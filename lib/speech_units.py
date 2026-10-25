@@ -252,10 +252,12 @@ def hardly_speech(words, span):
     return not any(sum(1 for x in starts if s0 <= x < s0 + DENSE_WINDOW_S) >= DENSE_WORDS for s0 in starts)
 
 
-def mark_made_up_tails(units, inside=frozenset()):
+def mark_made_up_tails(units, inside=frozenset(), durations=True):
     """The last sentence of each clip, three words or fewer, whose own words look made up: stretched or of zero
     length, or every one inside a measured silence (`inside`: (letter, word index) pairs speech_text found there),
-    like "Thank you." over a quiet end. Marked, so the selection drops it as a pause."""
+    like "Thank you." over a quiet end. Marked, so the selection drops it as a pause. durations=False (cut, which
+    measures the audio): only `inside` counts, never a word's length (a real last word can be stretched over
+    music, or be zero-length over its own sound)."""
     last = {}
     for n, (u, rows, _) in enumerate(units):
         last[u.clip] = n
@@ -265,15 +267,16 @@ def mark_made_up_tails(units, inside=frozenset()):
         words = [{"text": w.text, "start": w.start, "end": w.end} for w in ws]
         if u.fixed or not 0 < len(words) <= 3:
             continue
-        if made_up(words) or all((u.clip, w.idx) in inside for w in ws):
+        if (durations and made_up(words)) or all((u.clip, w.idx) in inside for w in ws):
             u.madeup = True
 
 
-def made_up_tail_words(units, inside=frozenset()):
+def made_up_tail_words(units, inside=frozenset(), durations=True):
     """{unit: word positions}: the made-up tail whisper glued onto the end of a clip's last real line ("... i want
     to find out Thank you." over room tone): its last three words or fewer, each inside a measured silence (`inside`)
     or together stretched or of zero length (`made_up`), after a word that is neither. A last unit that is all
-    made up is mark_made_up_tails' (a pause), so it is left out here."""
+    made up is mark_made_up_tails' (a pause), so it is left out here. durations=False: only `inside` counts (see
+    mark_made_up_tails)."""
     last = {}
     for n, (u, rows, _) in enumerate(units):
         last[u.clip] = n
@@ -286,7 +289,7 @@ def made_up_tail_words(units, inside=frozenset()):
 
         def made(part):
             return (all((u.clip, w.idx) in inside for w in part)
-                    or made_up([{"text": w.text, "start": w.start, "end": w.end} for w in part]))
+                    or (durations and made_up([{"text": w.text, "start": w.start, "end": w.end} for w in part])))
         k = max((k for k in (1, 2, 3) if made(ws[-k:])), default=0)
         if k and not made(ws[-k - 1:-k]):
             out[n] = set(range(len(ws) - k, len(ws)))

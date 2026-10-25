@@ -20,7 +20,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "lib"))
 
 import steps.edit.cut as cc  # noqa: E402
-from lib import speech_text  # noqa: E402
+from lib import speech_energy, speech_text  # noqa: E402
 
 FIX = REPO_ROOT / "tests" / "fixtures" / "speech_text"
 SCHEMA = json.loads((REPO_ROOT / "steps" / "edit" / "cut.json").read_text())
@@ -39,7 +39,9 @@ SCRIPT = ("Start by, um, picking the clip you want. "
           "Finally export it for your phone today. "
           "Thanks everyone.").split()
 KEPT = ["Start by picking the clip you want.", "Then drag it onto the timeline.",
-        # the truncated take run into the next sentence stays: only offered (abandoned?), "Trim" could be a name
+        # the truncated take run into the next sentence stays: only offered. (The pause before "Trim" is in
+        # whisper's times only: the audio runs straight on, so since §558's audio-placed edges it is the complete
+        # take before it that is offered, a fuzzy repeat (F1), not an abandoned opening.)
         "Then drag it onto Trim the start so it opens on the action.", "Finally export it for your phone today.",
         "Thanks everyone."]
 
@@ -130,10 +132,16 @@ def plan_and_apply(d, monkeypatch, *extra):
     return plan, applied
 
 
+def as_cut_reads(project, d):
+    """The timeline's speech as cut reads it: words placed by the audio (lib/speech_energy), so a word whisper put
+    in a pause is read where cut folded it, beside the word that holds its sound."""
+    return speech_text.derive(project, str(d), "trk-0", refiner=speech_energy.Refiner())
+
+
 def phrases(d):
     """The speech now on the timeline, one sentence per kept take."""
     project = json.loads((d / "project.json").read_text())
-    der = speech_text.derive(project, str(d), "trk-0")
+    der = as_cut_reads(project, d)
     words = [w.text for r in der.cut if r.kind == "speech" for w in r.words]
     out, cur = [], []
     for w in words:
@@ -203,13 +211,14 @@ def test_the_plan_writes_nothing_to_the_project(tmp_path, stub_transcribe, monke
     assert out["kept"]["lines"] == len(cut_rows)                    # rows of the plan, as removed counts rows
     unused_part = (d / "cut-plan.md").read_text().split("\n## Unused\n", 1)[1].strip()
     groups = unused_part.split("\n\n")
-    assert sum(out["removed"]["lines"].values()) == sum(1 for g in groups if "?]" not in g)   # one group per take
+    offered = [g for g in groups if any((m := cc._TAG.search(r)) and m.group(3) for r in g.splitlines())]
+    assert sum(out["removed"]["lines"].values()) == len(groups) - len(offered)    # one group per take
     assert out["removed"]["lines"] == {"retake": 2, "false-start": 1}
-    assert out["suggested"] == {"abandoned?": 1}
+    assert out["suggested"] == {"retake?": 1}          # F1 offers the earlier take (see KEPT)
     assert out["removed"]["fillers"] == 1 and out["removed"]["seconds"] > 0
     assert out["removed"]["seconds"] == pytest.approx(SOURCE_S - out["kept"]["seconds"], abs=0.02)
     lines = out["cut"].splitlines()
-    assert all(ln.rsplit(" [", 1)[1].rstrip("]").rstrip("?") in cc.WHYS for ln in lines)
+    assert all(ln.rsplit(" [", 1)[1].rstrip("]").split()[0].rstrip("?") in cc.WHYS for ln in lines)
     assert any(ln.endswith("[false-start]") and "Start by..." in ln for ln in lines)
     assert len(raw) < 1500
 
@@ -227,7 +236,7 @@ def test_the_plan_is_speech_edit_text_with_removed_rows_tagged(tmp_path, stub_tr
     assert kept_words == " ".join(KEPT)
     assert all(cc._TAG.search(r) for r in cut + unused)
     assert {cc._TAG.search(r).group(2) + (cc._TAG.search(r).group(3) or "") for r in unused} == \
-        {"retake", "false-start", "abandoned?"}
+        {"retake", "false-start", "retake?"}
 
 
 def test_the_same_transcript_gives_the_same_plan(tmp_path, stub_transcribe, monkeypatch):
@@ -606,12 +615,9 @@ def _layered_project(tmp_path):
     words = [w for w in retake_transcript()["transcription"]]
     p = json.loads((d / "project.json").read_text())
     (d / "x.jsx").write_text("export default function X(){return null}")
-    # each overlay ends by the next word's start: overlays that overlap at the start can collide once the dead air
-    # between two words is cut, which the carry refuses (carry_conflict), as speech_edit does
-    starts = [w["offsets"]["from"] / 1000 for w in words] + [float("inf")]
     p["tracks"].append({"id": "trk-ov", "items": [
         {"id": f"ov-{i}", "type": "overlay", "src": str(d / "x.jsx"),
-         "start": starts[i], "end": min(starts[i] + 0.2, starts[i + 1])} for i, w in enumerate(words)]})
+         "start": w["offsets"]["from"] / 1000, "end": w["offsets"]["from"] / 1000 + 0.2} for i, w in enumerate(words)]})
     p["notes"] = [{"id": f"n{i}", "t": w["offsets"]["from"] / 1000, "text": w["text"].strip()} for i, w in enumerate(words)]
     segs, cur = [], []
     for w in words:
@@ -749,9 +755,9 @@ def test_an_uncertain_retake_stays_kept_and_is_offered(tmp_path, stub_transcribe
     d = make_project(tmp_path)
     plan, _ = run(d, monkeypatch=monkeypatch)
     assert plan["removed"]["lines"] == {} and plan["suggested"]["retake?"] >= 1
-    assert "I love this app. [retake?]" in plan["cut"]
+    assert "I love this app. [retake? A2 " in plan["cut"]          # the offer names the other take's line
     cut, unused = sections((d / "cut-plan.md").read_text())
-    assert unused and all(r.endswith("?]") for r in unused)
+    assert unused and all(cc._TAG.search(r).group(3) for r in unused)          # every one only offered
     run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
     assert phrases(d) == sentences                       # nothing uncertain was cut
     assert json.loads((d / "project.json").read_text())["cleanCut"]["removed"]["lines"] == {}
@@ -1030,7 +1036,8 @@ def test_apply_after_the_timeline_was_emptied_says_so(tmp_path, stub_transcribe,
     before = (d / "project.json").read_bytes()
     e = _error(d, "--plan", plan["plan"], monkeypatch=monkeypatch, capsys=capsys)
     assert e["error"] == "stale_plan"
-    assert e["message"] == ("The timeline changed since this plan was made. Run cut again for a new plan. "
+    assert e["message"] == ("This plan was made before cut was updated, or the timeline changed. Run cut again "
+                            "(your edited plan is kept). "
                             "There are no clips on the timeline now; place clips first.")
     assert (d / "project.json").read_bytes() == before
 
@@ -1043,7 +1050,8 @@ def test_a_stale_plan_with_clips_has_no_clips_line(tmp_path, stub_transcribe, mo
     (d / "speech.json").write_text(json.dumps(tr))
     e = _error(d, "--plan", plan["plan"], monkeypatch=monkeypatch, capsys=capsys)
     assert e["error"] == "stale_plan"
-    assert e["message"] == "The timeline changed since this plan was made. Run cut again for a new plan."
+    assert e["message"] == ("This plan was made before cut was updated, or the timeline changed. Run cut again "
+                            "(your edited plan is kept).")
 
 
 def test_cut_on_a_draft_with_an_empty_timeline_is_refused(tmp_path, stub_transcribe, monkeypatch, capsys):
@@ -1237,7 +1245,7 @@ def tone_project(tmp_path, clips):
 def played_words(d):
     """[(text, timeline start, timeline end)] of every word the project plays now, in timeline order."""
     project = json.loads((d / "project.json").read_text())
-    der = speech_text.derive(project, str(d), "trk-0")
+    der = as_cut_reads(project, d)
     items = {it["id"]: it for it in project["tracks"][0]["items"]}
     out = []
     for r in der.cut:
@@ -1449,12 +1457,13 @@ def test_a_quiet_but_audible_word_is_kept(tmp_path, monkeypatch):
 
 def test_words_under_the_floor_are_removed_and_tagged_and_come_back_from_the_plan(tmp_path, monkeypatch):
     spans, words, end = spoken(["you feel a slight lean so you steer."])
-    for k in (2, 3):                                              # "a slight": under the clip's floor
-        spans[k] = (spans[k][0], spans[k][1], -58.0)
+    for k in (2, 3):              # "a slight": within 10 dB of the room's -70 (R2-Q2: -58 is heard, only offered)
+        spans[k] = (spans[k][0], spans[k][1], -64.0)
     d = tone_project(tmp_path, [("vo", spans, end + 1.0, words)])
     plan, _ = run(d, monkeypatch=monkeypatch)
     assert plan["removed"]["inaudible"] == 2 and plan["removed"]["by"]["inaudible"] > 0
-    assert set(plan["removed"]["by"]) == {"pause", "deadAir", "retake", "inaudible", "tail", "fillers"}
+    # silence: the mechanical pass's own silence trimming, apart from the filler words (#1 should-fix 5, #2 #9)
+    assert set(plan["removed"]["by"]) == {"pause", "deadAir", "retake", "inaudible", "tail", "fillers", "silence"}
     cut, unused = sections((d / "cut-plan.md").read_text())
     assert unused == [next(r for r in unused if r.startswith("*A1 ") and r.endswith(" inaudible]"))]
     run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
@@ -1540,3 +1549,373 @@ def test_a_list_a_refrain_or_a_quote_is_never_cut(tmp_path, monkeypatch, name):
     plan, text, said = plan_apply_said(d, monkeypatch, *extra)
     assert said == " ".join(lines), (name, said)
     assert plan["removed"]["by"]["retake"] == 0
+
+
+def kept_iv(d):
+    """(inPoint, outPoint) of each speech item, in timeline order."""
+    p = json.loads((d / "project.json").read_text())
+    return [(it["inPoint"], it["outPoint"]) for it in sorted(p["tracks"][0]["items"], key=lambda x: x["start"])
+            if "inPoint" in it]
+
+
+def plays_whole(d, t0, t1):
+    """Every moment of source [t0, t1] plays (one clip)."""
+    return any(a <= t0 + 1e-3 and b >= t1 - 1e-3 for a, b in kept_iv(d))
+
+
+def unheard_pieces(d, spans, under=0.3):
+    """Kept pieces shorter than `under` that hold no whole tone a person hears (one clip)."""
+    heard = [(a, b) for a, b, db in spans if db > NOISE_DB + 10]
+    return [(a, b) for a, b in kept_iv(d) if b - a < under and not any(a <= x - 1e-3 and y <= b + 1e-3 for x, y in heard)]
+
+
+# B3, B4, B2 (review #1)
+
+def test_soft_words_in_a_quiet_recording_are_kept(tmp_path, monkeypatch):
+    spans, words, end = spoken(["you feel a slight lean so you steer."], db=-40.0)
+    for k in (2, 3):                    # 10 dB softer, 30 dB over the room
+        spans[k] = (spans[k][0], spans[k][1], -50.0)
+    d = tone_project(tmp_path, [("vo", spans, end + 1.0, words)])
+    plan, _, said = plan_apply_said(d, monkeypatch)
+    assert said == "you feel a slight lean so you steer." and plan["removed"]["inaudible"] == 0
+    assert all(plays_whole(d, a, b) for a, b, _ in spans)
+
+
+def test_a_zero_length_audible_last_word_is_kept(tmp_path, monkeypatch):
+    spans, words, end = spoken(["you learn it by doing it again and that's it."])
+    words = list(words)
+    a = words[-1][1]
+    words[-1] = (words[-1][0], a + 0.1, a + 0.1)        # whisper's zero-length last word, over its own sound
+    words[-2] = (words[-2][0], words[-2][1], a + 0.1)
+    d = tone_project(tmp_path, [("vo", spans, end + 1.0, words)])
+    plan, _, said = plan_apply_said(d, monkeypatch)
+    assert said == "you learn it by doing it again and that's it." and plan["removed"]["by"]["tail"] == 0
+    assert plays_whole(d, *spans[-1][:2])
+
+
+@pytest.mark.parametrize("onset", [False, True])
+def test_a_weak_fricative_edge_plays(tmp_path, monkeypatch, onset):
+    """B4: a -48 dB "f" decay (or "h" onset) of 120 ms beside a -20 dB word, the floor at -46."""
+    spans = [(0.30, 0.55, SPEECH_DB), (0.60, 0.85, SPEECH_DB)]
+    if not onset:
+        nxt = 0.97 + 0.7
+        spans += [(0.85, 0.97, -48.0), (nxt, nxt + 0.25, SPEECH_DB)]
+        words = [("you", 0.30, 0.60), ("laugh", 0.60, nxt), ("now.", nxt, nxt + 0.25)]
+    else:
+        spans += [(1.55, 1.67, -48.0), (1.67, 1.92, SPEECH_DB)]
+        words = [("you", 0.30, 0.60), ("feel", 0.60, 1.55), ("happy.", 1.55, 1.92)]
+    d = tone_project(tmp_path, [("vo", spans, 3.5, words)])
+    plan_apply_said(d, monkeypatch)
+    assert plays_whole(d, *spans[2][:2]), kept_iv(d)
+
+
+def test_a_breath_inside_a_long_whisper_span_keeps_the_word(tmp_path, monkeypatch):
+    spans = [(0.30, 0.55, SPEECH_DB), (0.60, 0.85, SPEECH_DB), (0.92, 1.32, -50.0), (1.40, 1.65, SPEECH_DB),
+             (1.70, 1.95, SPEECH_DB)]
+    words = [("you", 0.30, 0.60), ("feel", 0.60, 0.90), ("lean", 0.90, 1.70), ("now.", 1.70, 1.95)]
+    d = tone_project(tmp_path, [("vo", spans, 3.0, words)])
+    _, _, said = plan_apply_said(d, monkeypatch)
+    assert said == "you feel lean now." and plays_whole(d, 1.40, 1.65)
+
+
+def test_a_word_s_sound_past_whisper_s_end_is_not_cut_by_the_silence_pass(tmp_path, monkeypatch):
+    """Fragment (b): the mechanical pass cut at whisper's end + 0.05 s, through the word's own sound."""
+    spans = [(0.30, 0.55, SPEECH_DB), (0.60, 1.05, SPEECH_DB), (1.80, 2.05, SPEECH_DB)]
+    words = [("you", 0.30, 0.60), ("laugh", 0.60, 0.85), ("now.", 1.80, 2.05)]
+    d = tone_project(tmp_path, [("vo", spans, 3.0, words)])
+    plan_apply_said(d, monkeypatch)
+    assert plays_whole(d, 0.60, 1.05), kept_iv(d)
+
+
+def test_a_final_follow_me_keeps_both_words_whole(tmp_path, monkeypatch):
+    spans, words, end = spoken(["so come along and follow me"])
+    spans[-1] = (spans[-1][0], spans[-1][1], SPEECH_DB)
+    spans.append((spans[-1][1], spans[-1][1] + 0.12, -48.0))       # the soft end of "me"
+    d = tone_project(tmp_path, [("vo", spans, end + 1.0, words)])
+    _, _, said = plan_apply_said(d, monkeypatch)
+    assert said == "so come along and follow me"
+    assert plays_whole(d, spans[-3][0], spans[-1][1]), kept_iv(d)
+
+
+# D2: dense overlays keep their pauses (review #1 should-fix 1)
+
+def test_dense_overlays_keep_the_pauses_they_start_in_and_never_refuse_the_plan(tmp_path, stub_transcribe, monkeypatch):
+    d, words = _layered_project(tmp_path)
+    plan, applied = plan_and_apply(d, monkeypatch)
+    assert plan["mode"] == "plan" and applied["mode"] == "applied"
+    assert any("where an overlay starts" in w for w in plan["warnings"])
+
+
+# R2-Q2: words under the floor are offered, never removed, unless within 10 dB of the room (review #2 blocker 2)
+
+def _lv(lines, levels=None, **kw):
+    spans, words, end = spoken(lines, **kw)
+    for k, db in (levels or {}).items():
+        spans[k] = (spans[k][0], spans[k][1], db)
+    return spans, words, end
+
+
+def test_a_whispered_aside_is_kept_and_only_offered(tmp_path, monkeypatch):
+    lines = ["so that is the plan", "just between you and me", "and we ship it on friday."]
+    spans, words, end = _lv(lines, {k: -48.0 for k in range(5, 10)})
+    d = tone_project(tmp_path, [("vo", spans, end + 1.0, words)])
+    plan, text, said = plan_apply_said(d, monkeypatch)
+    assert said == " ".join(lines) and plan["removed"]["inaudible"] == 0
+    assert plan["suggested"].get("inaudible?") and "inaudible?]" in text
+    assert all(plays_whole(d, a, b) for a, b, _ in spans)
+
+
+def test_a_lone_soft_word_plays_whole_never_cut_to_40_ms(tmp_path, monkeypatch):
+    spans, words, end = _lv(["and that is what we did today."], {2: -48.0})
+    d = tone_project(tmp_path, [("vo", spans, end + 1.0, words)])
+    _, _, said = plan_apply_said(d, monkeypatch)
+    assert said == "and that is what we did today." and plays_whole(d, *spans[2][:2]), kept_iv(d)
+
+
+def test_a_soft_real_ending_is_kept(tmp_path, monkeypatch):
+    lines = ["that is all for today, thanks for watching", "thank you so much."]
+    spans, words, end = _lv(lines, {k: -48.0 for k in range(7, 11)})
+    d = tone_project(tmp_path, [("vo", spans, end + 1.0, words)])
+    plan, _, said = plan_apply_said(d, monkeypatch)
+    assert said == " ".join(lines) and plan["removed"]["by"]["tail"] == 0
+
+
+@pytest.mark.parametrize("db, room", [(-52.0, -75.0), (-52.0, -70.0)])
+def test_a_quiet_recording_loses_nothing(tmp_path, monkeypatch, db, room):
+    """Gain down: speech at -52 dB. Never empty_cut, nothing removed as inaudible."""
+    monkeypatch.setattr(sys.modules[__name__], "NOISE_DB", room)
+    lines = ["this whole clip was recorded quietly", "but every word is clear."]
+    spans, words, end = _lv(lines, db=db)
+    d = tone_project(tmp_path, [("vo", spans, end + 1.0, words)])
+    plan, _, said = plan_apply_said(d, monkeypatch)
+    assert said == " ".join(lines) and plan["removed"]["inaudible"] == 0
+
+
+def test_a_quiet_second_clip_loses_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "NOISE_DB", -78.0)
+    out = []
+    for n, (lines, db) in enumerate([(["this first clip is loud and clear."], -14.0),
+                                     (["the second clip was recorded with the gain down", "but you can hear it fine."],
+                                      -50.0)]):
+        spans, words, end = _lv(lines, db=db)
+        out.append((f"vo{n}", spans, end + 1.0, words))
+    d = tone_project(tmp_path, out)
+    plan, _, said = plan_apply_said(d, monkeypatch)
+    assert said == ("this first clip is loud and clear. the second clip was recorded with the gain down but you can "
+                    "hear it fine.")
+    assert plan["removed"]["inaudible"] == 0
+
+
+def test_an_aside_over_a_music_bed_is_kept(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "NOISE_DB", -35.0)
+    lines = ["so that is the plan", "just between you and me", "and we ship it on friday."]
+    spans, words, end = _lv(lines, {k: -48.0 for k in range(5, 10)})
+    d = tone_project(tmp_path, [("vo", spans, end + 1.0, words)])
+    _, _, said = plan_apply_said(d, monkeypatch)
+    assert said == " ".join(lines)
+
+
+# the tail rule: energy evidence only (B2, review #2 blocker 3)
+
+def test_a_real_last_word_stretched_over_outro_music_is_kept(tmp_path, monkeypatch):
+    lines = ["that is it for today thanks for watching and see you."]
+    spans, words, end = spoken(lines)
+    words = list(words)
+    last = words[-1]
+    words[-1] = (last[0], last[1], last[1] + 3.5)          # whisper runs the last word to the clip's end
+    spans.append((last[1] + 0.3, last[1] + 3.5, -30.0))     # outro music under and after it
+    d = tone_project(tmp_path, [("vo", spans, last[1] + 3.6, words)])
+    plan, _, said = plan_apply_said(d, monkeypatch)
+    assert said == lines[0] and plan["removed"]["by"]["tail"] == 0
+    assert plays_whole(d, *spans[-2][:2])
+
+
+# misplaced words (orchestrator's bar; review #2 should-fix 5)
+
+def test_misplaced_words_whose_sound_is_in_a_long_neighbour_are_kept(tmp_path, monkeypatch):
+    """"ride the bike": whisper puts "the bike" in a pause; the audio of all three sits in "ride"'s long span."""
+    spans = [(0.30, 0.55, SPEECH_DB), (0.60, 1.65, SPEECH_DB), (2.40, 2.65, SPEECH_DB), (2.70, 2.95, SPEECH_DB)]
+    words = [("we", 0.30, 0.60), ("ride", 0.60, 1.70), ("the", 1.70, 2.05), ("bike", 2.05, 2.40),
+             ("all", 2.40, 2.70), ("day.", 2.70, 2.95)]
+    d = tone_project(tmp_path, [("vo", spans, 3.6, words)])
+    plan, text, said = plan_apply_said(d, monkeypatch)
+    assert said == "we ride the bike all day." and plan["removed"]["inaudible"] == 0
+    assert "inaudible" not in text.split("\n## Unused\n")[1]
+
+
+def test_a_truly_silent_run_between_two_short_words_is_still_removed(tmp_path, monkeypatch):
+    spans = [(0.30, 0.55, SPEECH_DB), (0.60, 0.85, SPEECH_DB), (2.40, 2.65, SPEECH_DB), (2.70, 2.95, SPEECH_DB)]
+    words = [("we", 0.30, 0.60), ("ride", 0.60, 1.70), ("the", 1.70, 2.05), ("bike", 2.05, 2.40),
+             ("all", 2.40, 2.70), ("day.", 2.70, 2.95)]
+    d = tone_project(tmp_path, [("vo", spans, 3.6, words)])
+    plan, _, said = plan_apply_said(d, monkeypatch)
+    assert said == "we ride all day." and plan["removed"]["inaudible"] == 2
+
+
+def test_words_whisper_started_early_in_a_pause_are_kept(tmp_path, monkeypatch):
+    spans = [(0.3 + 0.3 * k, 0.55 + 0.3 * k, SPEECH_DB) for k in range(4)]
+    spans += [(3.0 + 0.3 * k, 3.25 + 0.3 * k, SPEECH_DB) for k in range(5)]
+    words = [("that", 0.3, 0.6), ("was", 0.6, 0.9), ("day", 0.9, 1.2), ("one.", 1.2, 1.5),
+             ("and", 1.9, 2.2), ("so", 2.2, 2.5), ("we", 2.5, 3.85), ("went", 3.9, 4.2), ("home.", 4.2, 4.45)]
+    d = tone_project(tmp_path, [("vo", spans, 5.5, words)])
+    plan, _, said = plan_apply_said(d, monkeypatch)
+    assert said == "that was day one. and so we went home." and plan["removed"]["inaudible"] == 0
+    assert all(plays_whole(d, a, b) for a, b, _ in spans)
+
+
+def test_words_in_the_quiet_band_are_offered_inaudible_and_kept(tmp_path, monkeypatch):
+    spans, words, end = _lv(["you feel a slight lean so you steer."], {2: -58.0, 3: -58.0})
+    d = tone_project(tmp_path, [("vo", spans, end + 1.0, words)])
+    plan, text, said = plan_apply_said(d, monkeypatch)
+    assert said == "you feel a slight lean so you steer." and plan["suggested"] == {"inaudible?": 1}
+
+
+# dead slivers and word fragments (Sam, in the QA app)
+
+def test_no_sliver_is_left_after_a_removed_retake(tmp_path, monkeypatch):
+    """A word whisper put in the pause after a removed retake ("look", no sound of its own) was left as a 0.12 s
+    clip of breath between removed words."""
+    lines = ["so then we lean the frame over.", "look", "so then we lean the frame over and it tips."]
+    spans, words, end = _lv(lines, {7: -90.0})
+    d = tone_project(tmp_path, [("vo", spans, end + 1.0, words)])
+    plan_apply_said(d, monkeypatch)
+    assert unheard_pieces(d, spans) == [], kept_iv(d)
+
+
+def test_no_sliver_is_left_when_the_person_deletes_the_words_on_both_sides(tmp_path, monkeypatch):
+    """Apply: the person deletes the words around one whisper put in a pause; it is not left as a clip of its own."""
+    spans, words, end = _lv(["and that is what we did today."], {2: -90.0})
+    d = tone_project(tmp_path, [("vo", spans, end + 1.0, words)])
+    run(d, monkeypatch=monkeypatch)
+    text = (d / "cut-plan.md").read_text()
+    text = re.sub(r"\bthat\b", "", text.replace(" what ", " ", 1), count=1)
+    (d / "cut-plan.md").write_text(text)
+    run(d, "--plan", str(d / "cut-plan.md"), monkeypatch=monkeypatch)
+    assert unheard_pieces(d, spans) == [], kept_iv(d)
+
+
+def test_a_short_audible_word_is_kept_as_its_own_piece(tmp_path, monkeypatch):
+    spans = [(0.30, 0.55, SPEECH_DB), (0.60, 0.85, SPEECH_DB), (2.0, 2.15, SPEECH_DB), (3.4, 3.65, SPEECH_DB)]
+    words = [("are", 0.30, 0.60), ("you?", 0.60, 1.2), ("Yes.", 1.2, 2.6), ("Good.", 2.6, 3.65)]
+    d = tone_project(tmp_path, [("vo", spans, 4.5, words)])
+    _, _, said = plan_apply_said(d, monkeypatch)
+    assert said == "are you? Yes. Good." and plays_whole(d, 2.0, 2.15)
+
+
+def test_a_breath_before_a_removed_retake_does_not_open_the_clip(tmp_path, monkeypatch):
+    """The kungfu case: the clip's first kept piece was 0.13 s of breath before a removed retake."""
+    lines = ["look", "| we built a robot that rides a bike", "| we built a robot that rides a bike and it learns."]
+    spans, words, end = _lv(lines, start=0.6)
+    spans[0] = (spans[0][0], spans[0][1], -90.0)                  # "look": silent, folded into the retake
+    d = tone_project(tmp_path, [("vo", spans, end + 1.0, words)])
+    _, _, said = plan_apply_said(d, monkeypatch)
+    assert said == "we built a robot that rides a bike and it learns."
+    assert unheard_pieces(d, spans) == [] and kept_iv(d)[0][0] >= spans[8][0] - 0.2, kept_iv(d)
+
+
+# F2: a line spliced from two takes is flagged, never changed
+
+def test_a_line_spliced_from_two_takes_is_offered_not_changed(tmp_path, monkeypatch):
+    lines = ["now the robot rides the bike up the hill.", "the robot rides the bike up the hill today."]
+    spans, words, end = _lv(lines, {9: -90.0, 10: -90.0})       # the second take's "the robot": not said
+    d = tone_project(tmp_path, [("vo", spans, end + 1.0, words)])
+    plan, text, said = plan_apply_said(d, monkeypatch)
+    assert said == "now the robot rides the bike up the hill today."
+    # offered: the take as it would be (the fragment out), naming the take it was spliced with
+    assert "\nA1 now [0.3 retake? spliced A2 " in text and any("spliced from two takes" in w for w in plan["warnings"])
+
+
+# #2 should-fix 6: the kept share and large inaudible losses, after every pass
+
+def test_a_clip_left_with_almost_nothing_by_the_inaudible_pass_is_warned(tmp_path, monkeypatch):
+    toks = ["we", "go"] + [f"w{k}" for k in range(24)] + ["now."]
+    spans = [(0.3, 0.55, SPEECH_DB), (0.6, 0.85, SPEECH_DB), (9.0, 9.25, SPEECH_DB)]
+    words = [(t, 0.3 + 0.3 * k, 0.6 + 0.3 * k) for k, t in enumerate(toks[:2])]
+    words += [(t, 0.9 + 0.31 * k, 1.21 + 0.31 * k) for k, t in enumerate(toks[2:-1])] + [("now.", 9.0, 9.25)]
+    d = tone_project(tmp_path, [("vo", spans, 30.0, words)])
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert any("keeps only" in w for w in plan["warnings"]) and any("as inaudible" in w for w in plan["warnings"])
+
+
+def test_removed_by_tells_silence_from_fillers(tmp_path, monkeypatch):
+    d = spoken_project(tmp_path, ["you lean right and the frame tips over."])
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert plan["removed"]["by"]["fillers"] == 0 and plan["removed"]["by"]["silence"] > 0.5
+
+
+# R2-Q3 and D1: the breath, clamped, and dead air at a sentence end
+
+@pytest.mark.parametrize("breath, marker", [("0", "{0.04}"), ("0.3", "{0.45}")])
+def test_the_breath_is_clamped(tmp_path, monkeypatch, breath, marker):
+    d = spoken_project(tmp_path, ["you lean right", "and the frame tips over."], line_gap=0.9)
+    run(d, "--breath", breath, monkeypatch=monkeypatch)
+    assert marker in (d / "cut-plan.md").read_text()
+
+
+def test_dead_air_at_a_sentence_end_keeps_a_sentence_pause(tmp_path, monkeypatch):
+    d = spoken_project(tmp_path, ["you lean right.", "and the frame tips over."], line_gap=0.9)
+    plan, text, said = plan_apply_said(d, monkeypatch)
+    assert "\nA2 {0.18} and the frame" in text, text
+    assert max(_gaps(d)) == pytest.approx(0.18, abs=0.02)
+
+
+# #2 should-fix 4: the plan and the apply keep the same copy of a repeat in one row
+
+def test_a_repeat_the_apply_would_keep_the_other_copy_of_is_only_offered(tmp_path, monkeypatch):
+    import lib.speech_build as sb
+    real = sb.align_row
+
+    def other_copy(line_id, tokens, lines):
+        got = real(line_id, tokens, lines)
+        return [k - 7 if 9 <= k <= 15 else k for k in got] if len(got) == 12 else got   # the first saying instead
+    monkeypatch.setattr(sb, "align_row", other_copy)
+    line = "okay so then you tip the whole frame over | then you tip the whole frame over and it falls."
+    d = spoken_project(tmp_path, [line])
+    plan, text, said = plan_apply_said(d, monkeypatch)
+    assert plan["removed"]["lines"] == {} and plan["suggested"].get("repeat?")
+    assert said == line.replace(" |", "")
+
+
+def test_a_sure_repeat_plays_the_second_saying(tmp_path, monkeypatch):
+    lines = ["okay so then you tip the whole frame over | then you tip the whole frame over and it falls."]
+    spans, words, end = _lv(lines)
+    d = tone_project(tmp_path, [("vo", spans, end + 1.0, words)])
+    _, _, said = plan_apply_said(d, monkeypatch)
+    assert said == "okay so then you tip the whole frame over and it falls."
+    first = spans[2:9]
+    assert not any(plays_whole(d, a, b) for a, b, _ in first), kept_iv(d)
+    assert all(plays_whole(d, a, b) for a, b, _ in spans[9:])
+
+
+# Sam's repeat rule (2026-10-24): a CLEAR repeat is pre-picked (the last take kept, the earlier in ## Unused, tagged);
+# a POSSIBLE one is only flagged, naming both places, and both takes stay in ## Cut: the unedited plan applies them both
+
+def test_a_paraphrase_pair_applies_both_takes_with_the_plan_unedited(tmp_path, monkeypatch):
+    lines = ["you overcorrected that as well.", "you overcorrected that too."]
+    d = spoken_project(tmp_path, lines)
+    plan, text, said = plan_apply_said(d, monkeypatch)
+    assert said == " ".join(lines) and plan["removed"]["lines"] == {}
+    cut, unused = sections(text)
+    assert [re.sub(r" ?\{[\d.]+\} ?", " ", r.split(" [")[0]).strip() for r in cut] == \
+        ["A1 you overcorrected that as well.", "A2 you overcorrected that too."]
+    assert any(r.startswith("A1 ") and re.search(r"\?\s+A2 \d", r) for r in unused), unused   # names the other
+
+
+def test_a_list_like_repeat_keeps_every_item_through_the_apply(tmp_path, monkeypatch):
+    lines = ["you can use it on your phone", "you can use it on your laptop", "you can use it on your TV."]
+    d = spoken_project(tmp_path, lines)
+    plan, text, said = plan_apply_said(d, monkeypatch)
+    assert said == " ".join(lines) and plan["removed"]["lines"] == {} and plan.get("suggested")
+
+
+def test_a_clear_back_to_back_retake_keeps_the_last_take_the_earlier_in_unused(tmp_path, monkeypatch):
+    lines = ["so then we lean the frame over", "so then we lean the frame over and it tips."]
+    d = spoken_project(tmp_path, lines)
+    plan, text, said = plan_apply_said(d, monkeypatch)
+    assert said == "so then we lean the frame over and it tips."
+    cut, unused = sections(text)
+    assert len(unused) == 1 and unused[0].startswith("A1 so then we lean the frame over [0.3 ")
+    assert cc._TAG.search(unused[0]).group(2) in ("retake", "restart", "false-start") and not cc._TAG.search(unused[0]).group(3)
+    assert [re.sub(r" ?\{[\d.]+\} ?", " ", r.split(" [")[0]).strip() for r in cut] == \
+        ["A2 so then we lean the frame over and it tips."]
+

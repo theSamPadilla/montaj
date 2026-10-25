@@ -127,6 +127,9 @@ class Selection:
     # [(unit index, word indices it would delete or None for the whole unit, why ending in "?")]: an uncertain
     # cut, not made; the unit stays kept and the plan offers the cut for the person to take
     suggest: list = field(default_factory=list)
+    # offered unit index -> the unit index of its other take (in this clip or another), so the offer can say
+    # where that take is (§558)
+    partner: dict = field(default_factory=dict)
 
 
 def _tokens(words, is_filler):
@@ -442,6 +445,7 @@ def select(units, is_filler):
             why[i] = "pause"
 
     sections, section_of, joins, near_misses, block_pairs = [], {}, {}, [], {}
+    partner = {}
 
     def reach(i, t):
         """(may i join t's section, through a block retake). Units are counted in track order across clip
@@ -543,6 +547,7 @@ def select(units, is_filler):
             why[i] = "retake"
         for i in unsure:
             suggest.append((i, None, "retake?"))
+            partner.setdefault(i, best)
         if unsure:
             out.append((best, [best] + sure, best))
             out += [(i, [i], i) for i in unsure]
@@ -552,13 +557,15 @@ def select(units, is_filler):
     kept = [k for _, _, k in out]
     kept_set = set(kept)
 
-    def offer(i, why_):
+    def offer(i, why_, other=None):
         if i in kept_set and not fixed[i] and not any(s[0] == i and s[1] is None for s in suggest):
             suggest.append((i, None, why_))
+            if other is not None:
+                partner.setdefault(i, other)
 
     for t, i in near_misses:
         if section_of.get(t) != section_of.get(i):
-            offer(t, "retake?")
+            offer(t, "retake?", i)
     # a line reworded in one or two places, said again right after: maybe a retake
     for t in range(n - 1):
         i = t + 1
@@ -572,7 +579,7 @@ def select(units, is_filler):
         changed = {x for op, a1, a2, b1, b2 in codes if op != "equal" for x in seqs[t][a1:a2] + seqs[i][b1:b2]}
         if (sm.ratio() >= REWORD_RATIO and swaps and len(swaps) <= REWORD_SWAPS
                 and all(c[0] in ("equal", "replace") for c in codes) and not changed & _NEGATIONS):
-            offer(t, "retake?")
+            offer(t, "retake?", i)
     # a take that broke off, then reworded: the next one opens close to it
     for t in range(n - 1):
         i = t + 1
@@ -581,7 +588,7 @@ def select(units, is_filler):
         if section_of.get(t) == section_of.get(i):
             continue
         if SequenceMatcher(None, seqs[t], seqs[i][:len(seqs[t])], autojunk=False).ratio() >= REWORD_RATIO:
-            offer(t, "false-start?")
+            offer(t, "false-start?", i)
     # a block whose next line grew: after a matched pair, the pair after it at a lower bar
     pairs = [(t, i) for i, (t, _) in joins.items()] + near_misses
     for t, i in pairs:
@@ -592,7 +599,7 @@ def select(units, is_filler):
             continue
         sm = SequenceMatcher(None, seqs[nt], seqs[nb], autojunk=False)
         if {op for op, *_ in sm.get_opcodes()} <= {"equal", "insert"} and sm.ratio() >= GROWN_RATIO:
-            offer(nt, "retake?")
+            offer(nt, "retake?", nb)
 
     seen, uniq = set(), []
     for s in sorted((s for s in suggest if s[0] in kept_set and not fixed[s[0]]), key=lambda s: s[0]):
@@ -602,7 +609,7 @@ def select(units, is_filler):
             uniq.append(s)
     return Selection(kept=kept, drop={i: cleaned[i][1] for i in kept if cleaned[i][1]},
                      sections=[sec for _, sec, _ in out], losers=sorted(losers), abandoned=[], why=why,
-                     suggest=uniq)
+                     suggest=uniq, partner={i: j for i, j in partner.items() if any(s[0] == i for s in uniq)})
 
 
 # ── phrase retakes: the same words said again across whisper's line breaks (§558 field test) ──────────────
@@ -767,8 +774,9 @@ def _sure(seq, i, L, j):
         return None
     if not tail:
         return i + L if (seq[j][BREAK] or seq[j - 1][CUT]) else None
-    if any(not x[BARE] or x[TOK] in _JOINERS for x in tail) or any(x[CUT] for x in tail[:-1]) or seq[i + L - 1][CUT]:
-        return None
+    if any(not x[BARE] or x[TOK] in _JOINERS for x in tail) or any(x[CUT] for x in tail[:-1]) or seq[i + L - 1][CUT] \
+            or seq[i + L - 1][SENT]:
+        return None                 # after a sentence end, the words between are a line of their own
     if not (seq[i + L][BREAK] or (len(tail) == 1 and _fragment(tail[0]))):
         return None                 # a list item said in full ("... on your phone | ... on your laptop")
     if not (seq[j][BREAK] or tail[-1][CUT] or _fragment(tail[-1])):
@@ -812,11 +820,12 @@ def _clauses(seq):
     return out
 
 
-def phrase_retakes(units, sel, is_filler, times=None):
+def phrase_retakes(units, sel, is_filler, times=None, pairs=None):
     """The phrase rules above, on the words `sel` keeps. times: per unit, (start, end) source seconds per word
     (None: every repeat in one clip counts as near, and only the units' break marks are breaks). Returns (drops
     {unit: {word position: "retake"}}, suggestions [(unit, word positions or None, why?)]); the caller adds them to
-    the selection."""
+    the selection. pairs (a list): each sure retake is appended as ([(unit, position)] removed, [(unit, position)]
+    of the saying kept), for the caller's checks."""
     seq = _phrase_seq(units, sel, is_filler, times)
     sparse = {ui for ui, u in enumerate(units) if getattr(u, "sparse", False)}
     within = PHRASE_WITHIN_S if times is not None else None
@@ -834,10 +843,12 @@ def phrase_retakes(units, sel, is_filler, times=None):
                     continue
                 end = _sure(seq, i, L, j)
                 if end is not None and (best is None or L > best[0]):
-                    best = (L, i, end)
+                    best = (L, i, end, j)
         if best is None:
             break
-        _, i, end = best
+        L, i, end, j = best
+        if pairs is not None:
+            pairs.append(([(x[UNIT], x[POS]) for x in seq[i:end]], [(x[UNIT], x[POS]) for x in seq[j:j + L]]))
         for x in seq[i:end]:
             drops.setdefault(x[UNIT], {})[x[POS]] = "retake"
         seq = seq[:i] + seq[end:]

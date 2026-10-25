@@ -166,6 +166,8 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     plain_sils = derived.silences if refiner is None else None
     runs, report = runs_from_rows(rows, derived, derived.silences,
                                   max_pause, old_items, project_dir, feel=feel)
+    if hasattr(refiner, "tidy"):
+        runs = refiner.tidy(runs, derived, report)     # cut: no partial word, no sliver (lib/speech_energy.tidy)
     if not any(r.kind == "speech" for r in runs):
         fail("empty_cut", "The edit leaves no speech in the cut. Delete words or rows, but keep some speech.")
     reserved = {it["id"] for i, t in enumerate(tracks) if i != ti for it in t["items"]}
@@ -217,7 +219,9 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
 
     before, after = _summary(disk, ti), _summary(candidate, ti)
     if preview:
-        new_text = speech_text.render(speech_text.derive(candidate, project_dir, track=derived.track_id, sils=plain_sils), _title(candidate))
+        # cut's preview (a refiner) never shows the text: deriving it as speech_edit does is two more full decodes
+        new_text = None if refiner is not None else speech_text.render(
+            speech_text.derive(candidate, project_dir, track=derived.track_id, sils=plain_sils), _title(candidate))
         out = _result(applied=False, preview=True, version=False, before=before, after=after,
                       report=report, warnings=derived.warnings, text=new_text)
         if want_project:

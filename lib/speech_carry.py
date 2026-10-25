@@ -112,9 +112,11 @@ from lib.item_ids import id_suffix
 from lib.keyframe_curves import rebase
 from lib.project_tracks import normalize_tracks, replace_track_items
 from lib.speech_build import Report
+from lib.speech_lines import norm
 
 BED_SHARE = 0.9
 CAPTION_SPLIT_GAP_S = 0.5
+FOLD_ANCHOR_S = 1.0     # how far a caption word may be from the refined word saying it, when no refined word overlaps it
 
 _EPS = 1e-9        # same moment
 _MERGE_S = 1e-6    # new intervals this close are one
@@ -445,12 +447,13 @@ class TimeMap:
 
     # ---------------------------------------------------------- captions
 
-    def word_copies(self, a, b):
+    def word_copies(self, a, b, text=None):
         """New placements of an old caption word [a, b): [(start, end, clipped_start, clipped_end)].
 
         Anchored on the refined word its source span overlaps most (over every old item playing its
-        midpoint), else on its midpoint; one placement per new play of that anchor that continues
-        the old one (`_continues`): the first play and copies for repeats."""
+        midpoint), else (`text` given) on the nearest refined word saying it within FOLD_ANCHOR_S (a word cut's
+        energy pass folded beside the word that holds its sound, §558), else on its midpoint; one placement per new
+        play of that anchor that continues the old one (`_continues`): the first play and copies for repeats."""
         m = (a + b) / 2
         owners = self._owners(m)
         if not owners:
@@ -465,6 +468,8 @@ class TimeMap:
                 ov = min(x.s_at(b), w.end) - max(x.s_at(a), w.start)
                 if ov > 0 and (best is None or ov > best[0]):
                     best = (ov, x, w.idx)
+        if best is None and text:
+            best = self._folded_anchor(owners, m, text)
         if best is not None:
             _, x, k = best
             w = self.words[x.key][k]
@@ -491,6 +496,20 @@ class TimeMap:
                 sa, sb, ca, cb = na, nb, False, False
             out.append((sa, sb, ca, cb))
         return sorted(out)
+
+    def _folded_anchor(self, owners, m, text):
+        """(None, owner, word index) of the refined word saying `text` nearest the source time of m, within
+        FOLD_ANCHOR_S, or None."""
+        want, best = norm(text), None
+        if not want:
+            return None
+        for x in owners:
+            sm = x.s_at(m)
+            for w in (self.words.get(x.key) or {}).values():
+                d = abs((w.start + w.end) / 2 - sm)
+                if w.norm == want and d <= FOLD_ANCHOR_S and (best is None or d < best[0]):
+                    best = (d, x, w.idx)
+        return None if best is None else (None, best[1], best[2])
 
     def _words_over(self, key, s0, s1):
         """Refined words of `key` overlapping source span (s0, s1). Refined words are in source
@@ -793,7 +812,7 @@ class _Carry:
             return [seg]
         inst = []
         for j, w in enumerate(words):
-            for sa, sb, ca, cb in self.tm.word_copies(float(w["start"]), float(w["end"])):
+            for sa, sb, ca, cb in self.tm.word_copies(float(w["start"]), float(w["end"]), w.get("word")):
                 inst.append((sa, sb, j, ca, cb))
         if not inst:
             return None
