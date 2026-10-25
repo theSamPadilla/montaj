@@ -59,6 +59,7 @@ class Derived:
     silences: dict = field(default_factory=dict)     # source key -> measured silences, kept so an apply measures once
     warnings: list = field(default_factory=list)
     inaudible: set = field(default_factory=set)      # (letter, i): words with no audible frame (a `refiner`'s call)
+    untrimmed: dict = field(default_factory=dict)    # (letter, i) -> (start, end) before a refiner's silence trim
 
 
 def _resolve(item: dict, project_dir: str | None) -> dict:
@@ -222,7 +223,7 @@ def derive(project: dict, project_dir: str, track: str | None = None, sils: dict
             add(s["src"], sc, _media_for(s, sc))
     letters = {k: _letter(n) for n, k in enumerate(keys)}
 
-    words, lines, uncertain, inside, measured, inaudible = {}, {}, set(), set(), {}, set()
+    words, lines, uncertain, inside, measured, inaudible, untrimmed = {}, {}, set(), set(), {}, set(), {}
     for k in keys:
         if sidecars[k] is None:
             words[k], lines[k] = [], []
@@ -231,16 +232,25 @@ def derive(project: dict, project_dir: str, track: str | None = None, sils: dict
         if refiner is not None:
             refined, stats, sil = refiner(k, media[k], raw)
             inaudible.update((letters[k], i) for i in stats.get("inaudible", ()))
+            before = stats.get("untrimmed")
         else:
             sil = sils[k] if sils is not None and k in sils else silences(media[k])
             refined, stats = refine(raw, sil)
+            before = None
         measured[k] = sil
         words[k] = refined
         letter = letters[k]
         for a, b in uncertain_gaps(stats):
             uncertain.add((letter, a, b))
         inside.update((letter, i) for i in stats["inside_words"])
-        lines[k] = split_lines(letter, refined)
+        if before is None:
+            lines[k] = split_lines(letter, refined)
+        else:
+            # fix pass 4: lines split where they split before the refiner's silence trim (see take_span); their
+            # words are the trimmed ones, which the timeline is built on
+            by_idx = {w.idx: w for w in refined}
+            lines[k] = [Line(ln.id, tuple(by_idx[w.idx] for w in ln.words)) for ln in split_lines(letter, before)]
+            untrimmed.update(((letter, w.idx), (w.start, w.end)) for w in before)
     line_of = {k: {w.idx: ln for ln in lines[k] for w in ln.words} for k in keys}
 
     cut, played, wordless = [], {k: set() for k in keys}, {}
@@ -306,7 +316,14 @@ def derive(project: dict, project_dir: str, track: str | None = None, sils: dict
     used_sidecars = [sidecars[k] for k in keys if sidecars[k]]
     return Derived(tr["id"], letters, all_lines, cut, unused, partly,
                    stamp(project, idx, used_sidecars, getattr(refiner, "stamp", None) if refiner is not None else None),
-                   uncertain, inside, measured, warnings, inaudible)
+                   uncertain, inside, measured, warnings, inaudible, untrimmed)
+
+
+def take_span(d: Derived, letter: str, w) -> tuple:
+    """(start, end) of word `w` of source `letter` as the take rules read it: where it was placed before a
+    refiner's silence trim (cut, fix pass 4), else where it is. The trim is for the timeline only: the lines,
+    units, breaks and phrase times read this, so no take, break or flag changes because of it."""
+    return d.untrimmed.get((letter, w.idx), (w.start, w.end))
 
 
 def _row_text(row: Row) -> str:

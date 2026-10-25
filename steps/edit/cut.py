@@ -151,7 +151,8 @@ def _mechanical(work, project_path, ti, project_dir, fillers, lineage, whole=Non
         keeps = rm_nonspeech.source_keeps(words, duration)
         if refiner is not None:
             raw = load_words(sidecar)
-            placed, _, _ = refiner(r["src"], speech_text._media_for(r, sidecar), raw)
+            placed, st, _ = refiner(r["src"], speech_text._media_for(r, sidecar), raw)
+            placed = st.get("untrimmed", placed)      # the keeps the take rules' rows read (speech_text.take_span)
             keeps = _cover(keeps, raw, placed, duration)
         keeps, cuts, _ = rm_fillers.spec_keeps(keeps, words, fillers)
         lo, hi = _window(it, r["src"])
@@ -738,7 +739,7 @@ def _already_cut(project):
 
 # ── the run ──────────────────────────────────────────────────────────────────
 
-def _build(project_path, project_dir, disk, track_id, language, warnings):
+def _build(project_path, project_dir, disk, track_id, language, warnings, max_pause=None):
     """The base: the disk project with the mechanical pass on its speech track, in memory, and everything the
     plan and its apply need. Deterministic for the same project and transcripts, so an apply rebuilds the base
     the plan was made from."""
@@ -748,7 +749,7 @@ def _build(project_path, project_dir, disk, track_id, language, warnings):
     work = copy.deepcopy(origin)
     ti, track = _track(work, track_id)
     b = {"work": work, "ti": ti, "before_s": _seconds(track, project_dir),
-         "origin": origin, "lineage": {}, "d": None, "fillers": 0, "refiner": speech_energy.Refiner(),
+         "origin": origin, "lineage": {}, "d": None, "fillers": 0, "refiner": speech_energy.Refiner(max_pause),
          "filler_spans": {}}
     has_words = any((sc := sidecar_for(_resolved(it, project_dir))) and load_words(sc) for it in _media(track))
     if has_words:
@@ -756,6 +757,7 @@ def _build(project_path, project_dir, disk, track_id, language, warnings):
         b["whole"] = set()
         b["fillers"], w = _mechanical(work, project_path, ti, project_dir, rm_fillers.filler_matcher(language),
                                       b["lineage"], b["whole"], b["filler_spans"], b["refiner"])
+        b["refiner"].whole = b["whole"]          # clips kept whole: tidy never trims their edges (fix pass 4)
         warnings += w
         warnings += _silence_cut(work, project_path, ti, project_dir, b["lineage"], untranscribed_only=True)
         d = speech_text.derive(work, project_dir, track_id, refiner=b["refiner"])   # words where the audio is
@@ -802,7 +804,9 @@ def _phrases(b, units, is_filler):
     """The phrase rules (lib/take_select.phrase_retakes) on what the selection keeps: a sure retake's words join the
     unit's drop, tagged per word in b["why_at"]; the rest are offered."""
     sel = b["sel"]
-    times = [[(w.start, w.end) for _, r in rows for w in r.words] for _, rows, _ in units]
+    # the words' times as the take rules read them (before the silence trim, speech_text.take_span)
+    times = [[speech_text.take_span(b["d"], _line_key(r.line)[0], w) for _, r in rows for w in r.words]
+             for _, rows, _ in units]
     drops, offers = phrase_retakes([u for u, _, _ in units], sel, is_filler, times, pairs=b.setdefault("pairs", []))
     why_at = b.setdefault("why_at", {})
     for ui, pos in drops.items():
@@ -1170,7 +1174,7 @@ def _make_plan(args, project_path, project_dir):
     language = _language(args.language, _track(normalize_tracks(disk), track_id)[1], project_dir)
     max_pause = args.max_pause if args.max_pause is not None else FEELS[DEFAULT_FEEL].max_pause
     title = disk.get("name") or disk.get("id") or os.path.basename(project_dir)
-    b = _build(project_path, project_dir, disk, track_id, language, warnings)
+    b = _build(project_path, project_dir, disk, track_id, language, warnings, max_pause)
     answer = {"project": disk.get("id"), "mode": "plan"}
 
     if b["d"] is None:
@@ -1262,7 +1266,7 @@ def _apply_plan(args, project_path, project_dir):
     max_pause = args.max_pause if args.max_pause is not None else (
         plan_pause if plan_pause is not None else FEELS[DEFAULT_FEEL].max_pause)
     warnings = []
-    b = _build(project_path, project_dir, disk, track_id, language, warnings)
+    b = _build(project_path, project_dir, disk, track_id, language, warnings, max_pause)
     b["refiner"].max_pause = max_pause
     stale = ("This plan was made before cut was updated, or the timeline changed. Run cut again (your edited plan "
              "is kept).")

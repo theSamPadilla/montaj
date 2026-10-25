@@ -35,6 +35,13 @@ a word's span, after a dip, that goes on into the touching neighbour's span is t
   captions keep them and the pause beside them is one gap like any other (listed in stats["folded"]).
 No word is whisper-placed inside a pause any more, so no gap is unsure. The measured silences are the runs of
 frames under the floor, at least MIN_SILENCE_S long.
+Then the silence trim (fix pass 4, _trim_silence), on the timeline only: each heard word is trimmed to its SOUND,
+read on the source's speech level (speech_level, its SPEECH_PERCENTILE-th frame) and never on the noise reading
+(sound_frames: within SILENCE_BELOW_SPEECH_DB of it, or a soft sound over the quiet frames' own room), so a span
+whisper stretched over silence, or an offered word's, keeps none of it; sound after a long silence at a span's end
+goes to the next word. Refiner.quiet (dead air) reads the same silence. The classification above reads the spans as
+they were, and so do the take rules (stats["untrimmed"], speech_text.take_span), so the trim changes no removal, no
+take and no flag.
 
 cut uses it through `Refiner`, which speech_text.derive calls in place of speech_lines.refine, in the plan and in
 its apply alike, and whose `tidy` cleans the apply's runs (see `tidy`). speech_edit is unchanged.
@@ -53,7 +60,7 @@ from dataclasses import replace
 
 from lib.common import fail, ff_path, ffmpeg_bin, run
 
-VERSION = "speech-energy v3"
+VERSION = "speech-energy v4"
 FRAME_S = 0.01
 RATE = 16000
 FLOOR_BELOW_SPEECH_DB = 26.0
@@ -78,10 +85,16 @@ DEAD_AIR_MIN_S = 0.16            # a pause this long, every frame under the floo
 BREATH_S = 0.04                  # what a dead-air pause keeps on each side of the words
 SENTENCE_END_S = 0.18            # what dead air at a sentence end keeps, at most
 ISLAND_S = 0.35                  # a kept piece shorter than this never stands alone between two cuts (see tidy)
+SPEECH_PERCENTILE = 95           # the source's speech level: this percentile of its frames
+SILENCE_BELOW_SPEECH_DB = 30.0   # a frame this far under the speech level is silence (the trim, never a removal)
+SOUND_MIN_FRAMES = 3             # a soft sound under that level is sound only over this many frames in a row
+ROOM_DIP_DB = 20.0               # a quiet frame this far under the quiet frames' median is a dip, not the room
+TOUCH_S = 0.10                   # a group of sound this close to a word's span edge, by a neighbour, may be that neighbour's
 EDGE_REACH_S = 0.30              # the most tidy plays on over loud sound a cut went through (longer is not a word)
 DECODE_TIMEOUT_S = 600
 _SILENT_DB = -120.0
 _EPS = 1e-6
+_DEFAULT_MAX_PAUSE_S = 0.45      # speech_build's natural feel, when the refiner was given none
 
 
 def envelope(media: str) -> list:
@@ -254,10 +267,136 @@ def at_noise(env, noise, start, end) -> bool:
     return all(v <= noise + AT_NOISE_DB for v in env[a:b])
 
 
-def refine(words, env, floor, noise=None, trusted=None):
+def speech_level(env) -> float:
+    """The source's speech level: its SPEECH_PERCENTILE-th percentile frame (digital silence left out)."""
+    vals = [v for v in env if v > _SILENT_DB]
+    return _pct(vals, SPEECH_PERCENTILE) if vals else _SILENT_DB
+
+
+def sound_frames(env, speech):
+    """One byte a frame, 1 for sound. A frame is SOUND when it is at most SILENCE_BELOW_SPEECH_DB under the
+    `speech` level, or a soft sound: AUDIBLE_OVER_NOISE_DB over the quiet frames' own room (the NOISE_PERCENTILE-th
+    percentile of the frames under that level, those ROOM_DIP_DB or more under their median left out, whatever the
+    noise reading's trust) for SOUND_MIN_FRAMES frames in a
+    row, so a soft word's own sound is never silence and a stray frame of room tone is. Every other frame is
+    silence, for the trim (refine), never a removal."""
+    lvl = speech - SILENCE_BELOW_SPEECH_DB
+    low = [v for v in env if _SILENT_DB < v < lvl]
+    if low:
+        mid = statistics.median(low)
+        low = [v for v in low if v >= mid - ROOM_DIP_DB]       # a dip (a gate, a camera's first frames) is not the room
+    soft = (_pct(low) if low else lvl) + AUDIBLE_OVER_NOISE_DB
+    n = len(env)
+
+    def runs(test):
+        out, k = [], 0
+        while k < n:
+            if test(env[k]):
+                m = k
+                while m < n and test(env[m]):
+                    m += 1
+                out.append((k, m))
+                k = m
+            else:
+                k += 1
+        return out
+    snd = bytearray(1 if v >= lvl else 0 for v in env)
+    for a, b in runs(lambda v: v >= min(lvl, soft)):
+        if b - a >= SOUND_MIN_FRAMES:
+            snd[a:b] = b"\x01" * (b - a)
+    return snd
+
+
+def _trim_silence(out, words, kind, env, snd, hole, gone=frozenset()):
+    """Fix pass 4: no heard word's placed span keeps the silence whisper stretched it over. A word's sound frames
+    (sound_frames) are grouped, a run of silence over `hole` seconds (max-pause) splitting two groups. A word with
+    more than one group gives some to its heard neighbours, so the silence between becomes a gap between words, which
+    dead air and max-pause trim (whisper placed the neighbour late or early, its sound in this word's span):
+    - its first group, when it opens the span and the sound runs on from the word before (no silent frame between),
+      goes back to that word;
+    - its own sound is the first group left, of SOUND_MIN_FRAMES frames or more (a lone frame before it is dropped);
+    - every later group goes to the next word when whisper's span for it follows on (within TOUCH_S) and it is
+      heard, or silent and kept (not in `gone`, the words removed as inaudible: whisper placed it late, its sound is here; it is
+      then placed on that sound, not folded), in turn: that word keeps the first of them as its own and passes the
+      rest on. With no word to take them, they stay, and so does the silence between.
+    Then each heard word's span is trimmed to its sound, within its span: the pauses beside it are gaps that dead air
+    keeps a breath of and max-pause caps (a soft word's own sound is sound, so it always plays). One with no sound
+    frame keeps an anchor of BREATH_S: right after the word before when whisper's spans touch, else at its loudest
+    frame. Silent (folded) words are placed after this, against these edges. Returns the indexes of the silent words placed on sound."""
+    gap = int(round(hole / FRAME_S))
+    n = len(out)
+
+    def groups(i):
+        a, b = _frames(env, out[i].start, out[i].end)
+        gs = []
+        for k in range(a, b):
+            if snd[k]:
+                if gs and k - gs[-1][1] <= gap:
+                    gs[-1][1] = k + 1
+                else:
+                    gs.append([k, k + 1])
+        return gs
+    heard = [kind[i] != "silent" for i in range(n)]
+    taken = set()
+    for i in range(n):
+        gs = groups(i) if heard[i] else []
+        if len(gs) < 2:
+            continue
+        w = out[i]
+        a = _frames(env, w.start, w.end)[0]
+        if (i and heard[i - 1] and gs[0][0] == a and a and snd[a - 1]
+                and words[i].start - words[i - 1].end <= TOUCH_S + _EPS):
+            out[i - 1] = replace(out[i - 1], end=round(max(out[i - 1].end, gs[0][1] * FRAME_S), 6))
+            gs = gs[1:]
+        own = next((g for g in gs if g[1] - g[0] >= SOUND_MIN_FRAMES), gs[0])
+        later = gs[gs.index(own) + 1:]
+        st, en = own[0] * FRAME_S, w.end
+        if (later and i + 1 < n and (heard[i + 1] or i + 1 not in gone)
+                and words[i + 1].start - words[i].end <= TOUCH_S + _EPS):
+            out[i + 1] = replace(out[i + 1], start=round(min(out[i + 1].start, later[0][0] * FRAME_S), 6))
+            en = own[1] * FRAME_S
+            if not heard[i + 1]:
+                heard[i + 1] = True
+                taken.add(i + 1)
+        out[i] = replace(w, start=round(max(w.start, st), 6), end=round(min(w.end, max(st, en)), 6))
+    for i, w in enumerate(out):
+        if not heard[i]:
+            continue
+        a, b = _frames(env, w.start, w.end)
+        if b <= a:
+            continue
+        gs = groups(i)
+        if not gs:
+            # an anchor: against the word before when whisper's spans touch (its sound is there, as a folded
+            # word's is), else at its loudest frame
+            if i and heard[i - 1] and words[i].start - words[i - 1].end <= TOUCH_S + _EPS and out[i - 1].end <= w.end:
+                st = out[i - 1].end
+            else:
+                st = max(w.start, max(range(a, b), key=lambda k: (env[k], -k)) * FRAME_S)
+            out[i] = replace(w, start=round(st, 6), end=round(st + BREATH_S, 6))
+            continue
+        st = max(w.start, gs[0][0] * FRAME_S)
+        en = min(w.end, gs[-1][1] * FRAME_S + RELEASE_S)          # a soft ending survives (B4)
+        if st > w.start + _EPS or en < w.end - _EPS:
+            out[i] = replace(w, start=round(st, 6), end=round(max(st, en), 6))
+    return taken
+
+
+def refine(words, env, floor, noise=None, trusted=None, speech=None, hole=None):
     """(words placed by the audio, stats {inaudible, quiet, folded, heard: [word index], inside_words: [], inside,
-    attached, orphan}, silences [(start, end)]). See the module docstring. `trusted`: whether the noise reading
-    came from enough frames outside the words (noise_reading); nothing is inaudible when it did not."""
+    attached, orphan, untrimmed: [Word]}, silences [(start, end)]). See the module docstring. `trusted`: whether the
+    noise reading came from enough frames outside the words (noise_reading); nothing is inaudible when it did not.
+    `speech`: the source's speech level (speech_level); `hole`: max-pause, for the silence trim (_trim_silence).
+    stats["untrimmed"]: the words placed as before the silence trim (fix pass 4). The take rules read those, through
+    speech_text.take_span: lines, units, breaks and phrase times, so the trim changes only the timeline, never a
+    take, a break or a flag."""
+    before, _, _ = _refine(words, env, floor, noise, trusted, speech, hole, trim=False)
+    out, stats, sils = _refine(words, env, floor, noise, trusted, speech, hole, trim=True)
+    stats["untrimmed"] = before
+    return out, stats, sils
+
+
+def _refine(words, env, floor, noise, trusted, speech, hole, trim):
     if noise is None:
         noise, trusted = noise_reading(words, env)
     elif trusted is None:
@@ -299,14 +438,18 @@ def refine(words, env, floor, noise=None, trusted=None):
             m = min(max((x.end + y.start) / 2, core[i][1]), core[i + 1][0]) if core[i][1] <= core[i + 1][0] else x.end
             out[i] = replace(x, end=round(max(x.start, m), 6))
             out[i + 1] = replace(y, start=round(min(y.end, max(m, out[i].end)), 6))
+    # the misplaced-word rules below read the spans as they were before the silence trim, so the trim never
+    # changes which word is removed or offered (fix pass 4, rule a); the silent words fold against the trimmed edges
+    pre = list(out)
+    folds = []                  # (i, j, host): placed after the silence trim, against the trimmed edges
 
     def excess(k):
-        return (out[k].end - out[k].start) - _expected(words[k])
+        return (pre[k].end - pre[k].start) - _expected(words[k])
 
     def holds(k, m, need):
         """Heard word k holds m silent words' sound: it is long for its own text by `need`, or its span holds a
         separate burst of sound for each of them (a run said at a normal pace)."""
-        return (excess(k) > 0 and excess(k) >= need) or _bursts(env, out[k].start, out[k].end, heard) - 1 >= m
+        return (excess(k) > 0 and excess(k) >= need) or _bursts(env, pre[k].start, pre[k].end, heard) - 1 >= m
 
     bursts = _burst_spans(env, heard)
 
@@ -333,7 +476,7 @@ def refine(words, env, floor, noise=None, trusted=None):
             # there are words to its end (or after its start as words from it), so their sound may be there (R3
             # should-fix 1): kept, folded, offered
             quiet += list(range(i, j))
-            _fold(out, words, i, j, best)
+            folds.append((i, j, best))
             folded += [words[x].idx for x in range(i, j)]
             i = j
             continue
@@ -356,19 +499,28 @@ def refine(words, env, floor, noise=None, trusted=None):
                 inaudible += [words[k].idx for k in range(g0, g1)]
                 for lo, hi, host in ((i, g0, i - 1), (g1, j, j)):
                     if hi > lo:
-                        _fold(out, words, lo, hi, host)
+                        folds.append((lo, hi, host))
                         folded += [words[x].idx for x in range(lo, hi)]
                         quiet += list(range(lo, hi))
                 i = j
                 continue
             quiet += list(range(i, j))
-            _fold(out, words, i, j, best)
+            folds.append((i, j, best))
             folded += [words[x].idx for x in range(i, j)]
             i = j
             continue
-        _fold(out, words, i, j, held if held is not None else best)
+        folds.append((i, j, held if held is not None else best))
         folded += [words[k].idx for k in range(i, j)]
         i = j
+    taken = set()
+    if trim:
+        gone = set(inaudible)
+        taken = _trim_silence(out, words, kind, env, sound_frames(env, speech_level(env) if speech is None else speech),
+                              _DEFAULT_MAX_PAUSE_S if hole is None else hole,
+                              {k for k in range(n) if words[k].idx in gone})
+    for i, j, host in folds:
+        _fold_around(out, words, i, j, host, taken)
+    folded = [x for x in folded if x not in {words[k].idx for k in taken}]
     sils, run_start = [], None
     for k, v in enumerate(env + [0.0]):
         if v < floor and k < len(env):
@@ -378,9 +530,29 @@ def refine(words, env, floor, noise=None, trusted=None):
                 sils.append((round(run_start * FRAME_S, 6), round(k * FRAME_S, 6)))
             run_start = None
     stats = {"inaudible": inaudible, "quiet": [words[k].idx for k in sorted(set(quiet))], "folded": folded,
-             "heard": [words[k].idx for k in range(n) if kind[k] != "silent"],
+             "heard": [words[k].idx for k in range(n) if kind[k] != "silent" or k in taken],
              "inside_words": [], "inside": 0, "attached": 0, "orphan": 0}
     return out, stats, sils
+
+
+def _fold_around(out, words, i, j, host, taken):
+    """_fold of silent words i..j-1, but for those the silence trim placed on sound (`taken`): each run of the rest
+    folds against the nearest placed word on its host's side (a taken one, or the host), so the order holds."""
+    k = i
+    while k < j:
+        if k in taken:
+            k += 1
+            continue
+        m = k
+        while m < j and m not in taken:
+            m += 1
+        h = host
+        if host is not None and host < i and k > i:
+            h = k - 1                                    # the taken word right before this run
+        elif host is not None and host >= j and m < j:
+            h = m                                        # the taken word right after it
+        _fold(out, words, k, m, h)
+        k = m
 
 
 def _fold(out, words, i, j, host):
@@ -420,7 +592,8 @@ def quiet(env, floor, start, end) -> bool:
 _STAMPED = ("FRAME_S", "FLOOR_BELOW_SPEECH_DB", "FLOOR_RANGE_DB", "MIN_SILENCE_S", "INAUDIBLE_RUN", "LONE_WORD_S",
             "NOISE_PERCENTILE", "NOISE_MIN_FRAMES", "NOISE_FALLBACK_PERCENTILE", "AUDIBLE_OVER_NOISE_DB", "AT_NOISE_DB",
             "AT_NOISE_PAD_S", "BURST_GAP_FRAMES", "EDGE_BLEED_FRAMES", "EDGE_BELOW_FLOOR_DB", "RELEASE_S", "LETTER_S",
-            "WORD_BASE_S", "MISPLACED_SHARE", "ISLAND_S", "EDGE_REACH_S")
+            "WORD_BASE_S", "MISPLACED_SHARE", "ISLAND_S", "EDGE_REACH_S", "SPEECH_PERCENTILE",
+            "SILENCE_BELOW_SPEECH_DB", "SOUND_MIN_FRAMES", "ROOM_DIP_DB", "TOUCH_S", "BREATH_S")
 
 
 class Refiner:
@@ -431,6 +604,8 @@ class Refiner:
 
     def __init__(self, max_pause=None):
         self.env, self.floor, self.noise, self.trusted, self.quiet_words, self.heard = {}, {}, {}, {}, {}, {}
+        self.speech, self.sound = {}, {}
+        self.whole = set()          # item ids of clips kept whole (cut sets it): tidy never trims their edges
         self.max_pause = max_pause
 
     stamp = VERSION + " " + " ".join(f"{k}={globals()[k]}" for k in _STAMPED)
@@ -440,13 +615,22 @@ class Refiner:
             self.env[key] = envelope(media)
             self.noise[key], self.trusted[key] = noise_reading(raw, self.env[key])
             self.floor[key] = floor_db(raw, self.env[key], self.noise[key])
-        words, stats, sils = refine(raw, self.env[key], self.floor[key], self.noise[key], self.trusted[key])
+            self.speech[key] = speech_level(self.env[key])
+            self.sound[key] = sound_frames(self.env[key], self.speech[key])
+        words, stats, sils = refine(raw, self.env[key], self.floor[key], self.noise[key], self.trusted[key],
+                                    self.speech[key], self.max_pause)
         self.quiet_words[key] = set(stats["quiet"])
         self.heard[key] = set(stats["heard"])
         return words, stats, sils
 
     def quiet(self, key, start, end) -> bool:
-        return key in self.env and quiet(self.env[key], self.floor[key], start, end)
+        """Every frame of [start, end] is under the floor or silence (sound_frames: 30 dB under the source's speech
+        level, fix pass 4), so dead air is read on the speech level too, whatever the floor's clamp."""
+        if key not in self.env:
+            return False
+        env, floor, snd = self.env[key], self.floor[key], self.sound[key]
+        a, b = _frames(env, start, end)
+        return all(env[k] < floor or not snd[k] for k in range(a, b))
 
     def end(self, key) -> float:
         """The measured length of the source, in seconds."""
@@ -458,8 +642,6 @@ class Refiner:
 
 
 # ── the kept pieces: no partial word, no sliver, no island (§558 dead slivers, P3-1) ─────────────────────────
-
-_DEFAULT_MAX_PAUSE_S = 0.45      # speech_build's natural feel, when the refiner was given none
 
 
 def tidy(runs, derived, refiner, report=None):
@@ -655,7 +837,40 @@ def tidy(runs, derived, refiner, report=None):
             p.words.extend(r.words)
             continue
         merged.append(r)
+    _video_edges(merged, words_of, refiner)
     return merged
+
+
+def _video_edges(runs, words_of, refiner):
+    """Fix pass 4 (Sam, pov v3): the video opens and ends on sound. The first speech piece starts BREATH_S before
+    its first sound or kept word, the last ends BREATH_S after its last, never inside a kept word and never so short
+    that it becomes an island (ISLAND_S): the island rule wins. A piece of a clip kept whole (refiner.whole: cut's
+    b-roll) is left as it is."""
+    speech = [r for r in runs if r.kind == "speech" and r.src in words_of]
+    if not speech:
+        return
+    whole = getattr(refiner, "whole", None) or ()
+    for r, side in ((speech[0], -1), (speech[-1], 1)):
+        if r.item_id in whole:
+            continue
+        env, snd = getattr(refiner, "env", {}).get(r.src), getattr(refiner, "sound", {}).get(r.src)
+        if env is None or snd is None:
+            continue
+        a, b = _frames(env, r.s_in, r.s_out)
+        hits = [k for k in range(a, b) if snd[k]]
+        own = [w for w in words_of[r.src] if w.idx in r.words]
+        if side < 0:
+            t = min([k * FRAME_S for k in hits[:1]] + [w.start for w in own], default=None)
+            if t is not None:
+                to = min(max(r.s_in, t - BREATH_S), r.s_out - ISLAND_S)
+                if to > r.s_in + _EPS:
+                    r.s_in, r.old_in, r.hard_in = round(to, 6), None, False
+        else:
+            t = max([(k + 1) * FRAME_S for k in hits[-1:]] + [w.end for w in own], default=None)
+            if t is not None:
+                to = max(min(r.s_out, t + BREATH_S), r.s_in + ISLAND_S)
+                if to < r.s_out - _EPS:
+                    r.s_out, r.old_out, r.hard_out = round(to, 6), None, False
 
 
 def _quiet_from(refiner, src, t, step, limit):

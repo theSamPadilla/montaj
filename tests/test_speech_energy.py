@@ -286,3 +286,56 @@ def test_a_removed_words_fragment_is_trimmed_off_a_kept_word_clipped_is_restored
     assert spans(out) == [("a", 1.1, 1.95, [1, 2])]            # (b): "keep" plays whole
     out = se.tidy([run_of("a", 0.5, 1.15), run_of("a", 1.2, 1.95, [1, 2])], d, _Heard({"a": {1, 2}}))
     assert spans(out) == [("a", 0.5, 1.95, [1, 2])]              # never over another piece: up to it, then one
+
+
+# ── fix pass 4: the silence trim inside word spans (timeline only) ─────────────────────────────────────────────
+
+def _dip(env, t0, t1, db=-90.0):
+    for k in range(int(round(t0 / F)), int(round(t1 / F))):
+        env[k] = db
+    return env
+
+
+def test_a_stretched_word_keeps_only_its_sound_whatever_the_room_reading():
+    """A camera's quiet first frames read the room 20 dB low, so every room frame counts as heard: the span is
+    still trimmed to the sound (plus the release), measured on the speech level."""
+    ws = words(("so", 0.3, 2.1), ("then", 2.1, 2.45), ("go.", 2.45, 2.75))
+    env = _dip(env_of(3.4, (0.3, 0.6, -20.0), (2.1, 2.4, -20.0), (2.45, 2.75, -20.0), noise=-65.0), 0.0, 0.25)
+    out, _, _ = refined(ws, env)
+    assert out[0].start == pytest.approx(0.3) and out[0].end == pytest.approx(0.6 + se.RELEASE_S)
+    noise, trusted = se.noise_reading(ws, env)
+    stats = se.refine(ws, env, se.floor_db(ws, env, noise), noise, trusted)[1]
+    assert stats["untrimmed"][0].end == pytest.approx(2.1)              # as placed before: it held the silence
+
+
+def test_a_soft_words_own_sound_is_never_trimmed():
+    """R3-B1 kept: a soft word (-55, 15 dB over the room, 35 under the speech) keeps its whole sound; only the
+    silence whisper stretched it over goes."""
+    ws = words(("the", 0.3, 0.6), ("pigeon", 0.6, 2.0), ("flew.", 2.0, 2.3))
+    env = env_of(3.0, (0.3, 0.55, -20.0), (0.9, 1.5, -55.0), (2.0, 2.3, -20.0))
+    out, _, _ = refined(ws, env)
+    assert out[1].start <= 0.9 + 1e-6 and out[1].end >= 1.5 - 1e-6 and out[1].end <= 1.5 + se.RELEASE_S + 1e-6
+
+
+def test_a_late_neighbours_sound_goes_to_it_and_the_silence_between_is_a_gap():
+    """Whisper is late on "pepper": its sound sits at the end of "lantern"'s span, after 0.6 s of silence. It
+    goes to "pepper", so the silence is a gap between the two words (dead air), not inside one."""
+    ws = words(("lantern", 0.3, 1.6), ("pepper", 1.6, 2.6), ("now.", 2.6, 2.9))
+    env = env_of(3.4, (0.3, 0.6, -20.0), (1.2, 1.5, -20.0), (2.6, 2.9, -20.0))
+    out, _, _ = refined(ws, env)
+    assert out[0].end <= 0.6 + se.RELEASE_S + 1e-6 and out[1].start == pytest.approx(1.2), out
+
+
+@pytest.mark.parametrize("case", range(4))
+def test_the_trim_never_changes_what_is_removed_or_offered(case):
+    """Rule (a): the classification reads the untrimmed spans, so inaudible, offered and heard are what they were."""
+    ws = words(("so", 0.3, 0.6), ("just", 0.6, 0.9), ("between", 0.9, 1.2), ("us", 1.2, 2.5), ("now.", 2.5, 2.8))
+    level = (-48.0, -67.0, -63.0, -58.0)[case]
+    env = env_of(3.4, (0.3, 0.55, -20.0), (0.6, 0.85, level), (0.9, 1.15, level), (1.2, 1.45, -20.0),
+                 (2.5, 2.75, -20.0))
+    noise, trusted = se.noise_reading(ws, env)
+    floor = se.floor_db(ws, env, noise)
+    _, before, _ = se._refine(ws, env, floor, noise, trusted, None, None, trim=False)
+    _, after, _ = se.refine(ws, env, floor, noise, trusted)
+    assert {k: after[k] for k in ("inaudible", "quiet")} == {k: before[k] for k in ("inaudible", "quiet")}
+    assert set(before["heard"]) <= set(after["heard"])

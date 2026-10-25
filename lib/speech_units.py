@@ -10,6 +10,7 @@ from lib import write_places
 from lib.common import fail
 from lib.project_tracks import normalize_tracks
 from lib.speech_lines import _ends_sentence, load_words, sidecar_for
+from lib.speech_text import take_span
 from lib.take_select import BREAK_GAP_S, Unit
 
 HESITATION_S = 0.5          # a pause this long inside a take counts against it (select-takes: less dead air)
@@ -211,12 +212,14 @@ def build_units(d, is_filler):
             if ln and played:
                 lo, hi = min(played), max(played)
                 fillers += sum(1 for w in ln.words if lo <= w.idx <= hi and w.norm and is_filler(w.norm))
-        hes = sum(1 for a, b in zip(words, words[1:]) if b.start - a.end >= HESITATION_S)
+        letter = line_key(u["line"])[0]
+        span = [take_span(d, letter, w) for w in words]        # where the take rules read them (fix pass 4)
+        hes = sum(1 for a, b in zip(span, span[1:]) if b[0] - a[1] >= HESITATION_S)
         # a timing break before a word: it opens another source line, or follows a pause in the source
         breaks, pos, prev_line = set(), 0, None
         for _, r in u["rows"]:
             for k, w in enumerate(r.words):
-                if pos and w.start - words[pos - 1].end >= BREAK_GAP_S:      # a measured pause only
+                if pos and span[pos][0] - span[pos - 1][1] >= BREAK_GAP_S:      # a measured pause only
                     breaks.add(pos)
                 pos += 1
             prev_line = r.line
