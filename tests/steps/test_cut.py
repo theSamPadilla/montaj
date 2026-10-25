@@ -111,6 +111,16 @@ def stub_transcribe(monkeypatch):
 
 def run(d, *extra, monkeypatch):
     before = json.loads((d / "project.json").read_text()) if "--plan" in extra else None
+    held = {}
+    if before is not None:
+        from lib import speech_energy as _se
+        real_hold = _se.Refiner.hold
+
+        def hold(self, key, n):
+            s0, s1 = self.layers[key].silences[n]
+            held.setdefault(os.path.basename(key), []).append((s0, s1))
+            return real_hold(self, key, n)
+        monkeypatch.setattr(_se.Refiner, "hold", hold)
     monkeypatch.setattr(sys, "argv", ["cut.py", "--project", str(d / "project.json"), *extra])
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
@@ -119,16 +129,16 @@ def run(d, *extra, monkeypatch):
     assert raw.count("\n") <= 1, "one JSON object on stdout, nothing else"
     answer = json.loads(raw)
     if before is not None:
-        applied_checks(d, before, answer, extra)
+        applied_checks(d, before, answer, extra, held)
     return answer, raw
 
 
-def applied_checks(d, before, answer, extra=()):
-    """§558 cut v5: tests/cut_checks.py on every applied speech cut (flat runs, the video's lead and tail, islands,
-    audio tracks). Left out: a silence-only plan (waveform_trim's own absolute threshold, not layer 1), a clip kept
-    whole (b-roll: its own silences stay), a max-pause other than the default, an applied project whose speech items
-    do not all come from transcribed media, and the flat check where other layers are timed to the speech (D2 may
-    keep a silence whole for them, and warns)."""
+def applied_checks(d, before, answer, extra=(), held=None):
+    """§558 cut v5: tests/cut_checks.py on every applied speech cut (flat runs on the joined timeline, the video's
+    lead and tail, wordless pieces, audio tracks). The silences the apply kept whole for an overlay (D2, `held`) are
+    reported apart, never a failure; nothing else is exempt. Left out: a silence-only plan (waveform_trim's own
+    absolute threshold, not layer 1), a cut with a clip kept whole (b-roll), a max-pause other than the default, and
+    an applied project whose speech items do not all come from transcribed media."""
     from tests import cut_checks
     if answer.get("mode") != "applied" or "--max-pause" in extra:
         return
@@ -138,16 +148,14 @@ def applied_checks(d, before, answer, extra=()):
     if not text or " · silence · " in text.splitlines()[0] or not items or any(
             not (d / (Path(it["src"]).stem + ".json")).is_file() for it in items):
         return
-    if any(w.startswith("kept ") and " whole" in w for w in answer.get("warnings", [])) or re.search(
-            r"kept clip-\d+ whole", text):
+    if any(w.startswith("kept ") and " whole" in w for w in answer.get("warnings", [])):
         return
-    fails = cut_checks.check(d, before, (), (answer,))
+    fails = cut_checks.check(d, before, (), (answer,), held=held)
     if os.environ.get("V5_CHECK_LOG"):
         with open(os.environ["V5_CHECK_LOG"], "a") as f:
-            f.write(f"{os.environ.get('PYTEST_CURRENT_TEST', '').split(' ')[0]} {sorted(fails)}\n")
+            f.write(f"{os.environ.get('PYTEST_CURRENT_TEST', '').split(' ')[0]} {sorted(fails)} "
+                    f"held={len(cut_checks.exempt_report(d, held=held)['held'])}\n")
     fails.pop("islands", None)          # the plan answer's warnings are not passed here: checked by the tests
-    if any(t.get("items") for t in before.get("tracks", [])[1:]):
-        fails.pop("flat", None)         # D2: a silence an overlay starts in is kept whole, and the plan warns
     assert not fails, (fails, [(it["inPoint"], it["outPoint"]) for it in items], text.split("## Cut")[-1])
 
 

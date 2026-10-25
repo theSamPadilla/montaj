@@ -1,30 +1,29 @@
 """The cut checks (§558 cut v5), run on every applied result in the unit tests and the drift fuzz.
 
-They mirror the controller's acceptance tools: flat.py (/Users/Shared/s558/flat.py) exactly, and compare.py's
-lost-word and island columns:
-- FLAT: each speech item's 10 ms RMS frames of its source, decoded as flat.py decodes them (ffmpeg -ac 1, 16 kHz),
-  "flat" when under the source's 95th-percentile frame less 30 dB. No flat run inside a kept item longer than
-  max-pause, and at most LEAD_S of flat before the video's first sound and after its last. The one exemption, the
-  orchestrator's (2026-10-24): a run holding an ATTACHED word's kept frames (lib/speech_energy._attached_frames:
-  a word between kept words keeps its own sound down to 40 dB under the speech level) is not counted. Nothing else
-  is exempt, and nothing has slack;
+They mirror the controller's acceptance tools: flat.py v2 (/Users/Shared/s558/flat.py, 2026-10-24) exactly, and
+compare's lost-word and island columns:
+- FLAT, on the JOINED timeline (the speech items in timeline order, runs going on across cuts): each item's 10 ms RMS
+  frames of its source (the engine's own envelope, lib/speech_energy.envelope: the louder channel of each frame),
+  "flat" when under the source's speech level (waveform_trim.speech_level: the gated 95th percentile) less 30 dB, or
+  every frame of a source at or under -100 dB. No flat run longer than max-pause, and at most LEAD_S of flat before
+  the video's first sound and after its last. No exemption: a silence kept whole for an overlay (D2, `held`) and a
+  clip kept whole (b-roll, `whole`) are each reported in a column of their own, never hidden;
 - LOST: every word the person keeps (a test names its sound) whose peak is at or over LOUD_DB (absolute, as
   compare's guard) plays every one of its loud frames (those at or over LOUD_DB);
 - ISLANDS: no kept item under ISLAND_S unless an answer warns of as many short pieces;
+- WORDLESS: no kept piece standing alone on the timeline (a cut on each side) holding no word and under ISLAND_S of
+  sound (L-B4);
 - AUDIO: every music or audio track of the project before the cut is still there after it.
 The flat runs are waveform_trim.flat_runs, the same function layer 1 reads its silences with.
 """
 import json
+import math
 import os
 import re
-import subprocess
 
-import numpy as np
+from lib import speech_energy
+from steps.audio.waveform_trim import flat_runs, speech_level
 
-from lib.common import ffmpeg_bin
-from steps.audio.waveform_trim import flat_runs
-
-SR = 16000
 MAX_PAUSE = 0.45
 LEAD_S = 0.1
 LOUD_DB = -46.0
@@ -33,17 +32,17 @@ _FRAMES = {}
 
 
 def frames_db(path):
-    """flat.py's frames of `path`: 10 ms RMS of the mono mixdown, in dB, as float32 math."""
+    """(frames, speech level) of `path`: the engine's 10 ms RMS reading (the louder channel) and its gated level."""
     key = (os.path.abspath(path), os.path.getmtime(path))
     if key not in _FRAMES:
-        raw = subprocess.run([ffmpeg_bin(), "-v", "error", "-i", path, "-ac", "1", "-ar", str(SR), "-f", "s16le",
-                              "-"], capture_output=True, check=True).stdout
-        x = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-        w = SR // 100
-        n = len(x) // w
-        db = 20 * np.log10(np.sqrt((x[: n * w].reshape(n, w) ** 2).mean(axis=1) + 1e-12))
-        _FRAMES[key] = (db, float(np.percentile(db, 95)))
+        env = speech_energy.envelope(path)
+        _FRAMES[key] = (env, speech_level(env) if env else -120.0)
     return _FRAMES[key]
+
+
+def flat_of(db, ref):
+    """flat.py v2's flat frames: under ref - 30, or every frame when the source is at or under -100 dB."""
+    return [True] * len(db) if ref <= -100 else [v < ref - 30 for v in db]
 
 
 def _project(d):
@@ -59,54 +58,65 @@ def _media(d, it):
     return os.path.join(str(d), os.path.basename(it["src"]))
 
 
-def attached_frames(d, project=None, max_pause=MAX_PAUSE):
-    """{media basename: set of frame indexes}: the attached words' kept frames, as lib/speech_energy finds them on
-    each source's own transcript (the exemption, see the module docstring)."""
-    from lib import speech_energy
-    from lib.speech_lines import load_words
-    project = project or _project(d)
-    out = {}
-    for it in _items(project):
+def _timeline(d, project, held=None, whole=()):
+    """The joined timeline: [(media basename, source frame, flat, exempt)] per frame of every speech item in timeline
+    order. exempt: "held" for a frame inside a silence kept for an overlay ({media: [(start, end)]}), "whole" for a
+    frame of an item kept whole (b-roll: item ids), else None."""
+    out = []
+    held = held or {}
+    for it in sorted(_items(project), key=lambda it: float(it["start"])):
         f = os.path.basename(it["src"])
-        if f in out:
-            continue
-        side = os.path.splitext(_media(d, it))[0] + ".json"
-        if not os.path.isfile(side):
-            out[f] = set()
-            continue
-        ref = speech_energy.Refiner(max_pause)
-        ref(f, _media(d, it), load_words(side))
-        out[f] = set(ref.layers[f].attached)
+        db, ref = frames_db(_media(d, it))
+        flat = flat_of(db, ref)
+        a, b = float(it["inPoint"]), float(it["outPoint"])
+        lo, hi = int(a * 100), int(b * 100)
+        for k in range(lo, min(hi, len(db))):
+            ex = "whole" if it.get("id") in whole else (
+                "held" if any(s0 - 1e-6 <= k / 100 and (k + 1) / 100 <= s1 + 1e-6 for s0, s1 in held.get(f, ())) else None)
+            out.append((f, k, flat[k], ex, float(it["start"]) + (k - lo) / 100))
     return out
 
 
-def flat_report(d, max_pause=MAX_PAUSE, exempt=None):
-    """flat.py's numbers on the project at d: {"lead_s", "tail_s", "longest_flat", "over_max_pause", "runs"}. A run
-    holding a frame of exempt[media basename] is not counted (attached words); None reads them (attached_frames)."""
+def flat_report(d, max_pause=MAX_PAUSE, held=None, whole=()):
+    """flat.py v2's numbers on the JOINED timeline of the project at d: {"lead_s", "tail_s", "longest_flat",
+    "over_max_pause", "runs", "held_runs", "whole_runs"}. A run over max-pause holding a frame of a held silence (D2)
+    or of a whole-kept clip goes to its own column."""
     project = _project(d)
-    exempt = attached_frames(d, project, max_pause) if exempt is None else exempt
-    runs, longest, timeline = [], 0.0, []
-    for it in _items(project):
-        f = os.path.basename(it["src"])
-        db, ref = frames_db(_media(d, it))
-        a, b, st = float(it["inPoint"]), float(it["outPoint"]), float(it["start"])
-        lo = int(a * 100)
-        seg = db[lo:int(b * 100)]
-        flat = seg < ref - 30
-        mine = exempt.get(f, ())
-        timeline.extend(flat.tolist())
-        for i, j in flat_runs(seg.tolist(), ref - 30):
-            if any(lo + k in mine for k in range(i, j)):
-                continue
-            L = (j - i) / 100
-            longest = max(longest, L)
-            if L > max_pause:
-                runs.append({"file": f[:14], "timeline": round(st + i / 100, 2), "src": round(a + i / 100, 2),
-                             "len": round(L, 2)})
-    lead = next((k for k, v in enumerate(timeline) if not v), len(timeline)) / 100
-    tail = next((k for k, v in enumerate(reversed(timeline)) if not v), len(timeline)) / 100
+    tl = _timeline(d, project, held, whole)
+    flags = [x[2] for x in tl]
+    runs, held_runs, whole_runs, longest = [], [], [], 0.0
+    for i, j in flat_runs([0.0 if f else 1.0 for f in flags], 0.5):
+        L = (j - i) / 100
+        longest = max(longest, L)
+        if L > max_pause + 1e-9:
+            row = {"file": tl[i][0][:14], "timeline": round(tl[i][4], 2), "src": round(tl[i][1] / 100, 2),
+                   "len": round(L, 2)}
+            kinds = {x[3] for x in tl[i:j]}
+            (whole_runs if "whole" in kinds else held_runs if "held" in kinds else runs).append(row)
+    lead = next((k for k, v in enumerate(flags) if not v), len(flags)) / 100
+    tail = next((k for k, v in enumerate(reversed(flags)) if not v), len(flags)) / 100
     return {"lead_s": lead, "tail_s": tail, "longest_flat": round(longest, 2), "over_max_pause": len(runs),
-            "runs": runs}
+            "runs": runs, "held_runs": held_runs, "whole_runs": whole_runs}
+
+
+def wordless(d, max_pause=MAX_PAUSE):
+    """Kept pieces standing alone on the timeline (L-B4) that hold no word (none of the source's words has its middle
+    in it, by derive's reading) and under ISLAND_S of sound (frames not flat)."""
+    from tests.steps import test_cut as tc
+    project = _project(d)
+    der = tc.as_cut_reads(project, d)
+    worded = {r.item_ids[0] for r in der.cut if r.kind == "speech" and r.words}
+    out = []
+    for it in _items(project):
+        if it.get("id") in worded:
+            continue
+        db, ref = frames_db(_media(d, it))
+        flat = flat_of(db, ref)
+        a, b = float(it["inPoint"]), float(it["outPoint"])
+        sound = sum(1 for k in range(int(a * 100), min(int(b * 100), len(db))) if not flat[k]) / 100
+        if sound < ISLAND_S - 1e-9:
+            out.append((round(a, 3), round(b, 3), sound))
+    return out
 
 
 def lost_words(d, kept):
@@ -124,7 +134,8 @@ def lost_words(d, kept):
             first = _items(project)
             path = os.path.join(str(d), os.path.splitext(name)[0] + os.path.splitext(first[0]["src"])[1])
         db, _ = frames_db(path)
-        k0, k1 = int(np.ceil(t0 * 100 - 1e-6)), int(np.floor(t1 * 100 + 1e-6))
+        db = list(db)
+        k0, k1 = int(math.ceil(t0 * 100 - 1e-6)), int(math.floor(t1 * 100 + 1e-6))
         loud = [k for k in range(k0, min(k1, len(db))) if db[k] >= LOUD_DB]
         if not loud:
             continue
@@ -158,11 +169,13 @@ def audio_ids(project):
     return out
 
 
-def check(d, before=None, kept=(), answers=(), max_pause=MAX_PAUSE):
+def check(d, before=None, kept=(), answers=(), max_pause=MAX_PAUSE, held=None, whole=()):
     """Every check on the applied project at d; returns the failures ({} when it passes). before: the project
-    before the cut (for the audio check); kept: the person's kept words' sound (see lost_words)."""
+    before the cut (for the audio check); kept: the person's kept words' sound (see lost_words); held: {media
+    basename: [(start, end)]} silences kept for an overlay (D2); whole: item ids of clips kept whole. Runs in held or
+    whole stretches are reported under "held" and "whole", which are not failures."""
     fails = {}
-    rep = flat_report(d, max_pause)
+    rep = flat_report(d, max_pause, held, whole)
     if rep["over_max_pause"]:
         fails["flat"] = rep["runs"]
     if rep["lead_s"] > LEAD_S + 1e-9 or rep["tail_s"] > LEAD_S + 1e-9:
@@ -173,9 +186,18 @@ def check(d, before=None, kept=(), answers=(), max_pause=MAX_PAUSE):
     isl = islands(d, answers)
     if isl:
         fails["islands"] = isl
+    alone = wordless(d, max_pause)
+    if alone:
+        fails["wordless"] = alone
     if before is not None:
         after = audio_ids(_project(d))
         gone = [i for i in audio_ids(before) if i not in after]
         if gone:
             fails["audio"] = gone
     return fails
+
+
+def exempt_report(d, max_pause=MAX_PAUSE, held=None, whole=()):
+    """The exempt columns on their own: {"held": runs, "whole": runs}."""
+    rep = flat_report(d, max_pause, held, whole)
+    return {"held": rep["held_runs"], "whole": rep["whole_runs"]}
