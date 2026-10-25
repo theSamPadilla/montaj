@@ -14,9 +14,10 @@ Right after the cut's plan (`cut-plan.md`), before the apply. The plan has alrea
 
 1. `read_file` `cut-plan.md`. `## Cut` is what will play, in order; `## Unused` holds every removed take and every offer (a tag ending in `?`, which may name its other take's line and time).
 2. Map the script: its sections in narrative order. For each, find every take in both lists and keep one: complete over cut off, no restart inside it, fewer fillers, the last when they are equal.
-3. In each kept take, a phrase of 3 or more words said twice keeps only its last saying. Read every seam between sections: the same fact or beat said on both sides loses one.
-4. Edit only the plan: move a row from `## Unused` into `## Cut` to keep it, delete a row from `## Cut` to drop it, move rows to reorder, delete words from a row (never add or change one); a `*` row is the whole of a trimmed row, put in place of that row. To take a `?` offer: for `retake?` or `false-start?`, delete that take's rows from `## Cut` (they are still there); for any other `?` group, put its rows in place of that take's rows in `## Cut`. Then `write_file` it back. The next step applies it.
-5. If the plan cannot say what the video needs (a clip with no rows at all, a long silence kept), tell the person what you see and stop there. Never rebuild the cut with other steps: no `waveform_trim`, `jump_cut`, `speech_text`, `speech_edit` or `crop_spec`. Each changes the project, and the apply is then refused as stale.
+3. In each kept take, a phrase of 3 or more words said twice keeps only its last saying.
+4. Order: put the kept rows in the order the prompt or script asks for; with neither, keep the recording order. The apply plays `## Cut` top to bottom. Then read every seam between sections: the same fact or beat said on both sides loses one.
+5. Edit only the plan: move a row from `## Unused` into `## Cut` to keep it, delete a row from `## Cut` to drop it, move rows to reorder, delete words from a row (never add or change one); a `*` row is the whole of a trimmed row, put in place of that row. To take a `?` offer: for `retake?` or `false-start?`, delete that take's rows from `## Cut` (they are still there); for any other `?` group, put its rows in place of that take's rows in `## Cut`. Then `write_file` it back. The next step applies it.
+6. If the plan cannot say what the video needs (a clip with no rows at all, a long silence kept), tell the person what you see and stop there. Never rebuild the cut with other steps: no `waveform_trim`, `jump_cut`, `speech_text`, `speech_edit` or `crop_spec`. Each changes the project, and the apply is then refused as stale.
 
 ## On a project already cut
 
