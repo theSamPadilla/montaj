@@ -152,6 +152,7 @@ def apply_snapshot(tmp, name, **kw) -> str:
     text = fn(render(derive(project, pdir), project.get("name") or project["id"]))
     with _pinned_ids():
         result = speech_apply.apply(os.path.join(pdir, "project.json"), text, preview=False, max_pause=max_pause, **kw)
+    result.pop("hardCutAt", None)   # §558 added after these goldens; test_speech_glued checks it
     with open(os.path.join(pdir, "project.json"), encoding="utf-8") as f:
         written = f.read()
     with open(os.path.join(pdir, "speech-text.md"), encoding="utf-8") as f:

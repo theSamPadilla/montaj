@@ -545,6 +545,14 @@ class TimeMap:
 # ------------------------------------------------------------------ rule 2: a timed span
 
 
+# A 3D item (render/scene3d.js): an overlay whose `src` is this reserved name.
+SCENE3D_SRC = "engine:scene3d"
+# A kept stretch closer than this to the next is one stretch for a 3D item (rounding, not a cut).
+_SCENE3D_MIN_GAP_S = 0.001
+# Two kept stretches of a 3D item play back to back when the next starts within this of the last one's end.
+_SCENE3D_JOIN_S = 0.002
+
+
 @dataclass
 class _Span:
     start: float
@@ -651,6 +659,9 @@ class _Carry:
             if partners:
                 out.extend(self.pieces(it, partners))
                 continue
+            if it.get("src") == SCENE3D_SRC and self.scene3d(it):
+                out.append(it)
+                continue
             a, b = float(it["start"]), float(it["end"])
             sp = _carry_span(self.tm, a, b)
             if sp is None and it.get("type") == "audio":
@@ -674,6 +685,99 @@ class _Carry:
             self.counts["overlays"] += 1
             out.append(it)
         return self.fix_overlaps(ti, t.get("id"), out)
+
+    def scene3d(self, it):
+        """A 3D item a cut falls inside is never cut up or cut short (§558): its scene would jump, and 3D beats join
+        by camera moves. It stays one item, from its first kept moment, as long as its kept speech, and is flagged
+        with the removed spans in scene seconds (`props.inPoint` plus item time) and `map`: [[scene from, scene to,
+        item time]] per kept stretch, so its keys can be retimed by one warp. `scene3d_timing` when the kept stretches
+        still play back to back in order; `scene3d_reordered` when the edit moved them apart (the map says where each
+        plays). Its own keyframes are rebuilt stretch by stretch. False when no cut falls inside it (it is carried
+        like any overlay)."""
+        a, b = float(it["start"]), float(it["end"])
+        # each surviving stretch inside it, with where its start plays now (a stretch played twice counts once,
+        # at its first place)
+        kept = {}
+        for t0, t1, x, nseg, delta in self.tm._stretches:
+            lo, hi = max(a, t0), min(b, t1)
+            if hi - lo <= _EPS:
+                continue
+            n0 = (lo + delta if delta else lo) if x is None else self.tm._to_new(x, nseg, lo)
+            if (lo, hi) not in kept or n0 < kept[(lo, hi)]:
+                kept[(lo, hi)] = n0
+        merged = []           # [lo, hi, new start]: one only where both old and new times run on
+        for (lo, hi), n0 in sorted(kept.items()):
+            if merged and lo <= merged[-1][1] + _EPS and abs(merged[-1][2] + (lo - merged[-1][0]) - n0) <= _SCENE3D_JOIN_S:
+                merged[-1][1] = max(merged[-1][1], hi)
+            else:
+                merged.append([lo, hi, n0])
+        if not merged:
+            return False                      # nothing of it survives: removed and listed, as an overlay
+        removed, at = [], a
+        for lo, hi, _ in merged:
+            if lo - at > _SCENE3D_MIN_GAP_S:
+                removed.append((at, lo))
+            at = max(at, hi)
+        if b - at > _SCENE3D_MIN_GAP_S:
+            removed.append((at, b))
+        if not removed:
+            return False
+        news = [n0 for _, _, n0 in merged]
+        if news[0] is None:
+            return False
+        length = sum(hi - lo for lo, hi, _ in merged)
+        ns = news[0]
+        in_order, cursor = True, ns
+        for lo, hi, n0 in merged:
+            if n0 is None or abs(n0 - cursor) > _SCENE3D_JOIN_S:
+                in_order = False
+            cursor += hi - lo
+        if not in_order:
+            # moved apart: the item covers every stretch where it plays now, from the first to the last
+            if any(n0 is None for n0 in news):
+                return False
+            ns = min(news)
+            length = max(n0 + hi - lo for lo, hi, n0 in merged) - ns
+        it["start"], it["end"] = _r6(ns, it["start"]), _r6(ns + length, it["end"])
+        offset = float((it.get("props") or {}).get("inPoint") or 0)
+        local, mapping, placed = 0.0, [], []
+        for lo, hi, n0 in merged:
+            t = local if in_order else n0 - ns
+            mapping.append([round(offset + lo - a, 3), round(offset + hi - a, 3), round(t, 3)])
+            placed.append((lo, hi, t))
+            local += hi - lo
+        self._scene3d_keyframes(it, a, placed)
+        self.flag("scene3d_timing" if in_order else "scene3d_reordered", it.get("id"),
+                  removed=[[round(offset + lo - a, 3), round(offset + hi - a, 3)] for lo, hi in removed], map=mapping,
+                  **{"from": round(a, 2), "to": round(it["start"], 2)})
+        self.counts["overlays"] += 1
+        return True
+
+    @staticmethod
+    def _scene3d_keyframes(it, a, placed):
+        """The item's own keyframes, kept stretch by stretch, each piece at its item time t ([(lo, hi, t)]): each
+        stretch's piece is exact at its ends (keyframe_curves.rebase); at a join the later stretch's first value wins
+        (the cut is a jump)."""
+        kfs = it.get("keyframes")
+        if not kfs:
+            return
+        out = []
+        for track in kfs:
+            points = []
+            for lo, hi, at in sorted(placed, key=lambda p: p[2]):
+                piece = rebase([track], lo - a, hi - lo)
+                if not piece:
+                    continue
+                pts = [{**p, "t": round(p["t"] + at, 6)} for p in piece[0]["points"]]
+                if points and pts and abs(points[-1]["t"] - pts[0]["t"]) < 1e-6:
+                    points.pop()
+                points += pts
+            if points:
+                out.append({**{k: v for k, v in track.items() if k != "points"}, "points": points})
+        if out:
+            it["keyframes"] = out
+        else:
+            it.pop("keyframes", None)
 
     @staticmethod
     def _layer_range(layer):
@@ -760,6 +864,11 @@ class _Carry:
             if hit is None:
                 return items
             b, to, others = hit
+            if b.get("src") == SCENE3D_SRC or any(x.get("src") == SCENE3D_SRC for x in others):
+                # a 3D item is never trimmed (its scene would jump): the edit is refused instead
+                ids = ", ".join(str(x.get("id")) for x in sorted(others + [b], key=lambda x: (x["start"], x["end"])))
+                fail("carry_conflict", f"{tid}: {ids} overlap after the edit, and a 3D item is never trimmed; "
+                                       "move or delete one, then apply again")
             if b["end"] - to <= _EPS:
                 ids = ", ".join(str(x.get("id")) for x in sorted(others + [b], key=lambda x: (x["start"], x["end"])))
                 fail("carry_conflict", f"{tid}: {ids} overlap after the edit; move or delete one, then apply again")

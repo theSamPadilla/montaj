@@ -237,3 +237,21 @@ def test_apply_never_returns_a_silent_noop(tmp_path, measured, feel):
     assert r["applied"] is False and r["noop"] is True
     assert r["cut"] == [] and r["hardCuts"] == 0
     assert r["flagged"] == [{"kind": "no_gap", "line": "A2", "words": "I"}]
+
+
+@pytest.mark.parametrize("feel", FEEL_NAMES)
+def test_apply_lists_where_each_hard_cut_is(tmp_path, measured, feel):
+    """§558: `hardCutAt` gives the seconds on the new timeline of every hard cut `hardCuts` counts, one per hard
+    edge (an edge into an item is its start, one out of it its end), so a recipe can sample each one."""
+    path = _git_project(tmp_path / "p")
+    r = speech_apply.apply(path, edit(_text(path), A2, "A2 I would"), preview=False, max_pause=None, feel=feel)
+    assert len(r["hardCutAt"]) == r["hardCuts"] == 2 and r["hardCutAt"] == sorted(r["hardCutAt"])
+    with open(path, encoding="utf-8") as f:
+        edges = {round(float(it[k]), 3) for it in json.load(f)["tracks"][0]["items"] for k in ("start", "end")}
+    assert set(r["hardCutAt"]) <= edges
+
+
+def test_preview_lists_the_hard_cuts_too(tmp_path, measured):
+    path = _git_project(tmp_path / "p")
+    r = speech_apply.apply(path, edit(_text(path), A2, "A2 I would"), preview=True, max_pause=None)
+    assert len(r["hardCutAt"]) == r["hardCuts"]

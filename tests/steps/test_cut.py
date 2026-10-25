@@ -224,7 +224,8 @@ def test_schema_declares_the_params():
     names = {p["name"]: p for p in SCHEMA["params"]}
     assert SCHEMA["name"] == "cut"
     assert names["project"]["required"] is True and names["project"]["type"] == "path"
-    assert {"plan", "language", "max-pause", "breath", "recut", "detail", "model"} == set(names) - {"project"}
+    assert {"plan", "language", "max-pause", "breath", "silence-threshold", "speech", "recut", "detail", "model"} == set(names) - {"project"}
+    assert names["silence-threshold"]["type"] == "float" and names["silence-threshold"]["min"] == -60
     assert "preview" not in names
     assert SCHEMA["input"]["type"] == "project" and "language is detected" in SCHEMA["description"]
 
@@ -245,7 +246,7 @@ def test_the_plan_writes_nothing_to_the_project(tmp_path, stub_transcribe, monke
     assert calls == [{"input": str(d / "speech.mp4"), "model": "large-v3-turbo-q5_0", "language": "auto"}]
     assert (d / "speech.json").is_file() and not (d / "speech.srt").exists()
 
-    assert set(out) == {"project", "mode", "plan", "kept", "removed", "suggested", "duration", "layers", "cut",
+    assert set(out) == {"project", "mode", "speech", "plan", "kept", "removed", "suggested", "hardCuts", "hardCutAt", "duration", "layers", "cut",
                         "next", "transcribed"}
     assert out["layers"] == {} and out["next"].startswith(f'Apply: cut with plan "{d / "cut-plan.md"}".')
     assert out["mode"] == "plan" and out["transcribed"] == ["clip-0"]
@@ -315,12 +316,43 @@ def test_the_apply_cuts_through_the_speech_edit_save(tmp_path, stub_transcribe, 
     assert (d / "speech-text.md").is_file()
     assert out == {"project": "cut-fixture", "mode": "applied", "version": "version: before cut",
                    "duration": plan["duration"], "undo": 'Restore the version "version: before cut".',
-                   "layers": {}}
+                   "hardCuts": out["hardCuts"], "hardCutAt": out["hardCutAt"], "layers": {}}
     marker = json.loads((d / "project.json").read_text())["cleanCut"]
     assert marker["removed"]["lines"] == {"retake": 2, "false-start": 1}
     assert marker["maxPause"] == 0.45 and marker["kept"]["seconds"] == plan["kept"]["seconds"]
-    assert len(raw) < 300
+    assert len(raw) < 330   # 300, plus §558's hardCuts and hardCutAt (three times here)
     assert marker["planStamp"] == speech_text.parse(cc._untagged((d / "cut-plan.md").read_text())[0])[0]["stamp"]
+
+
+def test_both_answers_say_where_the_hard_cuts_are(tmp_path, stub_transcribe, monkeypatch):
+    """speech_edit's `hardCuts` and `hardCutAt` (§558): the plan previews them, the apply gives them as written."""
+    stub_transcribe(retake_transcript())
+    d = make_project(tmp_path)
+    plan, applied = plan_and_apply(d, monkeypatch)
+    for answer in (plan, applied):
+        assert isinstance(answer["hardCuts"], int) and len(answer["hardCutAt"]) == answer["hardCuts"]
+    edges = {round(float(it[k]), 3) for it in json.loads((d / "project.json").read_text())["tracks"][0]["items"]
+             for k in ("start", "end")}
+    assert set(applied["hardCutAt"]) <= edges and applied["hardCutAt"] == sorted(applied["hardCutAt"])
+
+
+def test_a_3d_item_over_the_cut_stays_whole_and_the_answers_give_its_removed_spans(tmp_path, stub_transcribe,
+                                                                                  monkeypatch):
+    """§558: a 3D scene is never cut up (Sam: 3D beats join by camera moves); both answers give the scene seconds
+    removed inside it, for one warp of its keys."""
+    stub_transcribe(retake_transcript())
+    d = make_project(tmp_path)
+    p = json.loads((d / "project.json").read_text())
+    p["tracks"].append({"id": "trk-3d", "items": [{"id": "s3d", "type": "overlay", "src": "engine:scene3d",
+                                                   "start": 0.5, "end": SOURCE_S - 0.5, "props": {"scene": "main"}}]})
+    (d / "project.json").write_text(json.dumps(p, indent=2))
+    git(d, "commit", "-qam", "3d")
+    plan, applied = plan_and_apply(d, monkeypatch)
+    for answer in (plan, applied):
+        (s3d,) = answer["scene3d"]
+        assert s3d["id"] == "s3d" and s3d["removed"] and answer["layers"]["scene3d_timing"] == 1
+    items = next(t for t in json.loads((d / "project.json").read_text())["tracks"] if t["id"] == "trk-3d")["items"]
+    assert [it["id"] for it in items] == ["s3d"]
 
 
 def test_plan_text_inline_applies_too(tmp_path, stub_transcribe, monkeypatch):
@@ -553,6 +585,36 @@ def test_a_silence_cut_after_a_failed_transcription_leaves_no_marker(tmp_path, s
     run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
     project = json.loads((d / "project.json").read_text())
     assert "cleanCut" not in project and len(project["tracks"][0]["items"]) > 1
+
+
+def test_the_silence_threshold_reaches_the_waveform_pass_and_the_plan_keeps_it(tmp_path, stub_transcribe, monkeypatch):
+    """A quiet speaker (product walkthrough): -42 dB. The apply rebuilds the base with the plan's threshold, not the
+    default, so the plan it applies is the one it made."""
+    stub_transcribe({**retake_transcript(), "transcription": []})
+    d = make_project(tmp_path)
+    seen, real = [], cc.waveform_trim.process_one
+    monkeypatch.setattr(cc.waveform_trim, "process_one", lambda src, thr, ms: seen.append(thr) or real(src, thr, ms))
+    plan, _ = run(d, "--silence-threshold", "-42", monkeypatch=monkeypatch)
+    assert seen == [-42.0] and "silence -42" in Path(plan["plan"]).read_text().splitlines()[0]
+    out, _ = run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    assert out["mode"] == "applied" and seen == [-42.0, -42.0]
+
+
+def test_the_default_silence_threshold_is_minus_30(tmp_path, stub_transcribe, monkeypatch):
+    stub_transcribe({**retake_transcript(), "transcription": []})
+    d = make_project(tmp_path)
+    seen, real = [], cc.waveform_trim.process_one
+    monkeypatch.setattr(cc.waveform_trim, "process_one", lambda src, thr, ms: seen.append(thr) or real(src, thr, ms))
+    run(d, monkeypatch=monkeypatch)
+    assert seen == [-30.0]
+
+
+@pytest.mark.parametrize("bad", ["-70", "-5", "nan"])
+def test_a_silence_threshold_out_of_range_is_refused(tmp_path, stub_transcribe, monkeypatch, capsys, bad):
+    stub_transcribe(retake_transcript())
+    d = make_project(tmp_path)
+    assert refused(d, "--silence-threshold", bad, monkeypatch=monkeypatch, capsys=capsys) == "invalid_params"
+    assert not (d / "cut-plan.md").exists()
 
 
 def test_a_waveform_failure_is_reported(tmp_path, stub_transcribe, monkeypatch):
@@ -915,6 +977,39 @@ def test_b_roll_words_never_take_part(tmp_path, monkeypatch, order):
     assert "Thanks for watching!" in " ".join(phrases(d))
     speech_first = order == "after"
     assert items[0]["src"].endswith("speech.mp4") == speech_first      # nothing moved across the b-roll
+
+
+def test_a_take_said_again_in_another_clip_is_offered_with_both_places(tmp_path, monkeypatch):
+    """§558: a line recorded in one clip and again in the next is only offered (cut less when unsure), and the
+    offer names the other take's line and time, so the agent decides in one edit of the plan."""
+    clips = [("one", synthetic("Hey everyone, welcome back. We shipped it to Canada, Mexico and Brazil,")),
+             ("two", synthetic("We shipped it to Canada, Mexico and Chile. Thanks for watching!"))]
+    d = clips_project(tmp_path, clips)
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert plan["removed"]["lines"] == {} and plan["suggested"] == {"retake?": 1}
+    other = next(r for r in sections((d / "cut-plan.md").read_text())[0] if "Chile" in r)
+    other_line, other_t = other.split()[0], other.rsplit("[", 1)[1].rstrip("]")
+    _, unused = sections((d / "cut-plan.md").read_text())
+    offered = [r for r in unused if "Brazil" in r]
+    assert len(offered) == 1 and offered[0].endswith(f"retake? {other_line} {other_t}]"), offered
+    assert any(c.endswith(f"[retake? {other_line} {other_t}]") and "Brazil" in c for c in plan["cut"].splitlines())
+    lines = (d / "cut-plan.md").read_text().splitlines()
+    cut_at, unused_at = lines.index("## Cut"), lines.index("## Unused")
+    taken = [ln for i, ln in enumerate(lines) if not (cut_at < i < unused_at and "Brazil" in ln)]
+    (d / "cut-plan.md").write_text("\n".join(taken) + "\n")
+    run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    said = " ".join(phrases(d))
+    assert "Chile" in said and "Brazil" not in said
+
+
+def test_left_alone_a_take_said_in_two_clips_keeps_both(tmp_path, monkeypatch):
+    clips = [("one", synthetic("Hey everyone, welcome back. We shipped it to Canada, Mexico and Brazil,")),
+             ("two", synthetic("We shipped it to Canada, Mexico and Chile. Thanks for watching!"))]
+    d = clips_project(tmp_path, clips)
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    said = " ".join(phrases(d))
+    assert "Chile" in said and "Brazil" in said
 
 
 def test_a_short_real_line_is_still_cut(tmp_path, stub_transcribe, monkeypatch):
@@ -1454,6 +1549,22 @@ def test_a_line_said_in_three_clips_keeps_only_the_last_copy(tmp_path, monkeypat
     assert said_text(d) == "Hello there friends. the robot learns by falling down a lot."
 
 
+def test_a_hook_said_again_as_a_callback_in_a_later_clip_is_offered_naming_both_places(tmp_path, monkeypatch):
+    """The opening line said again at the end is a callback, not a retake: only offered (retake?), its tag naming
+    the callback's line and time, and an untouched plan keeps both."""
+    d = spoken_project(tmp_path, ["what if a robot could ride a bike?", "Here is how it learns."], ["It falls a lot."],
+                       ["It gets up again."], ["It keeps trying all day.", "So what if a robot could ride a bike?"])
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert plan["removed"]["lines"] == {} and plan["suggested"].get("retake?")
+    cut, unused = sections((d / "cut-plan.md").read_text())
+    callback = next(r for r in cut if "So what if" in r)
+    line, t = callback.split()[0], callback.rsplit("[", 1)[1].split()[0].rstrip("]")
+    (hook,) = [r for r in unused if "what if" in r and "So what if" not in r]
+    assert hook.endswith(f" retake? {line} {t}]"), (hook, callback)
+    run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    assert said_text(d).count("what if a robot could ride a bike?") == 2
+
+
 def _tail_project(tmp_path, tail, audible):
     """A real line, then `tail` glued onto its end by whisper: its words fill the rest of the clip (gapless), over
     silence unless `audible`."""
@@ -1871,9 +1982,17 @@ def test_a_breath_before_a_removed_retake_does_not_open_the_clip(tmp_path, monke
     spans, words, end = _lv(lines, start=0.6)
     spans[0] = (spans[0][0], spans[0][1], -90.0)                  # "look": silent, folded into the retake
     d = tone_project(tmp_path, [("vo", spans, end + 1.0, words)])
+    results, real = [], cc.speech_apply._result
+
+    def keep(**kw):
+        results.append(real(**kw))
+        return results[-1]
+    monkeypatch.setattr(cc.speech_apply, "_result", keep)
     _, _, said = plan_apply_said(d, monkeypatch)
     assert said == "we built a robot that rides a bike and it learns."
     assert unheard_pieces(d, spans) == [] and kept_iv(d)[0][0] >= spans[8][0] - 0.2, kept_iv(d)
+    # every preview's and the apply's hard cuts are the edges played: a sliver the tidy dropped is not counted
+    assert results and all(r["hardCuts"] == len(r["hardCutAt"]) for r in results), results
 
 
 # F2: a line spliced from two takes is flagged, never changed
@@ -1991,3 +2110,167 @@ def test_a_clear_back_to_back_retake_keeps_the_last_take_the_earlier_in_unused(t
     assert [re.sub(r" ?\{[\d.]+\} ?", " ", r.split(" [")[0]).strip() for r in cut] == \
         ["A2 so then we lean the frame over and it tips."]
 
+
+# ── speech on audio (§558) ──────────────────────────────────────────────────
+
+def audio_project(tmp_path, *, voiceover=False):
+    """No speech on the video tracks: a 3D item over the timeline, and the narration either on an audio lane (one
+    item over the whole recording) or at voiceover.src with nothing playing it. Its transcript sits beside it."""
+    d = tmp_path / "proj"
+    d.mkdir()
+    shutil.copy(FIX / "speech.mp4", d / "narration.mp4")
+    shutil.copy(FIX / "speech.mp4", d / "bed.mp4")
+    (d / "narration.json").write_text(json.dumps(retake_transcript()))
+    base = json.loads((FIX / "project.json").read_text())
+    p = {k: base[k] for k in ("version", "settings", "status", "workflow", "editingPrompt")}
+    p.update({"id": "cut-fixture", "name": "Cut", "status": "draft",
+              "tracks": [{"id": "trk-0", "items": []},
+                         {"id": "trk-3d", "items": [{"id": "s3d", "type": "overlay", "src": "engine:scene3d",
+                                                     "start": 0.0, "end": SOURCE_S, "props": {"scene": "main"}}]}]})
+    if voiceover:
+        p["voiceover"] = {"src": str(d / "narration.mp4")}
+    else:
+        p["audio"] = {"tracks": [
+            {"id": "bed", "type": "music", "src": str(d / "bed.mp4"), "start": 0.0, "end": SOURCE_S, "inPoint": 0.0,
+             "outPoint": SOURCE_S, "volume": 0.2},
+            {"id": "vo-1", "type": "voiceover", "lane": 1, "src": str(d / "narration.mp4"), "start": 0.0,
+             "end": SOURCE_S, "inPoint": 0.0, "outPoint": SOURCE_S, "volume": 0.9, "fadeIn": 0.05}]}
+    (d / "project.json").write_text(json.dumps(p, indent=2))
+    git(d, "init", "-q")
+    git(d, "add", "project.json")
+    git(d, "commit", "-q", "-m", "init")
+    return d
+
+
+def narration(project):
+    return sorted((a for a in project["audio"]["tracks"] if a.get("type") == "voiceover"), key=lambda a: a["start"])
+
+
+def test_speech_on_an_audio_lane_is_cut_in_place(tmp_path, monkeypatch):
+    d = audio_project(tmp_path)
+    plan, applied = plan_and_apply(d, monkeypatch)
+    assert plan["removed"]["lines"] == {"retake": 2, "false-start": 1} and applied["mode"] == "applied"
+    project = json.loads((d / "project.json").read_text())
+    assert [t["id"] for t in project["tracks"]] == ["trk-0", "trk-3d"]   # the lifted track never reaches the file
+    vo = narration(project)
+    assert len(vo) > 1 and all(a["lane"] == 1 and a["volume"] == 0.9 and a["src"].endswith("narration.mp4") for a in vo)
+    assert vo[0]["fadeIn"] >= 0.05 and all(a["fadeOut"] >= 0.012 for a in vo[:-1])
+    assert all(b["start"] >= a["end"] - 1e-6 for a, b in zip(vo, vo[1:]))          # one voice at a time
+    assert sum(a["outPoint"] - a["inPoint"] for a in vo) < SOURCE_S - 1.0
+    bed = next(a for a in project["audio"]["tracks"] if a["id"] == "bed")
+    assert bed["volume"] == 0.2 and project["audio"]["tracks"].index(bed) == 0      # the other audio stays where it was
+    assert project["cleanCut"]["mode"] == "speech" and applied["scene3d"][0]["id"] == "s3d"
+    (s3d,) = project["tracks"][1]["items"]
+    assert s3d["end"] - s3d["start"] == pytest.approx(sum(a["end"] - a["start"] for a in vo), abs=0.05)
+    assert applied["version"] == "latest"        # nothing unsaved before it: the latest version holds it
+    again, _ = run(d, monkeypatch=monkeypatch)
+    assert again["mode"] == "already-cut" and "changedSince" not in again
+
+
+def test_a_voiceover_is_cut_onto_the_audio_and_plays_once(tmp_path, monkeypatch):
+    """voiceover.src is not played by the render or the editor: its kept spans become voiceover items, and the
+    file stays at voiceover.src for the vo_* steps. Exactly one voice plays at any moment."""
+    d = audio_project(tmp_path, voiceover=True)
+    plan, applied = plan_and_apply(d, monkeypatch)
+    project = json.loads((d / "project.json").read_text())
+    assert project["voiceover"] == {"src": str(d / "narration.mp4")}
+    vo = narration(project)
+    assert vo and len(vo) == len(project["audio"]["tracks"]) and all("lane" not in a for a in vo)
+    assert all(b["start"] >= a["end"] - 1e-6 for a, b in zip(vo, vo[1:]))
+    assert vo[0]["start"] == 0.0 and sum(a["outPoint"] - a["inPoint"] for a in vo) < SOURCE_S - 1.0
+
+
+def test_a_voiceover_already_on_the_audio_is_cut_there_not_added_again(tmp_path, monkeypatch):
+    d = audio_project(tmp_path)
+    p = json.loads((d / "project.json").read_text())
+    p["voiceover"] = {"src": str(d / "narration.mp4")}
+    (d / "project.json").write_text(json.dumps(p, indent=2))
+    git(d, "commit", "-qam", "vo")
+    plan, _ = run(d, "--speech", "voiceover", monkeypatch=monkeypatch)
+    run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    project = json.loads((d / "project.json").read_text())
+    assert all(a.get("lane") == 1 for a in narration(project)) and len(project["audio"]["tracks"]) == len(narration(project)) + 1
+
+
+def test_an_unknown_speech_source_is_refused(tmp_path, monkeypatch, capsys):
+    d = audio_project(tmp_path)
+    assert refused(d, "--speech", "audio:lane-7", monkeypatch=monkeypatch, capsys=capsys) == "invalid_params"
+    assert not (d / "cut-plan.md").exists()
+
+
+def test_narration_with_no_speech_is_cut_by_silences_on_the_audio(tmp_path, stub_transcribe, monkeypatch):
+    stub_transcribe({**retake_transcript(), "transcription": []})
+    d = audio_project(tmp_path)
+    (d / "narration.json").unlink()
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert plan["silence"] is True
+    out, _ = run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    assert out["mode"] == "applied"
+    project = json.loads((d / "project.json").read_text())
+    assert [t["id"] for t in project["tracks"]] == ["trk-0", "trk-3d"]
+    vo = narration(project)
+    assert len(vo) > 1 and all(a["lane"] == 1 for a in vo) and project["cleanCut"]["mode"] == "silence"
+    again, _ = run(d, monkeypatch=monkeypatch)
+    assert again["mode"] == "already-cut" and "changedSince" not in again
+
+
+def test_the_plan_says_where_the_speech_is(tmp_path, monkeypatch):
+    d = audio_project(tmp_path, voiceover=True)
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert plan["speech"] == "voiceover"
+
+
+def test_a_voiceover_changed_during_a_speech_apply_refuses_it(tmp_path, monkeypatch, capsys):
+    """The cut read voiceover.src: a voiceover the person changes meanwhile refuses the apply (it is guarded,
+    never written)."""
+    d = audio_project(tmp_path, voiceover=True)
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    real = cc.select
+    human = {}
+
+    def select_then_person_changes_voiceover(*a, **k):
+        p = json.loads((d / "project.json").read_text())
+        p["voiceover"] = {"src": str(d / "bed.mp4")}
+        (d / "project.json").write_text(json.dumps(p, indent=2))
+        human["bytes"] = (d / "project.json").read_bytes()
+        return real(*a, **k)
+    monkeypatch.setattr(cc, "select", select_then_person_changes_voiceover)
+    assert refused(d, "--plan", plan["plan"], monkeypatch=monkeypatch, capsys=capsys) == "project_changed"
+    assert (d / "project.json").read_bytes() == human["bytes"]
+
+
+def test_a_voiceover_changed_during_a_silence_apply_refuses_it(tmp_path, stub_transcribe, monkeypatch, capsys):
+    stub_transcribe({**retake_transcript(), "transcription": []})
+    d = audio_project(tmp_path, voiceover=True)
+    (d / "narration.json").unlink()
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert plan["silence"] is True
+    real = cc.commit_version
+    human = {}
+
+    def version_then_person_changes_voiceover(*a, **k):
+        out = real(*a, **k)
+        p = json.loads((d / "project.json").read_text())
+        p["voiceover"] = {"src": str(d / "bed.mp4")}
+        (d / "project.json").write_text(json.dumps(p, indent=2))
+        human["bytes"] = (d / "project.json").read_bytes()
+        return out
+    monkeypatch.setattr(cc, "commit_version", version_then_person_changes_voiceover)
+    assert refused(d, "--plan", plan["plan"], monkeypatch=monkeypatch, capsys=capsys) == "project_changed"
+    assert (d / "project.json").read_bytes() == human["bytes"]
+
+
+@pytest.mark.parametrize("speech", [True, False])
+def test_a_plan_applied_at_another_silence_threshold_is_refused_as_stale(tmp_path, stub_transcribe, monkeypatch,
+                                                                         capsys, speech):
+    """Another level gives another base, so the plan would not say what the apply keeps: refused like a max-pause
+    or breath that differs from the plan's. The plan's own level, passed again, applies."""
+    stub_transcribe(retake_transcript() if speech else {"transcription": []})
+    d = make_project(tmp_path)
+    plan, _ = run(d, "--silence-threshold", "-42", monkeypatch=monkeypatch)
+    before = (d / "project.json").read_bytes()
+    assert refused(d, "--plan", plan["plan"], "--silence-threshold", "-30", monkeypatch=monkeypatch,
+                   capsys=capsys) == "stale_plan"
+    assert (d / "project.json").read_bytes() == before
+    applied, _ = run(d, "--plan", plan["plan"], "--silence-threshold", "-42", monkeypatch=monkeypatch)
+    assert applied["mode"] == "applied"
