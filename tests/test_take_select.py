@@ -911,15 +911,18 @@ def test_a_reworded_retake_is_only_suggested():
 from lib.take_select import PHRASE_WITHIN_S, phrase_retakes  # noqa: E402
 
 
-def timed(*texts, word=0.3, gap=0.05, clip_gap=0.0):
-    """Units as `units` makes them, with even word times per clip (each clip's source starts at 0)."""
+def timed(*texts, word=0.3, gap=0.05, clip_gap=0.0, pause=0.45):
+    """Units as `units` makes them, with even word times per clip (each clip's source starts at 0); a "|" break
+    mark is a real `pause` of source time before the word, as whisper's line breaks are."""
     us = units(*texts)
     times, t, clip = [], 0.0, None
     for u in us:
         if u.clip != clip:
             clip, t = u.clip, 0.0
         row = []
-        for _ in u.words:
+        for k, _ in enumerate(u.words):
+            if k in u.breaks:
+                t += pause
             row.append((t, t + word))
             t += word + gap
         times.append(row)
@@ -941,29 +944,30 @@ def said(us, sel):
 
 
 def test_a_five_word_run_said_again_inside_one_unit_goes_the_last_stays():
-    texts = ["so the bike went past straight so the bike went past straight and fell over."]
+    texts = ["so the bike went past straight | so the bike went past straight and fell over."]
     us, sel, drops, sugg = phrased(texts)
     assert said(us, sel) == "so the bike went past straight and fell over."
-    assert drops == {0: {k: "retake" for k in range(6)}} and sugg == []
+    # with the pause before it, select's own repeat rule already takes the first saying: the phrase rule adds nothing
+    assert sel.drop == {0: set(range(6))} and drops == {} and sugg == []
 
 
 def test_the_same_run_across_two_units_goes_from_the_first():
-    texts = ["then you tip the whole frame over and", "you tip the whole frame over and it falls."]
+    texts = ["then you tip the whole frame over and", "| you tip the whole frame over and it falls."]
     us, sel, drops, _ = phrased(texts)
     assert said(us, sel) == "then you tip the whole frame over and it falls."
     assert set(drops) == {0}
 
 
 def test_three_sayings_keep_only_the_last():
-    texts = ["each wobble made the next one bigger", "each wobble made the next one bigger",
-             "each wobble made the next one bigger so we stop."]
+    texts = ["each wobble made the next one bigger", "| each wobble made the next one bigger",
+             "| each wobble made the next one bigger so we stop."]
     us, sel, _, _ = phrased(texts)
     assert said(us, sel) == "each wobble made the next one bigger so we stop."
 
 
 def test_three_sayings_run_into_one_another_inside_a_line():
-    texts = ["then you lean too far and the frame tips then you lean too far and the frame tips "
-             "then you lean too far and the frame tips over."]
+    texts = ["then you lean too far and the frame tips | then you lean too far and the frame tips "
+             "| then you lean too far and the frame tips over."]
     us, sel, _, _ = phrased(texts)
     assert said(us, sel) == "then you lean too far and the frame tips over."
 
@@ -983,7 +987,8 @@ def test_a_near_repeat_is_only_offered():
 
 
 def test_a_false_start_with_five_same_opening_words_goes_with_its_leftover():
-    texts = ["the one rule you should here", "the one rule you should know is this."]
+    # the speaker stops after the false start, mumbles a word and starts again
+    texts = ["the one rule you should | here", "| the one rule you should know is this."]
     us, sel, drops, _ = phrased(texts)
     assert said(us, sel) == "the one rule you should know is this."
 
@@ -1042,3 +1047,124 @@ def test_two_lines_built_alike_are_not_a_phrase_retake():
              "You can cut your audio in one click."]
     us, sel, drops, _ = phrased(texts)
     assert drops == {} and said(us, sel) == " ".join(texts)
+
+
+# ── §558 cut fix pass 2: a sure phrase retake is back to back after a break; everything else is offered ─────────
+# (review #1's adversarial phrase probes and review #2's list cases, red on 42b45f57's phrase rule)
+
+from lib.take_select import PHRASE_WITHIN_S as _WITHIN, _phrase_seq, _place  # noqa: E402
+
+NEVER_A_SURE_PHRASE = {
+    # parallel structures with commas (B1)
+    "beaches": ["we will fight on the beaches, we will fight on the landing grounds, we will fight in the fields."],
+    "matter": ["I want you to know that you matter, I want you to know that you are loved."],
+    "battery": ["you need to check the battery, you need to check the tires and you need to check the chain."],
+    "refrain": ["never gonna give you up never gonna let you down never gonna run around and desert you."],
+    "breathe": ["the first thing you want to do is breathe and the first thing you want to do is relax."],
+    "faster": ["if you want to get faster you train hard", "if you want to get stronger you eat well."],
+    "people": ["a lot of people think that it is easy but a lot of people think that it is hard"],
+    # lists, refrains and quotes (review #2 blocker 1), even with a pause before the second saying
+    "iphone": ["We tested it on the iPhone, | we tested it on the Pixel, | we tested it on the Galaxy, and all "
+               "three passed."],
+    "phone": ["you can use it on your phone", "| you can use it on your laptop", "| you can use it on your TV."],
+    "milk": ["You need to buy the fresh organic milk, | you need to buy the eggs from the farm."],
+    "fine": ["and I said it is going to be fine | and you said it is going to be fine"],
+    "quote": ['he said "I will be there tonight" and she said | "I will be there tonight" too.'],
+    "tienda": ["tienes que ir a la tienda, | tienes que ir a la playa, y luego descansas."],
+}
+
+
+@pytest.mark.parametrize("name", sorted(NEVER_A_SURE_PHRASE))
+def test_a_list_a_refrain_or_parallel_clauses_are_never_a_sure_phrase_retake(name):
+    texts = NEVER_A_SURE_PHRASE[name]
+    us, sel, drops, sugg = phrased(texts)
+    assert drops == {} and said(us, sel) == " ".join(plain(texts)), (name, said(us, sel))
+
+
+@pytest.mark.parametrize("name", ["milk", "iphone", "tienda"])
+def test_a_parallel_offer_takes_the_whole_earlier_saying_never_a_fragment(name):
+    """Taking the offer removes the earlier saying whole: "You need to buy the fresh organic milk," never leaves
+    "fresh organic milk," behind."""
+    texts = NEVER_A_SURE_PHRASE[name]
+    us, sel, drops, sugg = phrased(texts)
+    first = next(s for s in sugg if s[0] == 0)
+    gone = set(first[1]) if first[1] is not None else set(range(len(us[0].words)))
+    left = [w for k, w in enumerate(us[0].words) if k not in gone]
+    want = {"milk": "you need to buy the eggs from the farm.", "iphone": "we tested it on the Pixel,",
+            "tienda": "tienes que ir a la playa,"}[name]
+    assert " ".join(left).lower().startswith(want.lower()), (name, left)
+
+
+def test_back_to_back_with_no_break_is_only_offered():
+    """D3: the same words said again at once, with no pause, mark or cut-off before the second saying, may be an
+    emphasis: offered."""
+    texts = ["so the bike went past straight so the bike went past straight and fell over."]
+    us, sel, drops, sugg = phrased(texts)
+    assert drops == {} and said(us, sel) == texts[0] and sugg
+
+
+def test_a_dash_before_the_second_saying_is_a_break():
+    texts = ["so the bike went past straight — so the bike went past straight and fell over."]
+    us, sel, drops, _ = phrased(texts)
+    assert said(us, sel) == "so the bike went past straight and fell over."
+
+
+def test_a_false_start_leftover_with_no_stop_before_it_is_only_offered():
+    """R2-Q1: a one-word leftover said straight on is a list item as often as a false start ("... on your phone |
+    ... on your laptop"): offered whole."""
+    texts = ["the one rule you should here", "| the one rule you should know is this."]
+    us, sel, drops, sugg = phrased(texts)
+    assert drops == {} and said(us, sel) == " ".join(plain(texts))
+    assert any(s[0] == 0 and s[1] is None for s in sugg)        # the whole first line, never "here" alone
+
+
+def test_a_leftover_with_a_joining_word_is_never_cut():
+    texts = ["it is easy to learn this | and", "| it is easy to learn this today."]
+    us, sel, drops, _ = phrased(texts)
+    assert drops == {}
+
+
+def test_across_clips_the_second_saying_must_open_the_next_clip():
+    """B1: across clips the sayings are back to back: one ends the first clip, the other opens the next (two tokens
+    in at most); kept speech between makes it an offer."""
+    texts = ["Hello there friends.", "we built a robot that rides a bike", "##",
+             "Today is the day.", "we built a robot that rides a bike and it learns."]
+    us, sel, drops, sugg = phrased(texts)
+    assert drops == {} and sugg
+
+
+def test_place_never_calls_a_second_saying_before_the_first_near():
+    """R2 #7: a negative gap is never near."""
+    us, times = timed("we built a robot that rides a bike", "we built a robot that rides a bike")
+    times[1] = [(t0 - 50.0, t1 - 50.0) for t0, t1 in times[0]]     # the second saying timed BEFORE the first
+    seq = _phrase_seq(us, select(us, is_filler), is_filler, times)
+    assert _place(seq, 0, 8, 8, us, _WITHIN) == "far"
+
+
+def test_a_fuzzy_repeat_is_offered_and_names_the_other_saying():
+    """F1: two clauses within 10 s sharing their opening (or most of their content words) are offered, never cut."""
+    texts = ["you overcorrected that as well", "| you overcorrected that too.", "| Then it fell."]
+    us, sel, drops, sugg = phrased(texts)
+    assert drops == {} and said(us, sel) == " ".join(plain(texts))
+    assert any(s[0] == 0 and s[2].endswith("?") for s in sugg)
+    sel.partner = {}                                           # a Selection with a partner map gets it filled
+    _, sugg2 = phrase_retakes(us, sel, is_filler, timed(*texts)[1])
+    assert sel.partner.get(0) == 1
+
+
+def test_a_fuzzy_repeat_of_content_words_is_offered():
+    texts = ["the steering bar turned left too hard", "| the bar turned hard left on the steering."]
+    us, sel, drops, sugg = phrased(texts)
+    assert drops == {} and any(s[0] == 0 for s in sugg)
+
+
+def test_the_phrase_scan_is_not_quadratic():
+    """#1 should-fix 3 / #2 #8: a long transcript is scanned through a 5-token index bounded by the window."""
+    import time
+    words = ("alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa "
+             "quebec romeo sierra tango uniform victor whiskey xray yankee zulu").split()
+    texts = [" ".join(words[(k * 7 + m) % len(words)] for m in range(9)) + "." for k in range(400)]
+    t0 = time.monotonic()
+    phrased(texts)
+    assert time.monotonic() - t0 < 5          # 19.7 s on 42b45f57's scan, 0.3 s on the index
+

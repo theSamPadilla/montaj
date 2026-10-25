@@ -1270,15 +1270,23 @@ def test_pauses_beside_a_word_whisper_put_in_silence_are_capped_on_apply(tmp_pat
     assert {"Hello", "world", "again", "once", "more."} <= {w for w, _, _ in said}    # every audible word plays
 
 
-def spoken(lines, start=0.3, word=0.25, gap=0.05, line_gap=0.8, db=SPEECH_DB):
+def spoken(lines, start=0.3, word=0.25, gap=0.05, line_gap=0.8, db=SPEECH_DB, pause=0.45):
     """Lines said one after another: a tone per word, `gap` between words and `line_gap` of silence between
-    lines (whisper's line breaks). Returns (tone spans, gapless whisper words, end time): whisper's word spans run
-    on to the next word, so every pause sits inside a word."""
+    lines (whisper's line breaks); a "|" inside a line is a `pause` of silence there that whisper did not break the
+    line at. Returns (tone spans, gapless whisper words, end time): whisper's word spans run on to the next word, so
+    every pause sits inside a word."""
     spans, words, t = [], [], start
-    flat = [(tok, n) for n, ln in enumerate(lines) for tok in ln.split()]
+    flat, held = [], set()
+    for n, ln in enumerate(lines):
+        for tok in ln.split():
+            if tok == "|":
+                held.add(len(flat))
+            else:
+                flat.append((tok, n))
     for k, (tok, n) in enumerate(flat):
         spans.append((t, t + word, db))
-        nxt = t + word + (line_gap if k + 1 < len(flat) and flat[k + 1][1] != n else gap)
+        nxt = t + word + (line_gap if k + 1 < len(flat) and flat[k + 1][1] != n
+                          else pause if k + 1 in held else gap)
         words.append([tok, t, nxt])
         t = nxt
     words[-1][2] = words[-1][1] + word
@@ -1299,19 +1307,21 @@ def said_text(d):
 
 
 def test_a_five_word_repeat_inside_one_line_is_removed_the_last_kept(tmp_path, monkeypatch):
-    d = spoken_project(tmp_path, ["so the frame went past straight so the frame went past straight and tipped over."])
+    d = spoken_project(tmp_path, ["so the frame went past straight | so the frame went past straight and tipped over."])
     plan, _ = run(d, monkeypatch=monkeypatch)
     text = (d / "cut-plan.md").read_text()
     cut, unused = sections(text)
     assert re.sub(r" \{[\d.]+\}", "", cut[0]).startswith("A1 so the frame went past straight and tipped over. [")
-    assert unused == [next(r for r in unused if r.startswith("*A1 so the frame went past straight so the frame"))]
-    assert unused[0].endswith(" retake]") and plan["removed"]["lines"] == {"retake": 1}
+    assert unused == [next(r for r in unused if re.sub(r" \{[\d.]+\}", "", r).startswith(
+        "*A1 so the frame went past straight so the frame"))]
+    # with the pause before the second saying (D3), select's restart rule takes it before the phrase rule does
+    assert unused[0].endswith(" restart]") and plan["removed"]["lines"] == {"restart": 1}
     run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
     assert said_text(d) == "so the frame went past straight and tipped over."
 
 
 def test_a_removed_inline_retake_comes_back_by_putting_its_star_row_in_place(tmp_path, monkeypatch):
-    d = spoken_project(tmp_path, ["so the frame went past straight so the frame went past straight and tipped over."])
+    d = spoken_project(tmp_path, ["so the frame went past straight | so the frame went past straight and tipped over."])
     run(d, monkeypatch=monkeypatch)
     lines = (d / "cut-plan.md").read_text().splitlines()
     star = next(ln for ln in lines if ln.startswith("*A1 "))
@@ -1331,8 +1341,9 @@ def test_a_repeat_across_two_lines_is_removed_from_the_first(tmp_path, monkeypat
 
 
 def test_three_repeats_across_lines_keep_only_the_last(tmp_path, monkeypatch):
-    d = spoken_project(tmp_path, ["then every wobble made the next one bigger then", "every wobble made the next one",
-                                  "bigger then every wobble made the next one bigger so we stop."])
+    # the second saying opens a line, the third follows a pause; whisper broke the second inside it
+    d = spoken_project(tmp_path, ["then every wobble made the next one bigger", "then every wobble made", "the next one",
+                                  "bigger | then every wobble made the next one bigger so we stop."])
     plan, _ = run(d, monkeypatch=monkeypatch)
     run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
     assert said_text(d) == "then every wobble made the next one bigger so we stop."
@@ -1357,7 +1368,8 @@ def test_a_near_repeat_is_a_suggestion_only(tmp_path, monkeypatch):
 
 
 def test_a_false_start_with_five_same_opening_words_is_removed(tmp_path, monkeypatch):
-    d = spoken_project(tmp_path, ["the one rule you should here", "the one rule you should know is this."])
+    # the speaker stops after the false start, mumbles a word, then starts again
+    d = spoken_project(tmp_path, ["the one rule you should", "here", "the one rule you should know is this."])
     plan, _ = run(d, monkeypatch=monkeypatch)
     run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
     assert said_text(d) == "the one rule you should know is this."
@@ -1497,3 +1509,34 @@ def test_dead_air_keeps_a_breath_each_side_and_breath_loosens_it(tmp_path, monke
     assert "{0.30}" in (d2 / "cut-plan.md").read_text()
     run(d2, "--plan", plan["plan"], monkeypatch=monkeypatch)
     assert max(_gaps(d2)) == pytest.approx(0.30, abs=0.02)
+
+
+# ── §558 cut fix pass 2 (two reviews' adversarial probes, synthetic tones and invented words only) ─────────────
+
+def plan_apply_said(d, monkeypatch, *extra):
+    """(plan answer, plan text, the words the applied cut plays)."""
+    plan, _ = run(d, *extra, monkeypatch=monkeypatch)
+    text = (d / "cut-plan.md").read_text()
+    run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    return plan, text, said_text(d)
+
+
+LISTS = {
+    "commas": (["We tested it on the iPhone, we tested it on the Pixel, we tested it on the Galaxy, and all three passed."], ()),
+    "lines": (["you can use it on your phone", "you can use it on your laptop", "you can use it on your TV."], ()),
+    "quote": (['he said "I will be there tonight" and she said "I will be there tonight" too.'], ()),
+    "spanish": (["tienes que ir a la tienda, tienes que ir a la playa, y luego descansas."], ("--language", "es")),
+    "milk": (["You need to buy the fresh organic milk, you need to buy the eggs from the farm."], ()),
+    "refrain": (["and I said it is going to be fine and you said it is going to be fine"], ()),
+    "beaches": (["we will fight on the beaches,", "we will fight on the landing grounds."], ()),
+}
+
+
+@pytest.mark.parametrize("name", sorted(LISTS))
+def test_a_list_a_refrain_or_a_quote_is_never_cut(tmp_path, monkeypatch, name):
+    """Review #2 blocker 1 / review #1 B1: offered, never cut, so every word plays."""
+    lines, extra = LISTS[name]
+    d = spoken_project(tmp_path, lines)
+    plan, text, said = plan_apply_said(d, monkeypatch, *extra)
+    assert said == " ".join(lines), (name, said)
+    assert plan["removed"]["by"]["retake"] == 0
