@@ -3,10 +3,10 @@
   "description": "Trim and clean the footage, pick the best takes, then add overlays.",
   "project_type": "editing",
   "steps": [
-    { "id": "look_footage",     "uses": "montaj/probe",          "foreach": "clips", "note": "Look at the footage." },
-    { "id": "snapshot",         "uses": "montaj/snapshot",       "foreach": "clips", "needs": ["look_footage"], "note": "Look at the footage." },
+    { "id": "probe",     "uses": "montaj/probe",          "foreach": "clips", "note": "Look at the footage." },
+    { "id": "snapshot",         "uses": "montaj/snapshot",       "foreach": "clips", "needs": ["probe"], "note": "Look at the footage." },
     { "id": "cut_plan",         "uses": "montaj/cut",            "needs": ["snapshot"], "note": "Makes a plan of what to remove; read it and adjust it if needed." },
-    { "id": "select-takes",     "uses": "montaj/select-takes",   "needs": ["cut_plan"], "note": "With several clips: pick one take per line across clips and adjust the plan before applying." },
+    { "id": "select-takes",     "uses": "montaj/select-takes",   "needs": ["cut_plan"], "note": "With several clips: review the plan's takes across clips and edit cut-plan.md; never apply here." },
     { "id": "cut_apply",        "uses": "montaj/cut",            "needs": ["select-takes"], "params": { "plan": "cut-plan.md" }, "note": "Applies the plan." },
     { "id": "overlays",         "uses": "montaj/overlay",        "needs": ["cut_apply"], "params": { "style": "auto" } }
   ]

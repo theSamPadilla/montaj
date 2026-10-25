@@ -6,7 +6,20 @@ step: true
 
 # Select Takes
 
-`montaj/select_takes` is an agent-authored task: no CLI step, no API call. You reason across every clip and make editorial decisions. You do them as text: the speech track is read with `speech_text`, edited, and applied with `speech_edit` (format and rules: skill `speech-edit`).
+`montaj/select_takes` is an agent-authored task: no CLI step, no API call. You reason across every clip and make editorial decisions.
+
+## Between a cut plan and its apply
+
+Right after the cut's plan (`cut-plan.md`), before the apply. The plan has already picked one take per section by the cut's rules; you review that choice across clips.
+
+1. `read_file` `cut-plan.md`.
+2. Review it across clips with steps 2 to 5 and 7 below, reading the plan's rows instead of `speech_text`'s lines.
+3. Edit ONLY the plan file: move rows between `## Cut` and `## Unused`, reorder rows, then `write_file` it back.
+4. Never run `jump_cut`, `speech_text` or `speech_edit` here. They change the project, and the apply is then refused as stale. The next step applies the plan.
+
+## On a project already cut
+
+Here the decisions are text: the speech track is read with `speech_text`, edited, and applied with `speech_edit` (format and rules: skill `speech-edit`).
 
 Order: the mechanical pass (`waveform_trim`, `rm_nonspeech`, `rm_fillers`) has already run. Its keeps become the speech track's items (step 0), so the words you read match that cut.
 
