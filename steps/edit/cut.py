@@ -1210,7 +1210,7 @@ def _make_plan(args, project_path, project_dir):
     title = disk.get("name") or disk.get("id") or os.path.basename(project_dir)
     threshold = args.silence_threshold if args.silence_threshold is not None else SILENCE_THRESHOLD_DB
     b = _build(project_path, project_dir, disk_l, track_id, language, warnings, max_pause, breath, threshold)
-    answer = {"project": disk.get("id"), "mode": "plan"}
+    answer = {"project": disk.get("id"), "mode": "plan", "speech": key}
 
     if b["d"] is None:
         candidate, rep = _carried(b["origin"], b["work"], b["ti"], b["lineage"], project_dir)
@@ -1233,7 +1233,7 @@ def _make_plan(args, project_path, project_dir):
                                                    breath, threshold)
             res = apply(project_path, _untagged(text)[0], preview=True, max_pause=max_pause, feel=DEFAULT_FEEL,
                         base=b["work"], base_of=disk, want_project=True, carry_from=b["origin"], lineage=b["lineage"],
-                        guard_keys=(MARKER_KEY,), refiner=b["refiner"], lower=_lower(lift))
+                        guard_keys=(MARKER_KEY,) + _read_too(lift), refiner=b["refiner"], lower=_lower(lift))
             if not _settle(b, res, project_dir):
                 break
         else:
@@ -1327,6 +1327,9 @@ def _apply_plan(args, project_path, project_dir):
     else:
         threshold = plan_threshold if plan_threshold is not None else SILENCE_THRESHOLD_DB
     warnings = []
+    if args.silence_threshold is not None and args.silence_threshold != threshold:
+        warnings.append(f"silence-threshold {args.silence_threshold:g} was not used: a plan applies at its own level "
+                        f"({threshold:g}). Run cut without plan for a plan at the new level.")
     b = _build(project_path, project_dir, disk_l, track_id, language, warnings, max_pause, breath, threshold)
     stale = ("This plan was made before cut was updated, or the timeline changed. Run cut again (your edited plan "
              "is kept).")
@@ -1358,7 +1361,7 @@ def _apply_plan(args, project_path, project_dir):
                     carry_from=b["origin"], lineage=b["lineage"], refiner=b["refiner"], lower=_lower(lift),
                     # status is guarded when this write starts a pending project, so a status the person set
                     # meanwhile refuses the apply rather than being overwritten with draft.
-                    guard_keys=(MARKER_KEY,) + (("status",) if disk.get("status") == "pending" else ()))
+                    guard_keys=(MARKER_KEY,) + _read_too(lift) + (("status",) if disk.get("status") == "pending" else ()))
         version = res.get("version")
         wrote = bool(res.get("applied"))
         answer["hardCuts"], answer["hardCutAt"] = res.get("hardCuts", 0), res.get("hardCutAt", [])
@@ -1394,6 +1397,12 @@ def _start(project):
 def _lower(lift):
     """The apply's `lower` for a lifted source, None for a video track."""
     return lift.lower if lift.kind != "video" else None
+
+
+def _read_too(lift):
+    """Keys a lifted source reads besides the speech path's, guarded under the lock: a voiceover changed meanwhile
+    refuses the apply (run cut again). Read, never written."""
+    return ("voiceover",) if lift is not None and lift.kind != "video" else ()
 
 
 def _source(lift):
@@ -1432,7 +1441,7 @@ def _write_silence(project_path, project_dir, disk, b, track_id, max_pause, mark
     if not version and not is_own_repo(project_dir):
         warnings.append("no version saved: the project folder is not its own git repository")
     keys = ("tracks", "captions", "audio", "markers", "notes", MARKER_KEY)
-    guard = keys
+    guard = keys + _read_too(lift)
     if candidate.get("status") != disk.get("status"):
         # Written in this same guarded write, and guarded too: a status the person changed since this read
         # refuses the apply (run cut again) rather than being overwritten with draft.

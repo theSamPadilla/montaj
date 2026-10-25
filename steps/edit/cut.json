@@ -8,7 +8,7 @@
   },
   "output": {
     "type": "json",
-    "description": "Plan: {project, mode: plan, plan, kept {lines, seconds}, removed {lines {why: n}, fillers, seconds, by {pause, deadAir, retake, inaudible, tail, fillers, silence}, inaudible}, suggested? {why?: n}, hardCuts, hardCutAt, duration, layers, cut, keep?, next, previous?, transcribed, silence?, note?, warnings?}. Apply: {project, mode: applied, version, duration, undo, hardCuts, hardCutAt, layers, warnings?}. hardCutAt: the seconds on the cut timeline of each hard cut, as speech_edit gives them. A cut project: {mode: already-cut, ...}."
+    "description": "Plan: {project, mode: plan, speech, plan, kept {lines, seconds}, removed {lines {why: n}, fillers, seconds, by {pause, deadAir, retake, inaudible, tail, fillers, silence}, inaudible}, suggested? {why?: n}, hardCuts, hardCutAt, duration, layers, cut, keep?, next, previous?, transcribed, silence?, note?, warnings?}. Apply: {project, mode: applied, version, duration, undo, hardCuts, hardCutAt, layers, warnings?}. hardCutAt: the seconds on the cut timeline of each hard cut, as speech_edit gives them. A cut project: {mode: already-cut, ...}."
   },
   "params": [
     {

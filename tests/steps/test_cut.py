@@ -1549,6 +1549,22 @@ def test_a_line_said_in_three_clips_keeps_only_the_last_copy(tmp_path, monkeypat
     assert said_text(d) == "Hello there friends. the robot learns by falling down a lot."
 
 
+def test_a_hook_said_again_as_a_callback_in_a_later_clip_is_offered_naming_both_places(tmp_path, monkeypatch):
+    """The opening line said again at the end is a callback, not a retake: only offered (retake?), its tag naming
+    the callback's line and time, and an untouched plan keeps both."""
+    d = spoken_project(tmp_path, ["what if a robot could ride a bike?", "Here is how it learns."], ["It falls a lot."],
+                       ["It gets up again."], ["It keeps trying all day.", "So what if a robot could ride a bike?"])
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert plan["removed"]["lines"] == {} and plan["suggested"].get("retake?")
+    cut, unused = sections((d / "cut-plan.md").read_text())
+    callback = next(r for r in cut if "So what if" in r)
+    line, t = callback.split()[0], callback.rsplit("[", 1)[1].split()[0].rstrip("]")
+    (hook,) = [r for r in unused if "what if" in r and "So what if" not in r]
+    assert hook.endswith(f" retake? {line} {t}]"), (hook, callback)
+    run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    assert said_text(d).count("what if a robot could ride a bike?") == 2
+
+
 def _tail_project(tmp_path, tail, audible):
     """A real line, then `tail` glued onto its end by whisper: its words fill the rest of the clip (gapless), over
     silence unless `audible`."""
@@ -2188,3 +2204,57 @@ def test_narration_with_no_speech_is_cut_by_silences_on_the_audio(tmp_path, stub
     assert len(vo) > 1 and all(a["lane"] == 1 for a in vo) and project["cleanCut"]["mode"] == "silence"
     again, _ = run(d, monkeypatch=monkeypatch)
     assert again["mode"] == "already-cut" and "changedSince" not in again
+
+
+def test_the_plan_says_where_the_speech_is(tmp_path, monkeypatch):
+    d = audio_project(tmp_path, voiceover=True)
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert plan["speech"] == "voiceover"
+
+
+def test_a_voiceover_changed_during_a_speech_apply_refuses_it(tmp_path, monkeypatch, capsys):
+    """The cut read voiceover.src: a voiceover the person changes meanwhile refuses the apply (it is guarded,
+    never written)."""
+    d = audio_project(tmp_path, voiceover=True)
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    real = cc.select
+    human = {}
+
+    def select_then_person_changes_voiceover(*a, **k):
+        p = json.loads((d / "project.json").read_text())
+        p["voiceover"] = {"src": str(d / "bed.mp4")}
+        (d / "project.json").write_text(json.dumps(p, indent=2))
+        human["bytes"] = (d / "project.json").read_bytes()
+        return real(*a, **k)
+    monkeypatch.setattr(cc, "select", select_then_person_changes_voiceover)
+    assert refused(d, "--plan", plan["plan"], monkeypatch=monkeypatch, capsys=capsys) == "project_changed"
+    assert (d / "project.json").read_bytes() == human["bytes"]
+
+
+def test_a_voiceover_changed_during_a_silence_apply_refuses_it(tmp_path, stub_transcribe, monkeypatch, capsys):
+    stub_transcribe({**retake_transcript(), "transcription": []})
+    d = audio_project(tmp_path, voiceover=True)
+    (d / "narration.json").unlink()
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert plan["silence"] is True
+    real = cc.commit_version
+    human = {}
+
+    def version_then_person_changes_voiceover(*a, **k):
+        out = real(*a, **k)
+        p = json.loads((d / "project.json").read_text())
+        p["voiceover"] = {"src": str(d / "bed.mp4")}
+        (d / "project.json").write_text(json.dumps(p, indent=2))
+        human["bytes"] = (d / "project.json").read_bytes()
+        return out
+    monkeypatch.setattr(cc, "commit_version", version_then_person_changes_voiceover)
+    assert refused(d, "--plan", plan["plan"], monkeypatch=monkeypatch, capsys=capsys) == "project_changed"
+    assert (d / "project.json").read_bytes() == human["bytes"]
+
+
+def test_a_silence_threshold_passed_with_a_plan_is_not_used_and_says_so(tmp_path, stub_transcribe, monkeypatch):
+    d = make_project(tmp_path, transcript=retake_transcript())
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    applied, _ = run(d, "--plan", plan["plan"], "--silence-threshold", "-45", monkeypatch=monkeypatch)
+    assert applied["mode"] == "applied"
+    assert any(w.startswith("silence-threshold -45 was not used") for w in applied.get("warnings", []))
