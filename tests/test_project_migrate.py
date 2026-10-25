@@ -178,3 +178,102 @@ def test_a_put_carrying_the_retired_type_stores_the_current_one(ws):
     assert resp.status_code == 200, resp.text
     on_disk = json.loads(path.read_text())
     assert on_disk["projectType"] == "editing" and "renderMode" not in on_disk
+
+
+# ── render reads the converged view ────────────────────────────────────────────
+
+class _RenderRequest:
+    def __init__(self, body=None):
+        self.query_params = {"async": "1"}
+        self._body = body or {}
+
+    async def is_disconnected(self):
+        return False
+
+    async def json(self):
+        return self._body
+
+
+def _render(project_dir, monkeypatch):
+    """POST /render with render.js stubbed: what the detached run would have been given (cmd and its input file)."""
+    import asyncio
+    import serve.routes.projects as projects_mod
+
+    runtime = project_dir.parent / "runtime"
+    runtime.mkdir(exist_ok=True)
+    (runtime / "render.js").write_text("// stub")
+    monkeypatch.setattr(projects_mod, "render_runtime_dir", lambda: str(runtime))
+    monkeypatch.setattr(projects_mod.shutil, "which", lambda b: "/usr/bin/node")
+    monkeypatch.setattr(projects_mod, "_git_commit_sync", lambda *a, **k: None)
+    seen = {}
+
+    async def _fake_detached(project_id, cmd, env, render_input, project_path, job, **kwargs):
+        seen.update(cmd=cmd, render_input=render_input, project_path=project_path,
+                    body=json.loads(open(render_input).read()))
+
+    monkeypatch.setattr(projects_mod, "_run_render_detached", _fake_detached)
+    try:
+        asyncio.run(projects_mod.render_project(PID, _RenderRequest(), project_dir=project_dir))
+    finally:
+        projects_mod._active_renders.clear()
+        projects_mod._render_jobs.clear()
+        projects_mod._render_task_refs.clear()
+    return seen
+
+
+def test_an_old_lyric_project_never_opened_renders_converged_from_a_copy_beside_it(tmp_path, monkeypatch):
+    """A project still in the retired shape on disk (never opened since the upgrade, or its open's write skipped
+    for a Studio sync clash) must not draw its captions twice: render.js reads a converged copy in the project
+    folder (relative paths still resolve), the run removes it after, and project.json is left to the open."""
+    project_dir = tmp_path / "le-croix"
+    project_dir.mkdir()
+    old = old_lyric_project()
+    (project_dir / "project.json").write_text(json.dumps(old))
+    before = (project_dir / "project.json").read_text()
+    seen = _render(project_dir, monkeypatch)
+    assert seen["render_input"] != seen["project_path"]
+    assert seen["render_input"].parent == project_dir
+    assert str(seen["render_input"]) in seen["cmd"] and str(project_dir / "project.json") not in seen["cmd"]
+    assert seen["body"] == converge(old)
+    assert (project_dir / "project.json").read_text() == before
+
+
+def test_a_current_project_renders_its_own_file(tmp_path, monkeypatch):
+    project_dir = tmp_path / "current"
+    project_dir.mkdir()
+    (project_dir / "project.json").write_text(json.dumps(converge(old_lyric_project())))
+    seen = _render(project_dir, monkeypatch)
+    assert seen["render_input"] == seen["project_path"] == project_dir / "project.json"
+
+
+# ── a version restore writes the converged shape ───────────────────────────────
+
+def test_restoring_a_version_from_before_the_retirement_writes_it_converged(tmp_path):
+    import subprocess
+    from serve.common import get_project_dir
+    env = {**__import__("os").environ, "GIT_AUTHOR_NAME": "montaj", "GIT_AUTHOR_EMAIL": "montaj@local",
+           "GIT_COMMITTER_NAME": "montaj", "GIT_COMMITTER_EMAIL": "montaj@local"}
+    project_dir = tmp_path / "le-croix"
+    project_dir.mkdir()
+    old = old_lyric_project()
+    (project_dir / "project.json").write_text(json.dumps(old, indent=2))
+    for cmd in (["git", "init", "-q"], ["git", "add", "project.json"], ["git", "commit", "-q", "-m", "version: run 1 — draft"]):
+        subprocess.run(cmd, cwd=str(project_dir), env=env, check=True)
+    commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(project_dir), env=env,
+                            capture_output=True, text=True, check=True).stdout.strip()
+    (project_dir / "project.json").write_text(json.dumps({**converge(old), "status": "final"}, indent=2))
+    had, previous = hasattr(app.state, "broadcaster"), getattr(app.state, "broadcaster", None)
+    app.state.broadcaster = _StubBroadcaster()
+    app.dependency_overrides[get_project_dir] = lambda: project_dir
+    try:
+        resp = TestClient(app, raise_server_exceptions=False).post(f"/api/projects/{PID}/versions/{commit}/restore")
+    finally:
+        app.dependency_overrides.pop(get_project_dir, None)
+        if had:
+            app.state.broadcaster = previous
+        else:
+            del app.state.broadcaster
+    assert resp.status_code == 200, resp.text
+    on_disk = json.loads((project_dir / "project.json").read_text())
+    assert on_disk == converge(old)
+    assert resp.json()["projectType"] == "editing" and "renderMode" not in resp.json()
