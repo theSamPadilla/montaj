@@ -62,6 +62,7 @@ its apply alike) and whose `tidy` cleans the apply's runs. speech_edit is unchan
 The envelope reads the whole source into memory (16 kHz, 2 bytes a sample a channel: about 115 MB an hour of
 stereo); streaming it is left for long sources, if one needs it.
 """
+import hashlib
 import math
 import os
 import subprocess
@@ -1049,6 +1050,27 @@ _STAMPED = ("FRAME_S", "RATE", "_SILENT_DB", "SPEECH_PERCENTILE", "SILENCE_BELOW
             "MEASURED_SILENCE_S")
 
 
+class _RefinerStamp:
+    """Refiner.stamp: on the class, the reading's constants; on a refiner, those, and when it transcribes broken
+    stretches again (§577) lib/speech_repair's stamp and a digest of every source's repaired words (text, start, end)
+    and failed windows, so a plan and an apply that read different words (a cache gone, a second run that failed once
+    and not the other time) never match: stale_plan (review B3)."""
+
+    def __get__(self, obj, cls):
+        if obj is None or obj.retranscribe is None:
+            return cls.STAMP
+        from lib import speech_repair
+        h = hashlib.sha256()
+        for key in sorted(obj.repaired):
+            rep = obj.repaired[key]
+            if not rep:
+                continue
+            h.update(repr(key).encode())
+            h.update(repr([(r["window"], r.get("error")) for r in rep]).encode())
+            h.update(repr([(w.text, w.start, w.end) for w in obj.raw.get(key, ())]).encode())
+        return f"{cls.STAMP} {speech_repair.STAMP} repaired={h.hexdigest()[:12]}"
+
+
 class Refiner:
     """What speech_text.derive calls for each source instead of speech_lines.refine: (words, stats, silences).
     Reads each media once per process (layer 1, `layers`); `quiet_words` / `heard` / `inaudible` are the word
@@ -1057,7 +1079,8 @@ class Refiner:
     speech_build, none: a pause is cut by layer 1 alone, on the sound, never on whisper's word spans."""
 
     pause_cap = float("inf")
-    stamp = VERSION + " " + " ".join(f"{k}={globals()[k]}" for k in _STAMPED)
+    STAMP = VERSION + " " + " ".join(f"{k}={globals()[k]}" for k in _STAMPED)
+    stamp = _RefinerStamp()
 
     def __init__(self, max_pause=None, breath=BREATH_S, is_filler=None, retranscribe=None, retranscribe_tag=""):
         self.layers, self.placed, self.kinds, self.raw = {}, {}, {}, {}

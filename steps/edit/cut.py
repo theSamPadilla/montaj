@@ -143,9 +143,12 @@ def _mechanical(work, project_path, ti, project_dir, fillers, lineage, whole=Non
         if not _cuttable(it):
             warnings.append(f"no filler or pause cut on {cid}: it has keyframes, a speed change or a loop")
             continue
-        words = [{"text": w.text, "start": w.start, "end": w.end} for w in load_words(sidecar)]
-        if not words:
+        raw = load_words(sidecar)
+        if not raw:
             continue
+        placed, _, _ = refiner(r["src"], speech_text._media_for(r, sidecar), raw)
+        raw = refiner.raw.get(r["src"], raw)      # §577: a broken stretch's words, transcribed again
+        words = [{"text": w.text, "start": w.start, "end": w.end} for w in raw]
         lo, hi = _window(it, r["src"])
         inside = [w for w in words if lo <= (w["start"] + w["end"]) / 2 < hi]
         span = max(hi - lo, 1e-6)
@@ -154,9 +157,6 @@ def _mechanical(work, project_path, ti, project_dir, fillers, lineage, whole=Non
             if whole is not None:
                 whole.add(cid)
             continue
-        raw = load_words(sidecar)
-        placed, _, _ = refiner(r["src"], speech_text._media_for(r, sidecar), raw)
-        raw = refiner.raw.get(r["src"], raw)      # §577: a broken stretch's words, transcribed again
         if guard is not None:
             for n, (s0, s1) in enumerate(refiner.silences(r["src"])):
                 a, b = max(lo, s0 + refiner.breath), min(hi, s1 - refiner.breath)
@@ -682,30 +682,31 @@ def _already_cut(project):
 # ── the run ──────────────────────────────────────────────────────────────────
 
 def _retranscriber(model, language):
-    """retranscribe(media, start, end) -> [(text, start, end)] on the source's clock, or None (§577,
-    lib/speech_repair): the same whisper call as a clip with no transcript gets (transcribe_file, this model and
-    language), on a trim spec of that one stretch, in a temp folder that is removed after; nothing is written beside
-    the clip."""
-    def run(media, start, end):
+    """retranscribe(media, keeps) -> [(text, start, end)] on the source's clock, or None (§577, lib/speech_repair):
+    the same whisper call as a clip with no transcript gets (transcribe_file, this model and language), on one trim
+    spec of a broken window's voiced runs (one whisper run a window), in a temp folder removed after; nothing is
+    written beside the clip. run.last_error says why the last call came back with nothing."""
+    def run(media, keeps):
         run.last_error = None
         tmp = tempfile.mkdtemp(prefix="montaj-cut-")
         try:
             spec = os.path.join(tmp, "stretch.json")
             with open(spec, "w", encoding="utf-8") as f:
-                json.dump({"input": media, "keeps": [[round(start, 3), round(end, 3)]]}, f)
+                json.dump({"input": media, "keeps": [[round(a, 3), round(b, 3)] for a, b in keeps]}, f)
             prefix = os.path.join(tmp, "transcript")
             try:
                 ok, res = _quiet(transcribe_file, spec, prefix, model, language)
+                if not ok or not os.path.isfile(prefix + ".json"):
+                    run.last_error = ((res.get("message") or res.get("error") or "failed") if isinstance(res, dict)
+                                      else "failed")[:200]
+                    return None
+                words = load_words(prefix + ".json")
             except Exception as e:               # noqa: BLE001 (a failed run leaves the stretch as whisper wrote it)
                 run.last_error = f"{type(e).__name__}: {e}"[:200]
                 return None
-            if not ok or not os.path.isfile(prefix + ".json"):
-                run.last_error = (res.get("message") or res.get("error") or "failed")[:200] if isinstance(res, dict) \
-                    else "failed"
-                return None
             # transcribe maps a trim spec's times back to the source's clock itself
-            got = [(w.text, w.start, w.end) for w in load_words(prefix + ".json")
-                   if start - 0.5 <= w.start and w.end <= end + 0.5]
+            lo, hi = keeps[0][0], keeps[-1][1]
+            got = [(w.text, w.start, w.end) for w in words if lo - 0.5 <= w.start and w.end <= hi + 0.5]
             if not got:
                 run.last_error = "whisper heard no words there"
             return got
@@ -728,7 +729,8 @@ def _build(project_path, project_dir, disk, track_id, language, warnings, max_pa
     b = {"work": work, "ti": ti, "before_s": _seconds(track, project_dir),
          "origin": origin, "lineage": {}, "d": None, "fillers": 0,
          "refiner": speech_energy.Refiner(max_pause, breath, _filler_test(language),
-                                          _retranscriber(model or DEFAULT_WHISPER_MODEL, language), language),
+                                          _retranscriber(model or DEFAULT_WHISPER_MODEL, language),
+                                          f"{language}|{model or DEFAULT_WHISPER_MODEL}"),
          "filler_spans": {}, "held": []}
     has_words = any((sc := sidecar_for(_resolved(it, project_dir))) and load_words(sc) for it in _media(track))
     if has_words:
@@ -1159,7 +1161,8 @@ def _layer1_warnings(b):
         good = [r for r in rep if "error" not in r]
         if good:
             out.append(f"{name}: transcribed {len(good)} stretch(es) again where whisper's times broke ("
-                       + ", ".join(f"{r['window'][0]:.1f}-{r['window'][1]:.1f} s" for r in good[:4]) + ")")
+                       + ", ".join(f"{r['window'][0]:.1f}-{r['window'][1]:.1f} s" for r in good[:4]) + ")"
+                       + (f"; {len(bad)} more could not be" if bad else ""))
         for r in bad[:2]:
             out.append(f"{name}: whisper's times broke over {r['window'][0]:.1f}-{r['window'][1]:.1f} s, and transcribing "
                        f"it again failed ({r['error']}): its words are placed as written")

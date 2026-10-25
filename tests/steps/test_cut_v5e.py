@@ -58,9 +58,9 @@ def whisper_hears(script):
 
     def fake(input_path, out=None, model=None, language="en", **kw):
         spec = json.loads(open(input_path).read())
-        (a, b), = spec["keeps"]
-        calls.append((a, b))
-        heard = [(w, x, y) for w, x, y, _ in script if x >= a - 1e-6 and y <= b + 1e-6]
+        keeps = spec["keeps"]
+        calls.append([tuple(k) for k in keeps])
+        heard = [(w, x, y) for w, x, y, _ in script if any(x >= a - 1e-6 and y <= b + 1e-6 for a, b in keeps)]
         with open(out + ".json", "w") as f:
             json.dump(tc.gapless(heard), f)
         return {"words": out + ".json"}
@@ -71,8 +71,8 @@ def stubbed(monkeypatch, script):
     fake, calls = whisper_hears(script)
     monkeypatch.setattr(cc, "transcribe_file", fake)
 
-    def checks_run(media, a, b):
-        return [(w, x, y) for w, x, y, _ in script if x >= a - 1e-6 and y <= b + 1e-6]
+    def checks_run(media, keeps):
+        return [(w, x, y) for w, x, y, _ in script if any(x >= a - 1e-6 and y <= b + 1e-6 for a, b in keeps)]
     monkeypatch.setattr(cut_checks, "RETRANSCRIBE", checks_run)
     return calls
 
@@ -115,7 +115,8 @@ def test_shifted_times_and_collapsed_words_come_back_with_no_word_lost(tmp_path,
     d = v5.project(tmp_path, monkeypatch, [("vo", [(x, y, db) for _, x, y, db in script], end, words)], room=ROOM)
     plan, text, applied, said, before = v5.plan_apply(d, monkeypatch)
     assert said == S1 + S2 + S3[:7] + S4, (said, text)
-    assert len(calls) == 2, calls                       # one whisper run a voiced run of the broken window
+    # one whisper run for the window: its two voiced runs and its neighbours' sound (three good words each side)
+    assert len(calls) == 1 and calls[0][1:3] == [(3.9, 6.76), (8.9, 12.66)], calls
     tones = {k: (x, y) for k, (_, x, y, _) in enumerate(script)}
     s2 = range(len(S1), len(S1) + len(S2))
     s3_retake = range(len(S1) + len(S2) + 7, len(S1) + len(S2) + len(S3))
@@ -179,7 +180,7 @@ def test_the_merge_never_loses_a_word_whisper_wrote():
     old = [Word(0, "we", "we", 0.5, 0.8)] + [Word(1 + k, t, t, 2.0, 2.0) for k, t in enumerate(["get", "back", "up"])] + \
         [Word(4, "go.", "go", 9.0, 9.4)]
 
-    def again(media, a, b):
+    def again(media, keeps):
         return [("and", 4.0, 4.4), ("then", 4.5, 4.9), ("back", 5.0, 5.4)]
     out, rep = sr.repair(old, lay, "x.mov", again)
     assert [w.text for w in out] == ["we", "and", "then", "get", "back", "up", "go."], out
@@ -202,7 +203,7 @@ def test_the_second_run_reads_the_source_clock(tmp_path, monkeypatch):
         return {"words": out + ".json"}
     monkeypatch.setattr(cc, "transcribe_file", fake)
     run = cc._retranscriber("tiny", "en")
-    assert run("/m.mov", 3.9, 5.0) == [("and", 4.0, 4.4), ("then", 4.5, 4.9)]
+    assert run("/m.mov", [(3.9, 5.0)]) == [("and", 4.0, 4.4), ("then", 4.5, 4.9)]
     assert seen == [("/m.mov", [[3.9, 5.0]], "tiny", "en")]
 
 

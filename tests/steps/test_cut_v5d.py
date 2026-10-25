@@ -350,7 +350,7 @@ def test_a_thirty_minute_source_places_in_at_most_twice_the_time_without_the_ord
         ref("vo", str(dummy), words)
         return time.perf_counter() - t0
     # §577's broken-stretch search too (whisper's second run would cost one run a broken voiced run; none here)
-    new = min(timed(lambda m, a, b: runs.append((a, b))) for _ in range(2))
+    new = min(timed(lambda m, keeps: runs.append(keeps)) for _ in range(2))
     assert runs == []
     monkeypatch.setattr(se, "_ordered", lambda *a, **k: None)
     monkeypatch.setattr(se, "_chain", lambda *a, **k: None)
