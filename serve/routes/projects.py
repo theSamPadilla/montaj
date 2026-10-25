@@ -4,6 +4,7 @@ import contextlib
 import errno
 import io
 import json
+import tempfile
 import logging
 import math
 import mimetypes
@@ -4549,8 +4550,9 @@ async def restore_version(project_id: str, commit: str, request: Request, projec
     # A version from before the track-shape migration is legacy-shaped on disk
     # in that commit. Normalize before writing/broadcasting so a restore never
     # leaves legacy tracks on disk — a no-op (same object back) when the
-    # restored version is already normalized, matching save_project's rule.
-    restored = normalize_tracks(restored)
+    # restored version is already normalized, matching save_project's rule. The retired shapes converge too
+    # (lib/project_migrate.py): every old Lyric video project's history predates their retirement.
+    restored = converge(restored)
     # One lock hold, off the event loop: read the project, commit it as the "autosave before
     # restore" version (in the current run's history), then write the restored one. A
     # commit taken before the lock would let an edit land between the two and be lost from
@@ -5583,6 +5585,22 @@ def _validate_render_body(body: dict, *, overrides: bool = True) -> None:
         _render_motion_blur(body)
 
 
+def _converged_render_input(project_dir: Path, project) -> "Path | None":
+    """A copy of `project` converged (lib/project_migrate.py) beside its project.json, for render.js, when the file
+    is still in a retired shape (never opened since, or its open's write skipped for a Studio sync clash); None when
+    it already is current. Beside it, so relative paths resolve and render.js's default output places are
+    unchanged; the detached run removes it, as the carousel path's normalized copy."""
+    if not isinstance(project, dict):
+        return None
+    converged = converge(project)
+    if converged is project:
+        return None
+    fd, tmp_name = tempfile.mkstemp(prefix=".render-input-", suffix=".json", dir=str(project_dir))
+    with os.fdopen(fd, "w") as f:
+        json.dump(converged, f)
+    return Path(tmp_name)
+
+
 def _render_js_args(project_dir: Path, project_path: Path, body: dict, *, overrides: bool = True) -> tuple[list[str], Path]:
     """render.js's arguments for a video render from a validated render body,
     and the MP4 it writes: the project, ``--out output/<name>.mp4`` (the
@@ -5859,6 +5877,14 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
     # is a pure *viewer* — a disconnect just stops viewing; the render keeps going,
     # the output lands, and clients reconnect / poll /outputs for it. An actual stop
     # goes through POST /render/cancel.
+    # A project still in a retired shape on disk renders converged (see _converged_render_input), never with an old
+    # Lyric video's preview overlays drawn over its captions.
+    if project_type != "carousel":
+        converged_input = _converged_render_input(project_dir, project)
+        if converged_input is not None:
+            render_input = converged_input
+            script_args = [str(converged_input), *script_args[1:]]
+
     _active_renders.add(project_id)
     cmd = [node_bin, str(render_script), *script_args]
     job = _RenderJob()
