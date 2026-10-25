@@ -12,6 +12,11 @@ from parallelism import batch_workers
 
 FRAME_S = 0.01          # one RMS frame
 SPEECH_PERCENTILE = 95  # a source's speech level: this percentile of its frames
+ROOM_PERCENTILE = 10    # a source's room: this percentile of its frames
+GATE_OVER_ROOM_DB = 20.0    # the gated level reads only frames this far over the room ...
+GATE_GAIN_DB = 10.0         # ... and is used when it is this much over the plain level ...
+GATE_MIN_FRAMES = 50        # ... with this many frames over the gate (L-B5: a clip under 5% speech)
+DIGITAL_SILENCE_DB = -100.0  # a source whose level is at or under this is all silence
 
 
 def percentile(vals, p):
@@ -26,8 +31,24 @@ def percentile(vals, p):
 
 
 def speech_level(frames_db) -> float:
-    """A source's speech level: the SPEECH_PERCENTILE-th percentile of its 10 ms RMS frames, in dB."""
-    return percentile(frames_db, SPEECH_PERCENTILE)
+    """A source's speech level, in dB: the SPEECH_PERCENTILE-th percentile of its 10 ms RMS frames, gated (L-B5): of
+    the frames GATE_OVER_ROOM_DB or more over the ROOM_PERCENTILE-th frame, when GATE_MIN_FRAMES or more are and
+    their SPEECH_PERCENTILE-th lies over GATE_GAIN_DB above the plain level (a clip of little speech, whose plain
+    95th-percentile frame is the room). The same as the controller's flat.py v2."""
+    vals = list(frames_db)
+    plain = percentile(vals, SPEECH_PERCENTILE)
+    room = percentile(vals, ROOM_PERCENTILE)
+    gated = [v for v in vals if v >= room + GATE_OVER_ROOM_DB]
+    if len(gated) >= GATE_MIN_FRAMES:
+        g = percentile(gated, SPEECH_PERCENTILE)
+        if g > plain + GATE_GAIN_DB:
+            return g
+    return plain
+
+
+def room_level(frames_db) -> float:
+    """A source's room: the ROOM_PERCENTILE-th percentile of its 10 ms RMS frames, in dB."""
+    return percentile(list(frames_db), ROOM_PERCENTILE)
 
 
 def flat_runs(frames_db, level):
