@@ -345,3 +345,64 @@ def test_words_of_no_length_never_share_an_instant():
     assert len({round(p.start, 6) for p in zero}) == 3, placed
     assert all(a.end <= b.start + 1e-9 for a, b in zip(placed, placed[1:])), placed
     assert all(p.end - p.start >= se.INAUDIBLE_S - 1e-9 for p in placed), placed
+
+
+# ── ucla B, real3 v9: a run left in silence whose sound is under a later saying's words ────────────────────────────
+
+X = "it can follow you get back up".split()
+T1 = "the team described this as".split()
+T2 = "the team described this as telepresence.".split()
+
+
+def misplaced():
+    """S1 on its sound; B2 said at 5.0 (whisper's first run leaves it out); X said at 10.5; T1 (a retake of T2) at
+    13.0; T2 at 16.0. The first run writes X over 2.0-4.5 in the silence, then T1's words ON X's sound (10.5-12.0:
+    the wrong words, on sound, so no stretch shows there), and T2 on its own sound. The repair hears B2 between S1 and
+    T1; X stays in silence; the clear retake then removes T1's row, standing on X's sound."""
+    a, _ = said_on(0.5, S1)
+    b, _ = said_on(5.0, B2)
+    x, _ = said_on(10.5, X)
+    t1, _ = said_on(13.0, T1)
+    t2, end = said_on(16.0, T2)
+    script = a + b + x + t1 + t2
+    words = [(w, xx, round(y + 0.04, 3)) for w, xx, y, _ in a]
+    words += [(w, round(2.0 + 0.36 * k, 3), round(2.36 + 0.36 * k, 3)) for k, w in enumerate(X)]
+    words += [(w, round(10.5 + 0.3 * k, 3), round(10.8 + 0.3 * k, 3)) for k, w in enumerate(T1)]
+    words += [(w, xx, round(y + 0.04, 3)) for w, xx, y, _ in t2]
+    return script, words, round(end + 0.8, 2)
+
+
+def test_words_left_in_silence_take_their_sound_from_under_a_later_saying(tmp_path, monkeypatch):
+    """After the repair, X's words are looked for past the repaired window (one more whisper run, up to an anchor:
+    T2 where the first run put it). X takes its sound, T1 takes its own, and the clear retake removes only T1's
+    audio: no word lost."""
+    script, words, end = misplaced()
+    calls = e.stubbed(monkeypatch, script)
+    d = v5.project(tmp_path, monkeypatch, [("vo", tones(script), end, words)], room=ROOM)
+    plan, text, applied, said, before = v5.plan_apply(d, monkeypatch)
+    assert said == S1 + B2 + X + T2, (said, text)
+    xs = script[len(S1) + len(B2):len(S1) + len(B2) + len(X)]
+    t1s = script[len(S1) + len(B2) + len(X):len(S1) + len(B2) + len(X) + len(T1)]
+    assert all(v5.cover(d, xx, y) > 0.99 for _, xx, y, _ in xs), tc.kept_iv(d)
+    assert all(v5.cover(d, xx + 0.01, y - 0.01) < 0.02 for _, xx, y, _ in t1s), tc.kept_iv(d)
+    assert len(calls) == 2, calls                       # the repair, then one extension
+    w = " | ".join(plan.get("warnings", []))
+    assert "found 4 word(s) left in silence again past 10.5 s" in w, w      # X[:3] the repair already heard
+    v5.checked(d, plan, applied, before, [("vo", t[1], t[2]) for t in script if t not in t1s])
+
+
+def test_an_extension_with_no_anchor_moves_nothing_and_says_so():
+    """The second run past the window never comes back to where the first run put its words: nothing moves."""
+    lay = e._lay([(0.5, 2.0), (5.0, 8.9), (10.5, 12.6)], 16.0)
+    ws = [Word(0, "we", "we", 0.5, 1.0), Word(1, "go.", "go", 1.0, 2.0)] + \
+        [Word(2 + k, t, t, 2.1 + 0.4 * k, 2.5 + 0.4 * k) for k, t in enumerate(["zin", "zan", "zon", "zun", "zen", "zyn"])] + \
+        [Word(8, "the", "the", 10.5, 10.8), Word(9, "end.", "end", 10.8, 11.1)]
+
+    def again(media, keeps):
+        if keeps[0][0] < 5.0:
+            return [("a", 5.0, 5.3), ("box", 5.4, 5.7), ("is", 5.8, 6.1), ("here.", 6.2, 6.5)]
+        return [("zin", 10.5, 10.8), ("zan", 10.9, 11.2), ("off", 11.3, 11.6)]
+    out, rep = sr.repair(ws, lay, "x.mov", again)
+    ext = rep[0].get("extension")
+    assert ext and ext["error"].startswith("no anchor"), rep
+    assert [w.text for w in out][-2:] == ["the", "end."], out

@@ -1072,7 +1072,7 @@ class _RefinerStamp:
             if not rep:
                 continue
             h.update(repr(key).encode())
-            h.update(repr([(r["window"], r.get("error")) for r in rep]).encode())
+            h.update(repr([(r["window"], r.get("error"), r.get("extension")) for r in rep]).encode())
             h.update(repr([(w.text, w.start, w.end) for w in obj.raw.get(key, ())]).encode())
         return f"{cls.STAMP} {speech_repair.STAMP} repaired={h.hexdigest()[:12]}"
 

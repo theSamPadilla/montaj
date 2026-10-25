@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (steps): `cut` finds words whisper left in silence under a later saying's words (§577).** After a stretch is transcribed again, words can still sit in silence while their sound lies past it, labelled by the first run with another saying's words (on ucla, "It can follow a person, get", whose sound a clear retake's row stood on, so the retake removed it). Once per repaired stretch, `cut` looks for those words in one more whisper run over the voiced sound up to 20 s past the repaired window, up to the first three words heard where the first run put them, and merges the words as before: none dropped, matches of two words or more. The words take their own sound, and the retake removes only its own. The plan's answer names the search, found or not.
+
 ## v5.36.1
 
 - **Changed (skills): `select-takes` orders the cut as a step of its own (§577).** After the takes are picked, the kept rows go in the order the prompt or script asks for (with neither, the recording order); the apply plays `## Cut` top to bottom. Tests prove a pure reorder applies in plan order within a clip, across clips, with a kept offer and on recorded speech, and that no check refuses it. (`skills/select-takes/SKILL.md`, `tests/steps/test_cut_order.py`)

@@ -1166,6 +1166,14 @@ def _layer1_warnings(b):
         for r in bad[:2]:
             out.append(f"{name}: whisper's times broke over {r['window'][0]:.1f}-{r['window'][1]:.1f} s, and transcribing "
                        f"it again failed ({r['error']}): its words are placed as written")
+        for r in good:
+            ext = r.get("extension")
+            if ext and "error" not in ext:
+                out.append(f"{name}: found {ext['moved']} word(s) left in silence again past "
+                           f"{ext['from']:.1f} s (transcribed to {ext['to']:.1f} s)")
+            elif ext:
+                out.append(f"{name}: looked past {ext['from']:.1f} s (to {ext['to']:.1f} s) for the words left in "
+                           f"silence: {ext['error']}")
     hits = [f"{letters.get(src, os.path.basename(src))} at {a:.2f} s" for src, iv in ref.dropped.items() for a, _ in iv]
     if hits:
         out.append(f"dropped {len(hits)} short piece(s) of sound with no word: {', '.join(hits[:8])}")
