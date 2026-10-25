@@ -960,6 +960,39 @@ def test_b_roll_words_never_take_part(tmp_path, monkeypatch, order):
     assert items[0]["src"].endswith("speech.mp4") == speech_first      # nothing moved across the b-roll
 
 
+def test_a_take_said_again_in_another_clip_is_offered_with_both_places(tmp_path, monkeypatch):
+    """§558: a line recorded in one clip and again in the next is only offered (cut less when unsure), and the
+    offer names the other take's line and time, so the agent decides in one edit of the plan."""
+    clips = [("one", synthetic("Hey everyone, welcome back. We shipped it to Canada, Mexico and Brazil,")),
+             ("two", synthetic("We shipped it to Canada, Mexico and Chile. Thanks for watching!"))]
+    d = clips_project(tmp_path, clips)
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert plan["removed"]["lines"] == {} and plan["suggested"] == {"retake?": 1}
+    other = next(r for r in sections((d / "cut-plan.md").read_text())[0] if "Chile" in r)
+    other_line, other_t = other.split()[0], other.rsplit("[", 1)[1].rstrip("]")
+    _, unused = sections((d / "cut-plan.md").read_text())
+    offered = [r for r in unused if "Brazil" in r]
+    assert len(offered) == 1 and offered[0].endswith(f"retake? {other_line} {other_t}]"), offered
+    assert any(c.endswith(f"[retake? {other_line} {other_t}]") and "Brazil" in c for c in plan["cut"].splitlines())
+    lines = (d / "cut-plan.md").read_text().splitlines()
+    cut_at, unused_at = lines.index("## Cut"), lines.index("## Unused")
+    taken = [ln for i, ln in enumerate(lines) if not (cut_at < i < unused_at and "Brazil" in ln)]
+    (d / "cut-plan.md").write_text("\n".join(taken) + "\n")
+    run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    said = " ".join(phrases(d))
+    assert "Chile" in said and "Brazil" not in said
+
+
+def test_left_alone_a_take_said_in_two_clips_keeps_both(tmp_path, monkeypatch):
+    clips = [("one", synthetic("Hey everyone, welcome back. We shipped it to Canada, Mexico and Brazil,")),
+             ("two", synthetic("We shipped it to Canada, Mexico and Chile. Thanks for watching!"))]
+    d = clips_project(tmp_path, clips)
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    said = " ".join(phrases(d))
+    assert "Chile" in said and "Brazil" in said
+
+
 def test_a_short_real_line_is_still_cut(tmp_path, stub_transcribe, monkeypatch):
     """Six real words, then the camera left running: dense enough to be speech, so the rest is cut."""
     stub_transcribe(synthetic("Hey everyone, today we cook pasta."))
