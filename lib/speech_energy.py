@@ -629,11 +629,17 @@ def place(words, lay, breath=BREATH_S, is_filler=None):
                 placed[k] = replace(placed[k], start=round(t, 6), end=round(t + INAUDIBLE_S, 6))
                 t += INAUDIBLE_S
         i = j
-    # in order: a word never starts before the one before it ends
-    for i in range(1, n):
-        if placed[i].start < placed[i - 1].end - _EPS:
-            st = placed[i - 1].end
-            placed[i] = replace(placed[i], start=round(st, 6), end=round(max(st, placed[i].end), 6))
+    # in order: a word never starts before the one before it ends; and no word is of no length (§577, ucla B88: a
+    # kept word of no length on the instant a removed word starts put the cut on the kept one, which then played on
+    # neither side), so a word of no length takes INAUDIBLE_S
+    for i in range(n):
+        w = placed[i]
+        st = max(w.start, placed[i - 1].end) if i else w.start
+        en = max(st, w.end)
+        if en - st <= _EPS:
+            en = st + INAUDIBLE_S
+        if abs(st - w.start) > _EPS or abs(en - w.end) > _EPS:
+            placed[i] = replace(w, start=round(st, 6), end=round(en, 6))
     return placed, kind
 
 

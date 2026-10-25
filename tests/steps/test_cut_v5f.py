@@ -264,3 +264,84 @@ def test_a_take_broken_throughout_costs_one_whisper_run_a_window():
     calls = []
     sr.repair(w30, lay, "x.mov", lambda m, keeps: calls.append(len(keeps)) or None)
     assert len(calls) == len(sr.stretches(w30, lay)) == 1, calls
+
+
+# ── ucla B88: first-run words kept in the middle of a new sentence, on one instant with a removed word ────────────
+
+B2 = "a small computer underneath passes those commands to the actual robot motors.".split()
+B3 = "it can follow you get back up on its own and even walk around the room. the team describe this as".split()
+B4 = "telepresence basically a videophone.".split()
+
+
+def b88(at=0.0):
+    """The real B shape (the dump of B 88), invented sound. S1 on its sound; B2 said at 5.0; B4 on its own sound at
+    10.5. Whisper's first run leaves B2 out and writes B3 over its place: 'it can follow ... and' over 2.0-4.6 in the
+    silence, 'even walk around' collapsed to no length, 'the' stretched over B2's onset, 'room. the team' collapsed,
+    'describe' stretched over B2's sound and the silence after it, 'this as' in that silence. B3's real sound is later, past the
+    window (here never said: its words have no sound to take). The second run hears B2, whose 'to' and 'the' match
+    first-run words by chance."""
+    a, _ = said_on(0.5 + at, S1)
+    b, _ = said_on(5.0 + at, B2)
+    c, end = said_on(10.5 + at, B4)
+    script = a + b + c
+    words = [(w, x, round(y + 0.04, 3)) for w, x, y, _ in a]
+    words += [(w, round(2.0 + at + 0.24 * k, 3), round(2.24 + at + 0.24 * k, 3)) for k, w in enumerate(B3[:11])]
+    t = round(4.7 + at, 3)
+    words += [(w, t, t) for w in ("even", "walk", "around")]
+    words += [("the", t, round(6.3 + at, 3))]                    # stretched over B2's onset
+    t = round(6.3 + at, 3)
+    words += [(w, t, t) for w in ("room.", "the", "team")]
+    words += [("describe", t, round(9.6 + at, 3)), ("this", round(9.6 + at, 3), round(9.9 + at, 3)),
+              ("as", round(9.9 + at, 3), round(10.2 + at, 3))]
+    words += [(w, x, round(y + 0.04, 3)) for w, x, y, _ in c]
+    return script, words, round(end + 0.8, 2)
+
+
+def test_ucla_b88_plans_and_plays_what_it_says(tmp_path, monkeypatch):
+    """The plan is written and plan equals apply: no first-run word kept in the middle of B2 on one instant with a
+    removed word; B2 plays whole."""
+    script, words, end = b88()
+    e.stubbed(monkeypatch, script)
+    d = v5.project(tmp_path, monkeypatch, [("vo", tones(script), end, words)], room=ROOM)
+    plan, text, applied, said, before = v5.plan_apply(d, monkeypatch)
+    assert all(v5.cover(d, x, y) > 0.99 for _, x, y, _ in script[len(S1):len(S1) + len(B2)]), tc.kept_iv(d)
+    assert " ".join(B2) in " ".join(said), said
+    v5.checked(d, plan, applied, before, [("vo", x, y) for _, x, y, _ in script])
+
+
+def test_a_repair_and_a_later_loop_in_one_take_cross_their_indexes(tmp_path, monkeypatch):
+    """The orchestrator's case: a stretch repaired early in the take (words added: every later index moves) and a
+    whisper loop in a later stretch (its phantom copy), with the B88 shape after both. The plan is written, plan
+    equals apply, and each stretch's report names its own phantoms."""
+    s1, w1, end1 = e.broken()
+    s2, w2, end2 = loop_case()
+    sh = end1 + 0.5
+    s3, w3, end3 = b88(at=sh + end2 + 0.5)
+    script = s1 + [(w, round(x + sh, 3), round(y + sh, 3), db) for w, x, y, db in s2] + s3
+    words = w1 + [(w, round(x + sh, 3), round(y + sh, 3)) for w, x, y in w2] + w3
+    e.stubbed(monkeypatch, script)
+    d = v5.project(tmp_path, monkeypatch, [("vo", tones(script), end3, words)], room=ROOM)
+    plan, text, applied, said, before = v5.plan_apply(d, monkeypatch)
+    assert applied["mode"] == "applied"
+    from lib.speech_lines import load_words
+    ref = se.Refiner(0.45, retranscribe=cut_checks.RETRANSCRIBE, retranscribe_tag="en")
+    ref("vo", str(d / "vo.mov"), load_words(str(d / "vo.json")))
+    rep = ref.repaired["vo"]
+    assert len(rep) >= 3 and all("error" not in r for r in rep), rep
+    for r in rep:                       # each stretch's phantoms lie in its own part of the merged words
+        lo = min((x["phantom"][0] for x in rep if x["phantom"] and x["words"][0] > r["words"][0]), default=1e9)
+        assert all(p < lo for p in r["phantom"]), rep
+    assert rep[1]["phantom"], rep       # the loop's copy
+
+
+def test_words_of_no_length_never_share_an_instant():
+    """B88's refusal: a kept word of no length on the instant a removed word starts put the cut on the kept one,
+    which then played on neither side. place() gives every word INAUDIBLE_S at least, in order."""
+    lay = e._lay([(0.5, 2.0)], 4.0)
+    ws = [Word(0, "we", "we", 0.5, 1.0), Word(1, "go", "go", 1.0, 1.5)] + \
+        [Word(2 + k, t, t, 1.5, 1.5) for k, t in enumerate(["room.", "the", "team"])] + [Word(5, "now.", "now", 1.5, 2.0)]
+    placed, kind = se.place(ws, lay)
+    zero = [p for p in placed[2:5]]
+    assert len({round(p.start, 6) for p in zero}) == 3, placed
+    assert all(a.end <= b.start + 1e-9 for a, b in zip(placed, placed[1:])), placed
+    assert all(p.end - p.start >= se.INAUDIBLE_S - 1e-9 for p in placed), placed

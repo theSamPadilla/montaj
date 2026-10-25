@@ -44,10 +44,11 @@ WORD_BASE_S = 0.2
 MIN_VOICED_S = 0.3       # a broken window holds this much voiced audio, or it is left alone
 RUN_PAD_S = 0.1          # each voiced run is transcribed with this much of the room either side (whisper's context)
 NEIGHBOURS = 3           # the merge reaches this many good words each side of a stretch (their times drift too)
+MIN_MATCH = 2            # inside a stretch, a match of fewer words in a row is chance ('the'), not the same words
 CACHE_DAYS = 3           # a cached second run older than this is removed when the cache is written
-VERSION = "speech-repair v2"
+VERSION = "speech-repair v3"
 _STAMPED = ("ZERO_S", "ZERO_RUN", "SILENT_RUN", "SILENT_SPAN_S", "STRETCH_S", "MIN_VOICED_S", "RUN_PAD_S",
-            "NEIGHBOURS")
+            "NEIGHBOURS", "MIN_MATCH")
 STAMP = VERSION + " " + " ".join(f"{k}={globals()[k]}" for k in _STAMPED)
 _EPS = 1e-6
 
@@ -221,17 +222,34 @@ def _speech_like(new, lay):
     return on >= 0.5 * len(new)
 
 
+def _no_lone_matches(ops):
+    """The aligner's opcodes with a match of under MIN_MATCH words read as no match (§577, ucla B88: 'the' of one
+    sentence matched 'the' of another, so the first run's words were kept in the middle of the new sentence, and a
+    neighbour's chance match made the new words before it look like that neighbour heard twice), joined with the
+    blocks beside it."""
+    out = []
+    for op, a0, a1, b0, b1 in ops:
+        if op == "equal" and a1 - a0 < MIN_MATCH:
+            op = "replace"
+        if out and op != "equal" and out[-1][0] != "equal":
+            p = out.pop()
+            out.append(("replace", p[1], a1, p[3], b1))
+        else:
+            out.append((op, a0, a1, b0, b1))
+    return out
+
+
 def repair(words, lay, media, retranscribe, tag=""):
     """(words, report): each broken stretch, with NEIGHBOURS good words each side, merged with whisper's words for its
     window's voiced runs, all of a window's runs in one whisper run (retranscribe(media, keeps) -> [(text, start,
     end)] on the source's clock, or None), every word numbered again in order. The merge never loses a word: the two
     texts are aligned word for word (lib's norm); a matched word takes the new word's time; a word only the second run
     heard is added (never beside a neighbour: those only take new times); a word only the first run wrote is kept,
-    after the new words of its block (whisper's times run early over a broken stretch: its sound lies later), or
-    before the matched words it repeats (whisper's loop: the copy with no sound is the earlier saying, so a retake
-    rule keeps the real one). report: [{"words": (first, end) old indexes, "window": (t0, t1), "runs": n, "new": n,
+    after all the stretch's new words (whisper's times run early over a broken stretch: its sound lies later, and its
+    place among the new words is no place), or before the matched words it repeats (whisper's loop: the copy with no
+    sound is the earlier saying, so a retake rule keeps the real one). report: [{"words": (first, end) old indexes, "window": (t0, t1), "runs": n, "new": n,
     "matched": n, "added": n, "kept": n}], with "error" for a window whose second run failed or heard no speech (its
-    words are left as they were). A kept first-run-only word's new index is in "phantom"."""
+    words are left as they were). A kept first-run-only word's new index is in its own stretch's "phantom"."""
     from difflib import SequenceMatcher
     found = stretches(words, lay)
     if not found or retranscribe is None:
@@ -270,11 +288,12 @@ def repair(words, lay, media, retranscribe, tag=""):
         segs = []
         sm = SequenceMatcher(None, [w.norm for w in old], [w.norm for w in fresh], autojunk=False)
         n_match = n_add = n_keep = 0
-        for op, a0, a1, b0, b1 in sm.get_opcodes():
+        right0 = j - i2                      # old positions from here on are the right neighbours
+        for op, a0, a1, b0, b1 in _no_lone_matches(sm.get_opcodes()):
             if op == "equal":
                 segs.append(("equal", [replace(fresh[b], text=old[a].text) for a, b in zip(range(a0, a1),
                                                                                          range(b0, b1))],
-                             [old[a].norm for a in range(a0, a1)]))
+                             [old[a].norm for a in range(a0, a1)], a0 >= right0))
                 n_match += a1 - a0
                 continue
             # a word only the second run heard among the neighbours (or past them) is a neighbour heard twice: never
@@ -286,26 +305,36 @@ def repair(words, lay, media, retranscribe, tag=""):
             add = [] if among else fresh[b0:b1]
             # a neighbour the second run did not hear keeps its place and its time
             left = [old[a] for a in range(a0, a1) if a < i - i2]
-            right = [old[a] for a in range(a0, a1) if a >= j - i2]
-            keep = [replace(old[a], idx=-2) for a in range(a0, a1) if i - i2 <= a < j - i2]
+            right = [old[a] for a in range(a0, a1) if a >= right0]
+            keep = [replace(old[a], idx=-2 - len(report)) for a in range(a0, a1) if i - i2 <= a < right0]
             n_add += len(add)
             n_keep += len(keep)
-            for kind_, ws in (("nb", left), ("other", add), ("kept", keep), ("nb", right)):
+            for kind_, ws, tail in (("nb", left, False), ("other", add, False), ("kept", keep, False),
+                                    ("nb", right, True)):
                 if ws:
-                    segs.append((kind_, ws, [w.norm for w in ws] if kind_ == "kept" else []))
+                    segs.append((kind_, ws, [w.norm for w in ws] if kind_ == "kept" else [], tail))
         # whisper's loop: a kept block that repeats the matched words right before it goes before that copy (the one
         # with no sound is then the earlier saying, and a retake rule keeps the real one)
         q = 1
         while q < len(segs):
-            kind_, ws, ns = segs[q]
-            pk, pws, pns = segs[q - 1]
+            kind_, ws, ns, _ = segs[q]
+            pk, pws, pns, ptail = segs[q - 1]
             if kind_ == "kept" and pk == "equal" and len(ns) <= len(pns) and pns[len(pns) - len(ns):] == ns:
                 cut_at = len(pws) - len(ns)
-                segs[q - 1:q + 1] = [("equal", pws[:cut_at], pns[:cut_at]), (kind_, ws, ns),
-                                     ("equal", pws[cut_at:], pns[cut_at:])]
+                segs[q - 1:q + 1] = [("equal", pws[:cut_at], pns[:cut_at], ptail), ("loop", ws, ns, False),
+                                     ("equal", pws[cut_at:], pns[cut_at:], ptail)]
                 q += 2
             q += 1
-        merged = [w for _, ws, _ in segs for w in ws]
+        # every other word only the first run wrote goes after all the new words, before the right neighbours: its
+        # sound is not in the window (whisper's times run early over a broken stretch), and its first-run place
+        # inside the new sentence is no place (§577, ucla B88: 'to even walk around the actual' with 'even walk
+        # around' collapsed to no length on one instant)
+        n_tail = 0
+        while n_tail < len(segs) and segs[len(segs) - 1 - n_tail][3]:
+            n_tail += 1
+        body, tail = segs[:len(segs) - n_tail], segs[len(segs) - n_tail:]
+        segs = [x for x in body if x[0] != "kept"] + [x for x in body if x[0] == "kept"] + tail
+        merged = [w for _, ws, _, _ in segs for w in ws]
         entry.update(matched=n_match, added=n_add, kept=n_keep)
         report.append(entry)
         out += words[k:i2] + merged
@@ -314,15 +343,13 @@ def repair(words, lay, media, retranscribe, tag=""):
     if not any("error" not in r for r in report):
         return list(words), report
     # in order, and numbered again (a word the merge placed takes no time before the word before it)
-    fixed, prev, phantom = [], 0.0, []
+    fixed, prev = [], 0.0
+    for r in report:
+        r["phantom"] = []
     for n, w in enumerate(out):
         s = max(w.start, prev) if w.idx < 0 else w.start
-        if w.idx == -2:
-            phantom.append(n)
+        if w.idx <= -2:                      # a kept first-run-only word of stretch report[-idx - 2]
+            report[-w.idx - 2]["phantom"].append(n)
         fixed.append(replace(w, idx=n, start=round(s, 3), end=round(max(s, w.end), 3)))
         prev = max(prev, fixed[-1].end)
-    for r in report:
-        r.setdefault("phantom", [])
-    if report:
-        report[-1]["phantom"] = phantom
     return fixed, report

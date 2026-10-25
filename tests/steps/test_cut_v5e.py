@@ -174,8 +174,8 @@ def _lay(spans, total=15.0):
 
 def test_the_merge_never_loses_a_word_whisper_wrote():
     """The benchmark run of ucla B: the second run hears another sentence than the stretch's words (whisper's first
-    run left that sentence out). Matched words take the new times, new words are added, and every word the first run
-    wrote is kept, after the new words of its block, in order."""
+    run left that sentence out). New words are added, and every word the first run wrote is kept, after all the new
+    words, in order."""
     lay = _lay([(0.5, 0.8), (4.0, 6.0), (9.0, 9.4)])
     old = [Word(0, "we", "we", 0.5, 0.8)] + [Word(1 + k, t, t, 2.0, 2.0) for k, t in enumerate(["get", "back", "up"])] + \
         [Word(4, "go.", "go", 9.0, 9.4)]
@@ -183,11 +183,12 @@ def test_the_merge_never_loses_a_word_whisper_wrote():
     def again(media, keeps):
         return [("and", 4.0, 4.4), ("then", 4.5, 4.9), ("back", 5.0, 5.4)]
     out, rep = sr.repair(old, lay, "x.mov", again)
-    assert [w.text for w in out] == ["we", "and", "then", "get", "back", "up", "go."], out
-    assert [w.idx for w in out] == list(range(7)) and all(x.start <= y.start for x, y in zip(out, out[1:])), out
-    assert rep and rep[0]["matched"] == 1 and rep[0]["added"] == 2 and rep[0]["kept"] == 2, rep
-    back = next(w for w in out if w.text == "back")
-    assert (back.start, back.end) == (5.0, 5.4), back
+    # one word in common is chance (lib/speech_repair.MIN_MATCH: 'the' of another sentence), so 'back' is not matched:
+    # the new words come first, then every first-run word, in order
+    assert [w.text for w in out] == ["we", "and", "then", "back", "get", "back", "up", "go."], out
+    assert [w.idx for w in out] == list(range(8)) and all(x.start <= y.start for x, y in zip(out, out[1:])), out
+    assert rep and rep[0]["matched"] == 0 and rep[0]["added"] == 3 and rep[0]["kept"] == 3, rep
+    assert rep[0]["phantom"] == [4, 5, 6], rep
 
 
 def test_the_second_run_reads_the_source_clock(tmp_path, monkeypatch):
