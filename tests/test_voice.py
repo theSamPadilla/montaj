@@ -68,8 +68,8 @@ LINE = -66.0        # the voice line of a source whose room is at -72 (lib/speec
 
 def voiced(x, line=LINE):
     """lib/voice's voiced frames of x at the voice line."""
-    p, _, _, low = voice.features(x)
-    return voice.voiced(voice.pitched_db(p, low), line)
+    p, _, _, low, _ = voice.features(x)
+    return voice.voiced(voice.reading(p, low), line)
 
 
 def hum(n, db):
@@ -130,18 +130,52 @@ def test_room_hum_is_not_voice():
     assert not any(voiced(x, -56.0 + 6.0))        # the voice line: the room (the hum's level) + 6
 
 
-def test_only_sound_cut_off_from_voice_is_noise():
-    """A run of sound is noise only when no voiced frame lies in it or within VOICE_REACH_S of it."""
-    env = [-70.0] * 100
-    vo = bytearray(100)
+def test_only_sound_cut_off_from_voice_by_a_dip_to_the_room_is_noise():
+    """Sound joins a voice through continuously audible frames (at or over the audible line, the room + 6): a click
+    0.15 s from a voiced word with a dip to the room between is cut off; one reaching it through audible sound is not,
+    however far; a piece holding a kept frame (a word's own burst or speech) is never noise."""
+    env = [-70.0] * 120
+    vo = bytearray(120)
     for k in range(10, 30):
         env[k], vo[k] = -15.0, 1               # a voiced word
-    for k in range(40, 44):
-        env[k] = -35.0                         # a click 0.10 s after it: attached
-    for k in range(70, 74):
-        env[k] = -35.0                         # a click 0.40 s after it: cut off
-    assert voice.noise_frames(env, -43.0, vo) == set(range(70, 74))
-    assert voice.noise_word(env, vo, -66.0, 68, 76)
-    assert not voice.noise_word(env, vo, -66.0, 38, 46)
-    assert not voice.noise_word(env, vo, -66.0, 80, 90)     # no sound in its span: inaudible, never noise
-    assert voice.noise_frames(env, -43.0, None) == set() and not voice.noise_word(env, None, -66.0, 68, 76)
+    for k in range(30, 50):
+        env[k] = -50.0                         # audible sound (over -64) running on from it ...
+    for k in range(50, 54):
+        env[k] = -35.0                         # ... into a click 0.2 s after it: joined
+    for k in range(69, 73):
+        env[k] = -35.0                         # a click 0.15 s before the next word, a dip to the room between
+    for k in range(88, 110):
+        env[k], vo[k] = -15.0, 1               # the next word
+    line = -64.0
+    assert voice.noise_frames(env, line, vo) == set(range(69, 73))
+    assert voice.noise_word(env, vo, line, 67, 75)
+    assert not voice.noise_word(env, vo, line, 48, 56)
+    assert not voice.noise_word(env, vo, line, 60, 66)      # no sound in its span: inaudible, never noise
+    assert not voice.noise_word(env, vo, line, 67, 75, keep={70})
+    assert voice.noise_frames(env, line, vo, keep={70}) == set()
+    assert voice.joined(env, vo, line, 50, 54) and not voice.joined(env, vo, line, 69, 73)
+    assert voice.noise_frames(env, line, None) == set() and not voice.noise_word(env, None, line, 67, 75)
+
+
+@pytest.mark.parametrize("f0", [45, 60, 70])
+def test_a_deep_voice_under_80_hz_is_voiced(f0):
+    """Review B2: a voice at 45-70 Hz (a deep voice, creak) reads pitched, every 0.1 s of it: the lags reach 40 Hz
+    (one voiced frame is all a piece needs)."""
+    rng = np.random.default_rng(1)
+    n = int(0.4 * R)
+    x = scaled(vowel(rng, n, f0), -30) + scaled(rng.standard_normal(n), -72)
+    v = voiced(x)[4:-4]
+    assert all(any(v[k:k + 10]) for k in range(0, len(v) - 9)), list(v)
+
+
+def test_the_reading_is_the_same_read_in_chunks():
+    """features reads _CHUNK frames at a time (no copy of the whole source): the same as one chunk."""
+    x = (np.random.default_rng(0).standard_normal(R * 50) * 3000).astype("<i2")
+    a = voice.features(x, scale=voice.SCALE)
+    old = voice._CHUNK
+    try:
+        voice._CHUNK = 10 ** 7
+        b = voice.features(x, scale=voice.SCALE)
+    finally:
+        voice._CHUNK = old
+    assert all(np.allclose(u, v) for u, v in zip(a, b))

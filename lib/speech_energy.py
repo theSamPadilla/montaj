@@ -76,7 +76,7 @@ from lib.common import fail, ff_path, ffmpeg_bin, run
 from lib.speech_lines import _ends_sentence
 from steps.audio import waveform_trim
 
-VERSION = "speech-energy v5c"
+VERSION = "speech-energy v5d"
 FRAME_S = waveform_trim.FRAME_S
 RATE = 16000
 SPEECH_PERCENTILE = waveform_trim.SPEECH_PERCENTILE
@@ -84,6 +84,7 @@ SILENCE_BELOW_SPEECH_DB = 30.0   # a frame this far under the source's speech le
 ATTACHED_BELOW_SPEECH_DB = 40.0  # ... but an attached word's own frames down to this far under it are its sound,
 ATTACHED_OVER_ROOM_DB = 10.0     # ... and this far over the room (v5a fix 1)
 GUARD_DB = -46.0                 # a word peaking at or over this is never auto-removed (compare's guard, L-B3) ...
+SPEECH_WORD_S = 0.3              # ... and one this long or longer reaching it is speech, never noise (§577, Sam)
 PROTECT_OVER_ROOM_DB = 6.0       # a protected word's burst never reaches down to the room plus this
 BURST_UNDER_PEAK_DB = 6.0        # a protected word's burst: its frames down to this far under its peak
 BURST_GAP_S = 0.1                # a dip under the line this long ends a word's burst (v5a fix 2)
@@ -192,12 +193,16 @@ class Layer:
     chained: set = field(default_factory=set)   # word positions _chain folded (§577: whisper's drift, never quiet)
     voice: bytearray | None = None    # lib/voice: voiced frames (None: no voice check)
     noise: set = field(default_factory=set)     # frames over the line cut off from any voice (lib/voice): flat
+    speech_frames: set = field(default_factory=set)   # frames of words that are speech by their own evidence (§577)
+    audible: float = _SILENT_DB       # the room plus PROTECT_OVER_ROOM_DB: sound joins a voice through frames over it
 
 
-def layer1(media, env, max_pause, attached=frozenset(), spectral=None):
+def layer1(media, env, max_pause, attached=frozenset(), spectral=None, speech_frames=frozenset()):
     """Layer 1 of `media` (see the module docstring), from its envelope `env`. attached: frames an attached word's
     own sound holds (_attached_frames): voiced, though under the line. spectral: lib/voice.flags of the media, or None
-    (no voice check): a run of sound over the line cut off from any voiced frame is flat (§577 cut voice)."""
+    (no voice check): sound over the line cut off from any voiced frame (a piece of continuously audible frames, over
+    the room plus PROTECT_OVER_ROOM_DB, holding no voiced frame, no attached frame and none of `speech_frames`, the
+    frames of words that are speech by their own evidence, `_speech_by_evidence`) is flat (§577 cut voice)."""
     end = len(env) * FRAME_S
     if not env:
         return Layer(env, _SILENT_DB, _SILENT_DB, bytearray(), [], [[0.0, end]], end)
@@ -213,8 +218,20 @@ def layer1(media, env, max_pause, attached=frozenset(), spectral=None):
                      room=room, raw_flat=bytearray(ones))
     thr = speech - SILENCE_BELOW_SPEECH_DB
     raw_flat = bytearray(1 if v < thr else 0 for v in env)
-    vo = _voice.voiced(spectral, room + PROTECT_OVER_ROOM_DB)        # pitched over the room's own hum (§577)
-    noise = _voice.noise_frames(env, thr, vo, attached)
+    audible = room + PROTECT_OVER_ROOM_DB
+    vo = None
+    if spectral is not None:
+        # voiced: pitched, its low-passed level over the low-passed room plus PROTECT_OVER_ROOM_DB (the room's own
+        # hum never counts); the low-passed room read as the room is, on the quiet frames' own 10 ms, and never over
+        # the room itself (a low-passed level is never over its own full band: a higher reading is a soft word's or
+        # an edge's sound counted in, as in dense speech with soft words and short gaps)
+        lows = [spectral.low10[k] for k, v in enumerate(env) if v < thr and k < len(spectral)]
+        low_room = waveform_trim.room_level(lows) if lows else waveform_trim.percentile(list(spectral.low10),
+                                                                                         ROOM_DENSE_PERCENTILE)
+        low_room = min(low_room, room)
+        vo = _voice.voiced(spectral, low_room + PROTECT_OVER_ROOM_DB)
+    keep = set(attached) | set(speech_frames)
+    noise = {k for k in _voice.noise_frames(env, audible, vo, keep) if env[k] >= thr}
     flat = bytearray(1 if v < thr and k not in attached or k in noise else 0 for k, v in enumerate(env))
     reading = [min(v, thr - 1.0) if k in noise else v if flat[k] else max(v, thr)    # an attached frame reads as sound
                for k, v in enumerate(env)]
@@ -233,16 +250,45 @@ def layer1(media, env, max_pause, attached=frozenset(), spectral=None):
                 if (b - a) * FRAME_S >= MEASURED_SILENCE_S - 1e-9]
     return Layer(env, speech, thr, flat, sils, [list(k) for k in voiced], end, measured, attached=set(attached),
                  burst_of=dict(attached) if isinstance(attached, dict) else {},
-                 room=room, raw_flat=raw_flat, voice=vo, noise=noise)
+                 room=room, raw_flat=raw_flat, voice=vo, noise=noise, speech_frames=set(speech_frames),
+                 audible=audible)
+
+
+def _speech_by_evidence(env, w):
+    """Whether word w is speech by its own sound, whatever its pitch (§577: a breathy, whispered or creaky word):
+    its whisper span reaches GUARD_DB and is SPEECH_WORD_S or longer (Sam's call), or holds a run of BURST_MIN_S or
+    more within BURST_UNDER_PEAK_DB of its peak (review B1). Such a word is never noise, and its sound never flat."""
+    a, b = _frames(env, w.start, max(w.end, w.start + FRAME_S))
+    pk = max(env[a:b], default=_SILENT_DB)
+    if pk < GUARD_DB:
+        return False
+    if w.end - w.start >= SPEECH_WORD_S - _EPS:
+        return True
+    need, run_ = int(round(BURST_MIN_S / FRAME_S)), 0
+    for f in range(a, b):
+        run_ = run_ + 1 if env[f] >= pk - BURST_UNDER_PEAK_DB else 0
+        if run_ >= need:
+            return True
+    return False
+
+
+def speech_frames(words, env):
+    """The frames of the whisper spans of the words that are speech by their own evidence (`_speech_by_evidence`)."""
+    out = set()
+    for w in words:
+        if _speech_by_evidence(env, w):
+            out.update(range(*_frames(env, w.start, max(w.end, w.start + FRAME_S))))
+    return out
 
 
 def _noise(lay, w):
-    """Whether word w's sound is no voice (lib/voice.noise_word): its whisper span holds sound over the room plus
-    PROTECT_OVER_ROOM_DB (the lowest a burst reaches) and every run of it is cut off from any voiced frame."""
-    if lay.voice is None:
+    """Whether word w's sound is no voice (lib/voice.noise_word): never a word that is speech by its own evidence;
+    else its whisper span holds audible sound (over lay.audible, the room plus PROTECT_OVER_ROOM_DB) and every piece
+    of it is cut off from any voiced frame (and holds no attached frame)."""
+    if lay.voice is None or _speech_by_evidence(lay.env, w):
         return False
     a, b = _frames(lay.env, w.start, max(w.end, w.start + FRAME_S))
-    return _voice.noise_word(lay.env, lay.voice, lay.room + PROTECT_OVER_ROOM_DB, a, b)
+    return _voice.noise_word(lay.env, lay.voice, lay.audible, a, b, set(lay.attached) | lay.speech_frames)
 
 
 def _protected(lay, peak):
@@ -321,7 +367,8 @@ def _attached_frames(words, placed, kind, lay, max_pause, breath=BREATH_S):
                 continue
             k = max(cand, key=lambda f: (env[f], -f))
             lo, hi = _burst_run(lay, k, a, b, line, owner, i)
-            if not _voice.cut_off(lay.voice, lo, hi):     # a burst cut off from any voice is no word's sound (§577)
+            # a burst cut off from any voice is no word's sound (§577), unless the word is speech by its own evidence
+            if _speech_by_evidence(env, w) or _voice.joined(env, lay.voice, lay.audible, lo, hi, lay.speech_frames):
                 raw.append([k, lo, hi, line, cap, i])
             break
     raw.sort()
@@ -1070,6 +1117,7 @@ def _misplaced(words, placed, kind, flat=None, noise=()):
 _STAMPED = ("FRAME_S", "RATE", "_SILENT_DB", "SPEECH_PERCENTILE", "SILENCE_BELOW_SPEECH_DB",
             "ATTACHED_BELOW_SPEECH_DB", "ATTACHED_OVER_ROOM_DB", "GUARD_DB", "PROTECT_OVER_ROOM_DB",
             "BURST_UNDER_PEAK_DB", "BURST_GAP_S", "BURST_MIN_S", "ISLAND_TARGET_S", "ROOM_DENSE_PERCENTILE", "BREATH_S",
+            "SPEECH_WORD_S",
             "VIDEO_EDGE_S", "SENTENCE_END_S", "ISLAND_S",
             "DRIFT_S", "EDGE_BLEED_FRAMES", "FOLD_S", "INAUDIBLE_S", "LETTER_S", "WORD_BASE_S", "MISPLACED_SHARE", "ORDERED_MIN_S", "CHAIN_S", "TAIL_FREE_S", "ZERO_STAMP_S", "MIN_KEEP_S", "MIN_CUT_S",
             "MEASURED_SILENCE_S")
@@ -1134,11 +1182,15 @@ class Refiner:
         if key not in self.layers:
             env = envelope(media)
             spectral = _voice.flags(media, len(env))        # §577 cut voice: which frames sound like a voice
-            lay = layer1(media, env, self._pause(), spectral=spectral)
+            held = speech_frames(raw, env) if spectral is not None else frozenset()
+            lay = layer1(media, env, self._pause(), spectral=spectral, speech_frames=held)
             if self.retranscribe is not None:
                 from lib import speech_repair
                 raw, self.repaired[key] = speech_repair.repair(raw, lay, media, self.retranscribe,
                                                                self.retranscribe_tag)
+                if spectral is not None and speech_frames(raw, env) != held:     # the repaired words' own evidence
+                    held = speech_frames(raw, env)
+                    lay = layer1(media, env, self._pause(), spectral=spectral, speech_frames=held)
             placed, kind = place(raw, lay, self.breath, self.is_filler)
             attached = {}
             for _ in range(ATTACH_ROUNDS):       # until nothing changes (A-B2): a word attached makes its neighbour's
@@ -1146,7 +1198,7 @@ class Refiner:
                 if more == attached:
                     break
                 attached = more
-                lay = layer1(media, env, self._pause(), attached, spectral)
+                lay = layer1(media, env, self._pause(), attached, spectral, held)
                 placed, kind = place(raw, lay, self.breath, self.is_filler)
             self.layers[key], self.raw[key] = lay, list(raw)
             self.placed[key], self.kinds[key] = placed, kind

@@ -1,7 +1,9 @@
 """§577 cut voice: sound counts as speech only when it is loud enough AND a voice (lib/voice), and only sound cut off
-from any voiced frame (a quiet gap on both sides, no voiced frame within VOICE_REACH_S) is read as no voice. A
-whisper word whose only sound is that is removed and tagged `noise`. Synthetic replicas of the measured shapes
+from any voiced frame (no continuously audible sound joining it to one: a dip to the room between) is read as no
+voice. A whisper word whose only sound is that, and that is not speech by its own evidence (SPEECH_WORD_S, the
+guard), is removed and tagged `noise`. Synthetic replicas of the measured shapes
 (a harmonic voice with formants, clicks, handling noise, hum, fricatives), invented words; no real media."""
+import json
 import math
 import re
 import subprocess
@@ -57,13 +59,60 @@ def _clicks(rng, n):
     return x
 
 
+def _ramp(x, ms=10):
+    k = min(len(x) // 4, int(ms / 1000 * R))
+    if k:
+        x[:k] *= np.linspace(0, 1, k)
+        x[-k:] *= np.linspace(1, 0, k)
+    return x
+
+
+FORMANTS = ((700, 120), (1200, 150), (2600, 200))
+
+
+def _whisper(rng, n):
+    """A whispered vowel: white noise shaped by three formants (no glottal source, so no pitch), syllabic envelope."""
+    X = np.fft.rfft(rng.standard_normal(n))
+    f = np.fft.rfftfreq(n, 1 / R)
+    g = sum(np.exp(-0.5 * ((f - c) / (bw * 1.6)) ** 2) for c, bw in FORMANTS) + 0.02
+    x = np.fft.irfft(X * g, n)
+    t = np.arange(n) / R
+    return _ramp(x * (0.35 + 0.65 * np.abs(np.sin(np.pi * 4.0 * t))))
+
+
+def _creak(rng, n, f0=45.0, jitter=0.15):
+    """Creaky voice (fry) or a deep voice: glottal pulses at f0, each period jittered, each ringing the formants."""
+    tt = np.arange(400) / R
+    ir = sum(np.exp(-np.pi * bw * tt) * np.sin(2 * np.pi * c * tt) for c, bw in FORMANTS)
+    x = np.zeros(n)
+    k = int(rng.uniform(0, R / f0))
+    while k < n:
+        m = min(len(ir), n - k)
+        x[k:k + m] += ir[:m] * rng.uniform(0.7, 1.0)
+        k += int(R / f0 * (1 + jitter * rng.uniform(-1, 1)))
+    return _ramp(x)
+
+
+def _burst(rng, n):
+    """A plosive's release: a few ms of broadband burst, then aspiration noise."""
+    x = _band(rng, n, 500, 7900)
+    k = min(n, int(0.01 * R))
+    x[k:] *= 0.3
+    return x
+
+
 SHAPES = {
     "voice": lambda rng, n: _vowel(rng, n),
-    "breathy": lambda rng, n: _vowel(rng, n, breath=2.0),     # more aspiration than voice: hardly pitched
+    "breathy": lambda rng, n: _vowel(rng, n, breath=2.0),     # more aspiration than voice: hardly pitched (~0.3)
+    "breathy4": lambda rng, n: _vowel(rng, n, breath=4.0),
+    "whisper": _whisper,
+    "creak45": lambda rng, n: _creak(rng, n, 45.0),
+    "low70": lambda rng, n: _creak(rng, n, 70.0, jitter=0.0),
     "click": _clicks,
     "handling": lambda rng, n: _band(rng, n, 60, 900),
     "s": lambda rng, n: _band(rng, n, 4000, 7900),
     "f": lambda rng, n: _band(rng, n, 1000, 7900),
+    "t": _burst,
 }
 
 
@@ -166,8 +215,9 @@ def test_a_soft_real_word_beside_voiced_words_is_kept_and_heard(tmp_path, monkey
 
 
 def test_fricative_edges_of_a_voiced_word_are_kept(tmp_path, monkeypatch):
-    """An "s" (4-8 kHz noise, as noisy as a click) closing "yes." after a 40 ms closure, and an "f" opening "fine."
-    after 1.5 s of silence: each is attached to its word's voice, so each plays whole."""
+    """An "s" (4-8 kHz noise, as noisy as a click) closing "yes." after a 40 ms closure (a dip to the room), and an "f"
+    opening "fine." after 1.5 s of silence: each in its word's whisper span, a word that is speech by its own evidence
+    (SPEECH_WORD_S, the guard), so each plays whole."""
     parts = [(0.30, 0.55, SPEECH, "voice"), (0.60, 0.80, SPEECH, "voice"), (0.84, 1.00, -28.0, "s"),
              (2.50, 2.60, -32.0, "f"), (2.60, 2.90, SPEECH, "voice"), (2.95, 3.30, SPEECH, "voice")]
     words = [("oh", 0.30, 0.58), ("yes.", 0.58, 1.00), ("fine", 2.50, 2.92), ("then.", 2.92, 3.30)]
@@ -179,16 +229,154 @@ def test_fricative_edges_of_a_voiced_word_are_kept(tmp_path, monkeypatch):
     v5.checked(d, plan, applied, before, [("vo", a, b) for a, b, _, _ in parts])
 
 
-def test_a_click_right_against_a_word_is_never_touched(tmp_path, monkeypatch):
-    """A click 0.1 s after a voiced word (within VOICE_REACH_S) is attached to it: it plays, as before."""
-    parts = SENT + [(1.05, 1.09, -37.0, "click")] + BACK
+def test_a_click_joined_to_a_word_by_audible_sound_is_never_touched(tmp_path, monkeypatch):
+    """A click 0.1 s after a voiced word, reached from it through audible sound (handling noise running on from the
+    word, never down to the room): joined, so it plays, as before."""
+    parts = SENT + [(0.95, 1.05, -50.0, "handling"), (1.05, 1.09, -37.0, "click")] + BACK
     d = project(tmp_path, monkeypatch, parts, 4.0, SENT_W + BACK_W)
     plan, text, applied, said, before = v5.plan_apply(d, monkeypatch)
     assert said == ["we", "went", "back", "home."], (said, text)
     assert v5.cover(d, 1.05, 1.09) > 0.99, tc.kept_iv(d)
 
 
+def test_a_click_just_before_a_word_with_a_dip_to_the_room_between_goes(tmp_path, monkeypatch):
+    """Sam's 0:17.3 click: 0.1 s before a voiced word, the room between (no audible sound joins them): cut off from
+    the voice, so it is silence, and the word after it starts on its own sound (red before: within 0.15 s, kept)."""
+    parts = SENT + [(2.66, 2.70, -37.0, "click")] + BACK
+    d = project(tmp_path, monkeypatch, parts, 4.0, SENT_W + BACK_W)
+    plan, text, applied, said, before = v5.plan_apply(d, monkeypatch)
+    assert said == ["we", "went", "back", "home."], (said, text)
+    assert v5.cover(d, 2.66, 2.70) < 0.01, tc.kept_iv(d)
+    v5.checked(d, plan, applied, before, voiced(parts))
+
+
+def test_a_sibilant_and_a_plosive_running_into_their_vowel_are_kept(tmp_path, monkeypatch):
+    """An "s" running on from "yes"'s vowel, and a "t" (burst and aspiration) running into "top"'s, each outside its
+    word's whisper span (whisper's drift): joined to the voice by audible sound, so each plays whole."""
+    parts = [(0.30, 0.55, SPEECH, "voice"), (0.60, 0.80, SPEECH, "voice"), (0.80, 0.96, -28.0, "s"),
+             (2.50, 2.56, -30.0, "t"), (2.56, 2.85, SPEECH, "voice"), (2.90, 3.25, SPEECH, "voice")]
+    words = [("oh", 0.30, 0.58), ("yes.", 0.58, 0.80), ("top", 2.60, 2.87), ("it.", 2.87, 3.25)]
+    d = project(tmp_path, monkeypatch, parts, 3.9, words)
+    plan, text, applied, said, before = v5.plan_apply(d, monkeypatch)
+    assert said == [w for w, _, _ in words], (said, text)
+    assert v5.cover(d, 0.80, 0.96) > 0.99, tc.kept_iv(d)
+    assert v5.cover(d, 2.50, 2.56) > 0.99, tc.kept_iv(d)
+    v5.checked(d, plan, applied, before, [("vo", a, b) for a, b, _, _ in parts])
+
+
+def test_a_breathy_yeah_alone_between_pauses_is_kept(tmp_path, monkeypatch):
+    """kungfu's "yeah" (real3 v10, Sam kept it): 0.57 s of unpitched (whispered-like) voice at -32 (the real one: pitch
+    about 0.3), alone between two pauses. A whisper word of SPEECH_WORD_S or more reaching GUARD_DB is speech, never
+    noise: it plays, all of it (red before: removed as noise)."""
+    parts = SENT + [(1.60, 2.17, -32.0, "whisper")] + BACK
+    words = SENT_W + [("yeah", 1.60, 2.17)] + BACK_W
+    d = project(tmp_path, monkeypatch, parts, 4.0, words)
+    plan, text, applied, said, before = v5.plan_apply(d, monkeypatch)
+    assert said == ["we", "went", "yeah", "back", "home."], (said, tags(text))
+    assert v5.cover(d, 1.62, 2.15) > 0.99, tc.kept_iv(d)
+    v5.checked(d, plan, applied, before, [("vo", a, b) for a, b, _, _ in parts])
+
+
+@pytest.mark.parametrize("shape,db", [("whisper", -35.0), ("whisper", -41.0), ("breathy", -38.0),
+                                      ("breathy4", -38.0), ("creak45", -38.0), ("low70", -38.0)])
+def test_a_faint_phrase_alone_between_pauses_is_kept(tmp_path, monkeypatch, shape, db):
+    """Review B1: "i don't think" said softly (whispered, breathy, creaky or deep), alone between two sentences with
+    0.6 s of room either side, peaking over the -46 guard: whisper wrote it, the guard hears it, it plays."""
+    parts = SENT + [(1.60, 1.80, db, shape), (1.85, 2.05, db, shape), (2.10, 2.25, db, shape)] + BACK
+    words = SENT_W + [("i", 1.60, 1.80), ("don't", 1.80, 2.05), ("think", 2.05, 2.25)] + BACK_W
+    d = project(tmp_path, monkeypatch, parts, 4.0, words)
+    plan, text, applied, said, before = v5.plan_apply(d, monkeypatch)
+    assert max(se.envelope(str(d / "vo.mov"))[160:225]) >= se.GUARD_DB
+    assert said == ["we", "went", "i", "don't", "think", "back", "home."], (said, tags(text))
+    v5.checked(d, plan, applied, before, [("vo", a, b) for a, b, _, _ in parts])
+
+
+def test_a_deep_voice_under_80_hz_keeps_its_words(tmp_path, monkeypatch):
+    """Review B2: a whole clip spoken at 70 Hz (a deep voice, or fry throughout): every word plays."""
+    parts = [(a, b, db, "low70") for a, b, db, _ in SENT + BACK]
+    d = project(tmp_path, monkeypatch, parts, 4.0, SENT_W + BACK_W)
+    plan, text, applied, said, before = v5.plan_apply(d, monkeypatch)
+    assert said == ["we", "went", "back", "home."], (said, tags(text))
+
+
+def test_a_sentence_final_creaky_word_after_a_short_pause_is_kept(tmp_path, monkeypatch):
+    """Review B1/B2: "...went [0.25 s] there." with "there." in fry (45 Hz, as sentence ends often are)."""
+    parts = SENT + [(1.20, 1.60, -30.0, "creak45")] + BACK
+    words = SENT_W + [("there.", 1.20, 1.60)] + BACK_W
+    d = project(tmp_path, monkeypatch, parts, 4.0, words)
+    plan, text, applied, said, before = v5.plan_apply(d, monkeypatch)
+    assert "there." in said, (said, tags(text))
+
+
+def test_a_soft_voiced_word_in_a_noisy_room_is_kept(tmp_path, monkeypatch):
+    """Review should-fix 1: a clean pitched word at -41 in a white room at -50, over layer 1's line: the voice line is
+    the LOW-PASSED room plus 6, so its low-passed part is voiced (against the full-band room, no frame was)."""
+    parts = SENT + [(1.60, 2.00, -41.0, "voice")] + BACK
+    words = SENT_W + [("so", 1.60, 1.75)] + BACK_W
+    d = project(tmp_path, monkeypatch, parts, 4.0, words, room=-50.0)
+    plan, text, applied, said, before = v5.plan_apply(d, monkeypatch)
+    assert "so" in said, (said, tags(text))
+
+
+def test_a_noise_row_put_back_is_refused_clearly(tmp_path, monkeypatch, capsys):
+    """Review should-fix 2: a `noise` row moved back into ## Cut would play as nothing (its sound is silence to the
+    cut): the apply refuses it and says which word and what to do."""
+    parts = SENT + [(1.70, 1.76, -37.0, "click")] + BACK
+    words = SENT_W + [("it", 1.65, 1.80)] + BACK_W
+    d = project(tmp_path, monkeypatch, parts, 4.0, words)
+    tc.run(d, monkeypatch=monkeypatch)
+    text = (d / "cut-plan.md").read_text()
+    head, rest = text.split("\n## Cut\n", 1)
+    cut, unused = rest.split("\n## Unused", 1)
+    row = next(r for r in unused.splitlines() if "[" in r and "noise" in r)
+    rid = row.split()[0].lstrip("*")
+    line = re.sub(r"\s*\[[^\]]*\]\s*$", "", row).lstrip("*")
+    rows = [line if r.split() and r.split()[0] == rid else r for r in cut.splitlines() if r.strip()]
+    (d / "cut-plan.md").write_text(head + "\n## Cut\n" + "\n".join(rows) + "\n\n## Unused" + unused.replace(row, ""))
+    before = (d / "project.json").read_text()
+    with pytest.raises(SystemExit):
+        tc.run(d, "--plan", str(d / "cut-plan.md"), monkeypatch=monkeypatch)
+    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert err["error"] == "noise_kept" and '"it"' in err["message"] and "Delete" in err["message"], err
+    assert (d / "project.json").read_text() == before
+
+
 def test_the_voice_constants_are_in_the_energy_stamp():
-    assert voice.STAMP in se.Refiner.STAMP
-    for k in ("PITCH_MIN", "VOICE_REACH_S", "WINDOW_S", "LOWPASS_HZ"):
-        assert f"{k}={getattr(voice, k)}" in se.Refiner.STAMP
+    assert voice.STAMP in se.Refiner.STAMP and se.VERSION == "speech-energy v5d"
+    for k in ("VERSION", "RATE", "PITCH_MIN", "WINDOW_S", "PITCH_LAG_S", "LOWPASS_HZ", "_LOWPASS_TAPS"):
+        assert f"{getattr(voice, k)}" in se.Refiner.STAMP
+    assert f"SPEECH_WORD_S={se.SPEECH_WORD_S}" in se.Refiner.STAMP
+
+
+@pytest.mark.parametrize("check", [True, False])
+def test_a_deep_voiced_phrase_seeds_no_repair(tmp_path, monkeypatch, check):
+    """Review (c): the voice check runs before the repair; a soft deep-voiced phrase whisper stretched over 2.2 s must
+    not read as silence to it (which would seed a broken stretch and a second whisper run)."""
+    import steps.edit.cut as cc
+    from tests import cut_checks
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "tmp"))
+    (tmp_path / "tmp").mkdir()
+    import tempfile
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    if not check:
+        monkeypatch.setattr(voice, "flags", lambda media, n: None)
+    parts = [(0.30, 0.55, SPEECH, "voice"), (0.60, 0.95, SPEECH, "voice"),
+             (1.60, 1.85, -38.0, "low70"), (1.95, 2.25, -38.0, "low70"), (2.35, 2.60, -38.0, "low70"),
+             (4.40, 4.70, SPEECH, "voice"), (4.75, 5.10, SPEECH, "voice")]
+    words = [("we", 0.30, 0.60), ("went", 0.60, 0.95), ("i", 1.55, 2.30), ("don't", 2.30, 3.20),
+             ("think", 3.20, 3.90), ("so", 4.40, 4.75), ("now.", 4.75, 5.10)]
+    calls = []
+
+    def fake(input_path, out=None, model=None, language="en", **kw):
+        keeps = [tuple(k) for k in json.loads(open(input_path).read())["keeps"]]
+        calls.append(keeps)
+        heard = [(w, a, b) for (w, _, _), (a, b, _, _) in zip(words, parts)
+                 if any(a >= x - 1e-6 and b <= y + 1e-6 for x, y in keeps)]
+        with open(out + ".json", "w") as fh:
+            json.dump(tc.gapless(heard), fh)
+        return {"words": out + ".json"}
+    monkeypatch.setattr(cc, "transcribe_file", fake)
+    monkeypatch.setattr(cut_checks, "RETRANSCRIBE", lambda media, keeps: None)
+    d = project(tmp_path, monkeypatch, parts, 5.6, words)
+    v5.plan_apply(d, monkeypatch)
+    assert not calls, calls

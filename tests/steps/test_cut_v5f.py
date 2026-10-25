@@ -408,3 +408,93 @@ def test_an_extension_with_no_anchor_moves_nothing_and_says_so():
     ext = rep[0].get("extension")
     assert ext and ext["error"].startswith("no anchor"), rep
     assert [w.text for w in out][-2:] == ["the", "end."], out
+
+
+# ── review B3 (5.36.2): the extension's second run mishears, stops early or loops ──────────────────────────────
+
+S5 = "it works really well.".split()
+
+
+def ext_case(off=3.0):
+    """`misplaced`, plus S5 said at 19.5 (inside the extension), the first run right about it."""
+    script, words, _ = misplaced(off)
+    s5, end = e.said_on(19.5, S5)
+    script = script + s5
+    words = words + [(w, x, round(y + 0.04, 3)) for w, x, y, _ in s5]
+    return script, words, round(end + 0.8, 2)
+
+
+def ext_stub(monkeypatch, script, second):
+    """The repair's whisper run hears the script; the extension's (the second call) hears second(heard)."""
+    calls = []
+
+    def hear(keeps):
+        return [(w, x, y) for w, x, y, _ in script if any(x >= a - 1e-6 and y <= b + 1e-6 for a, b in keeps)]
+
+    def fake(input_path, out=None, model=None, language="en", **kw):
+        keeps = [tuple(k) for k in json.loads(open(input_path).read())["keeps"]]
+        calls.append(keeps)
+        heard = hear(keeps)
+        if len(calls) == 2:
+            heard = second(heard)
+        with open(out + ".json", "w") as fh:
+            json.dump(tc.gapless(heard), fh)
+        return {"words": out + ".json"}
+    monkeypatch.setattr(cc, "transcribe_file", fake)
+    monkeypatch.setattr(cut_checks, "RETRANSCRIBE", lambda media, keeps: hear(keeps))
+    return calls
+
+
+def ext_run(tmp_path, monkeypatch, second, off=3.0):
+    script, words, end = ext_case(off)
+    ext_stub(monkeypatch, script, second)
+    d = v5.project(tmp_path, monkeypatch, [("vo", tones(script), end, words)], room=ROOM)
+    plan, text, applied, said, before = v5.plan_apply(d, monkeypatch)
+    return script, said, [w for w, x, y, _ in script if v5.cover(d, x, y) < 0.5], text
+
+
+def _loop(h, src, dst):
+    """The second run hears the sound of the words starting in dst as the words starting in src again."""
+    a_ = [(w, a, b) for w, a, b in h if src[0] - 1e-6 <= a < src[1]]
+    b_ = [(w, a, b) for w, a, b in h if dst[0] - 1e-6 <= a < dst[1]]
+    out = [p for p in h if p not in b_]
+    if b_:
+        a, b = b_[0][1], b_[-1][2]
+        step = (b - a) / len(a_)
+        out += [(w, round(a + step * k, 3), round(a + step * (k + 1) - 0.02, 3)) for k, (w, _, _) in enumerate(a_)]
+    return sorted(out, key=lambda p: p[1])
+
+
+def test_the_extension_with_a_right_second_run_plays_every_saying(tmp_path, monkeypatch):
+    script, said, lost_, text = ext_run(tmp_path, monkeypatch, lambda h: h)
+    assert said == S1 + B2 + X + T2 + S5, said
+
+
+def test_the_extension_whose_second_run_stops_early_loses_nothing(tmp_path, monkeypatch):
+    """The second run hears X, T1 and T2's first three words, then nothing: T2's last words and S5, right in the
+    first run on their own sound, still play."""
+    def second(h):
+        k = [i for i, (w, x, y) in enumerate(h) if w == "the"][-1]
+        return h[:k + 3]
+    script, said, lost_, text = ext_run(tmp_path, monkeypatch, second)
+    assert said == S1 + B2 + X + T2 + S5, said
+
+
+def test_the_extension_whose_second_run_loops_t2_over_s5_loses_no_saying(tmp_path, monkeypatch):
+    script, said, lost_, text = ext_run(tmp_path, monkeypatch, lambda h: _loop(h, (16.0, 19.0), (19.5, 99.0)))
+    assert [w for w in lost_ if w not in T1] == [], (lost_, said)
+
+
+def test_the_extension_whose_second_run_mishears_a_word_loses_no_saying(tmp_path, monkeypatch):
+    script, said, lost_, text = ext_run(
+        tmp_path, monkeypatch, lambda h: [("telepresents." if w == "telepresence." else w, x, y) for w, x, y in h])
+    assert lost_ == [w for w in lost_ if w in T1], (lost_, said)
+    assert said[-len(S5):] == S5, said
+
+
+@pytest.mark.parametrize("off", [0.0, 3.0])
+def test_a_loop_in_the_extensions_second_run_makes_no_false_retake(tmp_path, monkeypatch, off):
+    """Review B3: the second run hears T1's sound (13.0) as X again (a loop). Merged with additions, the copy made a
+    sure retake that removed the real X (10.5); the extension only re-times first-run words, so X plays."""
+    script, said, lost_, text = ext_run(tmp_path, monkeypatch, lambda h: _loop(h, (10.5, 12.9), (13.0, 15.9)), off)
+    assert [w for w in lost_ if w not in T1] == [], (lost_, said)

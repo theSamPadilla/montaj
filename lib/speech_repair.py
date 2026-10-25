@@ -57,7 +57,7 @@ LOOKBACK = 12            # ... among the words this far before the repaired word
 ANCHOR_WORDS = 3         # ... up to an anchor: this many words in a row the second run hears where the first put them
 ANCHOR_S = 0.3           # ... (each within this of its first-run start)
 CACHE_DAYS = 3           # a cached second run older than this is removed when the cache is written
-VERSION = "speech-repair v4"
+VERSION = "speech-repair v5"
 _STAMPED = ("ZERO_S", "ZERO_RUN", "SILENT_RUN", "SILENT_SPAN_S", "STRETCH_S", "MIN_VOICED_S", "RUN_PAD_S",
             "NEIGHBOURS", "MIN_MATCH", "EXTEND_S", "LOOKBACK", "ANCHOR_WORDS", "ANCHOR_S")
 STAMP = VERSION + " " + " ".join(f"{k}={globals()[k]}" for k in _STAMPED)
@@ -250,10 +250,11 @@ def _no_lone_matches(ops):
     return out
 
 
-def _merge(old, fresh, left_n, right0, mark):
+def _merge(old, fresh, left_n, right0, mark, adds=True):
     """(merged, matched, added, kept): first-run words `old` merged with the second run's `fresh` (see `repair`);
     old positions under left_n are the left neighbours, from right0 the right ones; a kept first-run-only word gets
-    idx `mark`."""
+    idx `mark`. adds False: no word only the second run heard is added (the extension only re-times first-run words:
+    a whisper loop in its second run would add a copy of words said once, a false sure retake, review B3)."""
     from difflib import SequenceMatcher
     nb = set(range(0, left_n)) | set(range(right0, len(old)))          # positions of the neighbours in `old`
     segs = []
@@ -272,7 +273,7 @@ def _merge(old, fresh, left_n, right0, mark):
             among = all(a in nb for a in range(a0, a1))
         else:
             among = (a0 == 0 and left_n > 0) or (a0 == len(old) and right0 < len(old)) or (a0 - 1 in nb and a0 in nb)
-        add = [] if among else fresh[b0:b1]
+        add = [] if among or not adds else fresh[b0:b1]
         # a neighbour the second run did not hear keeps its place and its time
         left = [old[a] for a in range(a0, a1) if a < left_n]
         right = [old[a] for a in range(a0, a1) if a >= right0]
@@ -393,7 +394,8 @@ def _extend(words, report, lay, media, retranscribe, tag):
     runs of two or more, are looked for in ONE more whisper run over the voiced runs from the window's end, at most
     EXTEND_S on (never into the next repaired window). When the second run hears two or more of them in a row, and
     then an ANCHOR (ANCHOR_WORDS in a row heard where the first run put them, within ANCHOR_S), every word up to the
-    anchor is merged as a stretch is (lossless, MIN_MATCH, phantoms), and the silent runs take their real sound. With
+    anchor is merged as a stretch is (lossless, MIN_MATCH, phantoms; but no word only the second run heard is added: it
+    only re-times first-run words, review B3), and the silent runs take their real sound. With
     no such anchor (the first run's times off by seconds over the whole window: ucla B), the whole window is merged
     when the second run hears ANCHOR_WORDS more of the first run's words after the silent ones, in order (its new
     words after the last match left out). Else nothing moves. The report's "extension" names each one: {"from", "to", and "moved", "matched", "added", "kept"
@@ -474,7 +476,7 @@ def _extend(words, report, lay, media, retranscribe, tag):
             ext["error"] = "overlaps another extension"
             continue
         taken |= set(region)
-        merged, m, ad, kp = _merge(old[:anchor[0]], fresh[:anchor[1]], 0, anchor[0], -2 - ri)
+        merged, m, ad, kp = _merge(old[:anchor[0]], fresh[:anchor[1]], 0, anchor[0], -2 - ri, adds=False)
         ext.update(moved=len(cand), matched=m, added=ad, kept=kp)
         # the merged words go where the first word past the window stood (the silent runs move there)
         past = [n for n in region if n not in cset]

@@ -870,6 +870,30 @@ def _silent_why(b, key):
     return "noise" if key in _noise_keys(b.get("refiner"), b["d"]) else "inaudible"
 
 
+def _refuse_noise_kept(b, plain):
+    """A row of ## Cut that keeps a word cut removed as noise (§577: its only sound is a click or a bump, no voice)
+    is refused, clearly: that sound is silence to the cut, so the word would play as nothing. A word of a clip kept
+    whole (b-roll) plays as it is and is never refused."""
+    from lib.speech_align import align_row
+    d, ref = b.get("d"), b.get("refiner")
+    noise = _noise_keys(ref, d) if d is not None else set()
+    if not noise:
+        return
+    whole = {(_line_key(r.line)[0], w.idx) for u, rows, _ in b.get("units", ()) if u.fixed for _, r in rows
+             for w in r.words}
+    noise -= whole
+    for row in speech_text.parse(plain)[1]:
+        if row.kind != "speech" or not row.tokens or row.line not in d.lines:
+            continue
+        words = d.lines[row.line].words
+        hit = [words[p] for p in align_row(row.line, row.tokens, d.lines) if (row.letter, words[p].idx) in noise]
+        if hit:
+            said = " ".join(w.text for w in hit)
+            fail("noise_kept", f'{row.line} keeps "{said}", which cut removed as noise: its only sound is a click or '
+                               f'a bump with no voice, so it would play as nothing. Delete "{said}" from {row.line}, '
+                               "or leave the row as cut wrote it.")
+
+
 def _inaudible(b, units, inaudible):
     """A kept word with no audible frame (lib/speech_energy) goes, word for word, tagged inaudible (noise, when the
     only sound in its span is no voice: §577)."""
@@ -1443,6 +1467,7 @@ def _apply_plan(args, project_path, project_dir):
         if b["d"] is None or b["d"].stamp != plan_stamp:
             fail("stale_plan", stale)
         plain, why_left = _untagged(text)
+        _refuse_noise_kept(b, plain)
 
         def mark(candidate):
             kept_s, duration = _sums(candidate, track_id)

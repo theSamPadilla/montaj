@@ -277,11 +277,9 @@ def test_the_plan_writes_nothing_to_the_project(tmp_path, stub_transcribe, monke
     assert sum(out["removed"]["lines"].values()) == len(groups) - len(offered)    # one group per take
     assert out["removed"]["lines"] == {"retake": 2, "false-start": 1}
     # F1 offers the earlier take (see KEPT); v5: words with no sound of their own are kept and offered inaudible?, one
-    # offer per take. §577: the first two "want." and "so" take the sound no word held between their neighbours, in
-    # order, and the third take's "want." is offered. §577 cut voice: "timeline." (whisper put it in the silence after
-    # "the") held only a soft unpitched burst (16.73-16.79 s, no voiced frame within 0.15 s), which is no word's sound
-    # now: it is offered too (never removed: its whisper span holds sound attached to its neighbours')
-    assert out["suggested"] == {"retake?": 1, "inaudible?": 2}
+    # offer per take. §577: "timeline." (whisper put it in the silence after "the"), the first two "want." and "so"
+    # take the sound no word held between their neighbours, in order, so only the third take's "want." is offered
+    assert out["suggested"] == {"retake?": 1, "inaudible?": 1}
     assert out["removed"]["fillers"] == 1 and out["removed"]["seconds"] > 0
     assert out["removed"]["seconds"] == pytest.approx(SOURCE_S - out["kept"]["seconds"], abs=0.02)
     lines = out["cut"].splitlines()
@@ -819,9 +817,17 @@ def test_parallel_sentences_are_never_cut_end_to_end(tmp_path, stub_transcribe, 
 # ── serve ───────────────────────────────────────────────────────────────────
 
 def test_serve_plans_and_applies_on_a_project_id(tmp_path, monkeypatch):
-    """Through POST /api/steps/cut (a subprocess: the clip already has its transcript, nothing runs whisper)."""
+    """Through POST /api/steps/cut (a subprocess: the clip already has its transcript, nothing runs whisper). The
+    editing proxies serve queues after the plan are left out: their write lands in the tracks while the apply runs
+    and refuses it (project_changed, as it should), and whether it lands before or during the apply is timing alone
+    (on the §577 5.36.2 stack it began landing during)."""
     from starlette.testclient import TestClient
     import serve.server
+    from serve.routes import steps as steps_routes
+
+    async def no_proxies(*a, **k):
+        return None
+    monkeypatch.setattr(steps_routes, "_queue_proxies_after_step", no_proxies)
     ws = tmp_path / "Montaj"
     ws.mkdir()
     d = make_project(ws, transcript=retake_transcript())

@@ -284,6 +284,6 @@ def test_the_seconds_drift_fuzz_removes_no_real_word(tmp_path, monkeypatch, seed
 
 
 def test_the_stamp_names_the_ordered_placement():
-    assert se.VERSION.endswith("v5c") and "VERSION" not in se._STAMPED
+    assert se.VERSION.endswith("v5d") and "VERSION" not in se._STAMPED       # v5d: §577 cut voice, 5.36.2
     for name in ("ORDERED_MIN_S", "ATTACHED_OVER_ROOM_DB", "LETTER_S"):
         assert f"{name}=" in se.Refiner.stamp, name
