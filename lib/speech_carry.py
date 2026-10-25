@@ -653,14 +653,24 @@ class _Carry:
                 continue
             a, b = float(it["start"]), float(it["end"])
             sp = _carry_span(self.tm, a, b)
+            if sp is None and it.get("type") == "audio":
+                # an audio item (an sfx, a bed) whose whole span was cut moves to the next kept moment at its full
+                # length, never removed: only the person or the AI deletes audio (§558 cut v5, review A-B3)
+                nt = self.tm.next_kept(a)
+                it["start"], it["end"] = round(nt, 6), round(nt + (b - a), 6)
+                self.flag("audio_moved", it.get("id"), **{"from": round(a, 2), "to": round(nt, 2)})
+                self.counts["audio"] += 1
+                out.append(it)
+                continue
             if sp is None:
                 self.flag("overlay_removed", it.get("id"), src=it.get("src"))
                 continue
             _apply_span(it, sp)
+            kind = "audio" if it.get("type") == "audio" else "overlay"    # an audio item's answer says it is audio
             if sp.moved:
-                self.flag("overlay_moved", it.get("id"), **{"from": round(a, 2), "to": round(it["start"], 2)})
+                self.flag(f"{kind}_moved", it.get("id"), **{"from": round(a, 2), "to": round(it["start"], 2)})
             if sp.clipped:
-                self.flag("overlay_clipped", it.get("id"))
+                self.flag(f"{kind}_clipped", it.get("id"))
             self.counts["overlays"] += 1
             out.append(it)
         return self.fix_overlaps(ti, t.get("id"), out)
