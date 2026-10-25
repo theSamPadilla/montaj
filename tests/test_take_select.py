@@ -904,3 +904,141 @@ def test_a_reworded_retake_is_only_suggested():
     assert kept_text(texts, sel) == texts and sel.losers == []
     assert suggested(texts, sel) == [(0, "I love this app.", "retake?")]
 
+
+
+# ── phrase retakes: the same words said again across whisper's line breaks (§558 field test) ──
+
+from lib.take_select import PHRASE_WITHIN_S, phrase_retakes  # noqa: E402
+
+
+def timed(*texts, word=0.3, gap=0.05, clip_gap=0.0):
+    """Units as `units` makes them, with even word times per clip (each clip's source starts at 0)."""
+    us = units(*texts)
+    times, t, clip = [], 0.0, None
+    for u in us:
+        if u.clip != clip:
+            clip, t = u.clip, 0.0
+        row = []
+        for _ in u.words:
+            row.append((t, t + word))
+            t += word + gap
+        times.append(row)
+    return us, times
+
+
+def phrased(texts, **kw):
+    us, times = timed(*texts, **kw)
+    sel = select(us, is_filler)
+    drops, sugg = phrase_retakes(us, sel, is_filler, times)
+    for ui, pos in drops.items():
+        sel.drop.setdefault(ui, set()).update(pos)
+    sel.suggest += sugg
+    return us, sel, drops, sugg
+
+
+def said(us, sel):
+    return " ".join(w for i in sel.kept for k, w in enumerate(us[i].words) if k not in sel.drop.get(i, set()))
+
+
+def test_a_five_word_run_said_again_inside_one_unit_goes_the_last_stays():
+    texts = ["so the bike went past straight so the bike went past straight and fell over."]
+    us, sel, drops, sugg = phrased(texts)
+    assert said(us, sel) == "so the bike went past straight and fell over."
+    assert drops == {0: {k: "retake" for k in range(6)}} and sugg == []
+
+
+def test_the_same_run_across_two_units_goes_from_the_first():
+    texts = ["then you tip the whole frame over and", "you tip the whole frame over and it falls."]
+    us, sel, drops, _ = phrased(texts)
+    assert said(us, sel) == "then you tip the whole frame over and it falls."
+    assert set(drops) == {0}
+
+
+def test_three_sayings_keep_only_the_last():
+    texts = ["each wobble made the next one bigger", "each wobble made the next one bigger",
+             "each wobble made the next one bigger so we stop."]
+    us, sel, _, _ = phrased(texts)
+    assert said(us, sel) == "each wobble made the next one bigger so we stop."
+
+
+def test_three_sayings_run_into_one_another_inside_a_line():
+    texts = ["then you lean too far and the frame tips then you lean too far and the frame tips "
+             "then you lean too far and the frame tips over."]
+    us, sel, _, _ = phrased(texts)
+    assert said(us, sel) == "then you lean too far and the frame tips over."
+
+
+def test_a_four_word_repeat_is_only_offered():
+    texts = ["we lean to the left we lean to the right today."]
+    us, sel, drops, sugg = phrased(texts)
+    assert drops == {} and said(us, sel) == texts[0]
+    assert sugg and all(w.endswith("?") for _, _, w in sugg)
+
+
+def test_a_near_repeat_is_only_offered():
+    texts = ["you turned the front bars too far", "you turned the bars too far and fell."]
+    us, sel, drops, sugg = phrased(texts)
+    assert drops == {} and said(us, sel) == " ".join(texts)
+    assert sugg and {i for i, _, _ in sugg} == {0} and all(w.endswith("?") for _, _, w in sugg)
+
+
+def test_a_false_start_with_five_same_opening_words_goes_with_its_leftover():
+    texts = ["the one rule you should here", "the one rule you should know is this."]
+    us, sel, drops, _ = phrased(texts)
+    assert said(us, sel) == "the one rule you should know is this."
+
+
+def test_a_short_false_start_chain_is_only_offered():
+    texts = ["the shared trait though the", "shared trait here is but the shared trait is this."]
+    us, sel, drops, sugg = phrased(texts)
+    assert drops == {} and said(us, sel) == " ".join(texts)
+    assert len(sugg) >= 2
+
+
+def test_a_repeat_further_than_the_window_in_one_clip_is_not_sure():
+    other = ("red green blue cyan magenta yellow black white gray brown pink orange purple violet indigo teal "
+             "olive navy maroon lime coral salmon khaki beige ivory azure").split()
+    texts = ["this frame is built for speed.", *[" ".join(other[k:k + 3]) + "." for k in range(0, 24, 3)],
+             "this frame is built for speed."]
+    us, times = timed(*texts, gap=0.25)
+    assert times[-1][0][0] - times[0][-1][1] > PHRASE_WITHIN_S
+    sel = select(us, is_filler)
+    drops, sugg = phrase_retakes(us, sel, is_filler, times)
+    assert drops == {}
+
+
+def test_across_clips_a_line_said_again_at_the_next_clips_start_goes_from_the_first():
+    texts = ["Hello there friends.", "we built a robot that rides a bike", "##",
+             "so we built a robot that rides a bike and it learns."]
+    us, sel, drops, _ = phrased(texts)
+    assert said(us, sel) == "Hello there friends. so we built a robot that rides a bike and it learns."
+    assert set(drops) == {1}
+
+
+def test_across_clips_a_four_word_repeat_is_only_offered():
+    texts = ["Hello there friends.", "the robot rides fast", "##", "so the robot rides fast today."]
+    us, sel, drops, sugg = phrased(texts)
+    assert drops == {} and sugg
+
+
+def test_across_three_clips_only_the_last_copy_stays():
+    texts = ["Hello there friends.", "the robot learns by falling down", "##", "the robot learns by falling down",
+             "##", "the robot learns by falling down a lot."]
+    us, sel, drops, _ = phrased(texts)
+    assert said(us, sel) == "Hello there friends. the robot learns by falling down a lot."
+
+
+def test_a_hook_repeated_as_a_callback_across_clips_is_only_offered():
+    texts = ["what if a robot could ride a bike?", "Here is how it learns.", "##", "It falls a lot.", "##",
+             "It gets up again.", "##", "It keeps trying all day.", "So what if a robot could ride a bike?"]
+    us, sel, drops, sugg = phrased(texts)
+    assert drops == {} and said(us, sel) == " ".join(plain(texts))
+    assert any(i == 0 for i, _, _ in sugg)
+
+
+
+def test_two_lines_built_alike_are_not_a_phrase_retake():
+    texts = ["The best part is the price.", "The best part is the speed.", "You can cut your clips in one click.",
+             "You can cut your audio in one click."]
+    us, sel, drops, _ = phrased(texts)
+    assert drops == {} and said(us, sel) == " ".join(texts)

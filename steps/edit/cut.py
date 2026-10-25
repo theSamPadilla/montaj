@@ -30,7 +30,7 @@ from lib.speech_apply import apply
 from lib.speech_build import DEFAULT_FEEL, FEELS
 from lib.speech_carry import TimeMap, carry
 from lib.speech_lines import _ends_sentence, load_words, norm, sidecar_for
-from lib.take_select import BREAK_GAP_S, Selection, Unit, select
+from lib.take_select import BREAK_GAP_S, Selection, Unit, phrase_retakes, select
 from lib.speech_units import (FALLBACK_ERRORS, HESITATION_S, NON_MEDIA as _NON_MEDIA, UNIT_MAX_TOKENS,  # noqa: F401
                                build_units as _units, filler_test as _filler_test, find_track as _track,
                                install_sidecar as _install_sidecar, line_key as _line_key, media_items as _media,
@@ -278,14 +278,15 @@ def _kept_whole(row):
 
 
 def _plan(d, title, units, trailing, sel, at, of_source, language, max_pause, project_dir, is_filler,
-          whole=frozenset()):
+          whole=frozenset(), why_at=None):
     """The plan: speech_edit's text format. `## Cut` holds the kept rows in narrative order (each kept take at
     its section's first appearance, its repeated or restarted words deleted), each tagged [time]; `## Unused`
     every removed take, one group of rows per take (a blank line between), each row tagged [time why]. A row
     of a kept take that keeps some words is listed whole, marked `*`. Times are of the timeline as it is now.
     Line ids are the source's (lib/speech_lines), so the same transcript gives the same ids.
     Uncertain cuts (sel.suggest) are not made: the take stays in `## Cut` and `## Unused` offers the cut, tagged
-    with a `?` reason. Returns (text, kept rows [(id, t, words)], removed takes [(id, t, words, why)],
+    with a `?` reason. why_at: {unit: {word position: why}} for words a kept take lost to a rule of its own (a phrase
+    retake): each trimmed row is tagged with the why of its first lost word. Returns (text, kept rows [(id, t, words)], removed takes [(id, t, words, why)],
     suggestions [(id, t, words, why?)])."""
     home = {ui: s_i for s_i, section in enumerate(sel.sections) for ui in section}
     for ui in range(len(units) - 1, -1, -1):
@@ -309,12 +310,15 @@ def _plan(d, title, units, trailing, sel, at, of_source, language, max_pause, pr
                 out += [_other_row(r) for r in units[ui][2]]
         ui = sel.kept[s_i]
         drop, pos, lost = sel.drop.get(ui, set()), 0, []
+        mine_why = (why_at or {}).get(ui, {})
+        unit_why = mine_why[min(drop)] if drop and min(drop) in mine_why else sel.why.get(ui, "repeat")
         for _, row in units[ui][1]:
             mine = {k - pos for k in drop if pos <= k < pos + len(row.words)}
+            row_why = mine_why.get(min(mine) + pos, sel.why.get(ui, "repeat")) if mine else None
             pos += len(row.words)
             trimmed = _trimmed(row, mine) if mine else row
             if mine:
-                lost.append(f"{_row_line(row, star=trimmed is not None)} [{t_of(row):.1f} {sel.why.get(ui, 'repeat')}]")
+                lost.append(f"{_row_line(row, star=trimmed is not None)} [{t_of(row):.1f} {row_why}]")
             if trimmed is not None:
                 if row.item_ids and row.item_ids[0] in whole:
                     trimmed = _kept_whole(trimmed)
@@ -322,7 +326,7 @@ def _plan(d, title, units, trailing, sel, at, of_source, language, max_pause, pr
                 kept.append((row.line, t_of(row), " ".join(w.text for w in trimmed.words)))
         if lost:
             gone = [w for k, w in enumerate(units[ui][0].words) if k in drop]
-            groups.append((t_of(units[ui][1][0][1]), sel.why.get(ui, "repeat"), lost,
+            groups.append((t_of(units[ui][1][0][1]), unit_why, lost,
                            (units[ui][1][0][1].line, " ".join(gone))))
     out += [_other_row(r) for r in trailing]
 
@@ -599,12 +603,30 @@ def _build(project_path, project_dir, disk, track_id, language, warnings):
                 warnings.append(f"takes are not chosen for {language}: only silences and fillers are cut")
             else:
                 b["sel"] = select([u for u, _, _ in units], is_filler)
+                _phrases(b, units, is_filler)
             return b
     # no usable speech: waveform_trim keeps on a fresh copy
     work = copy.deepcopy(origin)
     b.update(work=work, lineage={}, fillers=0)
     warnings += _silence_cut(work, project_path, b["ti"], project_dir, b["lineage"])
     return b
+
+
+def _phrases(b, units, is_filler):
+    """The phrase rules (lib/take_select.phrase_retakes) on what the selection keeps: a sure retake's words join the
+    unit's drop, tagged per word in b["why_at"]; the rest are offered."""
+    sel = b["sel"]
+    times = [[(w.start, w.end) for _, r in rows for w in r.words] for _, rows, _ in units]
+    drops, offers = phrase_retakes([u for u, _, _ in units], sel, is_filler, times)
+    why_at = b.setdefault("why_at", {})
+    for ui, pos in drops.items():
+        sel.drop.setdefault(ui, set()).update(pos)
+        why_at.setdefault(ui, {}).update(pos)
+    # an offer select made inside words a phrase retake now removes is gone with them; a unit select already offers
+    # a cut in keeps that one
+    sel.suggest[:] = [o for o in sel.suggest if not (o[1] and set(o[1]) & set(drops.get(o[0], ())))]
+    offered = {o[0] for o in sel.suggest}
+    sel.suggest += [o for o in offers if o[0] not in offered]
 
 
 def _silence_stamp(b, track_id):
@@ -688,7 +710,7 @@ def _make_plan(args, project_path, project_dir):
         at, of_source = _timer(b["origin"], b["work"], b["ti"], b["lineage"])
         text, kept, removed, suggested = _plan(b["d"], title, b["units"], b["trailing"], b["sel"], at, of_source,
                                                language, max_pause, project_dir, _filler_test(language),
-                                               b.get("whole", frozenset()))
+                                               b.get("whole", frozenset()), b.get("why_at"))
         res = apply(project_path, _untagged(text)[0], preview=True, max_pause=max_pause, feel=DEFAULT_FEEL,
                     base=b["work"], base_of=disk, want_project=True, carry_from=b["origin"], lineage=b["lineage"],
                     guard_keys=(MARKER_KEY,))

@@ -603,3 +603,172 @@ def select(units, is_filler):
     return Selection(kept=kept, drop={i: cleaned[i][1] for i in kept if cleaned[i][1]},
                      sections=[sec for _, sec, _ in out], losers=sorted(losers), abandoned=[], why=why,
                      suggest=uniq)
+
+
+# ── phrase retakes: the same words said again across whisper's line breaks (§558 field test) ──────────────
+#
+# Whisper breaks lines at pauses, not at retakes, so on real speech the same phrase is said two or three times in a
+# row inside one line or across lines, where select (whole units) finds nothing sure. phrase_retakes runs after
+# select, on the words it keeps, in play order across units and clips:
+# - an EXACT run of PHRASE_MIN tokens or more (case and punctuation normalised, fillers left out) said again is a
+#   sure retake: the earlier saying goes, word for word, and the last is kept (a third saying: only the last stays).
+#   Never when a sentence ends between the two sayings ("The best part is the price. The best part is the speed."
+#   are two lines built alike: offered). Within one clip the second saying starts at most PHRASE_WITHIN_S of source time after the first ends. Across
+#   clips there is no window, but nothing kept may stand between the two (re-recorded takes sit at a clip's end and
+#   the next clip's start, or with only removed speech between): a hook repeated as a closing callback is offered.
+#   A false start's leftover, at most PHRASE_TAIL_MAX tokens between the earlier saying and the next with no
+#   sentence end ("the main thing you need | here | the main thing you need is"), goes with it.
+# - a shorter exact repeat (PHRASE_HINT_MIN tokens or more) that restarts within PHRASE_RESTART_GAP tokens, or a
+#   near repeat (PHRASE_MIN tokens or more in common, PHRASE_NEAR_SWAPS tokens or fewer differing on each side) is
+#   only offered (repeat?, retake? for a whole unit), never removed.
+PHRASE_MIN = 5
+PHRASE_WITHIN_S = 10.0
+PHRASE_HINT_WITHIN_S = 30.0
+PHRASE_HINT_MIN = 3
+PHRASE_RESTART_GAP = 6
+PHRASE_TAIL_MAX = 2
+PHRASE_NEAR_SWAPS = 2
+PHRASE_NEAR_SPAN = 14
+_SENTENCE_END = (".", "!", "?")
+
+
+def _phrase_seq(units, sel, is_filler, times):
+    """[(token, unit, word position, start, end, clip, sentence end)] of the words the selection keeps, in play
+    order. A unit kept whole (b-roll) or made up takes no part."""
+    out = []
+    for ui in sel.kept:
+        u = units[ui]
+        if getattr(u, "fixed", False) or getattr(u, "madeup", False):
+            continue
+        gone = sel.drop.get(ui, set())
+        for k, w in enumerate(u.words):
+            t = norm(w)
+            if k in gone or not t or is_filler(t):
+                continue
+            s, e = times[ui][k] if times is not None else (0.0, 0.0)
+            out.append((t, ui, k, s, e, u.clip, w.rstrip(_QUOTES).endswith(_SENTENCE_END)))
+    return out
+
+
+def _run_len(seq, i, j):
+    """Tokens seq[i:] and seq[j:] share from their starts, no further than j (the two sayings never overlap)."""
+    n = 0
+    while j + n < len(seq) and i + n < j and seq[i + n][0] == seq[j + n][0]:
+        n += 1
+    return n
+
+
+def _spans_sentences(seq, i, L):
+    """The run holds a sentence end before its last word: the end of one line and the opening of the next, said
+    alike ("... in one click. You can cut your ..."), not a phrase said again."""
+    return any(x[6] for x in seq[i:i + L - 1])
+
+
+def _one_clip(seq, a, b):
+    return len({x[5] for x in seq[a:b]}) == 1
+
+
+def _place(seq, i, L, j, units, within):
+    """"near" (one clip, within `within` s), "next" (across clips with nothing kept between, or the end of one
+    clip's last unit and the start of the next clip's first), "far" (anything else)."""
+    if not (_one_clip(seq, i, i + L) and _one_clip(seq, j, j + L)):
+        return "far"
+    if seq[i][5] == seq[j][5]:
+        return "near" if seq[j][3] - seq[i + L - 1][4] <= within + 1e-9 else "far"
+    if j == i + L:
+        return "next"
+    first_unit, last_unit, clips = {}, {}, []
+    for x in seq:
+        first_unit.setdefault(x[5], x[1])
+        last_unit[x[5]] = x[1]
+        if not clips or clips[-1] != x[5]:
+            clips.append(x[5])
+    ci, cj = seq[i][5], seq[j][5]
+    adjacent = any(clips[k] == ci and clips[k + 1] == cj for k in range(len(clips) - 1))
+    if adjacent and all(x[1] == last_unit[ci] for x in seq[i:i + L]) and all(x[1] == first_unit[cj] for x in seq[j:j + L]):
+        return "next"
+    return "far"
+
+
+def _offer(units, sel, seq, a, b, out, used):
+    """Offer deleting seq[a:b]: per unit, retake? when it is the whole of what the unit keeps, else repeat?."""
+    if any(k in used for k in range(a, b)):
+        return
+    used.update(range(a, b))
+    by_unit = {}
+    for x in seq[a:b]:
+        by_unit.setdefault(x[1], set()).add(x[2])
+    for ui, span in by_unit.items():
+        left = {k for k, w in enumerate(units[ui].words) if k not in sel.drop.get(ui, set()) and norm(w)}
+        out.append((ui, None, "retake?") if left <= span else (ui, frozenset(span), "repeat?"))
+
+
+def phrase_retakes(units, sel, is_filler, times=None):
+    """The phrase rules above, on the words `sel` keeps. times: per unit, (start, end) source seconds per word
+    (None: every repeat in one clip counts as near). Returns (drops {unit: {word position: "retake"}}, suggestions
+    [(unit, word positions or None, why?)]); the caller adds them to the selection."""
+    seq = _phrase_seq(units, sel, is_filler, times)
+    sparse = {ui for ui, u in enumerate(units) if getattr(u, "sparse", False)}
+    drops = {}
+    while True:
+        best = None
+        for i in range(len(seq)):
+            for j in range(i + PHRASE_MIN, len(seq)):
+                L = _run_len(seq, i, j)
+                if L < PHRASE_MIN or _numbers_only([x[0] for x in seq[i:i + L]]) or _spans_sentences(seq, i, L):
+                    continue
+                if {x[1] for x in seq[i:i + L] + seq[j:j + L]} & sparse:
+                    continue
+                if any(x[6] for x in seq[i + L:j]) or _place(seq, i, L, j, units, PHRASE_WITHIN_S) == "far":
+                    continue        # a sentence ended between the two: parallel lines, not a retake
+                if best is None or L > best[0]:
+                    best = (L, i, j)
+        if best is None:
+            break
+        L, i, j = best
+        end = i + L
+        tail = seq[end:j]
+        if 0 < len(tail) <= PHRASE_TAIL_MAX and not any(x[6] for x in seq[i:j]) and _one_clip(seq, i, j):
+            end = j                     # what is left of a false start goes with it
+        for x in seq[i:end]:
+            drops.setdefault(x[1], {})[x[2]] = "retake"
+        seq = seq[:i] + seq[end:]
+
+    suggest, used = [], set()
+    # exact repeats that are not sure: too far, across clips with kept speech between, or a doubted clip
+    for i in range(len(seq)):
+        for j in range(i + PHRASE_MIN, len(seq)):
+            L = _run_len(seq, i, j)
+            if L >= PHRASE_MIN and not _numbers_only([x[0] for x in seq[i:i + L]]) and not _spans_sentences(seq, i, L):
+                if seq[i][5] != seq[j][5] or _place(seq, i, L, j, units, PHRASE_HINT_WITHIN_S) != "far":
+                    _offer(units, sel, seq, i, i + L, suggest, used)
+    # short restarts: "the common trait though | the common trait here is but | the common trait is"
+    for i in range(len(seq)):
+        for j in range(i + PHRASE_HINT_MIN, min(len(seq), i + PHRASE_HINT_MIN + PHRASE_RESTART_GAP + 1)):
+            L = _run_len(seq, i, j)
+            if PHRASE_HINT_MIN <= L and not _numbers_only([x[0] for x in seq[i:i + L]]) \
+                    and _place(seq, i, L, j, units, PHRASE_WITHIN_S) != "far" and not any(x[6] for x in seq[i:j]):
+                _offer(units, sel, seq, i, j, suggest, used)
+                break
+    # near repeats: a word or two differ
+    toks = [x[0] for x in seq]
+    for i in range(len(seq) - 1):
+        for j in range(i + PHRASE_MIN, len(seq) - 1):
+            if toks[i:i + 2] != toks[j:j + 2] or _run_len(seq, i, j) >= PHRASE_MIN:
+                continue
+            a, b = toks[i:min(j, i + PHRASE_NEAR_SPAN)], toks[j:j + PHRASE_NEAR_SPAN]
+            same = da = db = ext = 0
+            for op, a1, a2, b1, b2 in SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+                if op == "equal":
+                    if a2 - a1 < 2:
+                        break           # a lone word in common is chance, not the phrase said again
+                    same += a2 - a1
+                    ext = a2
+                    continue
+                da, db = da + (a2 - a1), db + (b2 - b1)
+                if da > PHRASE_NEAR_SWAPS or db > PHRASE_NEAR_SWAPS:
+                    break
+            if same >= PHRASE_MIN and ext and not _spans_sentences(seq, i, ext) and (seq[i][5] != seq[j][5]
+                                               or _place(seq, i, ext, j, units, PHRASE_WITHIN_S) != "far"):
+                _offer(units, sel, seq, i, i + ext, suggest, used)
+    return drops, suggest
