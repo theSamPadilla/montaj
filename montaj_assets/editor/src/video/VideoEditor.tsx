@@ -309,7 +309,11 @@ export default function VideoEditor<P extends Project = Project>({
   // `onHistoryPruned` likewise: fired when a sync pull drops undo/redo steps.
   // `onBusyChange` reports a save in flight or a gesture open, on transitions.
   // `syncedProject` turns on pruning for a frame after a reconnect and a refetch.
-  const sync = useProjectSync<P>(adapter, project.id, project, { onLocalEdit: onUserEdit, onHistoryPruned, syncedProject, onBusyChange })
+  // `onFrame` tells the version history a frame arrived, through this one
+  // subscription (the history never subscribes itself).
+  const frameListeners = useRef(new Set<() => void>()).current
+  const onFrame = useCallback(() => { for (const f of [...frameListeners]) f() }, [frameListeners])
+  const sync = useProjectSync<P>(adapter, project.id, project, { onLocalEdit: onUserEdit, onHistoryPruned, syncedProject, onBusyChange, onFrame })
 
   // Set for the duration of a caption drag gesture (ReviewSurface's
   // `handleProjectChange` → `commitTimelineEdit`), read by the lane-
@@ -445,6 +449,7 @@ export default function VideoEditor<P extends Project = Project>({
       <div ref={containerRef} className="flex flex-col h-full bg-[var(--editor-bg)] text-[var(--editor-text)]">
         <PendingSurface
           sync={sync}
+          frameListeners={frameListeners}
           adapter={adapter}
           slots={slots}
           onBackToSetup={onBackToSetup}
@@ -464,6 +469,7 @@ export default function VideoEditor<P extends Project = Project>({
     <div ref={containerRef} className="flex flex-col h-full bg-[var(--editor-bg)] text-[var(--editor-text)]">
       <ReviewSurface
         sync={sync}
+        frameListeners={frameListeners}
         captionGestureRef={captionGestureRef}
         emit={emit}
         adapter={adapter}
@@ -521,19 +527,20 @@ export function useVersionHistory<P extends Project>(adapter: VideoEditorProps<P
 
   // The server commits a version in the background after it broadcasts a save
   // (an engine step's "before <step>", the late status commit), so a fetch can
-  // land before the commit exists. Refetch ~500 ms after the last frame: a
-  // burst of frames gives one fetch.
-  useEffect(() => {
+  // land before the commit exists. `noteFrame` (called from the editor's one
+  // live-frame callback, never a subscription of its own) refetches ~500 ms
+  // after the last frame: a burst of frames gives one fetch.
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const fetchRef = useRef(fetchVersions)
+  fetchRef.current = fetchVersions
+  const noteFrame = useCallback(() => {
     if (!adapter.listVersionHistory) return
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const unsub = adapter.subscribe(project.id, () => {
-      if (timer) clearTimeout(timer)
-      timer = setTimeout(() => { timer = undefined; void fetchVersions() }, VERSION_REFETCH_MS)
-    })
-    return () => { if (timer) clearTimeout(timer); unsub() }
-  }, [adapter, project.id, fetchVersions])
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => { timerRef.current = undefined; void fetchRef.current() }, VERSION_REFETCH_MS)
+  }, [adapter])
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); timerRef.current = undefined }, [])
 
-  return { versions, restoring, setRestoring, saving, setSaving, refresh: fetchVersions }
+  return { versions, restoring, setRestoring, saving, setSaving, refresh: fetchVersions, noteFrame }
 }
 
 // ── Footage-bin source-scrub overlay (opt-in) ────────────────────────────────
@@ -612,6 +619,8 @@ function SourcePreviewOverlay({ store }: { store?: SourcePreviewStore }) {
 
 interface SurfaceProps<P extends Project> {
   sync: UseProjectSync<P>
+  /** Listeners the editor's one frame subscription notifies (see `onFrame`). */
+  frameListeners: Set<() => void>
   adapter: VideoEditorProps<P>['adapter']
   slots?: VideoEditorProps<P>['slots']
   assetsPlacement?: VideoEditorProps<P>['assetsPlacement']
@@ -632,6 +641,7 @@ interface SurfaceProps<P extends Project> {
 
 function PendingSurface<P extends Project>({
   sync,
+  frameListeners,
   adapter,
   slots,
   onBackToSetup,
@@ -649,7 +659,8 @@ function PendingSurface<P extends Project>({
   const clock = clockRef.current
   const [skillPath, setSkillPath] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
-  const { versions, restoring, setRestoring, saving, setSaving, refresh: refreshVersions } = useVersionHistory(adapter, project)
+  const { versions, restoring, setRestoring, saving, setSaving, refresh: refreshVersions, noteFrame } = useVersionHistory(adapter, project)
+  useEffect(() => { frameListeners.add(noteFrame); return () => { frameListeners.delete(noteFrame) } }, [frameListeners, noteFrame])
   // The version-compare view: the LEFT hash it was opened for, or null when
   // closed. Lives beside `versions` since VersionCompare's picker is seeded
   // from the same list VersionPanel renders.
@@ -836,6 +847,7 @@ function collectAllIds(project: Project): Set<string> {
 
 function ReviewSurface<P extends Project>({
   sync,
+  frameListeners,
   captionGestureRef,
   emit,
   adapter,
@@ -1413,7 +1425,8 @@ function ReviewSurface<P extends Project>({
   }, [syncMutate, syncProjectRef])
   useEffect(() => { onProvideRenderTrigger?.(openRender) }, [onProvideRenderTrigger, openRender])
 
-  const { versions, restoring, setRestoring, saving, setSaving, refresh: refreshVersions } = useVersionHistory(adapter, project)
+  const { versions, restoring, setRestoring, saving, setSaving, refresh: refreshVersions, noteFrame } = useVersionHistory(adapter, project)
+  useEffect(() => { frameListeners.add(noteFrame); return () => { frameListeners.delete(noteFrame) } }, [frameListeners, noteFrame])
   // PL1: the host-owned render window's two callbacks (see `renderModal`).
   const closeRender = useCallback(() => setRenderOpen(false), [])
   const completeRender = useCallback(() => { void refreshVersions() }, [refreshVersions])

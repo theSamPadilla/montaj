@@ -196,6 +196,28 @@ describe('VideoEditor — editor-package integration', () => {
     })
   })
 
+  it('subscribes to a project\'s frames exactly once, and a frame refetches the versions', async () => {
+    const adapter = makeFakeAdapter()
+    const realSubscribe = adapter.subscribe
+    const subscribe = vi.fn(realSubscribe)
+    adapter.subscribe = subscribe
+    render(
+      <VideoEditor
+        project={makeVideoProject()}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        slots={{ pendingStatus: <div data-testid="pending" />, exportActions: <div data-testid="export" /> }}
+      />,
+    )
+    await waitFor(() => expect(adapter.listVersionHistory).toHaveBeenCalled())
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)) })
+    expect(subscribe).toHaveBeenCalledTimes(1)
+    const before = vi.mocked(adapter.listVersionHistory!).mock.calls.length
+    await act(async () => { adapter.emit(makeVideoProject()) })
+    await waitFor(() => expect(adapter.listVersionHistory).toHaveBeenCalledTimes(before + 1), { timeout: 2000 })
+    expect(subscribe).toHaveBeenCalledTimes(1)
+  })
+
   it('invokes onBackToSetup affordance only when the host supplies it', async () => {
     const adapter = makeFakeAdapter()
     const initial = makeVideoProject({ status: 'pending', tracks: [{ id: 'trk-0', items: [] }] })

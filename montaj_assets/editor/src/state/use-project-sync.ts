@@ -85,6 +85,12 @@ export interface UseProjectSyncOptions<P extends Project> {
    * hook does nothing extra.
    */
   onBusyChange?: (busy: boolean) => void
+  /**
+   * Called for every live frame the core's one subscription receives, whatever
+   * becomes of it (applied, held or pruned). Lets a host react to "the server
+   * wrote" without opening a second subscription. Read through a ref.
+   */
+  onFrame?: () => void
 }
 
 export interface UseProjectSync<P extends Project = Project> {
@@ -194,6 +200,8 @@ export function useProjectSync<P extends Project = Project>(
   // either can change, and reported only when it differs from the last report.
   const onBusyChangeRef = useRef(options?.onBusyChange)
   onBusyChangeRef.current = options?.onBusyChange
+  const onFrameRef = useRef(options?.onFrame)
+  onFrameRef.current = options?.onFrame
   const reportedBusy = useRef(false)
   const mounted = useRef(true)
   const checkBusyRef = useRef<() => void>(() => {})
@@ -378,6 +386,7 @@ export function useProjectSync<P extends Project = Project>(
     subscribedRef.current = true
     const unsubscribe = adapter.subscribe(projectId, (next, writer, info?: FrameInfo) => {
       if (!active) return
+      onFrameRef.current?.()
       setConnection('live')
       const gap = info?.gap === true || firstIsGap
       firstIsGap = false
