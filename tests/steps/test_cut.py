@@ -317,8 +317,9 @@ def test_max_pause_reaches_the_apply(tmp_path, stub_transcribe, monkeypatch):
     d = make_project(tmp_path, transcript=retake_transcript())
     plan, _ = run(d, "--max-pause", "0.3", monkeypatch=monkeypatch)
     run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
-    assert [k["max_pause"] for k in seen] == [0.3, 0.3]           # the plan records it for the apply
-    assert seen[0]["preview"] is True and seen[1]["preview"] is False and seen[1]["base"] is not None
+    # the plan records it for the apply (the plan previews once per settle round)
+    assert {k["max_pause"] for k in seen} == {0.3} and len(seen) >= 2
+    assert all(k["preview"] for k in seen[:-1]) and seen[-1]["preview"] is False and seen[-1]["base"] is not None
 
 
 def test_a_stale_plan_is_refused_when_the_transcript_changed(tmp_path, stub_transcribe, monkeypatch, capsys):
@@ -1457,17 +1458,20 @@ def test_a_quiet_but_audible_word_is_kept(tmp_path, monkeypatch):
 
 def test_words_under_the_floor_are_removed_and_tagged_and_come_back_from_the_plan(tmp_path, monkeypatch):
     spans, words, end = spoken(["you feel a slight lean so you steer."])
-    for k in (2, 3):              # "a slight": within 10 dB of the room's -70 (R2-Q2: -58 is heard, only offered)
-        spans[k] = (spans[k][0], spans[k][1], -64.0)
+    for k in (2, 3):              # "a slight": 3 dB over the room's -70 (2b: within 6 dB of it to go)
+        spans[k] = (spans[k][0], spans[k][1], -67.0)
     d = tone_project(tmp_path, [("vo", spans, end + 1.0, words)])
     plan, _ = run(d, monkeypatch=monkeypatch)
-    assert plan["removed"]["inaudible"] == 2 and plan["removed"]["by"]["inaudible"] > 0
+    # 2b: "slight" ends where "lean" starts, so within 40 ms of a sound: kept (folded) and offered, never removed
+    assert plan["removed"]["inaudible"] == 1 and plan["removed"]["by"]["inaudible"] > 0
     # silence: the mechanical pass's own silence trimming, apart from the filler words (#1 should-fix 5, #2 #9)
     assert set(plan["removed"]["by"]) == {"pause", "deadAir", "retake", "inaudible", "tail", "fillers", "silence"}
     cut, unused = sections((d / "cut-plan.md").read_text())
-    assert unused == [next(r for r in unused if r.startswith("*A1 ") and r.endswith(" inaudible]"))]
+    removed = [r for r in unused if not r.endswith("?]")]
+    assert removed == [next(r for r in unused if r.startswith("*A1 ") and r.endswith(" inaudible]"))]
+    assert [r for r in unused if r.endswith(" inaudible?]")]                  # "slight": offered
     run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
-    assert said_text(d) == "you feel lean so you steer."
+    assert said_text(d) == "you feel slight lean so you steer."
     # the person keeps them: the * row in place of the trimmed one
     (tmp_path / "again").mkdir()
     d = tone_project(tmp_path / "again", [("vo", spans, end + 1.0, words)])
@@ -1749,7 +1753,8 @@ def test_a_truly_silent_run_between_two_short_words_is_still_removed(tmp_path, m
              ("all", 2.40, 2.70), ("day.", 2.70, 2.95)]
     d = tone_project(tmp_path, [("vo", spans, 3.6, words)])
     plan, _, said = plan_apply_said(d, monkeypatch)
-    assert said == "we ride all day." and plan["removed"]["inaudible"] == 2
+    # 2b: "bike" ends where "all" starts (within 40 ms of a sound): kept, folded and offered; "the" goes
+    assert said == "we ride bike all day." and plan["removed"]["inaudible"] == 1
 
 
 def test_words_whisper_started_early_in_a_pause_are_kept(tmp_path, monkeypatch):

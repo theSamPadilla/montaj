@@ -287,7 +287,7 @@ def _first_why(whys):
     return next((w for w in _WHY_ORDER if w in whys), next(iter(sorted(whys)), "repeat"))
 
 
-def _dead_air(out, d, energy, breath, whole=frozenset(), guard=None, held=None):
+def _dead_air(out, d, energy, breath, whole=frozenset(), guard=None, held=None, hold=frozenset()):
     """The plan's lines, its kept rows ("row", Row, tag) written out. With `energy`, a pause between two kept words
     that is dead air (every frame under the clip's floor, lib/speech_energy) is written as the pause it keeps: two
     breaths where the words follow on in the source and it lasts DEAD_AIR_MIN_S or more, or where words were cut
@@ -296,7 +296,8 @@ def _dead_air(out, d, energy, breath, whole=frozenset(), guard=None, held=None):
     pause. The marker is the cut's own edit of the text, so the person sees it and can change it back; every other
     pause keeps its marker, which max-pause caps on apply. A row of a clip kept whole is left as it is.
     guard(item id, source start, source end) -> True when cutting that span of the item would move a layer's start
-    (an overlay) onto another's: that pause keeps its own marker (D2), and the row's line is added to `held`."""
+    (an overlay) onto another's: that pause keeps its own marker (D2), and the row's line is added to `held`.
+    hold: {(letter, word index, next word index)} pauses that keep their own marker: an island's (P3-1)."""
     if energy is None:
         return [f"{_row_line(x[1])}{x[2]}" if isinstance(x, tuple) else x for x in out]
     src_of = {letter: src for src, letter in d.letters.items()}
@@ -336,6 +337,8 @@ def _dead_air(out, d, energy, breath, whole=frozenset(), guard=None, held=None):
     def join(p, a, r, b):
         """The pause to write between kept words a (row p) and b (row r), or None to leave it."""
         pl, lt = letter(p), letter(r)
+        if (lt, a.idx, b.idx) in hold:
+            return None
         if pl == lt and b.idx == a.idx + 1:
             lo, hi = a.end, b.start
             if hi - lo < speech_energy.DEAD_AIR_MIN_S - 1e-9 or not quiet(lt, lo, hi):
@@ -430,7 +433,7 @@ def _kept_whole(row):
 
 def _plan(d, title, units, trailing, sel, at, of_source, language, max_pause, project_dir, is_filler,
           whole=frozenset(), why_at=None, energy=None, breath=speech_energy.BREATH_S, guard=None, held=None,
-          notes=None):
+          notes=None, hold=frozenset()):
     """The plan: speech_edit's text format. `## Cut` holds the kept rows in narrative order (each kept take at
     its section's first appearance, its repeated or restarted words deleted), each tagged [time]; `## Unused`
     every removed take, one group of rows per take (a blank line between), each row tagged [time why]. A row
@@ -483,7 +486,7 @@ def _plan(d, title, units, trailing, sel, at, of_source, language, max_pause, pr
             groups.append((t_of(units[ui][1][0][1]), unit_why, lost,
                            (units[ui][1][0][1].line, " ".join(gone))))
     out += [_other_row(r) for r in trailing]
-    out = _dead_air(out, d, energy, breath, whole, guard, held)
+    out = _dead_air(out, d, energy, breath, whole, guard, held, hold)
 
     for ui in sel.losers:
         rows = [r for _, r in units[ui][1]]
@@ -760,6 +763,7 @@ def _build(project_path, project_dir, disk, track_id, language, warnings):
         for u, rows, _ in units:
             # a clip kept whole (b-roll): its made-up words are never a take, a loser or a suggestion
             u.fixed = bool(rows) and all(r.item_ids and r.item_ids[0] in b["whole"] for _, r in rows)
+        _faint(b["refiner"], d, units)
         # a tail goes on the audio's evidence only (every word inaudible), never on a word's length (B2)
         _mark_made_up_tails(units, d.inaudible, durations=False)
         if units:
@@ -780,6 +784,18 @@ def _build(project_path, project_dir, disk, track_id, language, warnings):
     b.update(work=work, lineage={}, fillers=0)
     warnings += _silence_cut(work, project_path, b["ti"], project_dir, b["lineage"])
     return b
+
+
+FAINT_SHARE = 1 / 3         # a take this share of whose words are offered or inaudible never wins over an audible one
+
+
+def _faint(ref, d, units):
+    """P3-2: a unit whose words the energy pass offers (under the speech floor) or finds inaudible, FAINT_SHARE of
+    them or more, is faint: lib/take_select never keeps it over a take of the same words that is heard."""
+    low = {(d.letters[src], i) for src, idx in ref.quiet_words.items() if src in d.letters for i in idx} | d.inaudible
+    for u, rows, _ in units:
+        keys = [(_line_key(r.line)[0], w.idx) for _, r in rows for w in r.words if norm(w.text)]
+        u.faint = bool(keys) and sum(1 for k in keys if k in low) >= FAINT_SHARE * len(keys)
 
 
 def _phrases(b, units, is_filler):
@@ -976,7 +992,9 @@ def _settle(b, res, project_dir):
     """Fold what the preview shows back into the selection, so the plan says what the apply does. True when the
     plan must be made again:
     - words of a sliver the apply drops (lib/speech_energy.tidy: silent words whose neighbour went) are dropped in
-      the plan too, tagged inaudible, so no orphan row is left between removed rows;
+      the plan too, tagged inaudible, so no orphan row is left between removed rows (never a heard word: R3-B2);
+    - a pause tidy took back to join an island to its neighbour (P3-1) keeps its own marker in the plan
+      (b["hold"]), so the plan shows the pause the apply plays;
     - a unit whose phrase retake the apply would play (its row's words matched to the other copy of the repeat, #2
       should-fix 4) gets that cut back as an offer (repeat?), so the plan never says one copy and plays the other."""
     d, sel, units = b["d"], b["sel"], b["units"]
@@ -986,10 +1004,21 @@ def _settle(b, res, project_dir):
         for k, (lt, idx) in enumerate((_line_key(r.line)[0], w.idx) for _, r in units[ui][1] for w in r.words):
             where[(lt, idx)] = (ui, k)
     again = False
+    hold = b.setdefault("hold", set())
+    src_of = {letter: src for src, letter in d.letters.items()}
     for f in res.get("flagged") or []:
+        if f.get("kind") == "island_join":
+            key = (f["letter"], f["after"], f["before"])
+            if key not in hold:
+                hold.add(key)
+                again = True
+            continue
         if f.get("kind") != "sliver":
             continue
+        heard = b["refiner"].heard.get(src_of.get(f["letter"]), set())
         for idx in f.get("idx", ()):
+            if idx in heard:
+                continue
             hit = where.get((f["letter"], idx))
             if hit and hit[1] not in sel.drop.get(hit[0], set()):
                 sel.drop.setdefault(hit[0], set()).add(hit[1])
@@ -1055,6 +1084,23 @@ def _plan_warnings(b, final, project_dir, held):
     spliced = sorted({units[ui][1][0][1].line for ui, _ in b.get("notes", {})})
     if spliced:
         out.append(f"spliced from two takes (offered, retake? spliced): {', '.join(spliced[:8])}")
+    return out
+
+
+def _piece_warnings(d, flagged, slivers=True):
+    """What tidy (lib/speech_energy) did to the kept pieces, for an answer: islands it kept short (a heard word it
+    could not join or widen, P3-1) and, with `slivers`, short pieces of no heard word it dropped (R3-B2)."""
+    line_of = {(_line_key(ln.id)[0], w.idx): ln.id for ln in d.lines.values() for w in ln.words}
+    out = []
+    for kind, say in (("island", "kept {n} short piece(s) with a heard word, under {s:.2f} s: {w}"),
+                      ("sliver", "dropped {n} short piece(s) with no heard word: {w}")):
+        if kind == "sliver" and not slivers:
+            continue
+        hits = [f for f in flagged or [] if f.get("kind") == kind]
+        if hits:
+            where = [f"{line_of.get((f['letter'], (f.get('idx') or [None])[0]), f['letter'])} {f['seconds']:.2f} s"
+                     for f in hits]
+            out.append(say.format(n=len(hits), s=speech_energy.ISLAND_S, w=", ".join(where[:8])))
     return out
 
 
@@ -1141,19 +1187,25 @@ def _make_plan(args, project_path, project_dir):
         at, of_source = _timer(b["origin"], b["work"], b["ti"], b["lineage"])
         breath = min(max(args.breath, BREATH_MIN_S), max_pause / 2)       # R2-Q3
         guard, held = _layer_guard(b, at), []
-        for _ in range(SETTLE_ROUNDS):
+        b["refiner"].max_pause = max_pause
+        for _ in range(SETTLE_ROUNDS + 1):        # the last round only checks the plan made after the others
             held.clear()
             text, kept, removed, suggested = _plan(b["d"], title, b["units"], b["trailing"], b["sel"], at, of_source,
                                                    language, max_pause, project_dir, _filler_test(language),
                                                    b.get("whole", frozenset()), b.get("why_at"), b["refiner"], breath,
-                                                   guard, held, b.get("notes"))
+                                                   guard, held, b.get("notes"), frozenset(b.get("hold", ())))
             res = apply(project_path, _untagged(text)[0], preview=True, max_pause=max_pause, feel=DEFAULT_FEEL,
                         base=b["work"], base_of=disk, want_project=True, carry_from=b["origin"], lineage=b["lineage"],
                         guard_keys=(MARKER_KEY,), refiner=b["refiner"])
             if not _settle(b, res, project_dir):
                 break
+        else:
+            # the plan would not say what its apply does (R3 should-fix 2): never write one that may not
+            fail("plan_unsettled", "cut could not settle its plan: each preview changed it again, so nothing was "
+                                   "written. Run cut again, and report it if this repeats.")
         warnings[:] = [w for w in warnings if " keeps only " not in w] + _plan_warnings(b, res["_project"], project_dir,
-                                                                                         held)
+                                                                                         held) \
+            + _piece_warnings(b["d"], res.get("flagged"), slivers=False)
         kept_s, duration = _sums(res["_project"], track_id)
         by_cause, inaudible = _removed_by(b, res["_project"], project_dir, max_pause, b["units"])
         path, prev = _write_plan(project_path, disk.get("id"), text)
@@ -1211,6 +1263,7 @@ def _apply_plan(args, project_path, project_dir):
         plan_pause if plan_pause is not None else FEELS[DEFAULT_FEEL].max_pause)
     warnings = []
     b = _build(project_path, project_dir, disk, track_id, language, warnings)
+    b["refiner"].max_pause = max_pause
     stale = ("This plan was made before cut was updated, or the timeline changed. Run cut again (your edited plan "
              "is kept).")
     if not _has_clips(disk, track_id):
@@ -1247,6 +1300,7 @@ def _apply_plan(args, project_path, project_dir):
         wrote = bool(res.get("applied"))
         final = res["_project"]
         layers = _layers(res.get("flagged"))
+        warnings += _piece_warnings(b["d"], res.get("flagged"))
         warnings += [w for w in res.get("warnings", []) if w not in warnings]
     _, duration = _sums(final, track_id)
     if version:

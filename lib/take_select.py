@@ -46,8 +46,9 @@ next one extends, a short restart, a partial repeat, a line said again with a re
   REWORD_RATIO), and the next line of a block that only grew (ratio GROWN_RATIO).
 - A unit the caller marks `madeup` (the last line of a clip, words whisper made up over a quiet end) goes as
   a pause.
-- Which take is kept: complete over truncated, then no restart, then the last; fewer flaws (fillers plus
-  hesitations) decide only between takes that say the same words. Narrative order: a section whose earlier
+- Which take is kept: complete over truncated, then no restart, then the last (§558: a clear retake
+  keeps the last take, whatever its fillers or pauses, which the cut removes anyway), never a `faint` take (the
+  caller's: a third or more of its words under the speech floor) over an audible one. Narrative order: a section whose earlier
   takes all go sits at its first take; a section with a suggested take keeps every take where it was said.
 """
 from dataclasses import dataclass, field
@@ -113,6 +114,7 @@ class Unit:
     breaks: set = field(default_factory=set)
     fixed: bool = False      # never a take, a loser or a suggestion (a clip kept whole: b-roll); still a sentence between
     sparse: bool = False     # never removed as a take, only offered (the caller's call: a clip it doubts)
+    faint: bool = False      # many of its words barely heard (the caller measures it): never kept over an audible take
     madeup: bool = False     # words whisper made up over a quiet end (the caller measures it): removed as a pause
 
 
@@ -494,11 +496,6 @@ def select(units, is_filler):
             joins[i] = (best_t, best_block)
         prev = i
 
-    def flaws(i):
-        u = units[i]
-        fillers = u.fillers if u.fillers is not None else sum(1 for w in u.words if norm(w) and is_filler(norm(w)))
-        return fillers + (u.hesitations or 0)
-
     def truncated(i, section, block=False):
         if ending[i] == "open" and units[i].words and units[i].words[-1].rstrip(_QUOTES).endswith(_TRAILING_CUT):
             return True
@@ -537,9 +534,7 @@ def select(units, is_filler):
             continue
         top = max((not truncated(i, section), not cleaned[i][2]) for i in section)
         cands = [i for i in section if (not truncated(i, section), not cleaned[i][2]) == top]
-        last = max(cands)
-        same = [i for i in cands if seqs[i] == seqs[last]]
-        best = min(same, key=lambda i: (flaws(i), -i))
+        best = max([i for i in cands if not units[i].faint] or cands)
         sure = [i for i in section if i != best and i not in unsure_block and sure_pair(i, best)]
         unsure = [i for i in section if i != best and i not in sure]
         for i in sure:

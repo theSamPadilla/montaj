@@ -145,10 +145,19 @@ def test_an_identical_block_retake_keeps_only_the_second_block():
     assert kept_text(texts, sel) == texts[2:]
 
 
-def test_fewer_flaws_beat_recency():
+def test_a_clear_retake_keeps_the_last_take_whatever_its_flaws():
+    """§558 P3-2: the last take of a clear retake is kept; its pauses and fillers the cut removes."""
     us = [Unit(LINES[0].split()), Unit(LINES[0].split(), fillers=0, hesitations=2)]
     sel = select(us, is_filler)
-    assert sel.kept == [0]
+    assert sel.kept == [1] and sel.losers == [0]
+
+
+def test_a_faint_take_never_wins_over_an_audible_one():
+    us = [Unit(LINES[0].split()), Unit(LINES[0].split(), faint=True)]
+    sel = select(us, is_filler)
+    assert sel.kept == [0] and sel.losers == [1]
+    us = [Unit(LINES[0].split(), faint=True), Unit(LINES[0].split())]
+    assert select(us, is_filler).kept == [1]
 
 
 def test_within_take_repeat_keeps_the_final_occurrence():

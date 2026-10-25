@@ -86,10 +86,16 @@ def test_a_word_within_ten_db_of_the_room_is_inaudible_a_quieter_heard_one_is_on
                    (1.5, 1.75, -20.0))
     _, stats, _ = refined(ws, aside)
     assert stats["inaudible"] == [] and stats["quiet"] == [1, 2]
-    gone = env_of(2.5, (0.3, 0.55, -20.0), (0.6, 0.85, -64.0), (0.9, 1.15, -64.0), (1.2, 1.45, -20.0),
+    # 2b's conservative rule: only words within AT_NOISE_DB of the room over their whole span and 40 ms beside
+    # it go ("between" ends where "us" starts: kept, offered); 6 dB over the room is heard enough to stay
+    gone = env_of(2.5, (0.3, 0.55, -20.0), (0.6, 0.85, -67.0), (0.9, 1.15, -67.0), (1.2, 1.45, -20.0),
                   (1.5, 1.75, -20.0))
     _, stats, _ = refined(ws, gone)
-    assert stats["inaudible"] == [1, 2]
+    assert stats["inaudible"] == [1] and stats["quiet"] == [2]
+    faint = env_of(2.5, (0.3, 0.55, -20.0), (0.6, 0.85, -63.0), (0.9, 1.15, -63.0), (1.2, 1.45, -20.0),
+                   (1.5, 1.75, -20.0))
+    _, stats, _ = refined(ws, faint)
+    assert stats["inaudible"] == [] and stats["quiet"] == [1, 2]
 
 
 # ── B4: hysteresis edges and the release ───────────────────────────────────────────────────────────────────
@@ -146,7 +152,8 @@ def test_a_truly_silent_run_between_two_short_words_is_inaudible():
     ws = words(("we", 0.1, 0.3), ("ride", 0.3, 0.8), ("the", 0.8, 1.2), ("bike", 1.2, 1.6), ("now.", 1.6, 1.9))
     env = env_of(2.5, (0.1, 0.28, -20.0), (0.3, 0.6, -20.0), (1.6, 1.85, -20.0))
     _, stats, _ = refined(ws, env)
-    assert stats["inaudible"] == [2, 3]
+    # "bike" ends where "now." starts (2b: within 40 ms of a sound it is kept, folded and offered)
+    assert stats["inaudible"] == [2] and stats["quiet"] == [3] and 3 in stats["folded"]
 
 
 def test_a_silent_run_just_before_an_over_long_word_is_kept():
@@ -237,7 +244,7 @@ def test_a_breath_left_alone_between_removed_words_is_dropped():
             run_of("a", 1.46, 1.58, [2]), Run("", 0, 0, 0, None, kind="gap", dur=0.5), run_of("a", 2.36, 2.74, [3])]
     rep = Report()
     out = se.tidy(runs, d, _Heard({"a": {0, 1, 3}}), rep)
-    assert [r for r in out if r.kind == "speech" and r.s_out - r.s_in < se.SLIVER_S] == []
+    assert [r for r in out if r.kind == "speech" and r.s_out - r.s_in < se.ISLAND_S] == []
     assert {"kind": "sliver", "letter": "A", "idx": [2], "seconds": 0.12} in rep.flagged
 
 
@@ -249,14 +256,16 @@ def test_a_sliver_that_follows_on_in_the_source_is_merged_into_its_neighbour():
     assert spans(out)[:1] == [("a", 0.26, 1.06, [0, 1])] and len(out) == 2
 
 
-def test_a_short_whole_word_is_kept_but_never_a_piece_under_a_tenth():
+def test_a_short_whole_word_is_kept_and_widened_to_an_island():
     ws = words(("Yes.", 1.0, 1.15))
     d = _Derived({"a": ws})
+    # P3-1 / R3-B2: a short piece holding a heard word is never dropped: alone between cuts, it is widened into
+    # its own silence to ISLAND_S, half on each side
     keep = se.tidy([run_of("a", 0.98, 1.18, [0]), run_of("b", 0.0, 2.0)], d, _Heard({"a": {0}}))
-    assert spans(keep)[0] == ("a", 0.98, 1.18, [0])
+    assert spans(keep)[0] == ("a", 0.905, 1.255, [0])
     ws = words(("a", 1.0, 1.05))
-    gone = se.tidy([run_of("a", 1.0, 1.06, [0]), run_of("b", 0.0, 2.0)], _Derived({"a": ws}), _Heard({"a": {0}}))
-    assert [r.src for r in gone] == ["b"]
+    short = se.tidy([run_of("a", 1.0, 1.06, [0]), run_of("b", 0.0, 2.0)], _Derived({"a": ws}), _Heard({"a": {0}}))
+    assert spans(short)[0] == ("a", 0.855, 1.205, [0])
 
 
 def test_a_breath_opening_a_clip_before_a_removed_retake_is_dropped():
