@@ -508,6 +508,7 @@ export default function VideoEditor<P extends Project = Project>({
 // ── Version-history hook (shared by both surfaces) ───────────────────────────
 
 const VERSION_REFETCH_MS = 500
+const OPEN_REFETCH_SKIP_MS = 1000
 
 export function useVersionHistory<P extends Project>(adapter: VideoEditorProps<P>['adapter'], project: P) {
   const [versions, setVersions]   = useState<{ hash: string; message: string; timestamp: string }[]>([])
@@ -517,11 +518,19 @@ export function useVersionHistory<P extends Project>(adapter: VideoEditorProps<P
   // Extracted so ad-hoc callers (post-restore, post-save, post-render) can
   // re-run the same fetch on demand via `refresh`, without duplicating the
   // adapter call or bypassing the auto-refetch effect below.
+  const lastFetchAt = useRef(-Infinity)
   const fetchVersions = useCallback(() => {
+    lastFetchAt.current = Date.now()
     return adapter.listVersionHistory?.(project.id).then(setVersions).catch(() => {}) ?? Promise.resolve()
   }, [adapter, project.id])
 
+  // Child effects run first, so the panel's open-on-mount fetch can already have
+  // started: the first run skips when one began within the last second.
+  const mountedOnce = useRef(false)
   useEffect(() => {
+    const first = !mountedOnce.current
+    mountedOnce.current = true
+    if (first && Date.now() - lastFetchAt.current < OPEN_REFETCH_SKIP_MS) return
     void fetchVersions()
   }, [fetchVersions, project.status])
 
@@ -530,6 +539,12 @@ export function useVersionHistory<P extends Project>(adapter: VideoEditorProps<P
   // land before the commit exists. `noteFrame` (called from the editor's one
   // live-frame callback, never a subscription of its own) refetches ~500 ms
   // after the last frame: a burst of frames gives one fetch.
+  // Opening the panel refetches, unless a fetch started within the last second
+  // (the panel mounting at load lands right after the mount fetch).
+  const refreshOnOpen = useCallback(() => {
+    if (Date.now() - lastFetchAt.current < OPEN_REFETCH_SKIP_MS) return Promise.resolve()
+    return fetchVersions()
+  }, [fetchVersions])
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const fetchRef = useRef(fetchVersions)
   fetchRef.current = fetchVersions
@@ -540,7 +555,7 @@ export function useVersionHistory<P extends Project>(adapter: VideoEditorProps<P
   }, [adapter])
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); timerRef.current = undefined }, [])
 
-  return { versions, restoring, setRestoring, saving, setSaving, refresh: fetchVersions, noteFrame }
+  return { versions, restoring, setRestoring, saving, setSaving, refresh: fetchVersions, refreshOnOpen, noteFrame }
 }
 
 // ── Footage-bin source-scrub overlay (opt-in) ────────────────────────────────
@@ -659,7 +674,7 @@ function PendingSurface<P extends Project>({
   const clock = clockRef.current
   const [skillPath, setSkillPath] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
-  const { versions, restoring, setRestoring, saving, setSaving, refresh: refreshVersions, noteFrame } = useVersionHistory(adapter, project)
+  const { versions, restoring, setRestoring, saving, setSaving, refresh: refreshVersions, refreshOnOpen, noteFrame } = useVersionHistory(adapter, project)
   useEffect(() => { frameListeners.add(noteFrame); return () => { frameListeners.delete(noteFrame) } }, [frameListeners, noteFrame])
   // The version-compare view: the LEFT hash it was opened for, or null when
   // closed. Lives beside `versions` since VersionCompare's picker is seeded
@@ -810,7 +825,7 @@ function PendingSurface<P extends Project>({
       {/* Right sidebar — version history (hidden when the capability is absent) */}
       {adapter.listVersionHistory && (
         <div className="w-48 shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden">
-          <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} onSaveVersion={handleSaveVersion} saving={saving} onCompareVersion={adapter.versionFrameUrl ? handleCompareVersion : undefined} mode={timelineMode} onOpen={refreshVersions} />
+          <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} onSaveVersion={handleSaveVersion} saving={saving} onCompareVersion={adapter.versionFrameUrl ? handleCompareVersion : undefined} mode={timelineMode} onOpen={refreshOnOpen} />
         </div>
       )}
 
@@ -1425,7 +1440,7 @@ function ReviewSurface<P extends Project>({
   }, [syncMutate, syncProjectRef])
   useEffect(() => { onProvideRenderTrigger?.(openRender) }, [onProvideRenderTrigger, openRender])
 
-  const { versions, restoring, setRestoring, saving, setSaving, refresh: refreshVersions, noteFrame } = useVersionHistory(adapter, project)
+  const { versions, restoring, setRestoring, saving, setSaving, refresh: refreshVersions, refreshOnOpen, noteFrame } = useVersionHistory(adapter, project)
   useEffect(() => { frameListeners.add(noteFrame); return () => { frameListeners.delete(noteFrame) } }, [frameListeners, noteFrame])
   // PL1: the host-owned render window's two callbacks (see `renderModal`).
   const closeRender = useCallback(() => setRenderOpen(false), [])
@@ -2817,7 +2832,7 @@ function ReviewSurface<P extends Project>({
     />
   )
   const versionPanel = adapter.listVersionHistory && (
-    <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} onSaveVersion={handleSaveVersion} saving={saving} onCompareVersion={adapter.versionFrameUrl ? handleCompareVersion : undefined} mode={timelineMode} onOpen={refreshVersions} />
+    <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} onSaveVersion={handleSaveVersion} saving={saving} onCompareVersion={adapter.versionFrameUrl ? handleCompareVersion : undefined} mode={timelineMode} onOpen={refreshOnOpen} />
   )
 
   /**

@@ -43,4 +43,14 @@ describe('useVersionHistory refetch', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(600) })
     expect(adapter.listVersionHistory).toHaveBeenCalledTimes(1)
   })
+
+  it('refreshOnOpen skips right after the mount fetch, but refetches once that is stale', async () => {
+    const { adapter, hook } = setup()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    await act(async () => { await hook.result.current.refreshOnOpen() })
+    expect(adapter.listVersionHistory).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1100) })
+    await act(async () => { await hook.result.current.refreshOnOpen() })
+    expect(adapter.listVersionHistory).toHaveBeenCalledTimes(2)
+  })
 })
