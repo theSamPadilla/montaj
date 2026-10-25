@@ -692,7 +692,8 @@ def _build(project_path, project_dir, disk, track_id, language, warnings, max_pa
     ti, track = _track(work, track_id)
     b = {"work": work, "ti": ti, "before_s": _seconds(track, project_dir),
          "origin": origin, "lineage": {}, "d": None, "fillers": 0,
-         "refiner": speech_energy.Refiner(max_pause, breath), "filler_spans": {}, "held": []}
+         "refiner": speech_energy.Refiner(max_pause, breath, _filler_test(language)), "filler_spans": {},
+         "held": []}
     has_words = any((sc := sidecar_for(_resolved(it, project_dir))) and load_words(sc) for it in _media(track))
     if has_words:
         is_filler = _filler_test(language)
@@ -745,7 +746,8 @@ FAINT_SHARE = 1 / 3         # a take this share of whose words are offered or in
 def _faint(ref, d, units):
     """P3-2: a unit whose words the energy pass offers (under the speech floor) or finds inaudible, FAINT_SHARE of
     them or more, is faint: lib/take_select never keeps it over a take of the same words that is heard."""
-    low = {(d.letters[src], i) for src, idx in ref.quiet_words.items() if src in d.letters for i in idx} | d.inaudible
+    low = {(d.letters[src], i) for src, idx in ref.quiet_words.items() if src in d.letters for i in idx
+           if i not in getattr(ref, "chained", {}).get(src, ())} | d.inaudible   # §577: drift, not faintness
     for u, rows, _ in units:
         keys = [(_line_key(r.line)[0], w.idx) for _, r in rows for w in r.words if norm(w.text)]
         u.faint = bool(keys) and sum(1 for k in keys if k in low) >= FAINT_SHARE * len(keys)
@@ -1010,15 +1012,17 @@ def _settle(b, res, project_dir):
     for f in res.get("flagged") or []:
         if f.get("kind") != "sliver":
             continue
-        heard = b["refiner"].heard.get(src_of.get(f["letter"]), set()) | \
-            getattr(b["refiner"], "loud", {}).get(src_of.get(f["letter"]), set())     # §577 (b)
+        heard = b["refiner"].heard.get(src_of.get(f["letter"]), set())
+        loud = getattr(b["refiner"], "loud", {}).get(src_of.get(f["letter"]), set())     # §577 (b)
         for idx in f.get("idx", ()):
             if idx in heard:
                 continue
             hit = where.get((f["letter"], idx))
             if hit and hit[1] not in sel.drop.get(hit[0], set()):
                 sel.drop.setdefault(hit[0], set()).add(hit[1])
-                why_at.setdefault(hit[0], {})[hit[1]] = "inaudible"
+                # the apply drops the sliver either way, so the plan does too (a plan never fails on it); a word
+                # whose whisper span holds sound is only offered: inaudible? (review blocker 3)
+                why_at.setdefault(hit[0], {})[hit[1]] = "inaudible?" if idx in loud else "inaudible"
                 again = True
     def take_drops(ui):
         """The positions a take rule (a repeat said again in the unit's own rows) drops in kept unit ui."""

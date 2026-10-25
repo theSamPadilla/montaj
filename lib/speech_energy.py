@@ -34,10 +34,11 @@ Layer 2, WHAT TO REMOVE, is whisper's words (cut's take rules). Here each word i
 - whisper's times drift by SECONDS (§577: a clip's first words stamped at 0.00, spans stretched over long pauses, whole
   phrases shifted), but its word order holds: a run of words whose spans lie in a silence is placed IN ORDER
   (`_ordered`) on the voiced audio no word holds between its neighbours' placed sound, else on a letter share of a
-  neighbour's sound that holds theirs too (long for its own text, or two or more bursts) or, at the source's start,
-  when they are stamped from 0.00 over the room; a run still silent after the misplaced fold, with sound no word holds within CHAIN_S,
-  is placed again with the words between, in order (`_chain`). A word whose whisper span holds a frame at the line is
-  never inaudible (`span_voiced`: at most offered);
+  neighbour's sound that holds theirs too (long for its own text, or two or more bursts; never a filler's) or, at the
+  source's start, when they are stamped from 0.00 over the room (fillers left out). A run still silent after the
+  misplaced fold, with sound no word holds (or a heard word's spare bursts) within CHAIN_S, is folded where it falls
+  in order and that sound plays as its heard neighbour's (`_chain`). A word whose whisper span holds a frame at the
+  line is never inaudible (`span_voiced`: at most offered);
 - a word whose span lies wholly in a silence is INAUDIBLE (stats["inaudible"]), unless whisper misplaced it (the
   landing bar: a lone such word between placed words, or a run a heard neighbour holds, long for its own text,
   LETTER_S a letter plus WORD_BASE_S by MISPLACED_SHARE of the run's letters, or with a burst of sound for each word):
@@ -103,6 +104,7 @@ MISPLACED_SHARE = 0.5            # ... the run's letters' share of LETTER_S it m
 ORDERED_MIN_S = 0.05             # unclaimed voiced audio this long or longer between two placed words may be a silent
                                  # word's sound (§577: whisper drifts by seconds)
 CHAIN_S = 3.0                    # ... and sound no word holds this near a run of silent words is theirs, in order
+TAIL_FREE_S = 0.12               # at a source's end, free sound must be this long a word to be a silent run's
 ZERO_STAMP_S = 0.05              # a source's first words stamped this near 0.00, over the room, are whisper's start
                                  # drift (their sound is the head of the first heard word's)
 MIN_KEEP_S = 0.0                 # process_one's min_keep: no keep of sound is ever too short to keep
@@ -185,6 +187,7 @@ class Layer:
     burst_of: dict = field(default_factory=dict)   # attached frame -> the index of the word whose burst it is
     room: float = _SILENT_DB
     raw_flat: bytearray = field(default_factory=bytearray)    # flat.py's flat frames: the attached ones too
+    chained: set = field(default_factory=set)   # word positions _chain folded (§577: whisper's drift, never quiet)
 
 
 def layer1(media, env, max_pause, attached=frozenset()):
@@ -423,8 +426,9 @@ MIN_CUT_S = 0.02                 # an island's widening always leaves this much 
 # ── layer 2: whisper's words, placed on layer 1 ─────────────────────────────────────────────────────────────
 
 
-def place(words, lay, breath=BREATH_S):
-    """(placed words, kind per word: "heard" | "quiet" | "folded" | "inaudible"). See the module docstring."""
+def place(words, lay, breath=BREATH_S, is_filler=None):
+    """(placed words, kind per word: "heard" | "quiet" | "folded" | "inaudible"). See the module docstring.
+    is_filler(norm): the language's filler test (cut's), or None."""
     env, flat, n_fr = lay.env, lay.flat, len(lay.env)
     n = len(words)
     if not n_fr:
@@ -532,9 +536,10 @@ def place(words, lay, breath=BREATH_S):
         mid = round((w.start + w.end) / 2, 6)
         placed[i] = replace(w, start=mid, end=mid)
         kind[i] = "inaudible"
-    _ordered(words, placed, kind, lay)
+    fill = (lambda w: bool(w.norm) and bool(is_filler(w.norm))) if is_filler else None
+    _ordered(words, placed, kind, lay, fill)
     _misplaced(words, placed, kind, flat)
-    _chain(words, placed, kind, lay)
+    _chain(words, placed, kind, lay, fill)
     # a word never auto-removed (L-B3, A-B2: its peak at the guard or over the room) is folded against the nearest
     # placed word and offered, like a misplaced one; its burst, if it has one, makes it heard on the next reading
     for i in range(n):
@@ -668,47 +673,144 @@ def _voiced_segs(flat, a, b):
     return out
 
 
-def _on_voiced(words, idx, segs):
+def _on_voiced(words, idx, segs, lay, groups=None):
     """[(word, start, end)]: words idx placed in order over the voiced frames of segs, each a share of them by its
-    letters (at least one each), and each kept to the one run of sound holding most of its share, so no word's span
-    takes in a silence (whose cut would leave its middle in no kept piece)."""
+    letters (at least one each). The boundaries between `groups` (lengths in order, splitting idx: a run of silent
+    words and the heard word whose sound it shares) are snapped first to the nearest edge between two runs of sound,
+    then each word's boundary inside its group, where there is one, so a removal takes whole bursts. Each word keeps to
+    the one voiced run of layer 1 holding most of its share, so no word's span takes in a silence (whose cut would
+    leave its middle in no kept piece)."""
     wts = [max(1, _letters(words[k].text)) for k in idx]
-    total, whole, done, out = sum(wts), sum(b - a for a, b in segs), 0, []
-    for k, wt in zip(idx, wts):
-        v0, v1 = done * whole / total, (done + wt) * whole / total
-        done += wt
-        best, at = None, 0.0
-        for a, b in segs:
-            lo, hi = max(v0, at), min(v1, at + (b - a))
-            if hi - lo > _EPS and (best is None or hi - lo > best[0] + _EPS):
-                best = (hi - lo, a + (lo - at), a + (hi - at))
-            at += b - a
-        if best is None:                     # a share under a frame: at its offset
-            a0 = _at(segs, v0, 1)
-            out.append((k, a0, a0))
+    total, whole = sum(wts), sum(b - a for a, b in segs)
+    if whole <= 0:
+        return []
+    cum = [0.0]
+    for wt in wts:
+        cum.append(cum[-1] + wt * whole / total)
+    edges, at = [], 0
+    for a, b in segs[:-1]:
+        at += b - a
+        edges.append(float(at))
+    bounds = list(cum)
+    used = set()
+
+    def snap(k, lo, hi):
+        """Boundary k to the nearest free edge strictly inside (lo, hi)."""
+        cands = [e for e in edges if lo + _EPS < e < hi - _EPS and e not in used]
+        if cands:
+            e = min(cands, key=lambda e: (abs(e - cum[k]), e))
+            bounds[k] = e
+            used.add(e)
+    gb = []
+    if groups:
+        acc = 0
+        for g in groups[:-1]:
+            acc += g
+            gb.append(acc)
+    lo = 0.0
+    for n, k in enumerate(gb):
+        snap(k, lo, cum[gb[n + 1]] if n + 1 < len(gb) else whole)
+        lo = bounds[k]
+    marks = [0] + gb + [len(idx)]
+    for g0, g1 in zip(marks, marks[1:]):
+        lo = bounds[g0]
+        for k in range(g0 + 1, g1):
+            snap(k, lo, bounds[g1])
+            lo = bounds[k]
+    # in order, and every word a frame at least where there are frames enough (a word of no length on a cut's edge
+    # would play on whichever side holds it)
+    m = min(1.0, whole / len(idx))
+    for k in range(1, len(idx)):
+        bounds[k] = max(bounds[k], bounds[k - 1] + m)
+    bounds[len(idx)] = whole
+    for k in range(len(idx) - 1, 0, -1):
+        bounds[k] = min(bounds[k], bounds[k + 1] - m)
+    # the voiced run (layer 1) of each frame of segs, by voiced offset
+    run_of = []
+    for a, b in segs:
+        r = next((n for n, (v0, v1) in enumerate(lay.voiced) if v0 - _EPS <= a * FRAME_S < v1 + _EPS), -1 - a)
+        run_of.append(r)
+    out = []
+    for n, k in enumerate(idx):
+        v0, v1 = bounds[n], bounds[n + 1]
+        if v1 - v0 <= _EPS:
+            t = _at(segs, v0, 1)
+            out.append((k, t, t))
             continue
+        share, at = {}, 0.0
+        for (a, b), r in zip(segs, run_of):
+            lo2, hi2 = max(v0, at), min(v1, at + (b - a))
+            if hi2 - lo2 > _EPS:
+                x = share.setdefault(r, [0.0, None, None])
+                x[0] += hi2 - lo2
+                x[1] = a + (lo2 - at) if x[1] is None else x[1]
+                x[2] = a + (hi2 - at)
+            at += b - a
+        best = max(share.values(), key=lambda x: x[0])
         out.append((k, round(best[1] * FRAME_S, 6), round(best[2] * FRAME_S, 6)))
     return out
 
 
-def _ordered(words, placed, kind, lay):
+def _free_sound(words, placed, kind, lay, min_fr, lo=0, hi=None):
+    """[(first, end) frames] of voiced audio no placed word holds (no heard, quiet or folded word's span, no burst; of
+    a heard word on two or more separate bursts, all but its longest), min_fr frames or more each, in frames
+    [lo, hi) (the whole source by default)."""
+    env, flat, n_fr = lay.env, lay.flat, len(lay.env)
+    hi = n_fr if hi is None else min(n_fr, hi)
+    lo = max(0, lo)
+    held = bytearray(n_fr)
+    t_lo, t_hi = (lo - 1) * FRAME_S, (hi + 1) * FRAME_S
+    for k in range(len(words)):
+        w = placed[k]
+        if w.end < t_lo or w.start > t_hi or w.end - w.start <= _EPS or kind[k] == "inaudible" \
+                or isinstance(kind[k], tuple):
+            continue
+        a, b = _frames(env, w.start, w.end)
+        if b <= lo or a >= hi:
+            continue
+        held[a:b] = b"\x01" * (b - a)
+        if kind[k] == "heard":
+            # a heard word on two or more separate bursts holds one: the others are spare (whisper's drift put the
+            # words they belong to elsewhere)
+            bs = _voiced_segs(flat, a, b)
+            if len(bs) >= 2:
+                keep = max(bs, key=lambda x: (x[1] - x[0], -x[0]))
+                for x0, x1 in bs:
+                    if (x0, x1) != keep:
+                        held[x0:x1] = b"\x00" * (x1 - x0)
+    for f in lay.burst_of:
+        if lo <= f < hi:
+            held[f] = 1
+    out = []
+    for a0, b0 in _voiced_segs(flat, lo, hi):
+        for a1, b1 in _voiced_segs(held, a0, b0):
+            if b1 - a1 >= min_fr:
+                out.append((a1, b1))
+    return out
+
+
+def _ordered(words, placed, kind, lay, fill=None):
     """§577: whisper's word times drift by seconds (a clip's first words stamped at 0.00 while its speech starts later,
     spans stretched over long pauses, whole phrases shifted), but its word ORDER holds. So a run of words found
     inaudible (no voiced frame in its span) is placed in order on the sound between its neighbours:
     (a) the unclaimed voiced audio between the placed sound of the word before it and of the word after (the source's
         start or end when there is none), ORDERED_MIN_S or more of it, shared by letters in order over its voiced
-        frames: heard;
+        frames: heard. At the source's end, only with TAIL_FREE_S of it a word (a click is no made-up tail's sound);
     (A) with none there, a share by letters of the head of the next heard word's placed sound (or the tail of the one
         before): when that word holds their sound too (_holds, the LETTER_S rule, or two or more separate bursts of
         sound, one of them its own), or at the source's START when the run is stamped from 0.00 (ZERO_STAMP_S,
-        whisper's start drift) and its spans hold only the room (under room + ATTACHED_OVER_ROOM_DB): heard. Never
-        at the source's end: words over the room there are whisper's made-up tail (review A should-fix 5);
+        whisper's start drift) and its spans hold only the room (under room + ATTACHED_OVER_ROOM_DB), its fillers
+        left out (a removed filler never takes the first word's head): heard. Never at the source's end: words over
+        the room there are whisper's made-up tail (review A should-fix 5). The boundary between the run and its host
+        lies at an edge between two bursts where there is one;
     otherwise they are left inaudible, for the misplaced fold (decision Q4) and the inaudible rule."""
     env, flat, n_fr = lay.env, lay.flat, len(lay.env)
     n = len(words)
     if not n_fr:
         return
+    fill = fill or (lambda w: False)
     min_fr = max(1, int(round(ORDERED_MIN_S / FRAME_S)))
+    orig = list(placed)                  # whether a host holds a run reads its own placement, before any share
     i = 0
     while i < n:
         if kind[i] != "inaudible":
@@ -736,44 +838,52 @@ def _ordered(words, placed, kind, lay):
             if m - k >= min_fr:
                 segs.append((k, m))
             k = m
-        if segs:
-            for m, a, b in _on_voiced(words, run, segs):
+        if segs and (nxt is not None or sum(b - a for a, b in segs) * FRAME_S >= TAIL_FREE_S * len(run) - _EPS):
+            for m, a, b in _on_voiced(words, run, segs, lay, [1] * len(run)):
                 placed[m] = replace(words[m], start=a, end=b)
                 kind[m] = "heard"
             i = j
             continue
-        # (A) a share of a neighbour that holds their sound, or at the source's edge
-        hosts = [h for h in (nxt, prev) if h is not None and kind[h] == "heard"
-                 and placed[h].end - placed[h].start >= FRAME_S * (len(run) + 1) - _EPS]
+        # (A) a share of a neighbour that holds their sound, or at the source's start
+        hosts = [h for h in (nxt, prev) if h is not None and kind[h] == "heard" and not fill(words[h])
+                 and placed[h].end - placed[h].start >= FRAME_S * (len(run) + 1) - _EPS]   # never a filler's sound
         # it holds their sound: long for its own text, or on two or more separate bursts (§577: one is its own)
-        held = [h for h in hosts if _holds(words, placed, flat, h, i, j)
-                or _bursts(flat, placed[h].start, placed[h].end) >= 2]
-        host = max(held, key=lambda h: (_excess(words, placed, h), h == nxt)) if held else None
+        held = [h for h in hosts if _holds(words, orig, flat, h, i, j)
+                or _bursts(flat, orig[h].start, orig[h].end) >= 2]
+        host = max(held, key=lambda h: (_excess(words, orig, h), h == nxt)) if held else None
         if host is None and prev is None and hosts and words[i].start <= ZERO_STAMP_S + _EPS:
             fa = min(_frames(env, words[m].start, max(words[m].end, words[m].start + FRAME_S))[0] for m in run)
             fb = max(_frames(env, words[m].start, max(words[m].end, words[m].start + FRAME_S))[1] for m in run)
             if max(env[fa:fb], default=_SILENT_DB) < lay.room + ATTACHED_OVER_ROOM_DB:
                 host = nxt
-        if host is not None:
+                run = [m for m in run if not fill(words[m])]      # review blocker 2: a filler stays inaudible
+        if host is not None and run:
             hs = _voiced_segs(flat, *_frames(env, placed[host].start, placed[host].end))
             if hs:
                 order = run + [host] if host == nxt else [host] + run
-                for m, a, b in _on_voiced(words, order, hs):
+                groups = [len(run), 1] if host == nxt else [1, len(run)]
+                for m, a, b in _on_voiced(words, order, hs, lay, groups):
                     placed[m] = replace(words[m] if m != host else placed[m], start=a, end=b)
                     kind[m] = "heard"
         i = j
 
 
-def _chain(words, placed, kind, lay):
-    """§577: a run of silent words still inaudible after _ordered and the misplaced fold, with voiced audio that no
-    word holds (ORDERED_MIN_S or more) within CHAIN_S of its span: whisper's drift moved every word between them by
-    one. The words from that sound to the run (the run and the heard words between) are placed again in order over
-    the voiced frames from that sound to the edge of the run's own neighbour, shared by letters: all heard."""
+def _chain(words, placed, kind, lay, fill=None):
+    """§577: a run of silent words still inaudible after _ordered and the misplaced fold, with voiced audio no word
+    holds (ORDERED_MIN_S or more; a heard word's spare bursts count) within CHAIN_S of its span: whisper's drift moved
+    the words between them. The run is FOLDED (2026-10-25 decision): kept in the text, offered inaudible?, folded as
+    the misplaced fold folds (FOLD_S a word inside the breath where it falls in order: after the heard words between
+    that sound and the run, or before them), so removing it cuts no voiced audio. The free sound goes to the heard
+    word beside it on the same voiced run, so it plays; no heard word leaves its own sound, and none takes sound across
+    a silence. Never when a filler is among those words (its sound would play as a kept word's), nor at the source's
+    end with under TAIL_FREE_S of free sound a word (a made-up tail over a click)."""
     env, flat, n_fr = lay.env, lay.flat, len(lay.env)
     n = len(words)
     if not n_fr:
         return
+    fill = fill or (lambda w: False)
     min_fr = max(1, int(round(ORDERED_MIN_S / FRAME_S)))
+    free = None
     i = 0
     while i < n:
         if kind[i] != "inaudible":
@@ -782,18 +892,8 @@ def _chain(words, placed, kind, lay):
         j = i
         while j < n and kind[j] == "inaudible":
             j += 1
-        live = [k for k in range(n) if kind[k] == "heard"]
-        held = bytearray(n_fr)
-        for k in range(n):
-            if kind[k] not in ("inaudible",) and not isinstance(kind[k], tuple):
-                a, b = _frames(env, placed[k].start, placed[k].end)
-                if placed[k].end - placed[k].start > _EPS:
-                    for f in range(a, b):
-                        held[f] = 1
-        free = [(a, b) for a, b in _voiced_segs(flat, 0, n_fr)]
-        free = [seg for a0, b0 in free for seg in _voiced_segs(bytearray(held[a0:b0]), 0, b0 - a0)
-                for seg in [(a0 + seg[0], a0 + seg[1])] if seg[1] - seg[0] >= min_fr]
-        free = [(a, b) for a, b in free if not any(lay.burst_of.get(f) is not None for f in range(a, b))]
+        if free is None:
+            free = _free_sound(words, placed, kind, lay, min_fr)
         t0, t1 = words[i].start, words[j - 1].end
         near = [(max(0.0, a * FRAME_S - t1, t0 - b * FRAME_S), a, b) for a, b in free]
         near = [x for x in near if x[0] <= CHAIN_S + _EPS]
@@ -801,28 +901,67 @@ def _chain(words, placed, kind, lay):
             i = j
             continue
         _, ua, ub = min(near)
+        live = [k for k in range(n) if kind[k] == "heard"]
         if ub * FRAME_S <= t0 + _EPS or (ua * FRAME_S < t1 and (ua + ub) / 2 * FRAME_S < (t0 + t1) / 2):
-            # the sound lies before the run: the heard words placed after it, then the run, to the next neighbour
-            hs = [k for k in live if k < i and placed[k].start >= ua * FRAME_S - _EPS]
-            order = hs + list(range(i, j))
+            # the sound lies before the run: from the heard word placed before it, through the run, to its neighbour
+            before = [k for k in live if k < i and placed[k].end <= ua * FRAME_S + _EPS]
+            fa = max(0, int(math.ceil(placed[before[-1]].end / FRAME_S - 1e-9))) if before else 0
+            hs = [k for k in live if k < i and placed[k].start >= fa * FRAME_S - _EPS]
             end = placed[j].start if j < n else lay.end
-            fa, fb = ua, min(n_fr, int(math.floor(end / FRAME_S + 1e-9)))
+            fb = min(n_fr, int(math.floor(end / FRAME_S + 1e-9)))
+            after_run = True
         else:
-            hs = [k for k in live if k >= j and placed[k].end <= ub * FRAME_S + _EPS]
-            order = list(range(i, j)) + hs
+            after = [k for k in live if k >= j and placed[k].start >= ub * FRAME_S - _EPS]
+            fb = min(n_fr, int(math.floor(placed[after[0]].start / FRAME_S + 1e-9))) if after else n_fr
+            hs = [k for k in live if k >= j and placed[k].end <= fb * FRAME_S + _EPS]
             start = placed[i - 1].end if i > 0 else 0.0
-            fa, fb = max(0, int(math.ceil(start / FRAME_S - 1e-9))), ub
-        if any(isinstance(kind[k], tuple) for k in range(min(order), max(order) + 1)) or \
-                any(kind[k] == "inaudible" and not i <= k < j for k in range(min(order), max(order) + 1)):
+            fa = max(0, int(math.ceil(start / FRAME_S - 1e-9)))
+            after_run = False
+        span = range(min(hs + [i]), max(hs + [j - 1]) + 1)
+        if (any(fill(words[k]) for k in hs) or any(fill(words[k]) for k in range(i, j))
+                or any(isinstance(kind[k], tuple) or kind[k] not in ("heard", "inaudible") for k in span)
+                or any(kind[k] == "inaudible" and not i <= k < j for k in span)):
             i = j
             continue
-        segs = [(a, b) for a, b in _voiced_segs(flat, fa, fb)
-                if not any(lay.burst_of.get(f) is not None for f in range(a, b))]
-        if segs:
-            for m, a, b in _on_voiced(words, order, segs):
-                placed[m] = replace(words[m], start=a, end=b)
-                kind[m] = "heard"
+        mine = [(x0, x1) for x0, x1 in free if x1 > fa and x0 < fb]
+        if not mine:
+            i = j
+            continue
+        if j == n and sum(min(x1, fb) - max(x0, fa) for x0, x1 in mine) * FRAME_S < TAIL_FREE_S * (j - i) - _EPS:
+            i = j          # a made-up tail over a click after the last word: never chained (review blocker 4)
+            continue
+        # the free sound goes to the heard word beside it on the same voiced run (it plays as that word's), never
+        # across a silence; no heard word leaves its own sound
+        for x0, x1 in mine:
+            x0, x1 = max(x0, fa), min(x1, fb)
+            bef = max((k for k in hs if placed[k].end <= x0 * FRAME_S + _EPS), default=None)
+            aft = min((k for k in hs if placed[k].start >= x1 * FRAME_S - _EPS), default=None)
+            if bef is not None and _vid(lay, placed[bef].end - FRAME_S / 2) == _vid(lay, x0 * FRAME_S):
+                placed[bef] = replace(placed[bef], end=round(max(placed[bef].end, x1 * FRAME_S), 6))
+            elif aft is not None and _vid(lay, placed[aft].start + FRAME_S / 2) == _vid(lay, (x1 - 1) * FRAME_S):
+                placed[aft] = replace(placed[aft], start=round(min(placed[aft].start, x0 * FRAME_S), 6))
+        if hs:
+            t = placed[hs[-1]].end if after_run else placed[hs[0]].start
+        else:                                # the free sound right beside the run: the run sits on its near edge
+            t = mine[-1][1] * FRAME_S if after_run else mine[0][0] * FRAME_S
+        for m in range(i, j):
+            # folded as the misplaced fold folds (FOLD_S each against that sound's edge, inside its breath)
+            kind[m] = ("folded", "after" if after_run else "before", round(t, 6))
+            lay.chained.add(m)
+        # read the free sound again where this chain placed words (a voiced run each side, so a cut segment is whole)
+        r0, r1 = fa, fb
+        while r0 > 0 and not flat[r0 - 1]:
+            r0 -= 1
+        while r1 < n_fr and not flat[r1]:
+            r1 += 1
+        free = [x for x in free if x[1] <= r0 or x[0] >= r1] + _free_sound(words, placed, kind, lay, min_fr, r0, r1)
+        free.sort()
         i = j
+
+
+def _vid(lay, t):
+    """The index of layer 1's voiced run holding time t, or None."""
+    return next((n for n, (a, b) in enumerate(lay.voiced) if a - _EPS <= t <= b + _EPS), None)
 
 
 def _at(segs, v, side):
@@ -906,7 +1045,7 @@ _STAMPED = ("FRAME_S", "RATE", "_SILENT_DB", "SPEECH_PERCENTILE", "SILENCE_BELOW
             "ATTACHED_BELOW_SPEECH_DB", "ATTACHED_OVER_ROOM_DB", "GUARD_DB", "PROTECT_OVER_ROOM_DB",
             "BURST_UNDER_PEAK_DB", "BURST_GAP_S", "BURST_MIN_S", "ISLAND_TARGET_S", "ROOM_DENSE_PERCENTILE", "BREATH_S",
             "VIDEO_EDGE_S", "SENTENCE_END_S", "ISLAND_S",
-            "DRIFT_S", "EDGE_BLEED_FRAMES", "FOLD_S", "INAUDIBLE_S", "LETTER_S", "WORD_BASE_S", "MISPLACED_SHARE", "ORDERED_MIN_S", "CHAIN_S", "ZERO_STAMP_S", "MIN_KEEP_S", "MIN_CUT_S",
+            "DRIFT_S", "EDGE_BLEED_FRAMES", "FOLD_S", "INAUDIBLE_S", "LETTER_S", "WORD_BASE_S", "MISPLACED_SHARE", "ORDERED_MIN_S", "CHAIN_S", "TAIL_FREE_S", "ZERO_STAMP_S", "MIN_KEEP_S", "MIN_CUT_S",
             "MEASURED_SILENCE_S")
 
 
@@ -920,14 +1059,16 @@ class Refiner:
     pause_cap = float("inf")
     stamp = VERSION + " " + " ".join(f"{k}={globals()[k]}" for k in _STAMPED)
 
-    def __init__(self, max_pause=None, breath=BREATH_S):
+    def __init__(self, max_pause=None, breath=BREATH_S, is_filler=None):
         self.layers, self.placed, self.kinds, self.raw = {}, {}, {}, {}
         self.quiet_words, self.heard, self.inaudible, self.soft, self.soundless = {}, {}, {}, {}, {}
         self.folded, self.loud = {}, {}     # per source: folded word indexes; words whose whisper span holds sound
+        self.chained = {}                   # per source: word indexes _chain folded
         self.whole = set()          # item ids of clips kept whole (cut sets it): tidy leaves their pieces
         self.dropped = {}           # source -> [(start, end)] pieces of sound with no word layer 1 dropped (L-B4)
         self.max_pause = max_pause
         self.breath = breath
+        self.is_filler = is_filler  # the language's filler test (norm -> bool): §577's ordered placement skips fillers
 
     @property
     def env(self):
@@ -940,7 +1081,7 @@ class Refiner:
         if key not in self.layers:
             env = envelope(media)
             lay = layer1(media, env, self._pause())
-            placed, kind = place(raw, lay, self.breath)
+            placed, kind = place(raw, lay, self.breath, self.is_filler)
             attached = {}
             for _ in range(ATTACH_ROUNDS):       # until nothing changes (A-B2): a word attached makes its neighbour's
                 more = {**_attached_frames(raw, placed, kind, lay, self._pause(), self.breath), **attached}
@@ -948,7 +1089,7 @@ class Refiner:
                     break
                 attached = more
                 lay = layer1(media, env, self._pause(), attached)
-                placed, kind = place(raw, lay, self.breath)
+                placed, kind = place(raw, lay, self.breath, self.is_filler)
             self.layers[key], self.raw[key] = lay, list(raw)
             self.placed[key], self.kinds[key] = placed, kind
             self.quiet_words[key] = {raw[i].idx for i in range(len(raw)) if kind[i] in ("quiet", "folded")}
@@ -956,6 +1097,8 @@ class Refiner:
             self.inaudible[key] = {raw[i].idx for i in range(len(raw)) if kind[i] == "inaudible"}
             self.soundless[key] = {raw[i].idx for i in range(len(raw)) if kind[i] in ("quiet", "folded")}
             self.folded[key] = {raw[i].idx for i in range(len(raw)) if kind[i] == "folded"}
+            # folded by _chain: whisper's drift, not a quiet word (a take is never faint for them)
+            self.chained[key] = {raw[i].idx for i in lay.chained if i < len(raw) and kind[i] == "folded"}
             # §577 (b): never auto-removed (inaudible, tail or the video's edge), at most offered
             self.loud[key] = {w.idx for w in raw if span_voiced(lay, w)}
             # soft: a word whose sound is all under the line (an attached or protected burst, or none): {idx: peak}
@@ -979,12 +1122,29 @@ class Refiner:
         """Word indexes that open a new line: the first word after a cut silence (layer 1's keeps), so each piece of
         a line cut at a silence has an id of its own (review A-B1)."""
         keeps = self.keeps(key)
-        out, prev = set(), None
-        for w in self.placed[key]:
+        out, prev, since = set(), None, 0
+        kinds, placed = self.kinds[key], self.placed[key]
+        for n, w in enumerate(placed):
             m = (w.start + w.end) / 2
             piece = next((n for n, (a, b) in enumerate(keeps) if a - _EPS <= m <= b + _EPS), -1 - w.idx)
             if prev is not None and piece != prev:
                 out.add(w.idx)
+                since = n
+            # §577 (the kungfu refusal): a run of inaudible words (whisper put them in a silence; they are parked in
+            # the breath of the sound before them) that repeats two words in a row said earlier in its line (one, for
+            # a run of one) opens a line of its own: the apply aligns a row to the LAST match in its line, so a kept "or get" of one saying would play
+            # another saying's parked "or get"
+            if n and kinds[n] == "inaudible" and kinds[n - 1] != "inaudible":
+                j = n
+                while j < len(placed) and kinds[j] == "inaudible":
+                    j += 1
+                g = min(2, j - n)            # two words in a row (one, for a run of one) said earlier in the line
+                before = [x.norm for x in placed[since:n]]
+                said = {tuple(before[q:q + g]) for q in range(len(before) - g + 1)}
+                run = [x.norm for x in placed[n:j]]
+                if any(all(run[q:q + g]) and tuple(run[q:q + g]) in said for q in range(len(run) - g + 1)):
+                    out.add(w.idx)
+                    since = n
             prev = piece
         return out
 

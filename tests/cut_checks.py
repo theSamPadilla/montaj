@@ -62,10 +62,17 @@ def burst_frames(d, project=None, max_pause=MAX_PAUSE):
         if not os.path.isfile(side):
             out[f] = set()
             continue
-        ref = speech_energy.Refiner(max_pause)
+        ref = _refiner(max_pause)
         ref(f, _media(d, it), load_words(side))
         out[f] = set(ref.layers[f].attached)
     return out
+
+
+def _refiner(max_pause=MAX_PAUSE):
+    """The engine's refiner as cut builds it for these English tests (its filler test too: §577's placement skips
+    fillers)."""
+    from lib.speech_units import filler_test
+    return speech_energy.Refiner(max_pause, is_filler=filler_test("en"))
 
 
 def _project(d):
@@ -89,7 +96,7 @@ def raw_runs(d, max_pause=MAX_PAUSE):
     rep = flat_report(d, max_pause, sound={})
     if not rep["runs"]:
         return []
-    der = speech_text.derive(project, str(d), project["tracks"][0]["id"], refiner=speech_energy.Refiner(max_pause))
+    der = speech_text.derive(project, str(d), project["tracks"][0]["id"], refiner=_refiner(max_pause))
     items = {it["id"]: it for it in _items(project)}
     loud = []                                    # (timeline start, end) of played words peaking at the guard or over
     for r in der.cut:
@@ -154,7 +161,7 @@ def wordless(d, max_pause=MAX_PAUSE):
     in it, by derive's reading) and under ISLAND_S of sound (frames not flat)."""
     from lib import speech_text
     project = _project(d)
-    der = speech_text.derive(project, str(d), project["tracks"][0]["id"], refiner=speech_energy.Refiner(max_pause))
+    der = speech_text.derive(project, str(d), project["tracks"][0]["id"], refiner=_refiner(max_pause))
     worded = {r.item_ids[0] for r in der.cut if r.kind == "speech" and r.words}
     # the played words' whisper spans (their transcript's own times): sound inside one may be that word's (drift),
     # so it is no lone piece (the engine's rule too)

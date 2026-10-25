@@ -177,7 +177,8 @@ def plan_and_apply(d, monkeypatch, *extra):
 def as_cut_reads(project, d):
     """The timeline's speech as cut reads it: words placed by the audio (lib/speech_energy), so a word whisper put
     in a pause is read where cut folded it, beside the word that holds its sound."""
-    return speech_text.derive(project, str(d), "trk-0", refiner=speech_energy.Refiner())
+    from lib.speech_units import filler_test
+    return speech_text.derive(project, str(d), "trk-0", refiner=speech_energy.Refiner(is_filler=filler_test("en")))
 
 
 def phrases(d):
