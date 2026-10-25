@@ -349,3 +349,19 @@ def test_explicit_eager_is_not_turned_into_background(tmp_path, init_spy):
     cmd = init_spy["cmd"]
     assert cmd.count("--normalize") == 1
     assert cmd[cmd.index("--normalize") + 1] == "eager"
+
+
+@pytest.mark.parametrize("wf_data, canvas", [
+    ({"name": "toy", "project_type": "3d"}, True),  # a 3D template needs no footage unless it says so
+    ({"name": "toy", "project_type": "3d", "requires_clips": True}, False),
+    ({"name": "cut", "project_type": "editing"}, False),  # every other type still defaults to needing clips
+])
+def test_run_without_clips_defaults_requires_clips_by_project_type(monkeypatch, init_spy, wf_data, canvas):
+    monkeypatch.setattr(projects_mod, "read_workflow", lambda name: wf_data)
+    resp = client.post("/api/run", json={"workflow": "user-template", "prompt": "make it", "clips": []})
+    if canvas:
+        assert resp.status_code == 201, resp.text
+        assert "--canvas" in init_spy["cmd"]
+    else:
+        assert resp.status_code == 400
+        assert resp.json()["detail"]["error"] == "clips_required"

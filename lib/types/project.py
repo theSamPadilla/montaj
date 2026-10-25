@@ -14,7 +14,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-PROJECT_TYPES: tuple[str, ...] = ("editing", "ai_video", "carousel", "broll")
+PROJECT_TYPES: tuple[str, ...] = ("editing", "ai_video", "carousel", "broll", "3d")
 DEFAULT_PROJECT_TYPE: str = "editing"
 
 def is_valid_project_type(value: str) -> bool:

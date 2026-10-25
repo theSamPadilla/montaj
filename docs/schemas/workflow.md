@@ -53,13 +53,13 @@ The workflow gives the agent a sensible starting point and encodes domain knowle
 | `name` | string | yes | Must match the filename (e.g. `overlays` for `overlays.json`) |
 | `description` | string | yes | One or two sentences. Agent reads this to understand when to use this workflow. |
 | `steps` | array | yes | Ordered list of step entries |
-| `requires_clips` | boolean | no | When `false`, no source footage is needed. Default: `true`. The UI warns if clips are missing for a workflow that requires them. |
-| `project_type` | string | no | One of `"editing"`, `"ai_video"`, `"carousel"`, `"broll"`. Drives UI branching (upload flow, player actions). Default: `"editing"`. Canonical list: `schema/enums.yaml`. |
+| `requires_clips` | boolean | no | When `false`, no source footage is needed. Default: `true`, or `false` when `project_type` is `"3d"`. The UI warns if clips are missing for a workflow that requires them. |
+| `project_type` | string | no | One of `"editing"`, `"ai_video"`, `"carousel"`, `"broll"`, `"3d"`. Drives UI branching (upload flow, player actions). Default: `"editing"`. Canonical list: `schema/enums.yaml`. |
 | `notes` | string | no | Extra guidance for the agent — conventions, track ordering rules, or input semantics specific to this workflow. Read alongside the description before the agent begins execution. |
 
 ### Project types
 
-`project_type` is a coarse UI hint. It does not affect workflow execution. Four values are defined — `schema/enums.yaml` is the single source of truth, and this table must be kept in step with it:
+`project_type` is a coarse UI hint. It does not affect workflow execution. Five values are defined — `schema/enums.yaml` is the single source of truth, and this table must be kept in step with it:
 
 | Value | Upload UI | Review phase before timeline | Player actions added |
 |-------|-----------|------------------------------|----------------------|
@@ -67,6 +67,7 @@ The workflow gives the agent a sensible starting point and encodes domain knowle
 | `ai_video` | Prompt + image references (image or text per slot) + style references (up to 2) + settings | **StoryboardView** — review + approve the storyboard before videos are generated | "Regenerate section" (per-clip) and future generation actions |
 | `carousel` | Aspect picker (square / portrait / vertical) + image assets + prompt + workflow picker | N/A — carousel projects have no timeline; review happens in the slide editor | None (no video player) |
 | `broll` | Footage drop zone + image assets + voiceover file (audio or video; audio only is used) + prompt | None | None |
+| `3d` | The app's 3D start (describe, a Library model or an import); no clips needed | The model's approval, before the video | None |
 
 Workflows without `project_type` are treated as `"editing"`. Third-party workflows (user-global in `~/.montaj/workflows/` or project-local in `./workflows/`) can declare any of these values to invoke the corresponding UI without shipping UI code.
 

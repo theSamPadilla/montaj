@@ -211,6 +211,15 @@ def test_multiple_clips_all_in_primary_track(tmp_path):
 # projectType propagation tests
 # ---------------------------------------------------------------------------
 
+def test_a_3d_workflow_gets_the_3d_type(tmp_path):
+    result = run_init("--canvas", "--prompt", "test", "--workflow", "robot",
+                      env_override=_user_workflow_env(tmp_path, "robot", "3d"))
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert project["projectType"] == "3d"
+    assert "storyboard" not in project
+
+
 def test_a_workflow_with_the_retired_music_video_type_makes_an_editing_project(tmp_path):
     result = run_init("--canvas", "--prompt", "test", "--workflow", "lyrics",
                       env_override=_user_workflow_env(tmp_path, "lyrics", "music_video"))

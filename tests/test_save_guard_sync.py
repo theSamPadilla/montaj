@@ -1147,6 +1147,17 @@ def test_case12_a_retired_project_type_heals_while_another_field_is_in_clash(ws,
     assert json.loads(_disk(d))["projectType"] == "editing"
 
 
+def test_case12_an_old_3d_project_heals_to_3d_only_once_a_projecttype_clash_closes(ws, state):
+    d = _project(ws, projectType="editing", workflow="model-3d", model3d={"slug": "arm", "approved": True})
+    side = _sidecar(state, fields=["projectType"])
+    before = _disk(d)
+    assert _client().get(f"/api/projects/{PID}", headers=AI).json()["projectType"] == "3d"
+    assert _disk(d) == before
+    side.unlink()
+    assert _client().get(f"/api/projects/{PID}", headers=AI).status_code == 200
+    assert json.loads(_disk(d))["projectType"] == "3d"
+
+
 def test_case12_a_settings_write_back_canvas_size_skips_a_clashed_settings(ws, state):
     d = _project(ws, settings={"resolution": [1080, 1920]})
     side = _sidecar(state, fields=["settings"])
