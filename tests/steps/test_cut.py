@@ -2260,9 +2260,17 @@ def test_a_voiceover_changed_during_a_silence_apply_refuses_it(tmp_path, stub_tr
     assert (d / "project.json").read_bytes() == human["bytes"]
 
 
-def test_a_silence_threshold_passed_with_a_plan_is_not_used_and_says_so(tmp_path, stub_transcribe, monkeypatch):
-    d = make_project(tmp_path, transcript=retake_transcript())
-    plan, _ = run(d, monkeypatch=monkeypatch)
-    applied, _ = run(d, "--plan", plan["plan"], "--silence-threshold", "-45", monkeypatch=monkeypatch)
+@pytest.mark.parametrize("speech", [True, False])
+def test_a_plan_applied_at_another_silence_threshold_is_refused_as_stale(tmp_path, stub_transcribe, monkeypatch,
+                                                                         capsys, speech):
+    """Another level gives another base, so the plan would not say what the apply keeps: refused like a max-pause
+    or breath that differs from the plan's. The plan's own level, passed again, applies."""
+    stub_transcribe(retake_transcript() if speech else {"transcription": []})
+    d = make_project(tmp_path)
+    plan, _ = run(d, "--silence-threshold", "-42", monkeypatch=monkeypatch)
+    before = (d / "project.json").read_bytes()
+    assert refused(d, "--plan", plan["plan"], "--silence-threshold", "-30", monkeypatch=monkeypatch,
+                   capsys=capsys) == "stale_plan"
+    assert (d / "project.json").read_bytes() == before
+    applied, _ = run(d, "--plan", plan["plan"], "--silence-threshold", "-42", monkeypatch=monkeypatch)
     assert applied["mode"] == "applied"
-    assert any(w.startswith("silence-threshold -45 was not used") for w in applied.get("warnings", []))

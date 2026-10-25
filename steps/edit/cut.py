@@ -1333,10 +1333,11 @@ def _apply_plan(args, project_path, project_dir):
         threshold = float(sil.group(4)) if sil.group(4) else SILENCE_THRESHOLD_DB
     else:
         threshold = plan_threshold if plan_threshold is not None else SILENCE_THRESHOLD_DB
+    if args.silence_threshold is not None and abs(args.silence_threshold - threshold) > 1e-6:
+        # another level gives another base, so the plan's text would not say what the apply keeps
+        fail("stale_plan", f"This plan was made at silence-threshold {threshold:g}. Run cut again at "
+                           f"{args.silence_threshold:g}, or apply it without silence-threshold (your edited plan is kept).")
     warnings = []
-    if args.silence_threshold is not None and args.silence_threshold != threshold:
-        warnings.append(f"silence-threshold {args.silence_threshold:g} was not used: a plan applies at its own level "
-                        f"({threshold:g}). Run cut without plan for a plan at the new level.")
     b = _build(project_path, project_dir, disk_l, track_id, language, warnings, max_pause, breath, threshold)
     stale = ("This plan was made before cut was updated, or the timeline changed. Run cut again (your edited plan "
              "is kept).")
