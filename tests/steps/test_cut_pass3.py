@@ -200,14 +200,15 @@ def _room_run(db):
     return spans, words
 
 
-def test_a_run_seven_db_over_the_room_is_never_removed(tmp_path, monkeypatch):
-    """Review B L-B3: 'the bike' at 7 dB over the room (43 dB under the speech) is never auto-removed: more than 6 dB
-    over the room, so they stay, their own sound kept as a burst (b7639ba5: offered; 50258c43: removed)."""
+def test_a_run_seven_db_over_the_room_in_a_silence_goes_with_it(tmp_path, monkeypatch):
+    """'the bike' at 7 dB over the room (43 dB under the speech), wholly in a silence, 'ride' too short to hold them:
+    they go with the silence, tagged inaudible. FINISH v5 protects only what the -46 guard hears (the fix pass kept
+    them for being 6 dB over the room; b7639ba5 offered them)."""
     spans, words = _room_run(tc.NOISE_DB + 7)
     d = tc.tone_project(tmp_path, [("vo", spans, 3.2, words)])
     plan, text, _, said = plan_apply(d, monkeypatch)
-    assert said == ["we", "ride", "the", "bike", "all", "day."], (said, text)
-    assert plan["removed"]["inaudible"] == 0, plan
+    assert said == ["we", "ride", "all", "day."], (said, text)
+    assert plan["removed"]["inaudible"] == 2, plan
 
 
 def test_a_run_three_db_over_the_room_for_its_whole_span_is_removed(tmp_path, monkeypatch):

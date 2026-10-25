@@ -26,8 +26,8 @@ Layer 2, WHAT TO REMOVE, is whisper's words (cut's take rules). Here each word i
 - SOFT words (_attached_frames): a word with no voiced frame keeps ONE BURST of its own sound under the line (the
   run around its loudest frame, a 0.1 s dip ending it, at least BURST_MIN_S, at most its expected length and max-pause
   less two breaths, never into a heard word's sound): ATTACHED (the orchestrator's rule) between kept words, at
-  max(speech - 40 dB, room + 10 dB); PROTECTED anywhere when it peaks at GUARD_DB or more than PROTECT_OVER_ROOM_DB
-  over the room (never auto-removed, review B L-B3). The room is the 10th-percentile flat frame. Layer 1 is read again
+  max(speech - 40 dB, room + 10 dB); PROTECTED anywhere when the guard hears it, peaking at GUARD_DB or over (never
+  auto-removed, review B L-B3). The room is the 10th-percentile flat frame. Layer 1 is read again
   with the bursts as sound until nothing changes. Never sound with no word attached (a breath between words);
 - a word with no voiced frame is OFFERED (stats["quiet"]: cut tags it `inaudible?`) and kept: where its span meets a
   voiced run (a pause inside the keeps), it is placed there;
@@ -74,7 +74,7 @@ SILENCE_BELOW_SPEECH_DB = 30.0   # a frame this far under the source's speech le
 ATTACHED_BELOW_SPEECH_DB = 40.0  # ... but an attached word's own frames down to this far under it are its sound,
 ATTACHED_OVER_ROOM_DB = 10.0     # ... and this far over the room (v5a fix 1)
 GUARD_DB = -46.0                 # a word peaking at or over this is never auto-removed (compare's guard, L-B3) ...
-PROTECT_OVER_ROOM_DB = 6.0       # ... nor one this far over the room
+PROTECT_OVER_ROOM_DB = 6.0       # a protected word's burst never reaches down to the room plus this
 BURST_UNDER_PEAK_DB = 6.0        # a protected word's burst: its frames down to this far under its peak
 BURST_GAP_S = 0.1                # a dip under the line this long ends a word's burst (v5a fix 2)
 BURST_MIN_S = 0.03               # a burst shorter than this is no word's sound (L-B2)
@@ -170,6 +170,7 @@ class Layer:
     keeps: list | None = None
     held: set = field(default_factory=set)
     attached: set = field(default_factory=set)
+    burst_of: dict = field(default_factory=dict)   # attached frame -> the index of the word whose burst it is
     room: float = _SILENT_DB
     raw_flat: bytearray = field(default_factory=bytearray)    # flat.py's flat frames: the attached ones too
 
@@ -208,27 +209,33 @@ def layer1(media, env, max_pause, attached=frozenset()):
     measured = [(round(a * FRAME_S, 6), round(b * FRAME_S, 6)) for a, b in runs
                 if (b - a) * FRAME_S >= MEASURED_SILENCE_S - 1e-9]
     return Layer(env, speech, thr, flat, sils, [list(k) for k in voiced], end, measured, attached=set(attached),
+                 burst_of=dict(attached) if isinstance(attached, dict) else {},
                  room=room, raw_flat=raw_flat)
 
 
 def _protected(lay, peak):
-    """A word with no voiced frame is never auto-removed when its peak reaches GUARD_DB or lies more than
-    PROTECT_OVER_ROOM_DB over the room (review B L-B3; review A A-B2's max(speech - 40, room + 10) is within it)."""
-    return peak >= GUARD_DB or peak > lay.room + PROTECT_OVER_ROOM_DB
+    """A word with no voiced frame is never auto-removed when the guard hears it: its peak at GUARD_DB or over
+    (review B L-B3, as FINISH v5 narrowed it: no room-relative clause, so a quiet room's breaths stay silence)."""
+    return peak >= GUARD_DB
 
 
-def _burst_run(lay, k, a, b, line):
+def _burst_run(lay, k, a, b, line, owner=None, me=None):
     """The run of frames around frame k, within [a, b), at or over `line`: a dip under it of BURST_GAP_S or more
-    ends it; (first, end) frames, trimmed to frames over the line."""
+    ends it, and so does a dip that leads into another word's whisper span (owner: the word index each frame's
+    middle lies in); (first, end) frames, trimmed to frames over the line."""
     env, gap = lay.env, int(round(BURST_GAP_S / FRAME_S))
     lo = hi = k
     for step in (-1, 1):
         under, f = 0, k + step
         while a <= f < b:
-            under = under + 1 if env[f] < line else 0
-            if under >= gap:
-                break
-            if env[f] >= line:
+            if env[f] < line:
+                under += 1
+                if under >= gap:
+                    break
+            else:
+                if under and owner is not None and owner[f] >= 0 and owner[f] != me:
+                    break                          # past a dip, into another word's own sound
+                under = 0
                 lo, hi = min(lo, f), max(hi, f)
             f += step
     return lo, hi + 1
@@ -241,8 +248,8 @@ def _attached_frames(words, placed, kind, lay, max_pause, breath=BREATH_S):
     - ATTACHED (the orchestrator's rule, binding): a word between the source's first and last heard words with a heard
       word on each side, or within max-pause of a heard word's sound, at the line max(speech - ATTACHED_BELOW_SPEECH_DB,
       room + ATTACHED_OVER_ROOM_DB) (v5a fix 1: never at the room);
-    - PROTECTED (L-B3, A-B2): any other word never auto-removed (_protected), at max(room + PROTECT_OVER_ROOM_DB,
-      min(that line, its peak - BURST_UNDER_PEAK_DB)).
+    - PROTECTED (L-B3, A-B2): any other word the guard hears (_protected: peak at GUARD_DB or over), at
+      max(room + PROTECT_OVER_ROOM_DB, min(that line, its peak - BURST_UNDER_PEAK_DB)).
     A burst looks in the word's span and DRIFT_S beside it, never into a heard word's placed sound; two soft words'
     bursts that meet split at the longest dip between them; each is at most LETTER_S a letter plus WORD_BASE_S and
     at most max-pause less two breaths (so a burst never hides an empty stretch), and at least BURST_MIN_S. Never
@@ -250,7 +257,13 @@ def _attached_frames(words, placed, kind, lay, max_pause, breath=BREATH_S):
     heard = [i for i in range(len(words)) if kind[i] == "heard"]
     env = lay.env
     line0 = max(lay.speech - ATTACHED_BELOW_SPEECH_DB, lay.room + ATTACHED_OVER_ROOM_DB)
-    raw = []                                  # [anchor, lo, hi, line, cap]
+    owner = [-1] * len(env)
+    for i, w in enumerate(words):
+        fa, fb = _frames(env, w.start, w.end)
+        for f in range(fa, fb):
+            if owner[f] < 0 and w.start - _EPS <= (f + 0.5) * FRAME_S <= w.end + _EPS:
+                owner[f] = i
+    raw = []                                  # [anchor, lo, hi, line, cap, word]
     for i, w in enumerate(words):
         if kind[i] == "heard":
             continue
@@ -275,8 +288,8 @@ def _attached_frames(words, placed, kind, lay, max_pause, breath=BREATH_S):
             if not cand:
                 continue
             k = max(cand, key=lambda f: (env[f], -f))
-            lo, hi = _burst_run(lay, k, a, b, line)
-            raw.append([k, lo, hi, line, cap])
+            lo, hi = _burst_run(lay, k, a, b, line, owner, i)
+            raw.append([k, lo, hi, line, cap, i])
             break
     raw.sort()
     for x, y in zip(raw, raw[1:]):            # two bursts that meet split at the longest dip between their anchors
@@ -298,13 +311,13 @@ def _attached_frames(words, placed, kind, lay, max_pause, breath=BREATH_S):
             else:
                 mid = (x[0] + y[0] + 1) // 2
                 x[2], y[1] = min(x[2], mid), max(y[1], mid)
-    out = set()
-    for k, lo, hi, line, cap in raw:
+    out = {}
+    for k, lo, hi, line, cap, i in raw:
         if hi - lo > cap:
             lo = max(lo, min(k - cap // 2, hi - cap))
             hi = lo + cap
         if (hi - lo) * FRAME_S >= BURST_MIN_S - 1e-9:
-            out.update(f for f in range(lo, hi) if env[f] < lay.threshold)    # its frames under the line only
+            out.update((f, i) for f in range(lo, hi) if env[f] < lay.threshold)    # its frames under the line only
     return out
 
 
@@ -417,10 +430,12 @@ def place(words, lay, breath=BREATH_S):
     drift = int(round(DRIFT_S / FRAME_S))
     prom = lay.attached                    # frames of a soft word's burst: sound, but never a neighbour's onset
 
-    def clusters(a, b):
+    burst_of = lay.burst_of
+
+    def clusters(a, b, me=None):
         out = []
         for k in range(a, b):
-            if flat[k]:
+            if flat[k] or burst_of.get(k, me) != me:            # never another word's burst
                 continue
             if out and vid[out[-1][0]] == vid[k]:
                 out[-1][1] = k + 1
@@ -461,7 +476,7 @@ def place(words, lay, breath=BREATH_S):
                 and placed[i - 1].end >= (a - 1) * FRAME_S - _EPS):        # the sound the word before is placed on
             placed[i - 1] = replace(placed[i - 1], end=round(max(placed[i - 1].end, (a + m) * FRAME_S), 6))
             a += m
-        cs = clusters(a, b)
+        cs = clusters(a, b, i)
         if g is None and len(cs) >= 2 and i > 0 and kind[i - 1] == "heard":
             c = cs[0]
             if (c[0] == a and a > 0 and not flat[a - 1] and c[1] - a <= drift
@@ -667,27 +682,6 @@ def _misplaced(words, placed, kind, flat=None):
         i = j
 
 
-def _take_spans(placed, lay):
-    """The spans the take, break and F1 rules read (review A should-fix 1): each placed word widened over the frames
-    beside it at or over the speech level less ATTACHED_BELOW_SPEECH_DB (a soft tail or onset is sound), never into
-    the next or previous word's span."""
-    line = lay.speech - ATTACHED_BELOW_SPEECH_DB
-    env, n = lay.env, len(lay.env)
-    out = list(placed)
-    for i, w in enumerate(placed):
-        if w.end - w.start <= _EPS:
-            continue
-        lo = placed[i - 1].end if i else 0.0
-        hi = placed[i + 1].start if i + 1 < len(placed) else n * FRAME_S
-        a, b = int(round(w.start / FRAME_S)), int(round(w.end / FRAME_S))
-        while a - 1 >= 0 and (a - 1) * FRAME_S >= lo - _EPS and env[a - 1] >= line:
-            a -= 1
-        while b < n and (b + 1) * FRAME_S <= hi + _EPS and env[b] >= line:
-            b += 1
-        out[i] = replace(w, start=round(min(w.start, a * FRAME_S), 6), end=round(max(w.end, b * FRAME_S), 6))
-    return out
-
-
 # ── what speech_text.derive and cut call ────────────────────────────────────────────────────────────────────
 
 _STAMPED = ("FRAME_S", "RATE", "_SILENT_DB", "SPEECH_PERCENTILE", "SILENCE_BELOW_SPEECH_DB",
@@ -728,9 +722,9 @@ class Refiner:
             env = envelope(media)
             lay = layer1(media, env, self._pause())
             placed, kind = place(raw, lay, self.breath)
-            attached = set()
+            attached = {}
             for _ in range(ATTACH_ROUNDS):       # until nothing changes (A-B2): a word attached makes its neighbour's
-                more = attached | _attached_frames(raw, placed, kind, lay, self._pause(), self.breath)
+                more = {**_attached_frames(raw, placed, kind, lay, self._pause(), self.breath), **attached}
                 if more == attached:
                     break
                 attached = more
@@ -756,7 +750,7 @@ class Refiner:
         stats = {"inaudible": sorted(self.inaudible[key]), "quiet": sorted(self.quiet_words[key]),
                  "folded": [placed[i].idx for i in range(len(placed)) if kind[i] == "folded"],
                  "heard": sorted(self.heard[key]), "inside_words": [], "inside": 0, "attached": 0, "orphan": 0,
-                 "untrimmed": _take_spans(placed, lay), "line_breaks": self._line_breaks(key)}
+                 "untrimmed": list(placed), "line_breaks": self._line_breaks(key)}
         return list(placed), stats, list(lay.measured)
 
     def _line_breaks(self, key):

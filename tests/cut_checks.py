@@ -81,13 +81,39 @@ def _media(d, it):
     return os.path.join(str(d), os.path.basename(it["src"]))
 
 
-def _timeline(d, project, held=None, whole=(), max_pause=MAX_PAUSE):
+def raw_runs(d, max_pause=MAX_PAUSE):
+    """flat.py v2's own (raw) flat runs over max-pause on the joined timeline, no burst counted as sound, less any run
+    that holds a played word peaking at LOUD_DB or more (the controller's annotation): what the raw check flags."""
+    from lib import speech_text
+    project = _project(d)
+    rep = flat_report(d, max_pause, sound={})
+    if not rep["runs"]:
+        return []
+    der = speech_text.derive(project, str(d), project["tracks"][0]["id"], refiner=speech_energy.Refiner(max_pause))
+    items = {it["id"]: it for it in _items(project)}
+    loud = []                                    # (timeline start, end) of played words peaking at the guard or over
+    for r in der.cut:
+        if r.kind != "speech":
+            continue
+        it = items.get(r.item_ids[0])
+        if it is None:
+            continue
+        db, _ = frames_db(_media(d, it))
+        for w in r.words:
+            pk = max(db[int(w.start * 100):max(int(w.start * 100) + 1, int(math.ceil(w.end * 100)))], default=-120.0)
+            if pk >= LOUD_DB:
+                t0 = float(it["start"]) + w.start - float(it["inPoint"])
+                loud.append((t0, t0 + w.end - w.start))
+    return [r for r in rep["runs"] if not any(a < r["timeline"] + r["len"] and b > r["timeline"] for a, b in loud)]
+
+
+def _timeline(d, project, held=None, whole=(), max_pause=MAX_PAUSE, sound=None):
     """The joined timeline: [(media basename, source frame, flat, exempt)] per frame of every speech item in timeline
     order. exempt: "held" for a frame inside a silence kept for an overlay ({media: [(start, end)]}), "whole" for a
     frame of an item kept whole (b-roll: item ids), else None."""
     out = []
     held = held or {}
-    sound = burst_frames(d, project, max_pause)
+    sound = burst_frames(d, project, max_pause) if sound is None else sound
     for it in sorted(_items(project), key=lambda it: float(it["start"])):
         f = os.path.basename(it["src"])
         db, ref = frames_db(_media(d, it))
@@ -101,12 +127,12 @@ def _timeline(d, project, held=None, whole=(), max_pause=MAX_PAUSE):
     return out
 
 
-def flat_report(d, max_pause=MAX_PAUSE, held=None, whole=()):
+def flat_report(d, max_pause=MAX_PAUSE, held=None, whole=(), sound=None):
     """flat.py v2's numbers on the JOINED timeline of the project at d: {"lead_s", "tail_s", "longest_flat",
     "over_max_pause", "runs", "held_runs", "whole_runs"}. A run over max-pause holding a frame of a held silence (D2)
     or of a whole-kept clip goes to its own column."""
     project = _project(d)
-    tl = _timeline(d, project, held, whole, max_pause)
+    tl = _timeline(d, project, held, whole, max_pause, sound)
     flags = [x[2] for x in tl]
     runs, held_runs, whole_runs, longest = [], [], [], 0.0
     for i, j in flat_runs([0.0 if f else 1.0 for f in flags], 0.5):

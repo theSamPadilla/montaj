@@ -257,8 +257,8 @@ def test_the_plan_writes_nothing_to_the_project(tmp_path, stub_transcribe, monke
     assert sum(out["removed"]["lines"].values()) == len(groups) - len(offered)    # one group per take
     assert out["removed"]["lines"] == {"retake": 2, "false-start": 1}
     # F1 offers the earlier take (see KEPT); v5: words with no sound of their own ("timeline.", which whisper put in
-    # the silence after "the", and "want.") are kept and offered inaudible?, one offer per take
-    assert out["suggested"] == {"retake?": 1, "inaudible?": 2}
+    # the silence after "the", "want.", "so") are kept and offered inaudible?, one offer per take
+    assert out["suggested"] == {"retake?": 1, "inaudible?": 3}
     assert out["removed"]["fillers"] == 1 and out["removed"]["seconds"] > 0
     assert out["removed"]["seconds"] == pytest.approx(SOURCE_S - out["kept"]["seconds"], abs=0.02)
     lines = out["cut"].splitlines()

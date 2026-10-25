@@ -46,7 +46,7 @@ def refiner(by_src, max_pause=0.45):
     for src, (env, ws) in by_src.items():
         lay = se.layer1(MEDIA, env, max_pause)
         placed, kind = se.place(ws, lay, ref.breath)
-        att = se._attached_frames(ws, placed, kind, lay, max_pause)
+        att = se._attached_frames(ws, placed, kind, lay, max_pause)  # {frame: word}
         if att:
             lay = se.layer1(MEDIA, env, max_pause, att)
             placed, kind = se.place(ws, lay, ref.breath)
@@ -180,19 +180,14 @@ def test_a_soft_word_whose_span_takes_in_a_neighbours_onset_keeps_its_own_sound(
     assert out[3][1] == 1.6, out
 
 
-def test_a_soft_word_at_the_lead_or_tail_is_never_attached_but_keeps_its_burst():
-    """Attached needs kept words beside it, so the lead and tail are never attached; but a word 15 dB over the room
-    is never auto-removed (L-B3): it keeps its burst, soft, for cut to send to ## Unused (2b's (b))."""
-    env = env_of(3.0, (0.30, 0.50, -55.0), (1.20, 1.50, SP), (2.40, 2.60, -55.0))
+def test_a_soft_word_at_the_lead_or_tail_keeps_a_burst_only_when_the_guard_hears_it():
+    """Attached needs kept words beside it, so the lead and tail are never attached; a word there keeps its burst only
+    when it peaks at the -46 guard or over (FINISH v5: no room-relative protection)."""
     ws = words(("faint", 0.3, 0.5), ("loud", 1.2, 1.5), ("faint.", 2.4, 2.6))
-    ref = refiner({"a": (env, ws)})
-    assert ref.kinds["a"] == ["heard", "heard", "heard"]
-    ref.soft["a"] = {}
-    ref("a", MEDIA, ws) if False else None
-    lay = ref.layers["a"]
-    assert all(max(env[int(p.start / F):int(p.end / F)]) < lay.threshold for p in (ref.placed["a"][0], ref.placed["a"][2]))
-    env = env_of(3.0, (0.30, 0.50, -66.0), (1.20, 1.50, SP), (2.40, 2.60, -66.0))
-    assert [k for *_, k in placed_of(env, ws)] == ["inaudible", "heard", "inaudible"]      # within 6 dB of the room
+    env = env_of(3.0, (0.30, 0.50, -55.0), (1.20, 1.50, SP), (2.40, 2.60, -55.0))
+    assert [k for *_, k in placed_of(env, ws)] == ["inaudible", "heard", "inaudible"]      # 15 dB over the room
+    env = env_of(3.0, (0.30, 0.50, -45.0), (1.20, 1.50, SP), (2.40, 2.60, -45.0))
+    assert [k for *_, k in placed_of(env, ws)] == ["heard", "heard", "heard"]              # the guard hears it
 
 
 def test_a_breath_with_no_word_stays_silence():

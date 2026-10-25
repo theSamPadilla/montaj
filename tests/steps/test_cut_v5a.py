@@ -17,6 +17,7 @@ from steps.audio import waveform_trim
 from tests import cut_checks
 from tests.steps import test_cut as tc
 from tests.steps import test_cut_v5 as v5
+from tests.steps.test_cut import stub_transcribe  # noqa: F401  (the fixture)
 
 SP = -20.0
 
@@ -143,27 +144,28 @@ def heard_tones_play(d, tones, room, skip=()):
 
 
 @pytest.mark.parametrize("db", [-52.0, -55.0, -58.0])
-def test_the_videos_soft_last_word_goes_to_unused_offered(tmp_path, monkeypatch, db):
-    """2b's (b): a soft last word of the video (35+ dB under the speech, 17+ over the room) is not played; it is in
-    ## Unused tagged inaudible?, and one move restores it."""
+def test_the_videos_soft_last_word_goes_to_unused(tmp_path, monkeypatch, db):
+    """A soft last word of the video (35+ dB under the speech, under the -46 guard, wholly in a silence) is not
+    played: FINISH v5 protects only what the guard hears, so it goes with its silence, tagged inaudible, and one move
+    restores it (fix pass: inaudible?, its burst kept)."""
     tones = [(0.30, 0.55, SP), (0.60, 0.85, SP), (0.90, 1.15, SP), (1.20, 1.45, SP), (1.75, 2.05, db)]
     words = [("that", 0.30, 0.60), ("is", 0.60, 0.90), ("all", 0.90, 1.20), ("folks", 1.20, 1.75), ("bye.", 1.75, 2.05)]
     d = v5.project(tmp_path, monkeypatch, [("vo", tones, 3.0, words)], room=-75.0)
     plan, text, applied, said_, before = v5.plan_apply(d, monkeypatch)
     unused = tc.sections(text)[1]
-    assert "bye." not in said_ and any("bye." in r and r.endswith("inaudible?]") for r in unused), (said_, text)
-    assert plan["removed"]["inaudible"] == 0 and "inaudible?" in plan["removed"]["lines"], plan["removed"]
+    assert "bye." not in said_ and any("bye." in r and r.endswith(" inaudible]") for r in unused), (said_, text)
+    assert v5.cover(d, 1.75, 2.05) < 0.05, tc.kept_iv(d)
     v5.checked(d, plan, applied, before)
 
 
 @pytest.mark.parametrize("db", [-52.0, -55.0, -58.0])
-def test_the_videos_soft_first_word_goes_to_unused_offered(tmp_path, monkeypatch, db):
+def test_the_videos_soft_first_word_goes_to_unused(tmp_path, monkeypatch, db):
     tones = [(0.30, 0.55, db), (0.90, 1.15, SP), (1.20, 1.45, SP), (1.50, 1.75, SP), (1.80, 2.05, SP)]
     words = [("so", 0.30, 0.90), ("we", 0.90, 1.20), ("went", 1.20, 1.50), ("out", 1.50, 1.80), ("today.", 1.80, 2.05)]
     d = v5.project(tmp_path, monkeypatch, [("vo", tones, 3.0, words)], room=-75.0)
     plan, text, applied, said_, before = v5.plan_apply(d, monkeypatch)
     unused = tc.sections(text)[1]
-    assert said_[0] == "we" and any(re.search(r"\bso\b", r) and r.endswith("inaudible?]") for r in unused), text
+    assert said_[0] == "we" and any(re.search(r"\bso\b", r) and r.endswith(" inaudible]") for r in unused), text
     v5.checked(d, plan, applied, before)
 
 
@@ -173,7 +175,7 @@ def test_one_move_restores_the_videos_soft_first_word(tmp_path, monkeypatch):
     d = v5.project(tmp_path, monkeypatch, [("vo", tones, 3.0, words)], room=-75.0)
     plan, text = plan_only(d, monkeypatch)
     lines = text.splitlines()
-    star = next(ln for ln in lines if ln.startswith("*") and ln.endswith("inaudible?]"))
+    star = next(ln for ln in lines if ln.startswith("*") and ln.endswith(" inaudible]"))
     lid = star[1:].split()[0]
     at = next(i for i, ln in enumerate(lines) if ln.startswith(lid + " "))
     lines = [ln for ln in lines if ln is not star and not ln.startswith(lid + " ")]
@@ -184,17 +186,22 @@ def test_one_move_restores_the_videos_soft_first_word(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("db", [-55.0, -58.0, -62.0])
 @pytest.mark.parametrize("drift", [0.0, 0.12])
-def test_a_soft_aside_pair_mid_line_plays(tmp_path, monkeypatch, db, drift):
-    """'we won | just kidding | we lost.': the aside 35-42 dB under the speech, 13-20 dB over the room; whisper's
-    spans exact or 0.12 s late. Its sound plays and its words stay (attached, or kept as an offered word's burst)."""
+def test_a_soft_aside_pair_mid_line(tmp_path, monkeypatch, db, drift):
+    """'we won | just kidding | we lost.': the aside 35-42 dB under the speech, under the -46 guard. 'kidding' ends
+    where 'we' starts, so it is attached and so, in turn, is 'just': at -55 and -58 (over the attached line,
+    max(speech - 40, room + 10) = -60) their sound plays. At -62 it is under that line, and FINISH v5 protects only
+    what the guard hears: the silence is cut and the words go with it, tagged inaudible (the fix pass kept them)."""
     tones = [(0.30, 0.55, SP), (0.60, 0.85, SP), (1.40, 1.60, db), (1.65, 1.85, db), (2.50, 2.75, SP), (2.80, 3.05, SP)]
     words = [("we", 0.30, 0.60), ("won", 0.60, 1.40 + drift), ("just", 1.40 + drift, 1.65 + drift),
              ("kidding", 1.65 + drift, 2.50), ("we", 2.50, 2.80), ("lost.", 2.80, 3.05)]
     d = v5.project(tmp_path, monkeypatch, [("vo", tones, 3.8, words)], room=-75.0)
     plan, text, applied, said_, before = v5.plan_apply(d, monkeypatch)
-    assert {"just", "kidding"} <= set(said_), (said_, text)
-    assert not heard_tones_play(d, tones, -75.0), (heard_tones_play(d, tones, -75.0), tc.kept_iv(d))
-    v5.checked(d, plan, applied, before)
+    if db > -60.0:
+        assert {"just", "kidding"} <= set(said_), (said_, text)
+        assert not heard_tones_play(d, tones, -75.0), (heard_tones_play(d, tones, -75.0), tc.kept_iv(d))
+    else:
+        assert not ({"just", "kidding"} & set(said_)) and plan["removed"]["inaudible"] == 2, (said_, text)
+    v5.checked(d, plan, applied, before, v5.kept_tones("vo", tones, [0, 1, 4, 5]))
 
 
 @pytest.mark.parametrize("faint", [-42.0, -45.0])
@@ -230,14 +237,16 @@ def test_a_gain_drop_to_the_end_loses_no_word(tmp_path, monkeypatch):
     v5.checked(d, plan, applied, before, v5.kept_tones("vo", tones))
 
 
-def test_a_last_word_under_the_guard_goes_to_unused_offered(tmp_path, monkeypatch):
-    """The mirror: the last sentence at -50 (under -46): its words play as attached sound, but the video's last word,
-    soft and under the guard, goes to ## Unused tagged inaudible? (2b's (b))."""
+def test_a_last_sentence_under_the_guard_goes_tagged_inaudible(tmp_path, monkeypatch):
+    """The mirror: the last sentence at -50 (36 dB under the speech, under the -46 guard): FINISH v5 protects only
+    what the guard hears, so the whole sentence is a silence to layer 1 and goes with it, tagged inaudible, one move
+    from coming back."""
     d, tones, words = _gain_drop(tmp_path, monkeypatch, -50.0)
     plan, text, applied, said_, before = v5.plan_apply(d, monkeypatch)
-    assert said_ == [w for w, _, _ in words][:-1], (said_, text)
-    assert any(r.endswith("inaudible?]") and "word." in r for r in tc.sections(text)[1]), text
-    v5.checked(d, plan, applied, before, v5.kept_tones("vo", tones[:-1]))
+    n = len(tc.spoken(["the first half is close to the mic and loud."], db=-14.0)[1])
+    assert said_ == [w for w, _, _ in words][:n], (said_, text)
+    assert any(r.endswith(" inaudible]") and "every word." in r for r in tc.sections(text)[1]), text
+    v5.checked(d, plan, applied, before, v5.kept_tones("vo", tones[:n]))
 
 
 # ── should-fix 3: a filler's removal never takes a neighbour's sound ───────────────────────────────────────────
@@ -317,9 +326,10 @@ def test_audio_wholly_inside_a_cut_span_is_moved_never_removed(tmp_path, monkeyp
 
 # ── should-fix 1: take breaks read a soft tail as sound ───────────────────────────────────────────────────────
 
-def test_a_repeat_after_a_short_pause_and_a_soft_decay_is_only_offered(tmp_path, monkeypatch):
-    """'press the red button now' twice, 0.2 s of room between, the first ending in a 0.12 s decay at -52 (32 dB
-    under, over speech - 40): the pause is 0.2 s, under BREAK_GAP_S, so no break and no sure retake."""
+def test_a_repeat_after_a_short_pause_and_a_soft_decay_is_a_sure_retake(tmp_path, monkeypatch):
+    """'press the red button now' twice, 0.2 s of room between, the first ending in a 0.12 s decay at -52: FINISH v5
+    takes back the fix pass's take-span widening, so the decay is no sound to the take rules, the pause is 0.32 s, a
+    break, and the clear back-to-back repeat is a sure retake again (the last saying kept), as on 50258c43."""
     toks = "press the red button now".split()
     tones, t = [], 0.3
     for k in range(5):
@@ -335,8 +345,8 @@ def test_a_repeat_after_a_short_pause_and_a_soft_decay_is_only_offered(tmp_path,
              for k, tok in enumerate(toks + toks)]
     d = v5.project(tmp_path, monkeypatch, [("vo", tones, t + 1.0, words)], room=-75.0)
     plan, text, applied, said_, before = v5.plan_apply(d, monkeypatch)
-    assert not plan["removed"]["lines"].get("retake"), text
-    assert " ".join(said_) == " ".join(w for w, _, _ in words), said_
+    assert set(plan["removed"]["lines"]) & {"retake", "restart"}, text
+    assert " ".join(said_) == "press the red button now.", said_
 
 
 def test_a_paraphrase_in_one_line_across_a_pause_plays_both(tmp_path, monkeypatch):
@@ -573,3 +583,69 @@ def test_an_apply_with_another_max_pause_or_breath_is_stale(tmp_path, monkeypatc
 def test_the_stamp_names_the_reading_constants():
     for name in ("RATE", "_SILENT_DB", "GUARD_DB", "BURST_GAP_S", "ISLAND_TARGET_S", "ATTACHED_OVER_ROOM_DB"):
         assert f"{name}=" in se.Refiner.stamp, name
+
+
+# ── FINISH v5 (Sam, 2026-10-25) ─────────────────────────────────────────────────────────────────────────────
+
+THRICE_COMMON = "zan pol rik mev tor sul gax fen".split()
+THRICE_TAILS = [["lun", "bar"], ["dop"], ["kir", "vam", "sul", "tep."]]
+
+
+def thrice():
+    """The real case's shape, invented words: a clause of about 11 words at -9..-18 dB said three times back to back,
+    whisper gapless; in sayings 1 and 2 its last common word ('overmanticles', 13 letters) is soft (peak -48.8, the
+    room -72, the speech level about -13) and whisper stretches it 0.93 s and 1.10 s over a silence; each saying
+    differs only in its tail."""
+    lv = [-9.0, -12.0, -15.0, -18.0, -11.0, -14.0, -17.0, -10.0]
+    tones, words, t = [], [], 0.4
+    for k in range(3):
+        seq = [(w, 0.22, lv[n]) for n, w in enumerate(THRICE_COMMON)]
+        seq.append(("overmanticles", 0.3 if k < 2 else 0.4, -48.8 if k < 2 else -13.0))
+        seq += [(w, 0.22, -13.0) for w in THRICE_TAILS[k]]
+        for w, dur, db in seq:
+            st = t
+            tones.append((round(st, 3), round(st + dur, 3), db))
+            words.append([w, round(st, 3), None])
+            t = st + (0.93 if k == 0 else 1.10) if (w == "overmanticles" and k < 2) else st + dur + 0.04
+    for k in range(len(words)):
+        words[k][2] = words[k + 1][1] if k + 1 < len(words) else tones[k][1]
+    return tones, [tuple(w) for w in words], t + 0.8
+
+
+def test_a_clause_said_three_times_with_a_soft_stretched_word_is_no_sure_retake(tmp_path, monkeypatch):
+    """No sure retake: a repeat? flag or nothing, and all three sayings are applied (the take rules read the placed
+    spans, never widened over soft frames)."""
+    tones, words, end = thrice()
+    d = v5.project(tmp_path, monkeypatch, [("vo", tones, end, words)], room=-72.0)
+    plan, text, applied, said_, before = v5.plan_apply(d, monkeypatch)
+    assert not plan["removed"]["lines"].get("retake"), text
+    assert set(plan.get("suggested") or {}) <= {"repeat?", "inaudible?"}, plan.get("suggested")
+    assert said_.count("zan") == 3 and said_[-1] == "tep.", (said_, text)
+
+
+def test_a_quiet_rooms_soft_first_and_last_words_leave_no_long_lead_or_tail(tmp_path, monkeypatch):
+    """pov's lead and tail: a quiet room (-72), the first and last whisper words stretched over silence with only
+    faint sound under them (-55..-66, under the -46 guard): never protected, so the video opens and ends within
+    0.1 s of the speech, and no flat run over max-pause stays."""
+    tones = [(0.50, 0.70, -60.0), (0.95, 1.05, -66.0), (1.60, 1.90, -13.0), (1.95, 2.25, -12.0), (2.30, 2.60, -14.0),
+             (2.65, 2.95, -13.0), (3.40, 3.60, -55.0), (3.90, 4.00, -64.0)]
+    words = [("so", 0.30, 1.60), ("we", 1.60, 1.95), ("went", 1.95, 2.30), ("out", 2.30, 2.65), ("today", 2.65, 3.00),
+             ("okay.", 3.00, 4.40)]
+    d = v5.project(tmp_path, monkeypatch, [("vo", tones, 5.0, words)], room=-72.0)
+    plan, text, applied, said_, before = v5.plan_apply(d, monkeypatch)
+    v5.checked(d, plan, applied, before, v5.kept_tones("vo", tones[2:6]))
+    iv = tc.kept_iv(d)
+    assert iv[0][0] >= 1.60 - 0.10 - 1e-6 and iv[-1][1] <= 2.95 + 0.10 + 1e-6, iv
+
+
+@pytest.mark.parametrize("transcript", ["retake", "plain"])
+def test_the_fixtures_applied_cut_passes_the_raw_flat_check_too(tmp_path, stub_transcribe, monkeypatch, transcript):  # noqa: F811
+    """09 and the orchestrator: flat.py v2's raw definition (no burst counted as sound) on the fixture's applied cut
+    flags no run over max-pause but one that holds a word the -46 guard hears (fix pass: 0.83 s at source 22.24), and
+    cut_checks agrees."""
+    stub_transcribe(tc.retake_transcript() if transcript == "retake" else json.loads((tc.FIX / "speech.json").read_text()))
+    d = tc.make_project(tmp_path)
+    plan, _ = tc.run(d, monkeypatch=monkeypatch)
+    tc.run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    assert not cut_checks.raw_runs(d), cut_checks.raw_runs(d)
+    assert not cut_checks.flat_report(d)["runs"]

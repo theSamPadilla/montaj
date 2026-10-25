@@ -1089,24 +1089,15 @@ def _layer1_warnings(b):
 
 
 def _played_mismatch(b, res, project_dir, text):
-    """The backstop (review A-B1): the plan's rows against what its preview plays, word for word, in source words:
-    the kept rows' words (as the apply reads them) that do not play, and the words that play but no kept row holds.
-    Returns a short description of the first mismatch, or None."""
-    d = b["d"]
-    header, rows = speech_text.parse(_untagged(text)[0])
+    """The backstop (review A-B1): the plan's kept words (each kept take's words less those it drops, in source words)
+    against what its preview plays: the words that play but the plan does not keep, and the kept ones that do not
+    play. Returns a short description of the first mismatch, or None."""
+    d, sel, units = b["d"], b["sel"], b["units"]
     want = set()
-    by_line = {ln.id: ln for ln in d.lines.values()}
-    for r in rows:
-        if r.kind != "speech" or not r.tokens or r.line not in by_line:
-            continue
-        ln = by_line[r.line]
-        toks = [norm(t) for t in r.tokens]
-        ws = [w for w in ln.words if norm(w.text)]
-        k = 0
-        for w in ws:                       # the row's words in its line, in order
-            if k < len(toks) and norm(w.text) == toks[k]:
-                want.add((r.letter, w.idx))
-                k += 1
+    for ui in sel.kept:
+        gone = sel.drop.get(ui, set())
+        keys = [(_line_key(r.line)[0], w.idx) for _, r in units[ui][1] for w in r.words]
+        want.update(k for n, k in enumerate(keys) if n not in gone and norm(units[ui][0].words[n]))
     d2 = speech_text.derive(res.get("_lifted", res["_project"]), project_dir, track=d.track_id, refiner=b["refiner"])
     letter_of = {d2.letters[src]: d.letters.get(src) for src in d2.letters}
     played = {(letter_of.get(_line_key(r.line)[0]), w.idx) for r in d2.cut if r.kind == "speech"

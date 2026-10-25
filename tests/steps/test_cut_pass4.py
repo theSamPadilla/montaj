@@ -89,11 +89,12 @@ def test_stretched_spans_and_an_offered_soft_word_keep_no_long_silence(tmp_path,
     d = room_project(tmp_path, monkeypatch, [("vo", spans, total, words)], dips=[(0.0, 0.25)])
     plan, text, applied, said = plan_apply(d, monkeypatch)
     assert said == [w for w, _, _ in words], (said, text)
-    # v5: "soft" (38 dB under the speech, between kept words) is attached: its own 0.3 s plays, never its 1.2 s
+    # FINISH v5: "soft" (38 dB under the speech, 3 dB under the attached line, room + 10) keeps no sound and none of
+    # its 1.2 s: offered, folded into a breath (the fix pass kept its 0.3 s as a protected burst)
     assert_flat_ok(d, text)
     lost = [(a, b) for a, b, db in spans if db >= ROOM + 10 and cover(d, a, b) < 0.99]
     assert not lost, (lost, tc.kept_iv(d))
-    assert cover(d, 4.70, 5.00) > 0.99 and cover(d, 4.25, 5.45) * 1.2 <= 0.45, (tc.kept_iv(d), text)
+    assert cover(d, 4.25, 5.45) * 1.2 <= 0.05 and "soft [inaudible?]" in plan.get("cut", ""), (tc.kept_iv(d), text)
     assert_no_unwarned_island(d, plan, applied)
 
 
