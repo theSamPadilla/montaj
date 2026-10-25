@@ -47,6 +47,13 @@
       "description": "Seconds of silence kept on each side of the sound where a silence longer than max-pause is cut (and at the video's start and end); at a sentence end such a silence keeps up to 0.18 s in all. Used between 0.02 and half of max-pause. Default 0.04; raise it for a slower read."
     },
     {
+      "name": "speech",
+      "type": "string",
+      "required": false,
+      "default": "auto",
+      "description": "Where the speech is. auto (the default): the source with the most transcribed seconds, else the voiceover. Or a video track id, audio:lane-<n> (the audio items of integer lane n), audio:<type> (audio items with no lane, of that type, e.g. audio:voiceover), or voiceover (the file at voiceover.src, or the audio that plays it). Audio is cut in place on audio.tracks; a voiceover's kept spans become voiceover items there, and voiceover.src is left as it is."
+    },
+    {
       "name": "silence-threshold",
       "type": "float",
       "required": false,

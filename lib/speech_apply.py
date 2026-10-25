@@ -113,7 +113,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
           feel: str = DEFAULT_FEEL, base: dict | None = None, base_of: dict | None = None,
           version_message: str = "version: before speech edit", want_project: bool = False,
           amend=None, carry_from: dict | None = None, lineage: dict | None = None,
-          guard_keys: tuple = (), refiner=None) -> dict:
+          guard_keys: tuple = (), refiner=None, lower=None) -> dict:
     """Apply `text` to the project at `project_path`.
 
     base (cut): the project as an in-memory step already changed it, and the one the text was read
@@ -132,6 +132,10 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     items the layers were timed to.
     guard_keys: more top-level keys the stale check compares under the lock (cut: its marker).
     refiner: places the words the text is read and built on (speech_text.derive's; cut's speech_energy.Refiner).
+    lower (with base): the speech track is a source cut lifted into a track of its own (an audio lane or the
+    voiceover, lib/speech_source.py); `lower(candidate)` puts it back where it came from. The text, the summaries and
+    `amend` see the lifted project; the noop check, the validation, the sync check and the write see the lowered
+    one, compared with `base_of` (the disk as it is). speech-text.md is not written: it would name the lifted track.
     """
     project_path = os.path.abspath(project_path)
     project_dir = os.path.dirname(project_path)
@@ -185,6 +189,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
         out = _noop(report, derived.warnings)
         if want_project:
             out["_project"] = disk
+            out["_lifted"] = project if lower is not None else disk
         return out
 
     if base is not None:
@@ -213,28 +218,32 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
         if candidate is project:
             candidate = copy.deepcopy(project)
         amend(candidate)
+    lifted = candidate
+    if lower is not None:
+        candidate = lower(lifted)
 
     if dump(candidate) == dump(disk):
         return noop()
 
     _validate(candidate)
 
-    before, after = _summary(disk, ti), _summary(candidate, ti)
+    before, after = _summary(project if lower is not None else disk, ti), _summary(lifted, ti)
     if preview:
         # cut's preview (a refiner) never shows the text: deriving it as speech_edit does is two more full decodes
         new_text = None if refiner is not None else speech_text.render(
-            speech_text.derive(candidate, project_dir, track=derived.track_id, sils=plain_sils), _title(candidate))
+            speech_text.derive(lifted, project_dir, track=derived.track_id, sils=plain_sils), _title(candidate))
         out = _result(applied=False, preview=True, version=False, before=before, after=after,
                       report=report, warnings=derived.warnings, text=new_text)
         if want_project:
             out["_project"] = candidate
+            out["_lifted"] = lifted
         return out
 
     # §482: a field this edit changes, or its text file, in an open Studio sync clash refuses it before the
     # version commit; the check runs again under the lock, on the fresh document.
     _check_sync(on_disk_as_read, candidate)
     # Everything that can fail runs before the write, so nothing fails after it.
-    new_text = speech_text.render(speech_text.derive(candidate, project_dir, track=derived.track_id, sils=plain_sils), _title(candidate))
+    new_text = speech_text.render(speech_text.derive(lifted, project_dir, track=derived.track_id, sils=plain_sils), _title(candidate))
     version = commit_version(project_dir, version_message)
     warnings = list(derived.warnings)
     if not version and not is_own_repo(project_dir):
@@ -275,10 +284,12 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
         finally:
             if os.path.exists(tmp):
                 os.remove(tmp)
-    with open(os.path.join(project_dir, SPEECH_TEXT_FILE), "w", encoding="utf-8") as f:
-        f.write(new_text)
+    if lower is None:
+        with open(os.path.join(project_dir, SPEECH_TEXT_FILE), "w", encoding="utf-8") as f:
+            f.write(new_text)
     out = _result(applied=True, preview=False, version=version, before=before, after=after,
                   report=report, warnings=warnings, text=new_text)
     if want_project:
         out["_project"] = merged
+        out["_lifted"] = lifted
     return out

@@ -224,7 +224,7 @@ def test_schema_declares_the_params():
     names = {p["name"]: p for p in SCHEMA["params"]}
     assert SCHEMA["name"] == "cut"
     assert names["project"]["required"] is True and names["project"]["type"] == "path"
-    assert {"plan", "language", "max-pause", "breath", "silence-threshold", "recut", "detail", "model"} == set(names) - {"project"}
+    assert {"plan", "language", "max-pause", "breath", "silence-threshold", "speech", "recut", "detail", "model"} == set(names) - {"project"}
     assert names["silence-threshold"]["type"] == "float" and names["silence-threshold"]["min"] == -60
     assert "preview" not in names
     assert SCHEMA["input"]["type"] == "project" and "language is detected" in SCHEMA["description"]
@@ -2086,3 +2086,105 @@ def test_a_clear_back_to_back_retake_keeps_the_last_take_the_earlier_in_unused(t
     assert [re.sub(r" ?\{[\d.]+\} ?", " ", r.split(" [")[0]).strip() for r in cut] == \
         ["A2 so then we lean the frame over and it tips."]
 
+
+# ── speech on audio (§558) ──────────────────────────────────────────────────
+
+def audio_project(tmp_path, *, voiceover=False):
+    """No speech on the video tracks: a 3D item over the timeline, and the narration either on an audio lane (one
+    item over the whole recording) or at voiceover.src with nothing playing it. Its transcript sits beside it."""
+    d = tmp_path / "proj"
+    d.mkdir()
+    shutil.copy(FIX / "speech.mp4", d / "narration.mp4")
+    shutil.copy(FIX / "speech.mp4", d / "bed.mp4")
+    (d / "narration.json").write_text(json.dumps(retake_transcript()))
+    base = json.loads((FIX / "project.json").read_text())
+    p = {k: base[k] for k in ("version", "settings", "status", "workflow", "editingPrompt")}
+    p.update({"id": "cut-fixture", "name": "Cut", "status": "draft",
+              "tracks": [{"id": "trk-0", "items": []},
+                         {"id": "trk-3d", "items": [{"id": "s3d", "type": "overlay", "src": "engine:scene3d",
+                                                     "start": 0.0, "end": SOURCE_S, "props": {"scene": "main"}}]}]})
+    if voiceover:
+        p["voiceover"] = {"src": str(d / "narration.mp4")}
+    else:
+        p["audio"] = {"tracks": [
+            {"id": "bed", "type": "music", "src": str(d / "bed.mp4"), "start": 0.0, "end": SOURCE_S, "inPoint": 0.0,
+             "outPoint": SOURCE_S, "volume": 0.2},
+            {"id": "vo-1", "type": "voiceover", "lane": 1, "src": str(d / "narration.mp4"), "start": 0.0,
+             "end": SOURCE_S, "inPoint": 0.0, "outPoint": SOURCE_S, "volume": 0.9, "fadeIn": 0.05}]}
+    (d / "project.json").write_text(json.dumps(p, indent=2))
+    git(d, "init", "-q")
+    git(d, "add", "project.json")
+    git(d, "commit", "-q", "-m", "init")
+    return d
+
+
+def narration(project):
+    return sorted((a for a in project["audio"]["tracks"] if a.get("type") == "voiceover"), key=lambda a: a["start"])
+
+
+def test_speech_on_an_audio_lane_is_cut_in_place(tmp_path, monkeypatch):
+    d = audio_project(tmp_path)
+    plan, applied = plan_and_apply(d, monkeypatch)
+    assert plan["removed"]["lines"] == {"retake": 2, "false-start": 1} and applied["mode"] == "applied"
+    project = json.loads((d / "project.json").read_text())
+    assert [t["id"] for t in project["tracks"]] == ["trk-0", "trk-3d"]   # the lifted track never reaches the file
+    vo = narration(project)
+    assert len(vo) > 1 and all(a["lane"] == 1 and a["volume"] == 0.9 and a["src"].endswith("narration.mp4") for a in vo)
+    assert vo[0]["fadeIn"] >= 0.05 and all(a["fadeOut"] >= 0.012 for a in vo[:-1])
+    assert all(b["start"] >= a["end"] - 1e-6 for a, b in zip(vo, vo[1:]))          # one voice at a time
+    assert sum(a["outPoint"] - a["inPoint"] for a in vo) < SOURCE_S - 1.0
+    bed = next(a for a in project["audio"]["tracks"] if a["id"] == "bed")
+    assert bed["volume"] == 0.2 and project["audio"]["tracks"].index(bed) == 0      # the other audio stays where it was
+    assert project["cleanCut"]["mode"] == "speech" and applied["scene3d"][0]["id"] == "s3d"
+    (s3d,) = project["tracks"][1]["items"]
+    assert s3d["end"] - s3d["start"] == pytest.approx(sum(a["end"] - a["start"] for a in vo), abs=0.05)
+    assert applied["version"] == "latest"        # nothing unsaved before it: the latest version holds it
+    again, _ = run(d, monkeypatch=monkeypatch)
+    assert again["mode"] == "already-cut" and "changedSince" not in again
+
+
+def test_a_voiceover_is_cut_onto_the_audio_and_plays_once(tmp_path, monkeypatch):
+    """voiceover.src is not played by the render or the editor: its kept spans become voiceover items, and the
+    file stays at voiceover.src for the vo_* steps. Exactly one voice plays at any moment."""
+    d = audio_project(tmp_path, voiceover=True)
+    plan, applied = plan_and_apply(d, monkeypatch)
+    project = json.loads((d / "project.json").read_text())
+    assert project["voiceover"] == {"src": str(d / "narration.mp4")}
+    vo = narration(project)
+    assert vo and len(vo) == len(project["audio"]["tracks"]) and all("lane" not in a for a in vo)
+    assert all(b["start"] >= a["end"] - 1e-6 for a, b in zip(vo, vo[1:]))
+    assert vo[0]["start"] == 0.0 and sum(a["outPoint"] - a["inPoint"] for a in vo) < SOURCE_S - 1.0
+
+
+def test_a_voiceover_already_on_the_audio_is_cut_there_not_added_again(tmp_path, monkeypatch):
+    d = audio_project(tmp_path)
+    p = json.loads((d / "project.json").read_text())
+    p["voiceover"] = {"src": str(d / "narration.mp4")}
+    (d / "project.json").write_text(json.dumps(p, indent=2))
+    git(d, "commit", "-qam", "vo")
+    plan, _ = run(d, "--speech", "voiceover", monkeypatch=monkeypatch)
+    run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    project = json.loads((d / "project.json").read_text())
+    assert all(a.get("lane") == 1 for a in narration(project)) and len(project["audio"]["tracks"]) == len(narration(project)) + 1
+
+
+def test_an_unknown_speech_source_is_refused(tmp_path, monkeypatch, capsys):
+    d = audio_project(tmp_path)
+    assert refused(d, "--speech", "audio:lane-7", monkeypatch=monkeypatch, capsys=capsys) == "invalid_params"
+    assert not (d / "cut-plan.md").exists()
+
+
+def test_narration_with_no_speech_is_cut_by_silences_on_the_audio(tmp_path, stub_transcribe, monkeypatch):
+    stub_transcribe({**retake_transcript(), "transcription": []})
+    d = audio_project(tmp_path)
+    (d / "narration.json").unlink()
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert plan["silence"] is True
+    out, _ = run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    assert out["mode"] == "applied"
+    project = json.loads((d / "project.json").read_text())
+    assert [t["id"] for t in project["tracks"]] == ["trk-0", "trk-3d"]
+    vo = narration(project)
+    assert len(vo) > 1 and all(a["lane"] == 1 for a in vo) and project["cleanCut"]["mode"] == "silence"
+    again, _ = run(d, monkeypatch=monkeypatch)
+    assert again["mode"] == "already-cut" and "changedSince" not in again
