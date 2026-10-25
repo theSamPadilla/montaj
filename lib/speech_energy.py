@@ -1059,7 +1059,7 @@ class Refiner:
     pause_cap = float("inf")
     stamp = VERSION + " " + " ".join(f"{k}={globals()[k]}" for k in _STAMPED)
 
-    def __init__(self, max_pause=None, breath=BREATH_S, is_filler=None):
+    def __init__(self, max_pause=None, breath=BREATH_S, is_filler=None, retranscribe=None, retranscribe_tag=""):
         self.layers, self.placed, self.kinds, self.raw = {}, {}, {}, {}
         self.quiet_words, self.heard, self.inaudible, self.soft, self.soundless = {}, {}, {}, {}, {}
         self.folded, self.loud = {}, {}     # per source: folded word indexes; words whose whisper span holds sound
@@ -1069,6 +1069,10 @@ class Refiner:
         self.max_pause = max_pause
         self.breath = breath
         self.is_filler = is_filler  # the language's filler test (norm -> bool): §577's ordered placement skips fillers
+        # §577 (ucla B): retranscribe(media, start, end) -> [(text, start, end)] on the source's clock, or None: whisper
+        # again over each voiced run of a broken stretch (lib/speech_repair); None leaves every transcript as it is
+        self.retranscribe, self.retranscribe_tag = retranscribe, retranscribe_tag
+        self.repaired = {}          # source -> lib/speech_repair's report of the stretches it replaced
 
     @property
     def env(self):
@@ -1081,6 +1085,10 @@ class Refiner:
         if key not in self.layers:
             env = envelope(media)
             lay = layer1(media, env, self._pause())
+            if self.retranscribe is not None:
+                from lib import speech_repair
+                raw, self.repaired[key] = speech_repair.repair(raw, lay, media, self.retranscribe,
+                                                               self.retranscribe_tag)
             placed, kind = place(raw, lay, self.breath, self.is_filler)
             attached = {}
             for _ in range(ATTACH_ROUNDS):       # until nothing changes (A-B2): a word attached makes its neighbour's

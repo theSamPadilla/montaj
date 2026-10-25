@@ -156,6 +156,7 @@ def _mechanical(work, project_path, ti, project_dir, fillers, lineage, whole=Non
             continue
         raw = load_words(sidecar)
         placed, _, _ = refiner(r["src"], speech_text._media_for(r, sidecar), raw)
+        raw = refiner.raw.get(r["src"], raw)      # §577: a broken stretch's words, transcribed again
         if guard is not None:
             for n, (s0, s1) in enumerate(refiner.silences(r["src"])):
                 a, b = max(lo, s0 + refiner.breath), min(hi, s1 - refiner.breath)
@@ -680,8 +681,42 @@ def _already_cut(project):
 
 # ── the run ──────────────────────────────────────────────────────────────────
 
+def _retranscriber(model, language):
+    """retranscribe(media, start, end) -> [(text, start, end)] on the source's clock, or None (§577,
+    lib/speech_repair): the same whisper call as a clip with no transcript gets (transcribe_file, this model and
+    language), on a trim spec of that one stretch, in a temp folder that is removed after; nothing is written beside
+    the clip."""
+    def run(media, start, end):
+        run.last_error = None
+        tmp = tempfile.mkdtemp(prefix="montaj-cut-")
+        try:
+            spec = os.path.join(tmp, "stretch.json")
+            with open(spec, "w", encoding="utf-8") as f:
+                json.dump({"input": media, "keeps": [[round(start, 3), round(end, 3)]]}, f)
+            prefix = os.path.join(tmp, "transcript")
+            try:
+                ok, res = _quiet(transcribe_file, spec, prefix, model, language)
+            except Exception as e:               # noqa: BLE001 (a failed run leaves the stretch as whisper wrote it)
+                run.last_error = f"{type(e).__name__}: {e}"[:200]
+                return None
+            if not ok or not os.path.isfile(prefix + ".json"):
+                run.last_error = (res.get("message") or res.get("error") or "failed")[:200] if isinstance(res, dict) \
+                    else "failed"
+                return None
+            # transcribe maps a trim spec's times back to the source's clock itself
+            got = [(w.text, w.start, w.end) for w in load_words(prefix + ".json")
+                   if start - 0.5 <= w.start and w.end <= end + 0.5]
+            if not got:
+                run.last_error = "whisper heard no words there"
+            return got
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    run.last_error = None
+    return run
+
+
 def _build(project_path, project_dir, disk, track_id, language, warnings, max_pause=None, breath=speech_energy.BREATH_S,
-           threshold=SILENCE_THRESHOLD_DB):
+           threshold=SILENCE_THRESHOLD_DB, model=None):
     """The base: the disk project with the mechanical pass on its speech track, in memory, and everything the
     plan and its apply need. Deterministic for the same project, transcripts, max-pause and breath, so an apply
     rebuilds the base the plan was made from. b["held"]: the silences kept whole for the overlays (D2)."""
@@ -692,8 +727,9 @@ def _build(project_path, project_dir, disk, track_id, language, warnings, max_pa
     ti, track = _track(work, track_id)
     b = {"work": work, "ti": ti, "before_s": _seconds(track, project_dir),
          "origin": origin, "lineage": {}, "d": None, "fillers": 0,
-         "refiner": speech_energy.Refiner(max_pause, breath, _filler_test(language)), "filler_spans": {},
-         "held": []}
+         "refiner": speech_energy.Refiner(max_pause, breath, _filler_test(language),
+                                          _retranscriber(model or DEFAULT_WHISPER_MODEL, language), language),
+         "filler_spans": {}, "held": []}
     has_words = any((sc := sidecar_for(_resolved(it, project_dir))) and load_words(sc) for it in _media(track))
     if has_words:
         is_filler = _filler_test(language)
@@ -1116,6 +1152,17 @@ def _layer1_warnings(b):
     can't be trimmed (review B should-fix 2)."""
     ref, out = b["refiner"], []
     letters = b["d"].letters if b.get("d") is not None else {}
+    # §577: whisper's times broke over a stretch, which was transcribed again (or could not be)
+    for src, rep in getattr(ref, "repaired", {}).items():
+        name = os.path.basename(src)
+        bad = [r for r in rep if "error" in r]
+        good = [r for r in rep if "error" not in r]
+        if good:
+            out.append(f"{name}: transcribed {len(good)} stretch(es) again where whisper's times broke ("
+                       + ", ".join(f"{r['window'][0]:.1f}-{r['window'][1]:.1f} s" for r in good[:4]) + ")")
+        for r in bad[:2]:
+            out.append(f"{name}: whisper's times broke over {r['window'][0]:.1f}-{r['window'][1]:.1f} s, and transcribing "
+                       f"it again failed ({r['error']}): its words are placed as written")
     hits = [f"{letters.get(src, os.path.basename(src))} at {a:.2f} s" for src, iv in ref.dropped.items() for a, _ in iv]
     if hits:
         out.append(f"dropped {len(hits)} short piece(s) of sound with no word: {', '.join(hits[:8])}")
@@ -1227,7 +1274,8 @@ def _make_plan(args, project_path, project_dir):
     breath = min(max(args.breath, BREATH_MIN_S), max_pause / 2)       # R2-Q3
     title = disk.get("name") or disk.get("id") or os.path.basename(project_dir)
     threshold = args.silence_threshold if args.silence_threshold is not None else SILENCE_THRESHOLD_DB
-    b = _build(project_path, project_dir, disk_l, track_id, language, warnings, max_pause, breath, threshold)
+    b = _build(project_path, project_dir, disk_l, track_id, language, warnings, max_pause, breath, threshold,
+               args.model)
     if args.silence_threshold is not None and b["d"] is not None:
         warnings.insert(0, THRESHOLD_SPEECH_WARNING)       # §577: it never reaches a clip with a transcript
     answer = {"project": disk.get("id"), "mode": "plan", "speech": key}
@@ -1351,7 +1399,8 @@ def _apply_plan(args, project_path, project_dir):
         fail("stale_plan", f"This plan was made at silence-threshold {threshold:g}. Run cut again at "
                            f"{args.silence_threshold:g}, or apply it without silence-threshold (your edited plan is kept).")
     warnings = []
-    b = _build(project_path, project_dir, disk_l, track_id, language, warnings, max_pause, breath, threshold)
+    b = _build(project_path, project_dir, disk_l, track_id, language, warnings, max_pause, breath, threshold,
+               args.model)
     stale = ("This plan was made before cut was updated, or the timeline changed. Run cut again (your edited plan "
              "is kept).")
     if not _has_clips(disk_l, track_id):

@@ -68,11 +68,15 @@ def burst_frames(d, project=None, max_pause=MAX_PAUSE):
     return out
 
 
+RETRANSCRIBE = None    # a test that stubs whisper's second run (§577, lib/speech_repair) sets it, so the checks read
+                       # the words cut reads
+
+
 def _refiner(max_pause=MAX_PAUSE):
     """The engine's refiner as cut builds it for these English tests (its filler test too: §577's placement skips
-    fillers)."""
+    fillers; and RETRANSCRIBE, when a test sets it)."""
     from lib.speech_units import filler_test
-    return speech_energy.Refiner(max_pause, is_filler=filler_test("en"))
+    return speech_energy.Refiner(max_pause, is_filler=filler_test("en"), retranscribe=RETRANSCRIBE, retranscribe_tag="en")
 
 
 def _project(d):
@@ -161,18 +165,18 @@ def wordless(d, max_pause=MAX_PAUSE):
     in it, by derive's reading) and under ISLAND_S of sound (frames not flat)."""
     from lib import speech_text
     project = _project(d)
-    der = speech_text.derive(project, str(d), project["tracks"][0]["id"], refiner=_refiner(max_pause))
+    ref = _refiner(max_pause)
+    der = speech_text.derive(project, str(d), project["tracks"][0]["id"], refiner=ref)
     worded = {r.item_ids[0] for r in der.cut if r.kind == "speech" and r.words}
-    # the played words' whisper spans (their transcript's own times): sound inside one may be that word's (drift),
-    # so it is no lone piece (the engine's rule too)
-    from lib.speech_lines import load_words
+    # the played words' whisper spans (their transcript's own times, as the refiner read them: §577 may have
+    # transcribed a broken stretch again): sound inside one may be that word's (drift), so it is no lone piece (the
+    # engine's rule too)
     spans, raw = {}, {}
     for r in der.cut:
         if r.kind == "speech":
             src = next(s for s, lt in der.letters.items() if lt == r.line.rstrip("0123456789"))
             if src not in raw:
-                side = os.path.splitext(src)[0] + ".json"
-                raw[src] = {w.idx: w for w in load_words(side)} if os.path.isfile(side) else {}
+                raw[src] = {w.idx: w for w in ref.raw.get(src, ())}
             for w in r.words:
                 x = raw[src].get(w.idx)
                 if x is not None:

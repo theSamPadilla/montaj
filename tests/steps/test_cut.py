@@ -97,6 +97,8 @@ def stub_transcribe(monkeypatch):
 
     def install(transcript, fail=None):
         def fake(input_path, out=None, model=None, language="en", **kw):
+            if str(input_path).endswith("stretch.json"):         # §577's second run: not this stub's (see run)
+                cc.fail("whisper_model_missing", "stub: no second whisper run")
             calls.append({"input": input_path, "model": model, "language": language})
             if fail:
                 cc.fail(fail, "stub: whisper failed")
@@ -109,7 +111,21 @@ def stub_transcribe(monkeypatch):
     return install
 
 
+def _no_second_whisper(real):
+    """§577: cut transcribes a broken stretch of a transcript again (lib/speech_repair). A test that does not stub it
+    never reaches a real whisper for that: the run fails as with no model, and the stretch stays as written."""
+    def fake(input_path, out=None, model=None, language="en", **kw):
+        if str(input_path).endswith("stretch.json"):
+            cc.fail("whisper_model_missing", "test: no second whisper run")
+        return real(input_path, out, model, language, **kw)
+    fake.real = real
+    return fake
+
+
 def run(d, *extra, monkeypatch):
+    from steps.speech.transcribe import transcribe as _real
+    if cc.transcribe_file is _real:
+        monkeypatch.setattr(cc, "transcribe_file", _no_second_whisper(_real))
     before = json.loads((d / "project.json").read_text()) if "--plan" in extra else None
     held = {}
     if before is not None:
@@ -178,7 +194,9 @@ def as_cut_reads(project, d):
     """The timeline's speech as cut reads it: words placed by the audio (lib/speech_energy), so a word whisper put
     in a pause is read where cut folded it, beside the word that holds its sound."""
     from lib.speech_units import filler_test
-    return speech_text.derive(project, str(d), "trk-0", refiner=speech_energy.Refiner(is_filler=filler_test("en")))
+    from tests import cut_checks          # its RETRANSCRIBE: a test's stub of whisper's second run (§577)
+    return speech_text.derive(project, str(d), "trk-0", refiner=speech_energy.Refiner(
+        is_filler=filler_test("en"), retranscribe=cut_checks.RETRANSCRIBE, retranscribe_tag="en"))
 
 
 def phrases(d):
