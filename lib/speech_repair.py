@@ -393,8 +393,10 @@ def _extend(words, report, lay, media, retranscribe, tag):
     runs of two or more, are looked for in ONE more whisper run over the voiced runs from the window's end, at most
     EXTEND_S on (never into the next repaired window). When the second run hears two or more of them in a row, and
     then an ANCHOR (ANCHOR_WORDS in a row heard where the first run put them, within ANCHOR_S), every word up to the
-    anchor is merged as a stretch is (lossless, MIN_MATCH, phantoms), and the silent runs take their real sound. Else
-    nothing moves. The report's "extension" names each one: {"from", "to", and "moved", "matched", "added", "kept"
+    anchor is merged as a stretch is (lossless, MIN_MATCH, phantoms), and the silent runs take their real sound. With
+    no such anchor (the first run's times off by seconds over the whole window: ucla B), the whole window is merged
+    when the second run hears ANCHOR_WORDS more of the first run's words after the silent ones, in order (its new
+    words after the last match left out). Else nothing moves. The report's "extension" names each one: {"from", "to", and "moved", "matched", "added", "kept"
     or "error"}."""
     from difflib import SequenceMatcher
     starts = sorted(r["window"][0] for r in report)
@@ -455,8 +457,18 @@ def _extend(words, report, lay, media, retranscribe, tag):
             ext["error"] = "the words left in silence are not heard there"
             continue
         if anchor is None:
-            ext["error"] = f"no anchor within {EXTEND_S:g} s"
-            continue
+            # no word heard where the first run put it (whisper's times are off by seconds over the whole window,
+            # ucla B): the whole window, when the second run hears ANCHOR_WORDS more of the first run's words after
+            # the silent ones, in order; its new words after the last match are left out (they may be the words
+            # past the window, heard twice)
+            after = [p_ for p_ in pairs if p_[0] > heard[0][0] and not is_c[p_[0]]]
+            if len(after) < ANCHOR_WORDS:
+                ext["error"] = f"no anchor within {EXTEND_S:g} s"
+                continue
+            anchor = (len(order), pairs[-1][1] + 1)
+            ext["anchor"] = "window"
+        else:
+            ext["anchor"] = "words"
         region = order[:anchor[0]]
         if set(region) & taken:
             ext["error"] = "overlaps another extension"
@@ -466,7 +478,7 @@ def _extend(words, report, lay, media, retranscribe, tag):
         ext.update(moved=len(cand), matched=m, added=ad, kept=kp)
         # the merged words go where the first word past the window stood (the silent runs move there)
         past = [n for n in region if n not in cset]
-        changes.append((region, merged, min(past) if past else order[anchor[0]]))
+        changes.append((region, merged, min(past) if past else order[min(anchor[0], len(order) - 1)]))
     if not changes:
         return words
     drop, at = set(), {}

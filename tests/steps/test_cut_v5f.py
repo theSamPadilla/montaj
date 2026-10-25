@@ -354,7 +354,7 @@ T1 = "the team described this as".split()
 T2 = "the team described this as telepresence.".split()
 
 
-def misplaced():
+def misplaced(off=0.0):
     """S1 on its sound; B2 said at 5.0 (whisper's first run leaves it out); X said at 10.5; T1 (a retake of T2) at
     13.0; T2 at 16.0. The first run writes X over 2.0-4.5 in the silence, then T1's words ON X's sound (10.5-12.0:
     the wrong words, on sound, so no stretch shows there), and T2 on its own sound. The repair hears B2 between S1 and
@@ -368,15 +368,17 @@ def misplaced():
     words = [(w, xx, round(y + 0.04, 3)) for w, xx, y, _ in a]
     words += [(w, round(2.0 + 0.36 * k, 3), round(2.36 + 0.36 * k, 3)) for k, w in enumerate(X)]
     words += [(w, round(10.5 + 0.3 * k, 3), round(10.8 + 0.3 * k, 3)) for k, w in enumerate(T1)]
-    words += [(w, xx, round(y + 0.04, 3)) for w, xx, y, _ in t2]
-    return script, words, round(end + 0.8, 2)
+    words += [(w, round(xx + off, 3), round(y + off + 0.04, 3)) for w, xx, y, _ in t2]   # off: T2's first-run drift
+    return script, words, round(end + off + 0.8, 2)
 
 
-def test_words_left_in_silence_take_their_sound_from_under_a_later_saying(tmp_path, monkeypatch):
+@pytest.mark.parametrize("off", [0.0, 1.5, 3.0])
+def test_words_left_in_silence_take_their_sound_from_under_a_later_saying(tmp_path, monkeypatch, off):
     """After the repair, X's words are looked for past the repaired window (one more whisper run, up to an anchor:
-    T2 where the first run put it). X takes its sound, T1 takes its own, and the clear retake removes only T1's
-    audio: no word lost."""
-    script, words, end = misplaced()
+    T2 where the first run put it; with T2's first-run times off by 1.5 or 3 s there is no such anchor, and the
+    whole window is merged, the second run hearing T2 after X in order). X takes its sound, T1 takes its own, and
+    the clear retake removes only T1's audio: no word lost."""
+    script, words, end = misplaced(off)
     calls = e.stubbed(monkeypatch, script)
     d = v5.project(tmp_path, monkeypatch, [("vo", tones(script), end, words)], room=ROOM)
     plan, text, applied, said, before = v5.plan_apply(d, monkeypatch)

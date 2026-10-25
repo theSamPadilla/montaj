@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Fixed (steps): `cut` finds words whisper left in silence under a later saying's words (§577).** After a stretch is transcribed again, words can still sit in silence while their sound lies past it, labelled by the first run with another saying's words (on ucla, "It can follow a person, get", whose sound a clear retake's row stood on, so the retake removed it). Once per repaired stretch, `cut` looks for those words in one more whisper run over the voiced sound up to 20 s past the repaired window, up to the first three words heard where the first run put them, and merges the words as before: none dropped, matches of two words or more. The words take their own sound, and the retake removes only its own. The plan's answer names the search, found or not.
+- **Fixed (steps): `cut` finds words whisper left in silence under a later saying's words (§577).** After a stretch is transcribed again, words can still sit in silence while their sound lies past it, labelled by the first run with another saying's words (on ucla, "It can follow a person, get", whose sound a clear retake's row stood on, so the retake removed it). Once per repaired stretch, `cut` looks for those words in one more whisper run over the voiced sound up to 20 s past the repaired window, up to the first three words heard where the first run put them (or over that whole stretch of sound, when the first run's times are off by seconds there and the second run hears three or more of its words after them, in order), and merges the words as before: none dropped, matches of two words or more. The words take their own sound, and the retake removes only its own. The plan's answer names the search, found or not.
 
 ## v5.36.1
 
