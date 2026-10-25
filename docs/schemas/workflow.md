@@ -53,7 +53,7 @@ The workflow gives the agent a sensible starting point and encodes domain knowle
 | `name` | string | yes | Must match the filename (e.g. `overlays` for `overlays.json`) |
 | `description` | string | yes | One or two sentences. Agent reads this to understand when to use this workflow. |
 | `steps` | array | yes | Ordered list of step entries |
-| `requires_clips` | boolean | no | When `false`, no source footage is needed. Default: `true`. The UI warns if clips are missing for a workflow that requires them. |
+| `requires_clips` | boolean | no | When `false`, no source footage is needed. Default: `true`, or `false` when `project_type` is `"3d"`. The UI warns if clips are missing for a workflow that requires them. |
 | `project_type` | string | no | One of `"editing"`, `"ai_video"`, `"carousel"`, `"broll"`, `"3d"`. Drives UI branching (upload flow, player actions). Default: `"editing"`. Canonical list: `schema/enums.yaml`. |
 | `notes` | string | no | Extra guidance for the agent — conventions, track ordering rules, or input semantics specific to this workflow. Read alongside the description before the agent begins execution. |
 

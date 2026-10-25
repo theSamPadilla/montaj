@@ -300,7 +300,7 @@ def old_3d_project(workflow="model-3d", project_type="editing"):
 
 
 @pytest.mark.parametrize("workflow", ["model-3d", "toy-world-3d"])
-@pytest.mark.parametrize("project_type", ["editing", None])
+@pytest.mark.parametrize("project_type", ["editing", None, "music_video"])
 def test_an_old_3d_project_reads_as_the_3d_type(workflow, project_type):
     old = old_3d_project(workflow, project_type)
     kept = copy.deepcopy(old)
@@ -326,6 +326,12 @@ def test_another_type_from_a_3d_workflow_is_left_alone(ptype):
     p = old_3d_project(project_type=ptype)
     assert migrate_project(p) is p
 
+
+@pytest.mark.parametrize("workflow", [[], {}, ["model-3d"], 3, None])
+def test_a_workflow_that_is_not_a_string_is_left_alone(workflow):
+    """A hand-edited file can hold anything in workflow: an unhashable one must not crash the open."""
+    p = old_3d_project(workflow=workflow)
+    assert migrate_project(p) is p
 
 def test_opening_an_old_3d_project_serves_and_writes_3d(ws):
     path = _write(ws, old_3d_project())

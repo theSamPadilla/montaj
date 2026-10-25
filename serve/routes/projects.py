@@ -1732,7 +1732,8 @@ async def run_project(request: Request, response: Response, body: dict = Body(..
         requires_clips = True  # conservative default
         wf_data = read_workflow(workflow)
         if wf_data is not None:
-            requires_clips = wf_data.get("requires_clips", True)
+            # A 3D template builds from a model, not footage, unless it says otherwise.
+            requires_clips = wf_data.get("requires_clips", wf_data.get("project_type") != "3d")
 
         if not requires_clips:
             # Workflow explicitly says no footage needed — create canvas project

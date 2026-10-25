@@ -52,7 +52,8 @@ def migrate_project(project):
         out = dict(project)
         out["projectType"] = RETIRED_PROJECT_TYPES[retired_type]
     current_type = (out if out is not None else project).get("projectType")
-    if project.get("workflow") in THREE_D_WORKFLOWS and current_type in (None, "editing"):
+    workflow = project.get("workflow")
+    if isinstance(workflow, str) and workflow in THREE_D_WORKFLOWS and current_type in (None, "editing"):
         out = out if out is not None else dict(project)
         out["projectType"] = "3d"
     if project.get("renderMode") == RETIRED_RENDER_MODE:
