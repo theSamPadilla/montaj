@@ -618,8 +618,15 @@ def _audio_warnings(flagged):
 
 
 def _scene3d(flagged):
-    """Each 3D item a cut fell inside: {id, removed: [[from, to] scene seconds]}, to retime its keys by one warp."""
-    return [{"id": f.get("id"), "removed": f.get("removed")} for f in flagged or [] if f.get("kind") == "scene3d_timing"]
+    """Each 3D item a cut fell inside: {id, removed: [[from, to] scene seconds]}, to retime its keys by one warp; one
+    whose kept stretches the edit moved apart also gives `map` ([[scene from, scene to, item time]]) and reordered."""
+    out = []
+    for f in flagged or []:
+        if f.get("kind") == "scene3d_timing":
+            out.append({"id": f.get("id"), "removed": f.get("removed")})
+        elif f.get("kind") == "scene3d_reordered":
+            out.append({"id": f.get("id"), "removed": f.get("removed"), "map": f.get("map"), "reordered": True})
+    return out
 
 
 def _tracks_rev(project, source="video"):

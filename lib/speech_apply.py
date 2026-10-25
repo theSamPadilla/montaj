@@ -100,11 +100,11 @@ def _noop(report, warnings) -> dict:
 SPEECH_TEXT_FILE = "speech-text.md"
 
 
-def _check_sync(before: dict, after: dict) -> None:
-    """§482: the fields `after` changes and the text file, against the project's open Studio sync clashes (a
-    no-op with MONTAJ_SYNC_STATE_DIR unset, or for the window's run). A refusal ends the step with it."""
+def _check_sync(before: dict, after: dict, text_file: bool = True) -> None:
+    """§482: the fields `after` changes and the text file (when it is written), against the project's open Studio
+    sync clashes (a no-op with MONTAJ_SYNC_STATE_DIR unset, or for the window's run). A refusal ends the step with it."""
     try:
-        sync_clash.check_step_document(before, after, files=[SPEECH_TEXT_FILE])
+        sync_clash.check_step_document(before, after, files=[SPEECH_TEXT_FILE] if text_file else [])
     except sync_clash.SyncConflict as e:
         sync_clash.exit_refused(e.body)
 
@@ -241,7 +241,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
 
     # §482: a field this edit changes, or its text file, in an open Studio sync clash refuses it before the
     # version commit; the check runs again under the lock, on the fresh document.
-    _check_sync(on_disk_as_read, candidate)
+    _check_sync(on_disk_as_read, candidate, text_file=lower is None)
     # Everything that can fail runs before the write, so nothing fails after it.
     new_text = speech_text.render(speech_text.derive(lifted, project_dir, track=derived.track_id, sils=plain_sils), _title(candidate))
     version = commit_version(project_dir, version_message)
@@ -275,7 +275,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
                     merged[key] = candidate[key]
             elif key in as_read:
                 merged.pop(key, None)
-        _check_sync(fresh_on_disk, merged)
+        _check_sync(fresh_on_disk, merged, text_file=lower is None)
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(merged, f, indent=2, ensure_ascii=False)

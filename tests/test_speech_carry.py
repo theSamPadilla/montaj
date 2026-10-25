@@ -677,6 +677,9 @@ def test_a_3d_item_whose_kept_speech_is_moved_apart_is_flagged_reordered(fx):
     s = item(r.project, "s3d")
     starts = sorted(s["start"] + t for _, _, t in f["map"])
     assert any(abs(r.tmap.forward(2.0 + lo) - (s["start"] + t)) < 1e-3 for lo, _, t in f["map"]) and starts
+    # the item covers every stretch where it plays now: none falls before its start or past its end
+    assert all(t >= -1e-6 and s["start"] + t + hi - lo <= s["end"] + 1e-3 for lo, hi, t in f["map"]), (s, f["map"])
+    assert min(t for _, _, t in f["map"]) == pytest.approx(0.0, abs=1e-3)
 
 
 def test_a_3d_items_keyframes_follow_its_kept_stretches(fx):

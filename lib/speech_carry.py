@@ -732,14 +732,21 @@ class _Carry:
             if n0 is None or abs(n0 - cursor) > _SCENE3D_JOIN_S:
                 in_order = False
             cursor += hi - lo
+        if not in_order:
+            # moved apart: the item covers every stretch where it plays now, from the first to the last
+            if any(n0 is None for n0 in news):
+                return False
+            ns = min(news)
+            length = max(n0 + hi - lo for lo, hi, n0 in merged) - ns
         it["start"], it["end"] = _r6(ns, it["start"]), _r6(ns + length, it["end"])
         offset = float((it.get("props") or {}).get("inPoint") or 0)
-        local, mapping = 0.0, []
+        local, mapping, placed = 0.0, [], []
         for lo, hi, n0 in merged:
-            t = local if in_order or n0 is None else n0 - ns
+            t = local if in_order else n0 - ns
             mapping.append([round(offset + lo - a, 3), round(offset + hi - a, 3), round(t, 3)])
+            placed.append((lo, hi, t))
             local += hi - lo
-        self._scene3d_keyframes(it, a, [(lo, hi) for lo, hi, _ in merged])
+        self._scene3d_keyframes(it, a, placed)
         self.flag("scene3d_timing" if in_order else "scene3d_reordered", it.get("id"),
                   removed=[[round(offset + lo - a, 3), round(offset + hi - a, 3)] for lo, hi in removed], map=mapping,
                   **{"from": round(a, 2), "to": round(it["start"], 2)})
@@ -747,16 +754,17 @@ class _Carry:
         return True
 
     @staticmethod
-    def _scene3d_keyframes(it, a, merged):
-        """The item's own keyframes, kept stretch by stretch and joined in item time: each stretch's piece is exact
-        at its ends (keyframe_curves.rebase); at a join the later stretch's first value wins (the cut is a jump)."""
+    def _scene3d_keyframes(it, a, placed):
+        """The item's own keyframes, kept stretch by stretch, each piece at its item time t ([(lo, hi, t)]): each
+        stretch's piece is exact at its ends (keyframe_curves.rebase); at a join the later stretch's first value wins
+        (the cut is a jump)."""
         kfs = it.get("keyframes")
         if not kfs:
             return
         out = []
         for track in kfs:
-            points, at = [], 0.0
-            for lo, hi in merged:
+            points = []
+            for lo, hi, at in sorted(placed, key=lambda p: p[2]):
                 piece = rebase([track], lo - a, hi - lo)
                 if not piece:
                     continue
@@ -764,7 +772,6 @@ class _Carry:
                 if points and pts and abs(points[-1]["t"] - pts[0]["t"]) < 1e-6:
                     points.pop()
                 points += pts
-                at += hi - lo
             if points:
                 out.append({**{k: v for k, v in track.items() if k != "points"}, "points": points})
         if out:

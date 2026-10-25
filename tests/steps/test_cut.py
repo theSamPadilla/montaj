@@ -246,7 +246,7 @@ def test_the_plan_writes_nothing_to_the_project(tmp_path, stub_transcribe, monke
     assert calls == [{"input": str(d / "speech.mp4"), "model": "large-v3-turbo-q5_0", "language": "auto"}]
     assert (d / "speech.json").is_file() and not (d / "speech.srt").exists()
 
-    assert set(out) == {"project", "mode", "plan", "kept", "removed", "suggested", "hardCuts", "hardCutAt", "duration", "layers", "cut",
+    assert set(out) == {"project", "mode", "speech", "plan", "kept", "removed", "suggested", "hardCuts", "hardCutAt", "duration", "layers", "cut",
                         "next", "transcribed"}
     assert out["layers"] == {} and out["next"].startswith(f'Apply: cut with plan "{d / "cut-plan.md"}".')
     assert out["mode"] == "plan" and out["transcribed"] == ["clip-0"]
@@ -1982,9 +1982,17 @@ def test_a_breath_before_a_removed_retake_does_not_open_the_clip(tmp_path, monke
     spans, words, end = _lv(lines, start=0.6)
     spans[0] = (spans[0][0], spans[0][1], -90.0)                  # "look": silent, folded into the retake
     d = tone_project(tmp_path, [("vo", spans, end + 1.0, words)])
+    results, real = [], cc.speech_apply._result
+
+    def keep(**kw):
+        results.append(real(**kw))
+        return results[-1]
+    monkeypatch.setattr(cc.speech_apply, "_result", keep)
     _, _, said = plan_apply_said(d, monkeypatch)
     assert said == "we built a robot that rides a bike and it learns."
     assert unheard_pieces(d, spans) == [] and kept_iv(d)[0][0] >= spans[8][0] - 0.2, kept_iv(d)
+    # every preview's and the apply's hard cuts are the edges played: a sliver the tidy dropped is not counted
+    assert results and all(r["hardCuts"] == len(r["hardCutAt"]) for r in results), results
 
 
 # F2: a line spliced from two takes is flagged, never changed

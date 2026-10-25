@@ -1061,6 +1061,8 @@ def items_from_runs(runs, old_items, fps, *, report: Report | None = None, sourc
         items.append(item)
         cursor = float(end)
         prev = (run.old_out, float(end), float(start))
+    if report is not None:
+        report.hard_cuts = len(report.hard_cut_at)      # the count of the edges played, after any tidy
     return items, prov
 
 
