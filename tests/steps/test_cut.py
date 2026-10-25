@@ -277,9 +277,11 @@ def test_the_plan_writes_nothing_to_the_project(tmp_path, stub_transcribe, monke
     assert sum(out["removed"]["lines"].values()) == len(groups) - len(offered)    # one group per take
     assert out["removed"]["lines"] == {"retake": 2, "false-start": 1}
     # F1 offers the earlier take (see KEPT); v5: words with no sound of their own are kept and offered inaudible?, one
-    # offer per take. §577: "timeline." (whisper put it in the silence after "the"), the first two "want." and "so"
-    # take the sound no word held between their neighbours, in order, so only the third take's "want." is offered
-    assert out["suggested"] == {"retake?": 1, "inaudible?": 1}
+    # offer per take. §577: the first two "want." and "so" take the sound no word held between their neighbours, in
+    # order, and the third take's "want." is offered. §577 cut voice: "timeline." (whisper put it in the silence after
+    # "the") held only a soft unpitched burst (16.73-16.79 s, no voiced frame within 0.15 s), which is no word's sound
+    # now: it is offered too (never removed: its whisper span holds sound attached to its neighbours')
+    assert out["suggested"] == {"retake?": 1, "inaudible?": 2}
     assert out["removed"]["fillers"] == 1 and out["removed"]["seconds"] > 0
     assert out["removed"]["seconds"] == pytest.approx(SOURCE_S - out["kept"]["seconds"], abs=0.02)
     lines = out["cut"].splitlines()

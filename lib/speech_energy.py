@@ -71,6 +71,7 @@ import wave
 from array import array
 from dataclasses import dataclass, field, replace
 
+from lib import voice as _voice
 from lib.common import fail, ff_path, ffmpeg_bin, run
 from lib.speech_lines import _ends_sentence
 from steps.audio import waveform_trim
@@ -189,11 +190,14 @@ class Layer:
     room: float = _SILENT_DB
     raw_flat: bytearray = field(default_factory=bytearray)    # flat.py's flat frames: the attached ones too
     chained: set = field(default_factory=set)   # word positions _chain folded (§577: whisper's drift, never quiet)
+    voice: bytearray | None = None    # lib/voice: voiced frames (None: no voice check)
+    noise: set = field(default_factory=set)     # frames over the line cut off from any voice (lib/voice): flat
 
 
-def layer1(media, env, max_pause, attached=frozenset()):
+def layer1(media, env, max_pause, attached=frozenset(), spectral=None):
     """Layer 1 of `media` (see the module docstring), from its envelope `env`. attached: frames an attached word's
-    own sound holds (_attached_frames): voiced, though under the line."""
+    own sound holds (_attached_frames): voiced, though under the line. spectral: lib/voice.flags of the media, or None
+    (no voice check): a run of sound over the line cut off from any voiced frame is flat (§577 cut voice)."""
     end = len(env) * FRAME_S
     if not env:
         return Layer(env, _SILENT_DB, _SILENT_DB, bytearray(), [], [[0.0, end]], end)
@@ -209,8 +213,11 @@ def layer1(media, env, max_pause, attached=frozenset()):
                      room=room, raw_flat=bytearray(ones))
     thr = speech - SILENCE_BELOW_SPEECH_DB
     raw_flat = bytearray(1 if v < thr else 0 for v in env)
-    flat = bytearray(1 if v < thr and k not in attached else 0 for k, v in enumerate(env))
-    reading = [v if flat[k] else max(v, thr) for k, v in enumerate(env)]    # an attached frame reads as sound
+    vo = _voice.voiced(spectral, room + PROTECT_OVER_ROOM_DB)        # pitched over the room's own hum (§577)
+    noise = _voice.noise_frames(env, thr, vo, attached)
+    flat = bytearray(1 if v < thr and k not in attached or k in noise else 0 for k, v in enumerate(env))
+    reading = [min(v, thr - 1.0) if k in noise else v if flat[k] else max(v, thr)    # an attached frame reads as sound
+               for k, v in enumerate(env)]
     sils = waveform_trim.envelope_silences(reading, thr, max_pause)
     runs = waveform_trim.flat_runs(reading, thr)
     for a, b in runs:                      # a flat run at the source's start or end is a silence at any length
@@ -226,7 +233,16 @@ def layer1(media, env, max_pause, attached=frozenset()):
                 if (b - a) * FRAME_S >= MEASURED_SILENCE_S - 1e-9]
     return Layer(env, speech, thr, flat, sils, [list(k) for k in voiced], end, measured, attached=set(attached),
                  burst_of=dict(attached) if isinstance(attached, dict) else {},
-                 room=room, raw_flat=raw_flat)
+                 room=room, raw_flat=raw_flat, voice=vo, noise=noise)
+
+
+def _noise(lay, w):
+    """Whether word w's sound is no voice (lib/voice.noise_word): its whisper span holds sound over the room plus
+    PROTECT_OVER_ROOM_DB (the lowest a burst reaches) and every run of it is cut off from any voiced frame."""
+    if lay.voice is None:
+        return False
+    a, b = _frames(lay.env, w.start, max(w.end, w.start + FRAME_S))
+    return _voice.noise_word(lay.env, lay.voice, lay.room + PROTECT_OVER_ROOM_DB, a, b)
 
 
 def _protected(lay, peak):
@@ -305,7 +321,8 @@ def _attached_frames(words, placed, kind, lay, max_pause, breath=BREATH_S):
                 continue
             k = max(cand, key=lambda f: (env[f], -f))
             lo, hi = _burst_run(lay, k, a, b, line, owner, i)
-            raw.append([k, lo, hi, line, cap, i])
+            if not _voice.cut_off(lay.voice, lo, hi):     # a burst cut off from any voice is no word's sound (§577)
+                raw.append([k, lo, hi, line, cap, i])
             break
     raw.sort()
     for x, y in zip(raw, raw[1:]):            # two bursts that meet split at the longest dip between their anchors
@@ -529,7 +546,7 @@ def place(words, lay, breath=BREATH_S, is_filler=None):
         over = [(min(we0, v1) - max(ws0, v0), v0, v1) for v0, v1 in lay.voiced
                 if v0 - _EPS <= we0 and ws0 <= v1 + _EPS]
         over = [x for x in over if x[0] > _EPS or (we0 - ws0 <= _EPS and x[1] - _EPS <= ws0 <= x[2] + _EPS)]
-        if over:
+        if over and not _noise(lay, w):              # a word on sound of no voice is inaudible: removed (§577)
             _, v0, v1 = max(over)
             placed[i] = replace(w, start=round(max(ws0, v0), 6), end=round(max(max(ws0, v0), min(we0, v1)), 6))
             kind[i] = "quiet"
@@ -539,7 +556,7 @@ def place(words, lay, breath=BREATH_S, is_filler=None):
         kind[i] = "inaudible"
     fill = (lambda w: bool(w.norm) and bool(is_filler(w.norm))) if is_filler else None
     _ordered(words, placed, kind, lay, fill)
-    _misplaced(words, placed, kind, flat)
+    _misplaced(words, placed, kind, flat, {i for i in range(n) if kind[i] == "inaudible" and _noise(lay, words[i])})
     _chain(words, placed, kind, lay, fill)
     # a word never auto-removed (L-B3, A-B2: its peak at the guard or over the room) is folded against the nearest
     # placed word and offered, like a misplaced one; its burst, if it has one, makes it heard on the next reading
@@ -548,7 +565,8 @@ def place(words, lay, breath=BREATH_S, is_filler=None):
             continue
         a, b = _frames(env, words[i].start, words[i].end)
         # (§577 b) a word whose whisper span holds sound at the line is never auto-removed either
-        if not (_protected(lay, max(env[a:b], default=_SILENT_DB)) or span_voiced(lay, words[i])):
+        if not (_protected(lay, max(env[a:b], default=_SILENT_DB)) or span_voiced(lay, words[i])) or \
+                _noise(lay, words[i]):          # §577: its sound is cut off from any voice, so the guard never holds it
             continue
         before = next((k for k in range(i - 1, -1, -1) if kind[k] != "inaudible"), None)
         after = next((k for k in range(i + 1, n) if kind[k] != "inaudible"), None)
@@ -649,7 +667,7 @@ def span_voiced(lay, w):
     if not lay.env or lay.speech <= waveform_trim.DIGITAL_SILENCE_DB:
         return False
     a, b = _frames(lay.env, w.start, max(w.end, w.start + FRAME_S))
-    return any(lay.env[f] >= lay.threshold for f in range(a, b))
+    return any(lay.env[f] >= lay.threshold and f not in lay.noise for f in range(a, b))
 
 
 def _excess(words, placed, k):
@@ -1003,12 +1021,13 @@ def _letters(text):
     return sum(1 for c in text if c.isalnum())
 
 
-def _misplaced(words, placed, kind, flat=None):
+def _misplaced(words, placed, kind, flat=None, noise=()):
     """The landing bar (2026-10-24): a word whisper put in silence while a neighbour holds its audio is never tagged
     inaudible. Of the words found inaudible (wholly in a silence), a lone one between placed words
     is whisper's timing, and so is a run a heard neighbour holds (its voiced span longer than LETTER_S a letter plus
     WORD_BASE_S for its own text, by MISPLACED_SHARE of the run's letters): those are folded against that neighbour
-    and offered, never removed. Text only: the silence is cut either way."""
+    and offered, never removed. Text only: the silence is cut either way. A lone word on sound of no voice (`noise`,
+    lib/voice: §577) is not whisper's timing: it stays inaudible, and is removed."""
     n = len(words)
     i = 0
     while i < n:
@@ -1032,7 +1051,7 @@ def _misplaced(words, placed, kind, flat=None):
         host = None
         if held:
             host = max(held, key=lambda k: (excess(k), -k))
-        elif j - i == 1 and len(hosts) == 2:
+        elif j - i == 1 and len(hosts) == 2 and i not in noise:
             host = min(hosts, key=lambda k: (words[i].start - placed[k].end) if k < i else (placed[k].start - words[i].end))
         if host is not None:
             if host < i:
@@ -1085,7 +1104,7 @@ class Refiner:
     speech_build, none: a pause is cut by layer 1 alone, on the sound, never on whisper's word spans."""
 
     pause_cap = float("inf")
-    STAMP = VERSION + " " + " ".join(f"{k}={globals()[k]}" for k in _STAMPED)
+    STAMP = VERSION + " " + " ".join(f"{k}={globals()[k]}" for k in _STAMPED) + " " + _voice.STAMP
     stamp = _RefinerStamp()
 
     def __init__(self, max_pause=None, breath=BREATH_S, is_filler=None, retranscribe=None, retranscribe_tag=""):
@@ -1093,6 +1112,7 @@ class Refiner:
         self.quiet_words, self.heard, self.inaudible, self.soft, self.soundless = {}, {}, {}, {}, {}
         self.folded, self.loud = {}, {}     # per source: folded word indexes; words whose whisper span holds sound
         self.chained = {}                   # per source: word indexes _chain folded
+        self.noise = {}                     # per source: inaudible word indexes whose sound is no voice (§577): `noise`
         self.whole = set()          # item ids of clips kept whole (cut sets it): tidy leaves their pieces
         self.dropped = {}           # source -> [(start, end)] pieces of sound with no word layer 1 dropped (L-B4)
         self.max_pause = max_pause
@@ -1113,7 +1133,8 @@ class Refiner:
     def __call__(self, key, media, raw):
         if key not in self.layers:
             env = envelope(media)
-            lay = layer1(media, env, self._pause())
+            spectral = _voice.flags(media, len(env))        # §577 cut voice: which frames sound like a voice
+            lay = layer1(media, env, self._pause(), spectral=spectral)
             if self.retranscribe is not None:
                 from lib import speech_repair
                 raw, self.repaired[key] = speech_repair.repair(raw, lay, media, self.retranscribe,
@@ -1125,7 +1146,7 @@ class Refiner:
                 if more == attached:
                     break
                 attached = more
-                lay = layer1(media, env, self._pause(), attached)
+                lay = layer1(media, env, self._pause(), attached, spectral)
                 placed, kind = place(raw, lay, self.breath, self.is_filler)
             self.layers[key], self.raw[key] = lay, list(raw)
             self.placed[key], self.kinds[key] = placed, kind
@@ -1136,6 +1157,7 @@ class Refiner:
             self.folded[key] = {raw[i].idx for i in range(len(raw)) if kind[i] == "folded"}
             # folded by _chain: whisper's drift, not a quiet word (a take is never faint for them)
             self.chained[key] = {raw[i].idx for i in lay.chained if i < len(raw) and kind[i] == "folded"}
+            self.noise[key] = {raw[i].idx for i in range(len(raw)) if kind[i] == "inaudible" and _noise(lay, raw[i])}
             # §577 (b): never auto-removed (inaudible, tail or the video's edge), at most offered
             self.loud[key] = {w.idx for w in raw if span_voiced(lay, w)}
             # soft: a word whose sound is all under the line (an attached or protected burst, or none): {idx: peak}

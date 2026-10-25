@@ -381,14 +381,16 @@ def test_a_filler_between_two_pauses_leaves_no_long_flat_across_the_joint(tmp_pa
 
 @pytest.mark.parametrize("smack_db", [-40.0, -45.0])
 def test_a_lip_smack_alone_in_a_long_pause_is_dropped_and_named(tmp_path, monkeypatch, smack_db):
-    """L-B4: a 30 ms smack alone in a 1.5 s pause between sentences is no 0.35 s dead clip: dropped, and named."""
+    """L-B4: a 30 ms smack alone in a 1.5 s pause between sentences is no 0.35 s dead clip: dropped. §577 cut voice: a
+    smack cut off from any voice is silence for layer 1, so no wordless piece is left to drop or name (the warning
+    names one only when the voice check is off, as for media it cannot read)."""
     tones = [(0.30, 0.55, SP), (0.60, 0.85, SP), (2.45, 2.70, SP), (2.75, 3.00, SP)]
     words = [("we", 0.30, 0.60), ("left.", 0.60, 0.85), ("then", 2.45, 2.75), ("home.", 2.75, 3.00)]
     d = v5.project(tmp_path, monkeypatch, [("vo", tones, 3.7, words)], room=-70.0,
                    bursts={"vo": [(1.60, 1.63, smack_db)]})
     plan, text, applied, said_, before = v5.plan_apply(d, monkeypatch)
     assert not [(a, b) for a, b in tc.kept_iv(d) if b <= 2.40 and a >= 0.90], tc.kept_iv(d)
-    assert any("no word" in w for w in plan.get("warnings", [])), plan.get("warnings")
+    assert not any("no word" in w for w in plan.get("warnings", [])), plan.get("warnings")
     v5.checked(d, plan, applied, before, v5.kept_tones("vo", tones))
 
 
