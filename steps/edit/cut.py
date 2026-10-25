@@ -57,7 +57,7 @@ PLAN_HELP = ("Edit, then run cut with plan: move a row from ## Unused into ## Cu
              "take trimmed (it replaces that take's rows in ## Cut). A * row tagged inaudible? holds the video's "
              "first or last word, too soft to play: put it in place of its row to keep it.")
 # Why a row is in a plan's ## Unused.
-WHYS = ("retake", "false-start", "repeat", "restart", "abandoned", "filler-only", "pause", "earlier", "inaudible")
+WHYS = ("retake", "false-start", "repeat", "restart", "abandoned", "filler-only", "pause", "earlier", "inaudible", "noise")
 REMOVED_CAP_BYTES = 1500
 PREV_PLAN_FILE = "cut-plan.prev.md"
 LOSES_MOST = 0.1            # warn when a clip keeps under this share of its length
@@ -277,7 +277,7 @@ def _trimmed(row, drop):
 
 # ── the plan ─────────────────────────────────────────────────────────────────
 
-_WHY_ORDER = ("retake", "false-start", "repeat", "restart", "abandoned", "pause", "inaudible", "inaudible?")
+_WHY_ORDER = ("retake", "false-start", "repeat", "restart", "abandoned", "pause", "inaudible", "noise", "inaudible?")
 SENTENCE_END_S = speech_energy.SENTENCE_END_S
 
 
@@ -321,7 +321,7 @@ def _kept_whole(row):
 
 
 def _plan(d, title, units, trailing, sel, at, of_source, language, max_pause, project_dir, is_filler,
-          whole=frozenset(), why_at=None, notes=None, breath=None, threshold=SILENCE_THRESHOLD_DB):
+          whole=frozenset(), why_at=None, notes=None, breath=None, threshold=SILENCE_THRESHOLD_DB, refiner=None):
     """The plan: speech_edit's text format. `## Cut` holds the kept rows in narrative order (each kept take at
     its section's first appearance, its repeated or restarted words deleted), each tagged [time]; `## Unused`
     every removed take, one group of rows per take (a blank line between), each row tagged [time why]. A row
@@ -385,6 +385,7 @@ def _plan(d, title, units, trailing, sel, at, of_source, language, max_pause, pr
         groups.append((t_of(rows[0]), why, [f"{_row_line(r)} [{t_of(r):.1f} {why}]" for r in rows],
                        (rows[0].line, words(rows))))
     inaudible = getattr(d, "inaudible", None) or set()
+    noise = _noise_keys(refiner, d)
     for ln in d.unused:
         if not ln.words:
             continue
@@ -405,7 +406,8 @@ def _plan(d, title, units, trailing, sel, at, of_source, language, max_pause, pr
             # whisper put these words wholly in a silence the mechanical pass cut: the line (the whole of it, `*`,
             # when some of it plays) tagged inaudible, to put back in its row's place
             star = "*" if ln.id in d.partly else ""
-            groups.append((round(t, 1), "inaudible", [f"{star}{ln.id} {text} [{t:.1f} inaudible]"],
+            why = "noise" if all((letter, w.idx) in noise for w in silent) else "inaudible"     # §577 cut voice
+            groups.append((round(t, 1), why, [f"{star}{ln.id} {text} [{t:.1f} {why}]"],
                            (ln.id, " ".join(w.text for w in silent))))
             continue
         why = "filler-only" if all(is_filler(w.norm) for w in ln.words if w.norm) else "pause"
@@ -858,8 +860,19 @@ def _edge_soft(b, units, d):
             why_at.setdefault(ui, {}).update({k: "inaudible?" for k in hit})
 
 
+def _noise_keys(ref, d):
+    """{(letter, word index)}: the inaudible words whose sound is no voice (lib/speech_energy, lib/voice: §577)."""
+    return {(d.letters[src], i) for src, idx in getattr(ref, "noise", {}).items() if src in d.letters for i in idx}
+
+
+def _silent_why(b, key):
+    """The tag of a word removed on the audio's evidence: noise when its sound is no voice (§577), else inaudible."""
+    return "noise" if key in _noise_keys(b.get("refiner"), b["d"]) else "inaudible"
+
+
 def _inaudible(b, units, inaudible):
-    """A kept word with no audible frame (lib/speech_energy) goes, word for word, tagged inaudible."""
+    """A kept word with no audible frame (lib/speech_energy) goes, word for word, tagged inaudible (noise, when the
+    only sound in its span is no voice: §577)."""
     sel, why_at = b["sel"], b.setdefault("why_at", {})
     for ui in sel.kept:
         u, rows, _ = units[ui]
@@ -870,7 +883,7 @@ def _inaudible(b, units, inaudible):
         pos = {k for k, key in enumerate(ws) if key in inaudible and k not in gone}
         if pos:
             sel.drop.setdefault(ui, set()).update(pos)
-            why_at.setdefault(ui, {}).update({k: "inaudible" for k in pos})
+            why_at.setdefault(ui, {}).update({k: _silent_why(b, ws[k]) for k in pos})
 
 
 def _quiet_offers(b, units, d):
@@ -901,7 +914,7 @@ def _spliced(b, units):
             continue
         ku, k0 = said[0]
         m, k = 0, k0 - 1
-        while k >= 0 and why_at.get(ku, {}).get(k) == "inaudible":
+        while k >= 0 and why_at.get(ku, {}).get(k) in ("inaudible", "noise"):
             m, k = m + 1, k - 1
         # words whisper put wholly in a silence (layer 1 cut them with it) right before the saying took it too
         keys = [(_line_key(r.line)[0], w.idx) for _, r in units[ku][1] for w in r.words]
@@ -923,6 +936,7 @@ def _spliced(b, units):
 
 _CATEGORY = {"retake": "retake", "false-start": "retake", "repeat": "retake", "restart": "retake",
              "abandoned": "retake", "earlier": "retake", "inaudible": "inaudible", "inaudible?": "inaudible",
+             "noise": "inaudible",
              "pause": "tail", "filler-only": "fillers"}
 
 
@@ -980,7 +994,7 @@ def _removed_by(b, final, project_dir, max_pause, units):
     inaudible = 0
     for src, letter in d.letters.items():
         ws = sorted(words_of.get(letter, []), key=lambda w: w.idx)
-        played = {w.idx for w in ws if why.get((letter, w.idx)) == "inaudible"}
+        played = {w.idx for w in ws if why.get((letter, w.idx)) in ("inaudible", "noise")}
         # words whisper put wholly in a silence: the mechanical pass cut their silence (layer 1)
         inaudible += len(played | {i for lt, i in getattr(d, "inaudible", ()) if lt == letter})
         gone = _minus(base.get(src, []), after.get(src, []))
@@ -1111,7 +1125,7 @@ def _plan_warnings(b, final, project_dir, held):
             total[lt] = total.get(lt, 0) + len(r.words)
             for w in r.words:
                 seen.add((lt, w.idx))
-                if why_at.get(ui, {}).get(n) == "inaudible":
+                if why_at.get(ui, {}).get(n) in ("inaudible", "noise"):
                     lost[lt] = lost.get(lt, 0) + 1
                 n += 1
     for lt, i in getattr(d, "inaudible", ()):            # cut with their silence, never played: in no take
@@ -1309,7 +1323,7 @@ def _make_plan(args, project_path, project_dir):
             text, kept, removed, suggested = _plan(b["d"], title, b["units"], b["trailing"], b["sel"], at, of_source,
                                                    language, max_pause, project_dir, _filler_test(language),
                                                    b.get("whole", frozenset()), b.get("why_at"), b.get("notes"),
-                                                   breath, threshold)
+                                                   breath, threshold, b["refiner"])
             res = apply(project_path, _untagged(text)[0], preview=True, max_pause=max_pause, feel=DEFAULT_FEEL,
                         base=b["work"], base_of=disk, want_project=True, carry_from=b["origin"], lineage=b["lineage"],
                         guard_keys=(MARKER_KEY,) + _read_too(lift), refiner=b["refiner"], lower=_lower(lift))
