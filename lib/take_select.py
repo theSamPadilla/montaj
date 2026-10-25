@@ -806,10 +806,13 @@ def _whole(seq, i, L, j):
 
 
 def _clauses(seq):
-    """[(start, end)] of seq split at sentence ends, clause punctuation, breaks and clip changes."""
+    """[(start, end)] of seq split at sentence ends, clause punctuation, unit and clip changes, for F1. Not at a
+    timing break inside a unit (§558 cut v5): the cut's silences are pauses inside a clause as often as between
+    two, and F1 only offers. The sure rules read breaks through _sure."""
     out, a = [], 0
     for n in range(1, len(seq) + 1):
-        if n == len(seq) or seq[n - 1][SENT] or seq[n - 1][LIST] or seq[n][BREAK] or seq[n][CLIP] != seq[n - 1][CLIP]:
+        if (n == len(seq) or seq[n - 1][SENT] or seq[n - 1][LIST] or seq[n][CLIP] != seq[n - 1][CLIP]
+                or seq[n][UNIT] != seq[n - 1][UNIT]):
             out.append((a, n))
             a = n
     return out
