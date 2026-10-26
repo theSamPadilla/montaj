@@ -97,7 +97,8 @@ def test_a_saved_item_src_typed_with_an_ascii_space_is_saved_as_the_real_name(cl
     r = c.put(f"/api/projects/{PID}", json={"id": PID, "tracks": [{"id": "trk-0", "items": [item, rel, gone]}]})
     assert r.status_code == 200, r.text
     saved = {it["id"]: it["src"] for it in json.loads((d / "project.json").read_text())["tracks"][0]["items"]}
-    assert saved == {"broll-1": str(d / REAL), "broll-2": REAL, "broll-3": str(d / "gone.mov")}
+    # a relative src is the project folder's: its twin is saved as the absolute real path (PL89i kung fu run 2)
+    assert saved == {"broll-1": str(d / REAL), "broll-2": str(d / REAL), "broll-3": str(d / "gone.mov")}
     warnings = r.json()["warnings"]
     assert len(warnings) == 2 and warnings[0].startswith("broll-1: no file at") and str(d / REAL) in warnings[0]
     assert warnings[1].startswith("broll-2:") and "broll-3" not in " ".join(warnings)

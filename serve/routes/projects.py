@@ -4386,9 +4386,9 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
 
 
 def _match_item_srcs(merged: dict, existing: dict, project_dir: Path) -> list:
-    """Point each new or changed item whose `src` names no file at its one twin (lib/path_match.py), in place,
-    keeping a relative src relative. Answers the save's warnings: one per src changed, and one per src left as
-    written because several files match, naming them."""
+    """Point each new or changed item whose `src` names no file at its one twin (lib/path_match.py), in place, as an
+    absolute path (a relative src is the project folder's). Answers the save's warnings: one per src changed, and one
+    per src left as written because several files match, naming them."""
     before = {(it.get("id"), it.get("src")) for t in normalize_tracks(existing).get("tracks") or [] if isinstance(t, dict)
               for it in t.get("items") or [] if isinstance(it, dict)}
     warnings = []
@@ -4399,7 +4399,7 @@ def _match_item_srcs(merged: dict, existing: dict, project_dir: Path) -> list:
                 continue
             hits = spaced_twins(src if os.path.isabs(src) else os.path.join(str(project_dir), src))
             if len(hits) == 1:
-                item["src"] = hits[0] if os.path.isabs(src) else os.path.relpath(hits[0], str(project_dir))
+                item["src"] = hits[0]  # absolute: a step reads a src as a path, and a relative one from its own folder
                 warnings.append(f"{item.get('id')}: no file at {src}; saved the file it names, {item['src']}")
             elif hits:
                 warnings.append(f"{item.get('id')}: no file at {src}, and several match once spaces are read alike ("
