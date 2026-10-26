@@ -8,7 +8,7 @@
   },
   "output": {
     "type": "json",
-    "description": "{id, mode (track, card or none), why?, keys? (crop keys), found? (frames with the subject), card? (the overlay's id), path (the sheet)}. detail adds the crop width and the card's box."
+    "description": "{id, mode (track, card or none), why (what it chose and why; the clip is done), keys? (crop keys), found? (frames with the subject), card? (the overlay's id), path (the sheet)}; for a list, {items: [one each, or {id, error, message}], path}. detail adds the crop width and the card's box."
   },
   "params": [
     {
@@ -21,7 +21,8 @@
       "name": "item",
       "type": "string",
       "required": true,
-      "description": "The b-roll clip's item id (a video on an upper track)."
+      "repeatable": true,
+      "description": "The b-roll clip's item id (a video on an upper track); a list frames them all in one call (at most 12): read in parallel, one write, one sheet."
     },
     {
       "name": "mode",

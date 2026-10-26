@@ -36,6 +36,10 @@ UNDER_CAPTIONS = 0.5      # the share of the frames with the subject that put it
 DEFAULT_CAPTION_BAND = (0.56, 0.76)   # where montaj's captions draw on a tall frame, every style (look_check.CAPTION_BAND)
 VERSION_MESSAGE = "version: before frame_broll"
 STEP_LOCK_TIMEOUT = 30.0
+MAX_ITEMS = 12          # items in one call
+MAX_PARALLEL = 4        # clips read and tracked at once
+MAX_SHEET_TIMES = 12    # times on the sheet of a list
+DONE = ". Done: this clip is framed; run frame_broll with another mode to change it, not an edit by hand."
 
 
 def read_tracks(project_path):
@@ -98,24 +102,26 @@ def default_sampler(project_path, times, out):
     return out
 
 
-def run(project_path, item_id, *, mode="auto", source=None, detail=False, sampler=None):
-    project_path = os.path.abspath(project_path)
-    project_dir = os.path.dirname(project_path)
-    sampler = sampler or default_sampler
-    if mode not in ("auto", "track", "card"):
-        fail("invalid_params", "mode is auto, track or card.")
-    on_disk, read_rev = read_tracks(project_path)
-    project = normalize_tracks(copy.deepcopy(on_disk))
+class ItemRefused(Exception):
+    """One item's refusal: fail() for a single item, a line of its own in a list."""
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code, self.message = code, message
+
+
+def analyse(project, on_disk, project_path, item_id, mode):
+    """What framing `item_id` takes, computed from the project as read (nothing is written): a plan for write_plans,
+    or {"id", "mode": "none", "why"} for a clip that needs nothing. Raises ItemRefused."""
     hit = place.find_item(project, item_id)
     if hit is None:
-        fail("item_not_found", f"No item {item_id} on the timeline.")
+        raise ItemRefused("item_not_found", f"No item {item_id} on the timeline.")
     ti, _, item = hit
     if item.get("type") != "video" or ti == 0:
-        fail("not_broll", f"{item_id} is not a video clip on an upper track (b-roll); the first track is the main footage.")
+        raise ItemRefused("not_broll", f"{item_id} is not a video clip on an upper track (b-roll); the first track is the main footage.")
     sw, sh = lc._num(item.get("sourceWidth")), lc._num(item.get("sourceHeight"))
     src = item.get("proxySrc") if item.get("proxySrc") and os.path.isfile(item["proxySrc"]) else item.get("src")
     if not src or not os.path.isfile(src):
-        fail("file_not_found", f"The clip's file is missing: {item.get('src')}")
+        raise ItemRefused("file_not_found", f"The clip's file is missing: {item.get('src')}")
     probed = None
     if not (sw > 0 and sh > 0):
         # the original's size (a proxy is smaller, with the same shape): a keyed video crop needs it on the item
@@ -123,12 +129,12 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
         try:
             sw, sh = (float(v) for v in dims.split(",")[:2])
         except ValueError:
-            fail("probe_failed", f"Could not read the clip's size: {dims!r}")
+            raise ItemRefused("probe_failed", f"Could not read the clip's size: {dims!r}")
         probed = (int(sw), int(sh))
     W, H = lc.design_size(project)
     canvas = W / H
     if sw / sh <= canvas * 1.05:
-        return {"id": item_id, "mode": "none", "why": "the clip is already as tall as the canvas"}
+        return {"id": item_id, "mode": "none", "why": "the clip is already as tall as the canvas; nothing to frame"}
     crop_w = round((sh * canvas) / sw, 4)
 
     start, end = lc._num(item.get("start")), lc._num(item.get("end"))
@@ -144,34 +150,80 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
 
     why = None
     band = caption_band(project, start, end, W, H)
+    captions_now = bool(lc.caption_bands(project, start, end, W, H))
     # a full-height crop keeps the source's heights, so the subject's box is where it lands on screen
     boxes_found = [p["box"] for p in path["points"] if p["box"] is not None]
     # text off the subject (Sam): the captions crossing the followed subject in most of the clip makes auto card it
     crossed = under_captions(boxes_found, band, 0.05)
+    seen = f"the subject is in {path['found']}/{n} frames"
     if mode == "auto":
         if path["cluttered"] > 0.3 * n:
-            mode, why = "card", "the camera moves, so there is no one subject to follow"
+            mode, why = "card", "card: the camera moves, so there is no one subject to follow"
         elif path["found"] < 0.6 * n:
-            mode, why = "card", "no moving subject was found in most of the clip"
+            mode, why = "card", "card: no moving subject was found in most of the clip"
         elif path["capture"] < 0.5:
-            mode, why = "card", "what moves is wider than the crop"
+            mode, why = "card", "card: what moves is wider than the crop"
         elif crossed > UNDER_CAPTIONS:
-            mode, why = "card", ("a crop that follows the subject puts the captions across it; the card keeps it "
-                                 "above them (or move the captions and run mode track)")
+            mode = "card"
+            why = ("card: a crop that follows the subject puts the captions across it; the card keeps it above them"
+                   if captions_now else
+                   f"card: {seen}, but captions would cross it in {round(crossed * 100)}% of the clip (no captions yet;"
+                   " for a video that will have none, run mode track)")
         else:
             mode = "track"
+            why = f"track: {seen} and the captions stay clear of it"
     elif mode == "track" and path["found"] == 0:
-        fail("no_subject", "No moving subject in the clip to follow; use mode card.")
+        raise ItemRefused("no_subject", "No moving subject in the clip to follow; use mode card.")
+    else:
+        why = f"{mode}: as asked"
 
     item_t = lambda st: round((st - t_in) / rate, 3) if rate > 0 else 0.0  # noqa: E731
     found = [(item_t(st), p) for st, p in zip(times, path["points"]) if p["box"] is not None]
     width_ratio = sw / sh
     card_h = CARD_SCALE * (W / H) / width_ratio            # the footage's height on screen, a share of the canvas
     box = [round((1 - CARD_SCALE) / 2, 4), round(CARD_CENTER_Y - card_h / 2, 4), CARD_SCALE, round(card_h, 4)]
+    return {"id": item_id, "mode": mode, "why": why, "probed": probed, "crop_w": crop_w, "box": box, "start": start,
+            "end": end, "W": W, "H": H, "track_keys": [(item_t(st), round(p["x"], 4)) for st, p in zip(times, path["points"])] if mode == "track" else None,
+            "found_boxes": found, "found": path["found"], "n": n, "crossed": crossed}
+
+
+def run(project_path, item_id, *, mode="auto", source=None, detail=False, sampler=None):
+    """Frame one b-roll item (`item_id` a string: the answer as it always was) or several (a list: {"items": [one
+    answer each, in the order given], "path"} from one write and one sheet)."""
+    project_path = os.path.abspath(project_path)
+    project_dir = os.path.dirname(project_path)
+    sampler = sampler or default_sampler
+    if mode not in ("auto", "track", "card"):
+        fail("invalid_params", "mode is auto, track or card.")
+    single = isinstance(item_id, str)
+    ids = [item_id] if single else list(dict.fromkeys(str(i) for i in item_id))
+    if not ids:
+        fail("invalid_params", "item is one item id or a list of them.")
+    if len(ids) > MAX_ITEMS:
+        fail("invalid_params", f"At most {MAX_ITEMS} items in one call.")
+    on_disk, read_rev = read_tracks(project_path)
+    project = normalize_tracks(copy.deepcopy(on_disk))
+
+    def one(i):
+        try:
+            return analyse(project, on_disk, project_path, i, mode)
+        except ItemRefused as e:
+            return {"id": i, "error": e.code, "message": e.message}
+    if len(ids) == 1:
+        plans = [one(ids[0])]
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL, len(ids))) as pool:
+            plans = list(pool.map(one, ids))
+    if single and "error" in plans[0]:
+        fail(plans[0]["error"], plans[0]["message"])
+    todo = [pl for pl in plans if pl.get("mode") in ("track", "card")]
+    if single and not todo:
+        return {k: plans[0][k] for k in ("id", "mode", "why")}
 
     credit = f"Footage: {source.strip()}" if source and source.strip() else ""
-    made, preset_src, card_id = False, None, None
-    if mode == "card":
+    made, preset_src = False, None
+    if any(pl["mode"] == "card" for pl in todo):
         def sync_check(rel):
             try:
                 sync_clash.check_step_write(on_disk.get("id"), (), [rel])
@@ -189,89 +241,104 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
             fail("project_changed", "The tracks changed since frame_broll read them (an edit in the editor or another "
                                     "step). Run frame_broll again.")
         doc = normalize_tracks(fresh)
-        h = place.find_item(doc, item_id)
-        it = h[2]
-        keyframes = [k for k in (it.get("keyframes") or []) if not str(k.get("prop", "")).startswith("crop")]
-        for k in ("sourceCrop", "scale", "offsetX", "offsetY"):
-            it.pop(k, None)
-        if probed:
-            it["sourceWidth"], it["sourceHeight"] = probed
-        if mode == "track":
-            keys = simplify([(t, round(p["x"], 4)) for t, p in [(item_t(st), p) for st, p in zip(times, path["points"])]])
-            it["sourceCrop"] = {"x": keys[0][1], "y": 0, "w": crop_w, "h": 1}
-            keyframes.append({"prop": "cropX", "points": [{"t": t, "value": v} for t, v in keys]})
-            written["keys"] = len(keys)
-        else:
-            it["scale"] = CARD_SCALE
-            it["offsetX"] = 0
-            it["offsetY"] = round((CARD_CENTER_Y - 0.5) * 100, 3)
-            subject = [[t, *[round(v, 4) for v in p["box"]]] for t, p in found]
-            card = {"id": place._new_id(doc), "type": "overlay", "src": preset_src, "start": start, "end": end,
-                    "props": {"box": ",".join(str(v) for v in box), "credit": credit,
-                              "subject": json.dumps(simplify_boxes(subject)) if subject else "",
-                              "canvasW": str(W), "canvasH": str(H)}}
-            dest, refusal = place.choose_track(doc, start, end)
-            if refusal:
-                fail("track_busy", f"No overlay track is free for the card: {refusal}.")
-            tracks = doc["tracks"]
-            if dest is None:
-                from lib import project_tracks
-                tracks.append({"id": project_tracks._new_track_id({t.get("id") for t in tracks}), "items": []})
-                dest = len(tracks) - 1
-            tracks[dest]["items"] = sorted(tracks[dest]["items"] + [card], key=lambda x: lc._num(x.get("start")))
-            written["card"] = card["id"]
-        if keyframes:
-            it["keyframes"] = keyframes
-        else:
-            it.pop("keyframes", None)
+        for pl in todo:
+            it = place.find_item(doc, pl["id"])[2]
+            keyframes = [k for k in (it.get("keyframes") or []) if not str(k.get("prop", "")).startswith("crop")]
+            for k in ("sourceCrop", "scale", "offsetX", "offsetY"):
+                it.pop(k, None)
+            if pl["probed"]:
+                it["sourceWidth"], it["sourceHeight"] = pl["probed"]
+            if pl["mode"] == "track":
+                keys = simplify(pl["track_keys"])
+                it["sourceCrop"] = {"x": keys[0][1], "y": 0, "w": pl["crop_w"], "h": 1}
+                keyframes.append({"prop": "cropX", "points": [{"t": t, "value": v} for t, v in keys]})
+                written[pl["id"]] = {"keys": len(keys)}
+            else:
+                it["scale"] = CARD_SCALE
+                it["offsetX"] = 0
+                it["offsetY"] = round((CARD_CENTER_Y - 0.5) * 100, 3)
+                subject = [[t, *[round(v, 4) for v in p["box"]]] for t, p in pl["found_boxes"]]
+                start, end = pl["start"], pl["end"]
+                card = {"id": place._new_id(doc), "type": "overlay", "src": preset_src, "start": start, "end": end,
+                        "props": {"box": ",".join(str(v) for v in pl["box"]), "credit": credit,
+                                  "subject": json.dumps(simplify_boxes(subject)) if subject else "",
+                                  "canvasW": str(pl["W"]), "canvasH": str(pl["H"])}}
+                dest, refusal = place.choose_track(doc, start, end)
+                if refusal:
+                    fail("track_busy", f"No overlay track is free for the card of {pl['id']}: {refusal}.")
+                tracks = doc["tracks"]
+                if dest is None:
+                    from lib import project_tracks
+                    tracks.append({"id": project_tracks._new_track_id({t.get("id") for t in tracks}), "items": []})
+                    dest = len(tracks) - 1
+                tracks[dest]["items"] = sorted(tracks[dest]["items"] + [card], key=lambda x: lc._num(x.get("start")))
+                written[pl["id"]] = {"card": card["id"]}
+            if keyframes:
+                it["keyframes"] = keyframes
+            else:
+                it.pop("keyframes", None)
         version = commit_version(project_dir, VERSION_MESSAGE)
         fresh["tracks"] = doc["tracks"]
         return fresh
 
-    try:
-        update_project_or_fail(project_path, apply, fail, timeout=STEP_LOCK_TIMEOUT)
-    except BaseException:
-        if made:
-            try:
-                os.unlink(os.path.join(project_dir, preset_src[2:]))
-            except OSError:
-                pass
-        raise
+    if todo:
+        try:
+            update_project_or_fail(project_path, apply, fail, timeout=STEP_LOCK_TIMEOUT)
+        except BaseException:
+            if made:
+                try:
+                    os.unlink(os.path.join(project_dir, preset_src[2:]))
+                except OSError:
+                    pass
+            raise
 
-    span = end - start
-    sheet_times = [round(start + span * (k + 0.5) / SHEET_TIMES, 2) for k in range(SHEET_TIMES)]
-    samples = os.path.join(project_dir, "render", "samples")
-    os.makedirs(samples, exist_ok=True)
-    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(item_id))[:40]
-    # the project is written by now: a sheet that cannot be made is said, never a failure of the step
-    sheet, sheet_error = None, None
-    err = io.StringIO()
-    try:
-        with contextlib.redirect_stderr(err):
-            sheet = sampler(project_path, sheet_times, os.path.join(samples, f"frame_broll-{safe}.png"))
-    except (SystemExit, Exception) as e:  # noqa: BLE001  (fail() exits; a renderer can raise anything)
-        said = err.getvalue().strip().splitlines()
-        sheet_error = (said[-1] if said else str(e) or type(e).__name__)[-300:]
-    out = {"id": item_id, "mode": mode}
-    if why:
-        out["why"] = why
-    if mode == "track":
-        out["keys"] = written["keys"]
-        out["found"] = f"{path['found']}/{n} frames"
-        if crossed > UNDER_CAPTIONS:
-            out["issues"] = [f"the captions cross the subject in {round(crossed * 100)}% of the clip: card keeps it clear of them"]
+    # One sheet: SHEET_TIMES over one clip, else two times in each framed clip (at most MAX_SHEET_TIMES).
+    if single:
+        span = todo[0]["end"] - todo[0]["start"]
+        sheet_times = [round(todo[0]["start"] + span * (k + 0.5) / SHEET_TIMES, 2) for k in range(SHEET_TIMES)]
     else:
-        out["card"] = written["card"]
-        if not credit:
-            out["note"] = "no credit: pass source for a 'Footage: <source>' line"
-    if not version and not is_own_repo(project_dir):
+        sheet_times = sorted({round(pl["start"] + (pl["end"] - pl["start"]) * f, 2) for pl in todo for f in (0.3, 0.7)})[:MAX_SHEET_TIMES]
+    samples = os.path.join(project_dir, "render", "samples")
+    sheet, sheet_error = None, None
+    if sheet_times:
+        os.makedirs(samples, exist_ok=True)
+        name = ids[0] if single else f"{ids[0]}-and-{len(ids) - 1}"
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(name))[:40]
+        # the project is written by now: a sheet that cannot be made is said, never a failure of the step
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                sheet = sampler(project_path, sheet_times, os.path.join(samples, f"frame_broll-{safe}.png"))
+        except (SystemExit, Exception) as e:  # noqa: BLE001  (fail() exits; a renderer can raise anything)
+            said = err.getvalue().strip().splitlines()
+            sheet_error = (said[-1] if said else str(e) or type(e).__name__)[-300:]
+
+    def answer(pl):
+        if "error" in pl or pl["mode"] == "none":
+            return {k: pl[k] for k in ("id", "error", "message", "mode", "why") if k in pl}
+        out = {"id": pl["id"], "mode": pl["mode"], "why": pl["why"] + DONE}
+        if pl["mode"] == "track":
+            out["keys"] = written[pl["id"]]["keys"]
+            out["found"] = f"{pl['found']}/{pl['n']} frames"
+            if pl["crossed"] > UNDER_CAPTIONS:
+                out["issues"] = [f"the captions cross the subject in {round(pl['crossed'] * 100)}% of the clip: card keeps it clear of them"]
+        else:
+            out["card"] = written[pl["id"]]["card"]
+            if not credit:
+                out["note"] = "no credit: pass source for a 'Footage: <source>' line"
+        if detail:
+            out["crop_w"], out["box"] = pl["crop_w"], pl["box"]
+        return out
+    if single:
+        out = answer(todo[0])
+    else:
+        out = {"items": [answer(pl) for pl in plans]}
+    if todo and not version and not is_own_repo(project_dir):
         out["version"] = False
     if sheet:
         out["sheet"] = out["path"] = sheet
-    else:
+    elif sheet_times:
         out["sheet_error"] = sheet_error
-    if detail:
-        out["crop_w"], out["box"] = crop_w, box
     return out
 
 
@@ -289,20 +356,25 @@ def simplify_boxes(subject, tol=0.01):
     return keep
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(description="Frame a landscape clip on a vertical timeline: follow its subject, or inset it as a card")
     parser.add_argument("--project", required=True, help="The project id, its folder, or its project.json")
-    parser.add_argument("--item", required=True, help="The b-roll clip's item id")
+    parser.add_argument("--item", required=True, action="append", help="The b-roll clip's item id; repeat it for several")
     parser.add_argument("--mode", default="auto", choices=["auto", "track", "card"], help="auto (default), track or card")
     parser.add_argument("--source", default=None, help="Where the footage is from, for the card's credit line")
     parser.add_argument("--detail", action="store_true", help="Also answer the crop width and the card's box")
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = build_parser().parse_args()
     project_path = args.project
     if os.path.isdir(project_path):
         project_path = os.path.join(project_path, "project.json")
     if not os.path.isfile(project_path):
         fail("file_not_found", f"No project.json at {args.project}")
-    print(json.dumps(run(project_path, args.item, mode=args.mode, source=args.source, detail=args.detail)))
+    items = args.item[0] if len(args.item) == 1 else args.item
+    print(json.dumps(run(project_path, items, mode=args.mode, source=args.source, detail=args.detail)))
 
 
 if __name__ == "__main__":

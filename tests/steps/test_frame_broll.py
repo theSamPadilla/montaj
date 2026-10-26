@@ -218,3 +218,97 @@ def test_auto_cards_a_subject_the_captions_only_cross(tmp_path):
     # the box at y 120-210 of 360 (33-58%): a full-height crop has the caption band (56-76%) crossing its foot
     out = fb.run(str(project(tmp_path, y=120)), "br-1", sampler=stub_sampler())
     assert out["mode"] == "card" and "captions" in out["why"]
+
+
+# PL89b: the agent sent five frame_broll calls in one turn; Claude Code runs a writing tool one call after another, so
+# they took 31-42 s each, in a row. One call frames a list of items: the clips are read in parallel (at most
+# MAX_PARALLEL at once), the project is written once, and one sheet shows them all.
+def two_brolls(tmp_path):
+    p = project(tmp_path)
+    doc = json.loads(Path(p).read_text())
+    second = dict(doc["tracks"][1]["items"][0], id="br-2", start=6, end=8, inPoint=0, outPoint=2)
+    doc["tracks"][1]["items"].append(second)
+    Path(p).write_text(json.dumps(doc, indent=2))
+    return p
+
+
+def test_a_list_of_items_is_framed_in_one_call_one_write_and_one_sheet(tmp_path, monkeypatch):
+    p = two_brolls(tmp_path)
+    versions = []
+    real = fb.commit_version
+    monkeypatch.setattr(fb, "commit_version", lambda d, m: versions.append(m) or real(d, m))
+    s = stub_sampler()
+    out = fb.run(str(p), ["br-1", "br-2", "br-1"], mode="track", sampler=s)
+    assert [x["id"] for x in out["items"]] == ["br-1", "br-2"], "each item once, in the order given"
+    assert all(x["mode"] == "track" and x["keys"] >= 2 for x in out["items"])
+    assert len(versions) == 1, "one write"
+    assert len(s.calls) == 1 and out["path"] == out["sheet"]
+    times = s.calls[0]
+    assert any(2 <= t < 6 for t in times) and any(6 <= t < 8 for t in times) and len(times) <= 12
+    for item_id in ("br-1", "br-2"):
+        item, _ = item_of(p, item_id)
+        assert any(k["prop"] == "cropX" for k in item["keyframes"]), item_id
+
+
+def test_the_clips_of_a_list_are_read_in_parallel_at_most_max_parallel_at_once(tmp_path, monkeypatch):
+    import threading
+    import time
+    p = project(tmp_path)
+    doc = json.loads(Path(p).read_text())
+    for k in range(2, 7):
+        doc["tracks"][1]["items"].append(dict(doc["tracks"][1]["items"][0], id=f"br-{k}", start=6 + k, end=7 + k, inPoint=0, outPoint=1))
+    Path(p).write_text(json.dumps(doc, indent=2))
+    busy, peak, lock = [0], [0], threading.Lock()
+    real = fb.gray_frames
+
+    def slow(*a, **k):
+        with lock:
+            busy[0] += 1
+            peak[0] = max(peak[0], busy[0])
+        time.sleep(0.2)
+        try:
+            return real(*a, **k)
+        finally:
+            with lock:
+                busy[0] -= 1
+    monkeypatch.setattr(fb, "gray_frames", slow)
+    out = fb.run(str(p), [f"br-{k}" for k in range(1, 7)], mode="track", sampler=stub_sampler())
+    assert len(out["items"]) == 6
+    assert 2 <= peak[0] <= fb.MAX_PARALLEL == 4
+
+
+def test_a_bad_item_in_a_list_is_said_for_that_item_and_the_others_are_framed(tmp_path):
+    p = two_brolls(tmp_path)
+    out = fb.run(str(p), ["br-1", "nope", "talk"], mode="track", sampler=stub_sampler())
+    by = {x["id"]: x for x in out["items"]}
+    assert by["br-1"]["mode"] == "track"
+    assert by["nope"]["error"] == "item_not_found" and by["talk"]["error"] == "not_broll"
+    item, _ = item_of(p, "br-1")
+    assert any(k["prop"] == "cropX" for k in item["keyframes"])
+
+
+def test_every_answer_says_why_it_chose_and_that_the_clip_is_done(tmp_path):
+    # auto's choice holds: PL89b redid four auto cards by hand (about 8 calls) because the answer did not say plainly
+    a = tmp_path / "a"
+    a.mkdir()
+    out = fb.run(str(project(a)), "br-1", sampler=stub_sampler())
+    assert out["mode"] == "track" and "frames" in out["why"] and out["why"].endswith(fb.DONE)
+    b = tmp_path / "b"
+    b.mkdir()
+    out = fb.run(str(project(b, moving=False)), "br-1", sampler=stub_sampler())
+    assert out["mode"] == "card" and out["why"].endswith(fb.DONE)
+
+
+def test_a_card_made_only_for_captions_not_there_yet_says_so_and_how_to_track_instead(tmp_path):
+    out = fb.run(str(project(tmp_path, y=220)), "br-1", sampler=stub_sampler())
+    assert out["mode"] == "card"
+    assert "no captions yet" in out["why"] and "mode track" in out["why"]
+
+
+def test_the_cli_takes_item_more_than_once(tmp_path):
+    p = two_brolls(tmp_path)
+    schema = json.loads((REPO_ROOT / "steps" / "edit" / "frame_broll.json").read_text())
+    item = next(x for x in schema["params"] if x["name"] == "item")
+    assert item.get("repeatable") is True
+    parser = fb.build_parser()
+    assert parser.parse_args(["--project", str(p), "--item", "br-1", "--item", "br-2"]).item == ["br-1", "br-2"]
