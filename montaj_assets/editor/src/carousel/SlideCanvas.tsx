@@ -692,22 +692,24 @@ export default function SlideCanvas({
   // ── Drag-select (§586 M6): a press and move from the empty canvas, the margin
   // or a locked element draws a band, in slide units. A press that never moves
   // is a click and draws nothing.
-  const rootRef = useRef<HTMLDivElement>(null)
   const bandRef = useRef<{
     start: { x: number; y: number }
     origin: { left: number; top: number }
     add: boolean
+    /** A shift-press on a locked element: toggled on release when the pointer never moved. */
+    toggleId?: string
     rect: BandRect | null
   } | null>(null)
   const [band, setBand] = useState<BandRect | null>(null)
   const BAND_THRESHOLD = 3
-  const startBand = (e: React.PointerEvent) => {
+  const startBand = (e: React.PointerEvent, toggleId?: string) => {
     if (!interactive || !onSelectMany || e.button !== 0) return
     const box = rootRef.current?.getBoundingClientRect()
     bandRef.current = {
       start: { x: e.clientX, y: e.clientY },
       origin: { left: box?.left ?? 0, top: box?.top ?? 0 },
       add: e.shiftKey,
+      toggleId,
       rect: null,
     }
     activeGesture.current = 'band'
@@ -731,6 +733,7 @@ export default function SlideCanvas({
       const b = bandRef.current
       bandRef.current = null
       setBand(null)
+      if (b && !b.rect && commitBand && b.toggleId) onToggleSelect?.(b.toggleId)
       if (!b?.rect || !commitBand) return
       swallowClickRef.current = true
       const rect = b.rect
@@ -917,8 +920,10 @@ export default function SlideCanvas({
               return
             }
             // Shift toggles membership and drags nothing. Crop mode ignores shift.
+            // On a locked element it toggles on release, and a move bands and adds.
             if (e.shiftKey && onToggleSelect && !cropSession) {
-              onToggleSelect(element.id)
+              if (isLocked(element) && onSelectMany) startBand(e, element.id)
+              else onToggleSelect(element.id)
               return
             }
             // A press inside a selected element's box acts on it though another
@@ -926,7 +931,11 @@ export default function SlideCanvas({
             // Without a move the click selects the topmost. A locked one waits.
             const held = selectedUnder(e)
             if (held && held.id !== element.id && held.id !== editingId) {
-              if (selectedIds.length > 1) startGroupDrag(e)
+              // A locked selection is never dragged: a move there draws a band,
+              // and the selection stays until the click picks the top element.
+              const allLocked = selectedIds.every((id) => isLocked(slide.elements.find((el) => el.id === id)))
+              if (allLocked) startBand(e)
+              else if (selectedIds.length > 1) startGroupDrag(e)
               else if (!isLocked(held)) {
                 heldPressRef.current = { x: e.clientX, y: e.clientY, moved: false }
                 startDrag(e, held)

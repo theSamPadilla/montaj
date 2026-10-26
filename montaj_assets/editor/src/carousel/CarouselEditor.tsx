@@ -1503,8 +1503,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     setSelectedElementIds(ids => (ids.includes(id) ? ids.filter(i => i !== id) : [...ids, id]))
   }, [])
 
-  // Drag-select (§586 M6): the canvas hands back the whole new selection and
-  // applies a crop in progress as the band starts.
+  // Drag-select (§586 M6): the canvas hands back the whole new selection (and
+  // has already applied a crop in progress as the band started).
   const selectBand = useCallback((ids: string[]) => {
     if (armedRef.current) return
     setSelectedElementIds(ids)
