@@ -380,3 +380,31 @@ def test_a_list_of_objects_on_a_repeated_param_goes_as_json_one_flag_each():
     schema = {"params": [{"name": "items", "type": "string"}]}
     flags = build_cli_args(schema, {"items": [{"at": 2, "overlay": "overlays/a.jsx"}, {"preset": "callout", "at": 5}]})
     assert flags == ["--items", '{"at": 2, "overlay": "overlays/a.jsx"}', "--items", '{"preset": "callout", "at": 5}']
+
+
+# Kung fu run (PL89i): steps carry out what they can.
+def test_inputs_given_as_one_string_is_one_path():
+    schema = {"input": {"type": "video", "multiple": True}, "params": []}
+    assert build_cli_args(schema, {"inputs": "/Users/x/IMG_1151.MOV"}) == ["--input", "/Users/x/IMG_1151.MOV"]
+
+
+def test_an_enum_refusal_carries_its_params_hint():
+    schema = {"params": [{"name": "mode", "type": "enum", "options": ["auto", "card"], "hint": "to read an item's framing, get_project"}]}
+    with pytest.raises(Exception) as e:
+        validate_params(schema, {"mode": "list"})
+    assert "get_project" in str(e.value.detail["message"])
+
+
+def test_a_path_typed_with_a_plain_space_finds_the_file_named_with_a_narrow_one(tmp_path):
+    from serve.routes.steps import resolve_spacing
+    real = tmp_path / "Screen Recording 2026-10-21 at 11.59.52 AM.mov"
+    real.write_bytes(b"x")
+    typed = str(tmp_path / "Screen Recording 2026-10-21 at 11.59.52 AM.mov")
+    schema = {"input": {"type": "video", "multiple": True}, "params": [{"name": "proxy", "type": "path"}, {"name": "out", "type": "path"}]}
+    body = {"inputs": [typed], "proxy": typed, "out": typed}
+    resolve_spacing(schema, body)
+    assert body["inputs"] == [str(real)] and body["proxy"] == str(real)
+    assert body["out"] == typed, "an output is never redirected"
+    body = {"input": str(tmp_path / "missing.mov")}
+    resolve_spacing({"input": {"type": "video"}, "params": []}, body)
+    assert body["input"] == str(tmp_path / "missing.mov"), "no match: left for the step to say"

@@ -113,7 +113,7 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--input",  help="Single source video or audio file")
     group.add_argument("--inputs", nargs="+", metavar="FILE", help="Multiple source files (processed in parallel)")
-    parser.add_argument("--samples-per-second", type=int, default=200, choices=list(RESOLUTIONS),
+    parser.add_argument("--samples-per-second", type=int, default=200,
                         help="Peak-pair resolution per second: 50, 200, or 800 (default: 200). "
                              "Stepped down automatically (and reported in the output) if the total "
                              "pairs would exceed the 500k clamp.")
@@ -123,10 +123,17 @@ def main():
     parser.add_argument("-P", "--parallel", type=int, default=0,
                         help="Max parallel workers for --inputs (default: number of inputs)")
     args = parser.parse_args()
+    # PL89i: a rate between the buckets takes the nearest one (the higher on a tie), said in each answer, never refused
+    asked = args.samples_per_second
+    args.samples_per_second = min(RESOLUTIONS, key=lambda r: (abs(r - asked), -r))
+    note = None if asked in RESOLUTIONS else f"samples-per-second {asked} is not a bucket: {args.samples_per_second} (of 50, 200, 800)"
+
+    def noted(r):
+        return {**r, "note": note} if note else r
 
     if args.input:
         result = process_one(args.input, args.samples_per_second, args.start, args.duration, args.timeout)
-        print(json.dumps(result))
+        print(json.dumps(noted(result)))
     else:
         workers = args.parallel or len(args.inputs)
         results: dict[int, dict] = {}
@@ -138,7 +145,7 @@ def main():
             for future in as_completed(futures):
                 idx = futures[future]
                 results[idx] = future.result()
-        print(json.dumps([results[i] for i in range(len(args.inputs))]))
+        print(json.dumps([noted(results[i]) for i in range(len(args.inputs))]))
 
 
 if __name__ == "__main__":

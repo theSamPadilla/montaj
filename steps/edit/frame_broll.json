@@ -29,7 +29,8 @@
       "type": "enum",
       "options": ["auto", "track", "card"],
       "default": "auto",
-      "description": "auto: track one clear moving subject, else card. track: a crop that follows the subject. card: the whole frame inset."
+      "description": "auto: track one clear moving subject, else card. track: a crop that follows the subject. card: the whole frame inset.",
+      "hint": "to read an item's framing, get_project tracks"
     },
     {
       "name": "source",

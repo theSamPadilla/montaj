@@ -3,6 +3,7 @@ import asyncio
 import json
 import math
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -141,6 +142,8 @@ def build_cli_args(schema: dict, body: dict) -> list[str]:
     inp = schema.get("input", {})
     if inp.get("multiple"):
         files = body.get("inputs", [])
+        if isinstance(files, str):   # a string is one path, never its characters (PL89i: "File not found: V")
+            files = [files]
         # Also accept singular "input" for convenience (UI sends singular for single-file calls)
         if not files and "input" in body:
             files = [body["input"]]
@@ -299,10 +302,46 @@ def validate_params(schema: dict, body: dict) -> None:
             options = param.get("options", [])
             for item in values:
                 if item not in options:
-                    errors.append(f"'{name}' must be one of {options}, got {item!r}")
+                    hint = f" ({param['hint']})" if isinstance(param.get("hint"), str) else ""
+                    errors.append(f"'{name}' must be one of {options}, got {item!r}{hint}")
 
     if errors:
         raise HTTPException(422, detail={"error": "invalid_params", "message": "; ".join(errors)})
+
+
+# PL89i: macOS names a screen recording "... at 11.59.52\u202fAM.mov" (a narrow no-break space); an agent types a plain
+# space and the file is not found. Spaces of any kind compare equal when a typed path names no file.
+_SPACES = re.compile(r"[\s\u00a0\u2007\u202f]+")
+
+
+def _spaced_twin(path: str):
+    """The one file beside `path` whose name differs from it only in its kinds of space, else None."""
+    if not isinstance(path, str) or not os.path.isabs(path) or os.path.exists(path):
+        return None
+    folder, name = os.path.split(path)
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return None
+    want = _SPACES.sub(" ", name)
+    hits = [n for n in names if n != name and _SPACES.sub(" ", n) == want]
+    return os.path.join(folder, hits[0]) if len(hits) == 1 else None
+
+
+def resolve_spacing(schema: dict, body: dict) -> None:
+    """In place: `input`, `inputs` and each path param (never an output) that names no file but has a twin differing
+    only in its kinds of space is pointed at the twin, so the step runs on the file meant."""
+    def fix(v):
+        if isinstance(v, list):
+            return [fix(x) for x in v]
+        return _spaced_twin(v) or v
+    for key in ("input", "inputs"):
+        if body.get(key) is not None:
+            body[key] = fix(body[key])
+    for p in schema.get("params") or []:
+        name = p.get("name")
+        if isinstance(name, str) and p.get("type") == "path" and not name.startswith("out") and body.get(name) is not None:
+            body[name] = fix(body[name])
 
 
 _PROJECT_ALIASES = ("projectId", "project_id")
@@ -622,6 +661,7 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
     # legitimate resolved path but catches anything the resolution produced that would leave the allowed
     # roots (low 15).
     check_step_out(name, schema, body, native=job_step_name(name, py_path) == name)
+    resolve_spacing(schema, body)
     validate_params(schema, body)
     cli_args = build_cli_args(schema, body)
     if timeout is None:

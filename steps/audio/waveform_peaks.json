@@ -13,10 +13,10 @@
   "params": [
     {
       "name": "samples-per-second",
-      "type": "enum",
+      "type": "int",
       "default": 200,
-      "options": [50, 200, 800],
-      "description": "Peak-pair resolution per second. Stepped down automatically (and reported in the output) if the requested resolution x window duration would exceed the 500k-pair clamp."
+      "min": 1,
+      "description": "Peak pairs per second: 50, 200 or 800 (another takes the nearest, said in a note). Stepped down if over the 500k-pair clamp."
     },
     {
       "name": "start",
