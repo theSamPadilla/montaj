@@ -115,6 +115,39 @@ def run(cmd: list[str], timeout: int = 300, check: bool = True, cwd: str = None)
     return r
 
 
+def run_stopping(cmd: list[str], timeout: float, env: dict = None, text: bool = False, grace: float = 10.0) -> subprocess.CompletedProcess:
+    """Run a command without a shell, capturing its output, and stop it cleanly when it overruns: past ``timeout``
+    seconds it gets SIGTERM (its whole process group on POSIX, so a child it started gets it too), ``grace`` seconds to
+    exit, then SIGKILL, and subprocess.TimeoutExpired is raised. SIGTERM first lets a node renderer close the Chromium
+    it started (puppeteer does on SIGTERM); a SIGKILL alone left that browser running with no parent."""
+    posix = os.name == "posix"
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=text, start_new_session=posix)
+
+    def stop(hard):
+        try:
+            if posix:
+                import signal
+                os.killpg(proc.pid, signal.SIGKILL if hard else signal.SIGTERM)
+            elif hard:
+                proc.kill()
+            else:
+                proc.terminate()
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        stop(False)
+        try:
+            out, err = proc.communicate(timeout=grace)
+        except subprocess.TimeoutExpired:
+            stop(True)
+            out, err = proc.communicate()
+        raise subprocess.TimeoutExpired(cmd, timeout, output=out, stderr=err)
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
 @contextlib.contextmanager
 def filter_script(graph: str, dir=None):
     """Write an ffmpeg filter graph to a temp file and yield its path.

@@ -83,7 +83,7 @@ def test_cli_rejects_too_many_samples(tmp_path):
 def test_sample_frame_timeout_fails(tmp_path, monkeypatch, capsys):
     def fake_run(cmd, **kw):
         raise subprocess.TimeoutExpired(cmd, 120)
-    monkeypatch.setattr(contact_sheet.subprocess, "run", fake_run)
+    monkeypatch.setattr(contact_sheet, "run_stopping", fake_run)
     with pytest.raises(SystemExit) as exc:
         contact_sheet._sample_frame(_project(tmp_path), 0.0, str(tmp_path / "f.png"))
     assert exc.value.code == 1
