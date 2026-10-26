@@ -511,3 +511,30 @@ def test_look_reports_the_unchecked_caption_ink_in_its_answer(tmp_path):
     path.write_text(json.dumps(p))
     out = look.run(str(path), detail=True)
     assert any("run caption_ink" in i for i in out["issues"])
+
+
+def test_a_paper_matte_that_only_measuring_can_find_is_not_flagged_before_the_step_ran():
+    p = _ink_project([{"start": 1, "end": 2}], card=False)
+    p["tracks"][1]["items"].append({"id": "matte", "type": "overlay", "src": "./overlays/footage-card.jsx", "start": 0, "end": 4})
+    assert lc.caption_ink_issues(p) == []
+
+
+def test_a_3d_scene_with_a_backdrop_is_flagged_without_opaque(tmp_path):
+    scenes = tmp_path / "models" / "scenes" / "specs"
+    scenes.mkdir(parents=True)
+    (scenes / "active.json").write_text(json.dumps({"scene": {"backdrop": {"style": "color"}}}))
+    p = _ink_project([{"start": 1, "end": 2}], card=False)
+    p["tracks"][1]["items"].append({"id": "s", "type": "overlay", "src": "engine:scene3d", "start": 0, "end": 4,
+                                    "props": {"scene": "specs"}})
+    issues = lc.caption_ink_issues(p, str(tmp_path))
+    assert len(issues) == 1 and "over s" in issues[0]["text"] and "not had its ink checked" in issues[0]["text"]
+    (scenes / "active.json").write_text(json.dumps({"scene": {"backdrop": {"style": "transparent"}}}))
+    assert lc.caption_ink_issues(p, str(tmp_path)) == []
+
+
+def test_ink_set_for_a_matte_is_fine_while_the_matte_is_on_screen_and_reported_when_it_is_not():
+    p = _ink_project([{"start": 1, "end": 2, "ink": "dark", "inkAuto": {"card": "matte", "ink": "dark"}},
+                      {"start": 5, "end": 6, "ink": "dark", "inkAuto": {"card": "matte", "ink": "dark"}}], card=False)
+    p["tracks"][1]["items"].append({"id": "matte", "type": "overlay", "src": "./overlays/footage-card.jsx", "start": 0, "end": 4})
+    issues = lc.caption_ink_issues(p)
+    assert len(issues) == 1 and issues[0]["t"] == 5.5 and "now over footage" in issues[0]["text"]
