@@ -42,9 +42,14 @@ def _add_param(parser, param):
 
     ptype = param.get("type")
     if param.get("repeatable"):
-        # Any repeatable param → append, regardless of scalar type.
+        # Any repeatable param → append. An int or float one still parses each value (PL89: snapshot's --at
+        # became repeatable, and its flags must read "3.0" as serve's and the plain float param's do).
         kw["action"] = "append"
         kw["default"] = []
+        if ptype == "int":
+            kw["type"] = int
+        elif ptype == "float":
+            kw["type"] = float
     elif ptype in ("bool", "boolean"):
         kw["action"] = "store_true"
     else:
