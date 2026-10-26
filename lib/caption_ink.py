@@ -23,6 +23,7 @@ an unchanged backdrop renders nothing.
 import copy
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -636,7 +637,8 @@ def _timed_words(seg):
 
 def split_pieces(seg, labels):
     """The pieces `seg` is split into, one per run of consecutive words with the same label in `labels` (one per word),
-    or None when there is one run or a piece would be shorter than MIN_PIECE_S. A piece keeps every field of `seg` but
+    or None when there is one run or a piece would be shorter than MIN_PIECE_S (except one word at the caption's edge,
+    over footage). A piece keeps every field of `seg` but
     its ink, takes its run's words and text, starts at its first word (the first piece at the caption's start) and ends
     at its last word (the last piece at the caption's end). The first piece keeps the id; the others have none."""
     words = seg["words"]
@@ -660,7 +662,10 @@ def split_pieces(seg, labels):
         if n:
             part.pop("id", None)
         if part["end"] - part["start"] < MIN_PIECE_S - 1e-9:
-            return None
+            # A single word at the caption's edge, over footage, is its own piece however short: it shows for its
+            # own spoken time, light, rather than the whole caption overhanging its card in dark ink.
+            if not (past - first == 1 and n in (0, len(runs) - 1) and labels[first] is None):
+                return None
         pieces.append(part)
     return pieces
 
@@ -671,6 +676,47 @@ def _with_pieces(project, index, pieces):
     segs = list(caps["segments"])
     segs[index:index + 1] = pieces
     return {**project, "captions": {**caps, "segments": segs}}
+
+
+def _overhangs(seg, item):
+    """{"start": (a, b, edge), "end": (a, b, edge)}: the spans of `seg` outside its card `item` ([a, b)), each with the
+    card edge it would snap to."""
+    out = {}
+    s, e = lc._num(seg.get("start")), lc._num(seg.get("end"))
+    cs, ce = lc._num(item.get("start")), lc._num(item.get("end"))
+    if s < cs:
+        out["start"] = (s, min(cs, e), cs)
+    if e > ce:
+        out["end"] = (max(ce, s), e, ce)
+    return out
+
+
+def _shows_frame(a, b, fps):
+    """Whether a frame (at n/fps) falls in [a, b): a caption is drawn on the frames where start <= t < end."""
+    return math.ceil(a * fps - 1e-6) / fps < b - 1e-9
+
+
+def _snapped(seg, over):
+    """The fields that snap `seg` to its card's edges (`over`: {"start"|"end": the edge}): its start and end, and its
+    words clamped inside them. False when a word would be left with no time on screen (it ends by the new start or
+    starts at or after the new end), or the caption would be shorter than MIN_PIECE_S."""
+    start = over.get("start", lc._num(seg.get("start")))
+    end = over.get("end", lc._num(seg.get("end")))
+    if end - start < MIN_PIECE_S - 1e-9:
+        return False
+    out = {k: over[k] for k in ("start", "end") if k in over}
+    words = seg.get("words")
+    if isinstance(words, list) and words:
+        new = copy.deepcopy(words)
+        for w in new:
+            if not isinstance(w, dict) or not (_timed(w.get("start")) and _timed(w.get("end"))):
+                continue
+            if w["end"] <= start + 1e-9 or w["start"] >= end - 1e-9:
+                return False
+            w["start"], w["end"] = max(w["start"], start), min(w["end"], end)
+        if new != words:
+            out["words"] = new
+    return out
 
 
 def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, project_dir=None, cache_path=None):
@@ -686,7 +732,7 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
     `backdrop_key`: its per-row means are kept in that file and a later plan over the same backdrop renders nothing.
     A frame not started by `deadline` (time.monotonic) counts as
     failed; a caption whose card or backdrop could not be had is left as it is."""
-    counts = {"dark": 0, "light": 0, "cleared": 0, "kept": 0, "split": 0}
+    counts = {"dark": 0, "light": 0, "cleared": 0, "kept": 0, "split": 0, "snapped": 0}
     changes, warnings = {}, []
     size = (width, height)
     warns = {}   # a message once, in the order it came
@@ -707,6 +753,7 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
             continue
         mine.append((_key(seg, i), seg, mid, box, i))
 
+    fps = int(round(lc._num((project.get("settings") or {}).get("fps"), 30))) or 30
     use_cache = bool(cache_path and project_dir)
     cached = load_cache(cache_path) if use_cache else {}
     fresh, memo, lock = {}, {}, threading.Lock()   # fresh: what this plan read, to keep
@@ -754,6 +801,10 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
                 if not pieces:
                     c = card_at(mid, box) if box is not None else None
                     slots = [{"seg": seg, "mid": mid, "box": box, "card": c["id"] if c else None, "item": c}]
+                for sl in slots:   # a caption the split may change, by the same rules, may be snapped
+                    if sl["card"] and seg.get("id") and seg["id"] not in named:
+                        sl["over"] = {side: edge for side, (a, b, edge) in _overhangs(sl["seg"], sl["item"]).items()
+                                      if _shows_frame(a, b, fps) and card_at((a + b) / 2, sl["box"]) is None}
             except Unmeasured:
                 continue
             out.append({"key": key, "seg": seg, "pieces": pieces, "slots": slots})
@@ -776,7 +827,6 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
         else:
             entries = classify(None)
     slots = [sl for e in entries for sl in e["slots"] if sl["card"]]
-    fps = int(round(lc._num((project.get("settings") or {}).get("fps"), 30))) or 30
     # A JSX card (a matte, an opaque overlay) is read from its own render: where it covers the band (alpha >= 0.9, which
     # is what makes it a card) the composite IS the overlay's pixels, so its mean over those pixels is the backdrop's,
     # with no frame composited. An opaque one hides everything below, so its transparent pixels are black.
@@ -842,7 +892,17 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
         if "lum" in sl:
             ink = "dark" if sl["lum"] >= LIGHT_L else "light"
             sl["change"] = {"ink": ink, "inkAuto": {"card": sl["card"], "ink": ink, "backdrop": round(sl["lum"], 3)}}
+            # Dark ink is for the card: a caption that shows over footage for a frame or more before the card starts
+            # or after it ends is snapped to the card's edge (light ink reads on footage as it is).
+            if ink == "dark" and sl.get("over"):
+                sl["snap"] = _snapped(sl["seg"], sl["over"])
     for e in entries:
+        if any(sl.get("snap") is False for sl in e["slots"]):
+            # The snap would leave a word no time on screen: the caption stays as it is, light, outline and all.
+            if ours(e["seg"]) and (e["seg"].get("ink") or "inkAuto" in e["seg"]):
+                changes[e["key"]] = None
+            counts["kept"] += 1
+            continue
         if e["pieces"] is None:
             sl = e["slots"][0]
             if sl["card"] is None:
@@ -850,15 +910,25 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
                     changes[e["key"]] = None
                     counts["cleared"] += 1
             elif "change" in sl:
-                changes[e["key"]] = sl["change"]
+                changes[e["key"]] = {**sl["change"], **(sl.get("snap") or {})}
                 counts[sl["change"]["ink"]] += 1
+                counts["snapped"] += bool(sl.get("snap"))
         elif all("change" in sl for sl in e["slots"] if sl["card"]):
-            for sl in e["slots"]:
+            for n, sl in enumerate(e["slots"]):
                 if sl["card"]:
                     sl["seg"].update(sl["change"])
                     counts[sl["change"]["ink"]] += 1
                 elif ours(e["seg"]):
                     counts["cleared"] += 1
+                snap = sl.get("snap")
+                if snap:
+                    sl["seg"].update(snap)
+                    counts["snapped"] += 1
+                    # the piece beside a snapped edge holds its text on screen up to it: no gap opens
+                    if "start" in snap and n:
+                        e["slots"][n - 1]["seg"]["end"] = snap["start"]
+                    if "end" in snap and n < len(e["slots"]) - 1:
+                        e["slots"][n + 1]["seg"]["start"] = snap["end"]
             changes[e["key"]] = {"split": [sl["seg"] for sl in e["slots"]]}
             counts["split"] += 1
     minted = [p for ch in changes.values() if ch and "split" in ch for p in ch["split"] if "id" not in p]
@@ -936,7 +1006,7 @@ def apply_changes(fresh, changes, read, project_dir=None):
 
 def update(project_path, render_fn=None, timeout=LOCK_TIMEOUT, overlay_fn=None):
     """Read the project, plan, and write `captions` only (under the project lock, onto the fresh captions).
-    Returns the answer ({dark, light, cleared, kept, split, changed, warnings?}; `changed` is whether anything was written) or
+    Returns the answer ({dark, light, cleared, kept, split, snapped, changed, warnings?}; `changed` is whether anything was written) or
     None when there is nothing to do (see needs_pass). Raises InkProjectChanged; lock errors (ProjectLockTimeout,
     ProjectReadOnly, SyncConflict) pass through."""
     project_path = os.path.abspath(project_path)

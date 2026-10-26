@@ -46,7 +46,7 @@ def _read(p):
 def test_the_step_writes_ink_on_the_captions_over_the_card_and_nothing_else(tmp_path):
     p = _project(tmp_path)
     out = step.run(str(p), render_fn=_light(tmp_path))
-    assert out == {"dark": 1, "light": 0, "cleared": 0, "kept": 0, "split": 0, "changed": True}
+    assert out == {"dark": 1, "light": 0, "cleared": 0, "kept": 0, "split": 0, "snapped": 0, "changed": True}
     doc = _read(p)
     segs = doc["captions"]["segments"]
     assert segs[0]["ink"] == "dark" and segs[0]["inkAuto"]["card"] == "card" and segs[0]["inkAuto"]["ink"] == "dark"
