@@ -39,7 +39,7 @@ from serve import provenance
 from serve import save_guard
 from lib import project_revisions
 from serve.jobs import create_job, set_done, set_error, get_job
-from serve.routes.files import save_upload, upload_name
+from serve.routes.files import drawable_upload, save_upload, upload_name
 from serve.disk_full import STATUS as disk_full_status, child_disk_full, detail_for as disk_full_detail, workspace_root as disk_full_root
 from lib.disk_space import DiskFull, is_disk_full
 from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, canvas_for_footage, fps_from_rate, modal_dims
@@ -5052,7 +5052,11 @@ async def upload_asset_to_project(
     as POST .../provenance (`save_guard.require_shell`, 403). Without it nothing
     is recorded. A record that cannot be written once the file is stored does not
     fail the upload: the answer carries `provenanceError` instead, for POST
-    .../provenance to retry."""
+    .../provenance to retry.
+
+    §568: a HEIC, HEIF or TIFF is stored as the JPEG (or PNG) drawable_upload
+    makes of it, with its colour profile, and `path` names that; one that cannot
+    be converted is a 422 image_unconvertible and nothing is stored."""
     entry = None
     if provenance_entry is not None:
         save_guard.require_shell(getattr(request, "headers", None))
@@ -5063,9 +5067,9 @@ async def upload_asset_to_project(
     # §482: a new file never replaces one, but a name in an open Studio sync clash is still that file's.
     record = [f"{provenance.ASSETS_DIR}/{provenance.RECORD_NAME}"] if entry is not None else []
     save_guard.check_sync(getattr(request, "headers", None), project_id, files=[upload_name(file.filename), *record])
-    dest = await save_upload(file, project_dir)
+    dest = await drawable_upload(await save_upload(file, project_dir))
     if dest.name != upload_name(file.filename):
-        try:   # the de-duplicated name it landed on
+        try:   # the de-duplicated or converted name it landed on
             save_guard.check_sync(getattr(request, "headers", None), project_id, files=[dest.name])
         except HTTPException:
             dest.unlink(missing_ok=True)

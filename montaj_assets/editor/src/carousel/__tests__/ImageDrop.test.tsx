@@ -760,16 +760,11 @@ describe('Images on the canvas: files from the OS', () => {
     expect(adapter.saveProject).not.toHaveBeenCalled()
   })
 
-  it.each([
-    ['HEIC', 'image/heic'],
-    ['HEIF', 'image/heif'],
-    ['TIFF', 'image/tiff'],
-    ['PSD', 'image/vnd.adobe.photoshop'],
-  ])('a %s file is ignored: the canvas cannot draw it, and it would land as an empty square (§556 review)', async (_name, type) => {
+  it('a PSD file is ignored: the canvas cannot draw it, and it would land as an empty square (§556 review)', async () => {
     const adapter = makeFakeAdapter()
     await mount(adapter)
     const { box, at } = pinCanvas()
-    const drop = await fire(box, dragEvent('drop', at(540, 675), transfer({ files: [new File(['x'], 'photo.bin', { type })] })))
+    const drop = await fire(box, dragEvent('drop', at(540, 675), transfer({ files: [new File(['x'], 'photo.psd', { type: 'image/vnd.adobe.photoshop' })] })))
     await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
     // Still kept from the browser, which would open it.
     expect(drop.defaultPrevented).toBe(true)
@@ -787,13 +782,39 @@ describe('Images on the canvas: files from the OS', () => {
     expect(adapter.uploadFile).toHaveBeenCalledWith(file, 'proj-1', 'drop')
   })
 
-  it('among several files only the ones it can draw are uploaded', async () => {
+  // §568: the upload stores these as a JPEG with their colour profile and answers that, so they are taken like the rest.
+  it.each([
+    ['HEIC', 'photo.heic', 'image/heic'],
+    ['HEIF', 'photo.heif', 'image/heif'],
+    ['TIFF', 'scan.tiff', 'image/tiff'],
+    ['HEIC with no type (a browser that does not know it)', 'IMG_0001.HEIC', ''],
+    ['TIF with no type', 'scan.tif', ''],
+  ])('a %s file is uploaded, and what the upload answers is placed', async (_name, name, type) => {
     const adapter = makeFakeAdapter()
     await mount(adapter)
     const { box, at } = pinCanvas()
-    const heic = new File(['x'], 'a.heic', { type: 'image/heic' })
+    const file = new File(['x'], name, { type })
+    await fire(box, dragEvent('drop', at(540, 675), transfer({ files: [file] })))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(adapter.uploadFile).toHaveBeenCalledWith(file, 'proj-1', 'drop')
+  })
+
+  it('a file with no type and no image name is still ignored', async () => {
+    const adapter = makeFakeAdapter()
+    await mount(adapter)
+    const { box, at } = pinCanvas()
+    await fire(box, dragEvent('drop', at(540, 675), transfer({ files: [new File(['x'], 'photo.heic.txt', { type: '' })] })))
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
+    expect(adapter.uploadFile).not.toHaveBeenCalled()
+  })
+
+  it('among several files only the ones it can draw or convert are uploaded', async () => {
+    const adapter = makeFakeAdapter()
+    await mount(adapter)
+    const { box, at } = pinCanvas()
+    const psd = new File(['x'], 'a.psd', { type: 'image/vnd.adobe.photoshop' })
     const jpg = new File(['x'], 'b.jpg', { type: 'image/jpeg' })
-    await fire(box, dragEvent('drop', at(540, 675), transfer({ files: [heic, jpg] })))
+    await fire(box, dragEvent('drop', at(540, 675), transfer({ files: [psd, jpg] })))
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
     expect(adapter.uploadFile).toHaveBeenCalledTimes(1)
     expect(adapter.uploadFile).toHaveBeenCalledWith(jpg, 'proj-1', 'drop')

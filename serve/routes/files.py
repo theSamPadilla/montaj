@@ -1,4 +1,5 @@
 """File-serving + asset endpoints: /files, /files/stream, /upload, /caption-template."""
+import asyncio
 import mimetypes
 import os
 import re
@@ -6,9 +7,11 @@ import stat
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Request, UploadFile
+from fastapi import APIRouter, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
+from lib import web_image
+from lib.common import ffmpeg_bin
 from lib.disk_space import is_disk_full, remove_partial
 from lib.fs_safe import _is_link, open_write_no_follow
 from serve import disk_full
@@ -81,10 +84,35 @@ async def save_upload(file: UploadFile, dest_dir: Path) -> Path:
     return dest
 
 
+async def drawable_upload(dest: Path) -> Path:
+    """§568: a stored HEIC, HEIF or TIFF upload, which Chromium cannot draw, replaced by the JPEG (or PNG, when it is
+    not fully opaque) that lib/web_image.py writes beside it with its colour profile; any other upload as it is. One
+    that cannot be converted is removed and is a 422 image_unconvertible; a full disk is a 507, as the upload's own
+    write is."""
+    if not web_image.needs_conversion(dest):
+        return dest
+    try:
+        out = await asyncio.to_thread(web_image.to_web_image, dest, ffmpeg_bin())
+    except web_image.WebImageError as e:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(422, detail={
+            "error": "image_unconvertible",
+            "message": f"{dest.name} could not be turned into an image Montaj can show ({e.code}).",
+        }) from e
+    except OSError as e:
+        dest.unlink(missing_ok=True)
+        if is_disk_full(e):
+            raise disk_full.http_error(e) from e
+        raise
+    dest.unlink(missing_ok=True)  # the converted copy stands in for it
+    return out
+
+
 @router.post("/upload")
 async def upload_file(file: UploadFile):
-    """Accept a browser file drop, save to workspace/_uploads/, return absolute path."""
-    dest = await save_upload(file, resolve_workspace() / "_uploads")
+    """Accept a browser file drop, save to workspace/_uploads/, return absolute path. A HEIC, HEIF or TIFF is stored
+    as the JPEG or PNG drawable_upload makes of it (§568)."""
+    dest = await drawable_upload(await save_upload(file, resolve_workspace() / "_uploads"))
     return {"path": str(dest)}
 
 
