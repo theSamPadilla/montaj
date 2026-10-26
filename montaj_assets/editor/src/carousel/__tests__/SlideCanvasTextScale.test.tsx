@@ -25,7 +25,7 @@ function text(props: Record<string, unknown>, over: Partial<OverlayElement> = {}
 function setup(el: CarouselElement) {
   const spies = {
     resizeElement: vi.fn<(slideId: string, elementId: string, box: Box) => Promise<void>>(async () => {}),
-    updateOverlayProp: vi.fn<(slideId: string, elementId: string, key: string, value: string) => Promise<void>>(async () => {}),
+    updateOverlayProp: vi.fn<(slideId: string, elementId: string, key: string, value: string | number) => Promise<void>>(async () => {}),
     commit: vi.fn(async () => {}),
   }
   const r = render(
@@ -67,28 +67,28 @@ async function dragFrom(target: HTMLElement, to: { x: number; y: number }, move:
 const DOUBLE = { x: 100, y: 50 }
 
 describe('SlideCanvas: a corner resize scales the text with the box (§586 M8)', () => {
-  it('doubling the box doubles a unitless font size, written as px with the resize and no separate commit', async () => {
+  it('doubling the box doubles a unitless font size, kept unitless, with the resize and no separate commit', async () => {
     const c = setup(text({ fontSize: '40' }))
     await dragFrom(c.handle('se'), DOUBLE)
     expect(c.resizeElement).toHaveBeenCalledWith('s', 'el', { x: 100, y: 100, w: 400, h: 200 })
     expect(c.updateOverlayProp).toHaveBeenCalledTimes(1)
-    expect(c.updateOverlayProp).toHaveBeenCalledWith('s', 'el', 'fontSize', '80px')
+    expect(c.updateOverlayProp).toHaveBeenCalledWith('s', 'el', 'fontSize', '80')
     // The prop write is the edit: it folds the transient resize into its undo step and its save.
     expect(c.commit).not.toHaveBeenCalled()
   })
 
-  it('doubles a number and a px font size', async () => {
-    for (const fontSize of [24, '24px']) {
+  it('doubles a number as a number and a px font size as px: a template may do arithmetic on a number', async () => {
+    for (const [fontSize, out] of [[24, 48], ['24px', '48px']]) {
       const c = setup(text({ fontSize }))
       await dragFrom(c.handle('se'), DOUBLE)
-      expect(c.updateOverlayProp).toHaveBeenCalledWith('s', 'el', 'fontSize', '48px')
+      expect(c.updateOverlayProp).toHaveBeenCalledWith('s', 'el', 'fontSize', out)
     }
   })
 
   it('rounds the size to half a pixel, by the ratio of the committed height', async () => {
     // 46 screen px across: 92 on the slide, 1.368 times the box, which
     // commits at 274 x 137, 1.37 times the height.
-    for (const [fontSize, out] of [['31', '42.5px'], ['30', '41px']]) {
+    for (const [fontSize, out] of [['31', '42.5'], ['30', '41'], ['31px', '42.5px'], [31, 42.5]]) {
       const c = setup(text({ fontSize }))
       await dragFrom(c.handle('se'), { x: 46, y: 0 })
       expect(c.resizeElement).toHaveBeenCalledWith('s', 'el', { x: 100, y: 100, w: 274, h: 137 })
@@ -107,7 +107,7 @@ describe('SlideCanvas: a corner resize scales the text with the box (§586 M8)',
     expect(c.inner().style.transformOrigin).toBe('top left')
     await act(async () => { pointer(window, 'pointerup') })
     expect(c.inner().style.transform).toBe('scale(0.5)')
-    expect(c.updateOverlayProp).toHaveBeenCalledWith('s', 'el', 'fontSize', '80px')
+    expect(c.updateOverlayProp).toHaveBeenCalledWith('s', 'el', 'fontSize', '80')
   })
 
   it('a side handle, a Shift corner and Fit to box change the box only, and preview no scale', async () => {
@@ -144,12 +144,17 @@ describe('SlideCanvas: a corner resize scales the text with the box (§586 M8)',
 })
 
 describe('scaleFontSize', () => {
-  it('scales a number, a unitless string and a px length to px at half-pixel steps; other units are left', () => {
-    expect(scaleFontSize(24, 2)).toBe('48px')
+  it('scales a number, a unitless string and a px length at half-pixel steps, each kept in its form; other units are left', () => {
+    expect(scaleFontSize(24, 2)).toBe(48)
+    expect(scaleFontSize(31, 1.37)).toBe(42.5)
     expect(scaleFontSize('24px', 1.5)).toBe('36px')
-    expect(scaleFontSize(' 31 ', 1.37)).toBe('42.5px')
+    expect(scaleFontSize(' 31 ', 1.37)).toBe('42.5')
+    expect(scaleFontSize('80', 1.5)).toBe('120')
     expect(scaleFontSize('10.25px', 1)).toBe('10.5px')
     for (const v of ['2em', '1.5rem', '50%', '4vw', 'large', '', undefined, null, NaN, -4, 0]) {
+      expect(scaleFontSize(v, 2)).toBeNull()
+    }
+    for (const v of [Infinity, '-4px']) {
       expect(scaleFontSize(v, 2)).toBeNull()
     }
   })
@@ -161,7 +166,7 @@ interface FakeAdapter extends EditorAdapter<Project> {
   saveCalls: Array<{ id: string; project: Project }>
 }
 
-function project(): Project {
+function project(fontSize: string | number = '24px'): Project {
   return {
     version: '1',
     id: 'proj-1',
@@ -172,14 +177,14 @@ function project(): Project {
     projectType: 'carousel',
     settings: { resolution: [1080, 1080] },
     assets: [],
-    slides: [{ id: 'slide-0', base_color: '#ffffff', elements: [text({ fontSize: '24px' }, { w: 600, h: 150 })] }],
+    slides: [{ id: 'slide-0', base_color: '#ffffff', elements: [text({ fontSize }, { w: 600, h: 150 })] }],
   } as Project
 }
 
-function makeFakeAdapter(): FakeAdapter {
+function makeFakeAdapter(fontSize: string | number): FakeAdapter {
   const saveCalls: Array<{ id: string; project: Project }> = []
   return {
-    loadProject: vi.fn(async () => project()),
+    loadProject: vi.fn(async () => project(fontSize)),
     saveProject: vi.fn(async (id: string, p: Project) => { saveCalls.push({ id, project: p }) }),
     subscribe: () => () => {},
     render: async function* (): AsyncIterable<RenderEvent> {
@@ -213,9 +218,9 @@ describe('CarouselEditor: a corner resize of a text box (§586 M8)', () => {
   }
   const placed = (p: Project) => p.slides![0].elements[0] as OverlayElement
 
-  it('writes the box and the doubled font size in one save, and one Cmd+Z restores both', async () => {
-    const adapter = makeFakeAdapter()
-    render(<CarouselEditor project={project()} adapter={adapter} onProjectChange={vi.fn()} />)
+  it.each([['24px', '48px'], [24, 48]])('writes the box and the doubled font size (%j to %j) in one save, and one Cmd+Z restores both', async (from, to) => {
+    const adapter = makeFakeAdapter(from)
+    render(<CarouselEditor project={project(from)} adapter={adapter} onProjectChange={vi.fn()} />)
     await waitFor(() => wrapperOf())
     await act(async () => { fireEvent.click(wrapperOf()) })
     // The canvas's scale, read off the box it draws.
@@ -226,7 +231,7 @@ describe('CarouselEditor: a corner resize of a text box (§586 M8)', () => {
     await waitFor(() => expect(adapter.saveCalls.length).toBe(before + 1))
     const saved = placed(adapter.saveCalls[adapter.saveCalls.length - 1].project)
     expect({ w: saved.w, h: saved.h }).toEqual({ w: 1200, h: 300 })
-    expect(saved.overlay.props.fontSize).toBe('48px')
+    expect(saved.overlay.props.fontSize).toBe(to)
 
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, cancelable: true, bubbles: true }))
@@ -234,6 +239,6 @@ describe('CarouselEditor: a corner resize of a text box (§586 M8)', () => {
     await waitFor(() => expect(adapter.saveCalls.length).toBe(before + 2))
     const undone = placed(adapter.saveCalls[adapter.saveCalls.length - 1].project)
     expect({ w: undone.w, h: undone.h }).toEqual({ w: 600, h: 150 })
-    expect(undone.overlay.props.fontSize).toBe('24px')
+    expect(undone.overlay.props.fontSize).toBe(from)
   })
 })

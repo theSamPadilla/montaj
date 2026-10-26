@@ -182,7 +182,8 @@ interface Props {
   resizeElement?: (slideId: string, elementId: string, box: { x: number; y: number; w: number; h: number }) => Promise<void>
   rotateElement?: (slideId: string, elementId: string, rotation: number) => Promise<void>
   commit?: () => Promise<void>
-  updateOverlayProp?: (slideId: string, elementId: string, key: string, value: string) => Promise<void>
+  /** A number is written as a number: a text box's corner resize keeps a numeric font size numeric (§586 M8). */
+  updateOverlayProp?: (slideId: string, elementId: string, key: string, value: string | number) => Promise<void>
   updateImageCrop?: (slideId: string, elementId: string, crop: { x: number; y: number; w: number; h: number } | undefined) => Promise<void>
 
   // Crop mode is owned here; the host enters it (the panel's Crop button, or a
@@ -445,13 +446,14 @@ export default function SlideCanvas({
       else applyPreviewTextScale(id, 1)
     },
     onCommit: async (id, box, gesture) => {
+      // Off first, so an element gone mid-drag leaves no scaled layer.
+      applyPreviewTextScale(id, 1)
       const el = elementById(id)
       if (!el) return
       const rotation = gesture.startBox.rotation ?? 0
       // w and h first, then x and y from the point the handle pins.
       const next = roundResizedBox(box, gesture.handle, rotation)
       applyPreviewBox(id, next, rotation)
-      applyPreviewTextScale(id, 1)
       if (next.x === el.x && next.y === el.y && next.w === el.w && next.h === el.h) return
       // A size that rounds back to the one it has is not written.
       const source = scalesText(el, gesture) ? el.overlay.props.fontSize : undefined

@@ -39,7 +39,7 @@ export type ReorderDirection = 'forward' | 'backward' | 'front' | 'back'
 
 export type Action<P extends Project = Project> =
   | { type: 'sse'; project: P }
-  | { type: 'updateOverlayProp'; slideId: string; elementId: string; key: string; value: string }
+  | { type: 'updateOverlayProp'; slideId: string; elementId: string; key: string; value: string | number }
   | { type: 'setStatus'; status: ProjectStatus }
   | { type: 'setName'; name: string }
   | { type: 'rollback'; snapshot: P }

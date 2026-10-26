@@ -1,22 +1,23 @@
 import type { CarouselElement, OverlayElement } from '../types'
 
-// A size this scales: a number, or a string of one with or without `px`.
+// A string size this scales: a number with or without `px`.
 const PX_SIZE = /^\s*(\d*\.?\d+)\s*(px)?\s*$/i
 
 /**
- * `fontSize` times `ratio`, as px rounded to half a pixel, or null when it is
- * not a size this scales: only a number, a unitless string (static-text's
- * `'80'`, px implied) and a px length are. A relative size (em, rem, %, vw)
- * is left alone. Written as `${n}px`, as the font size picker writes it.
+ * `fontSize` times `ratio`, rounded to half a pixel and in the form it came
+ * in, or null when it is not a size this scales. A number stays a number (a
+ * template may do arithmetic on it), a unitless string stays unitless
+ * (static-text's `'80'`, px implied) and a px length stays px. A relative
+ * size (em, rem, %, vw) is left alone.
  */
-export function scaleFontSize(fontSize: unknown, ratio: number): string | null {
-  const source = typeof fontSize === 'number' ? String(fontSize) : fontSize
-  if (typeof source !== 'string') return null
-  const m = PX_SIZE.exec(source)
-  if (!m || !Number.isFinite(ratio) || ratio <= 0) return null
-  const size = Number(m[1])
-  if (!(size > 0)) return null
-  return `${Math.max(0.5, Math.round(size * ratio * 2) / 2)}px`
+export function scaleFontSize(fontSize: unknown, ratio: number): string | number | null {
+  if (!Number.isFinite(ratio) || ratio <= 0) return null
+  const m = typeof fontSize === 'string' ? PX_SIZE.exec(fontSize) : null
+  const size = typeof fontSize === 'number' ? fontSize : m ? Number(m[1]) : NaN
+  if (!(size > 0) || !Number.isFinite(size)) return null
+  const scaled = Math.max(0.5, Math.round(size * ratio * 2) / 2)
+  if (typeof fontSize === 'number') return scaled
+  return m?.[2] ? `${scaled}px` : String(scaled)
 }
 
 /**

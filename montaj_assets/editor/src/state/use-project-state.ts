@@ -41,7 +41,8 @@ export interface UseProjectState<P extends Project = Project> {
   isEditingAllowed: boolean
   lastError: string | null
   clearError: () => void
-  updateOverlayProp: (slideId: string, elementId: string, key: string, value: string) => Promise<void>
+  /** `value` is written as given: a number prop stays a number. */
+  updateOverlayProp: (slideId: string, elementId: string, key: string, value: string | number) => Promise<void>
   updateImageCrop: (slideId: string, elementId: string, crop: { x: number; y: number; w: number; h: number } | undefined) => Promise<void>
   /**
    * Swaps an image element's file for `src` and keeps its box (§556 M5):
@@ -167,7 +168,7 @@ export function useProjectState<P extends Project = Project>(
   )
 
   const updateOverlayProp = useCallback(
-    (slideId: string, elementId: string, key: string, value: string) =>
+    (slideId: string, elementId: string, key: string, value: string | number) =>
       mutate({ type: 'updateOverlayProp', slideId, elementId, key, value }),
     [mutate],
   )
