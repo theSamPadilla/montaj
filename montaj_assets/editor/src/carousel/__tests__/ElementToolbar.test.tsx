@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, act, waitFor, fireEvent, within } from '@testing-library/react'
-import type { EditorAdapter, ImageElement, Project, RenderEvent } from '../../types'
+import type { EditorAdapter, GlobalOverlay, ImageElement, Project, RenderEvent } from '../../types'
 import CarouselEditor from '../CarouselEditor'
 
 vi.mock('../imageGeometry', async (importOriginal) => {
@@ -28,13 +28,25 @@ function makeProject(): Project {
           id: 'el-t', type: 'overlay', frame: 0, x: 300, y: 700, w: 400, h: 100, rotation: 0,
           overlay: {
             template: '/overlays/text.jsx',
-            props: { text: 'Hello', fontFamily: '"Inter", system-ui, sans-serif', fontSize: '32px', color: '#111111', fontWeight: '400', fontStyle: 'normal', textAlign: 'left', effect: 'none' },
+            props: { text: 'Hello', fontFamily: '"Inter", system-ui, sans-serif', fontSize: '32px', color: '#111111', fontWeight: '400', fontStyle: 'normal', textAlign: 'left', effect: 'none', tagline: 'Hi' },
           },
         },
       ],
     }],
   } as Project
 }
+
+/** Schemas for the overlay templates: a code element (badge) and the text template. */
+const OVERLAYS: GlobalOverlay[] = [
+  {
+    name: 'Badge', description: '', jsxPath: '/overlays/badge.jsx',
+    props: [{ name: 'accent', type: 'color' }, { name: 'show', type: 'bool' }, { name: 'label', type: 'string' }],
+  },
+  {
+    name: 'Text', description: '', jsxPath: '/overlays/text.jsx',
+    props: [{ name: 'text', type: 'string' }, { name: 'fontSize', type: 'string' }, { name: 'effect', type: 'string' }, { name: 'tagline', type: 'string' }],
+  },
+]
 
 function makeAdapter(): FakeAdapter {
   const saveCalls: Array<{ id: string; project: Project }> = []
@@ -45,7 +57,7 @@ function makeAdapter(): FakeAdapter {
     render: async function* (): AsyncIterable<RenderEvent> { yield { type: 'done', outputPath: '/out.png' } },
     resolveImageSrc: (el: ImageElement) => el.src,
     compileOverlay: vi.fn(async () => () => null),
-    listGlobalOverlays: vi.fn(async () => []),
+    listGlobalOverlays: vi.fn(async () => OVERLAYS),
     listSystemOverlays: vi.fn(async () => []),
     uploadFile: vi.fn(async () => '/path'),
     fileUrl: (path: string) => path,
@@ -65,9 +77,19 @@ afterEach(() => {
   else delete (Element.prototype as { setPointerCapture?: unknown }).setPointerCapture
 })
 
-async function mount(layout: 'rail' | 'classic' = 'rail') {
+/** The base project plus a code element (el-ov, the badge template, frame 3). */
+function withBadge(): Project {
+  const p = makeProject()
+  p.slides![0].elements.push({
+    id: 'el-ov', type: 'overlay', frame: 3, x: 600, y: 100, w: 200, h: 100, rotation: 0,
+    overlay: { template: '/overlays/badge.jsx', props: { accent: '#ff0000', show: true, label: 'Hi' } },
+  } as never)
+  return p
+}
+
+async function mount(layout: 'rail' | 'classic' = 'rail', extra: Partial<React.ComponentProps<typeof CarouselEditor>> = {}, project: Project = makeProject()) {
   const adapter = makeAdapter()
-  const r = render(<CarouselEditor project={makeProject()} adapter={adapter} onProjectChange={vi.fn()} layout={layout} />)
+  const r = render(<CarouselEditor project={project} adapter={adapter} onProjectChange={vi.fn()} layout={layout} {...extra} />)
   await waitFor(() => expect(document.querySelector('[data-element-id="el-img"]')).not.toBeNull())
   return { adapter, r }
 }
@@ -360,5 +382,110 @@ describe('Element toolbar (§587 M3, layout="rail")', () => {
     expect(r.queryByRole('dialog', { name: 'Position' })).toBeNull()
     await press(tb(r, 'Crop'))
     await waitFor(() => expect(document.querySelector('img[alt="Crop source"]')).toBeNull())
+  })
+})
+
+describe('Element toolbar: Edit, hide and popover closing (§587 M3)', () => {
+  it('a code element gets Edit: its schema props and Frame; a prop change is one save and one undo step', async () => {
+    const { adapter, r } = await mount('rail', {}, withBadge())
+    await click('el-ov')
+    expect(tbNames(r)).toEqual(['Edit', 'Position', 'Lock', 'Duplicate', 'Delete'])
+    await press(tb(r, 'Edit'))
+    const pop = popover(r, 'Edit')
+    const show = await waitFor(() => within(pop).getByRole('checkbox', { name: 'show' }))
+    expect(within(pop).getByLabelText('accent')).toBeTruthy()
+    expect(within(pop).getByRole('textbox', { name: 'label' })).toBeTruthy()
+    await press(show)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(propsOf(last(adapter), 'el-ov').show).toBe('false')
+    await undo()
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(propsOf(last(adapter), 'el-ov').show).toBe(true)
+    await undo()
+    await settle()
+    expect(adapter.saveCalls).toHaveLength(2)
+  })
+
+  it('Frame in the Edit popover writes once on Enter', async () => {
+    const { adapter, r } = await mount('rail', {}, withBadge())
+    await click('el-ov')
+    await press(tb(r, 'Edit'))
+    const frame = field(popover(r, 'Edit'), 'Frame')
+    expect(frame.value).toBe('3')
+    await type(frame, '7')
+    await act(async () => { fireEvent.keyDown(frame, { key: 'Enter' }) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(byId(last(adapter), 'el-ov')).toMatchObject({ frame: 7 })
+  })
+
+  it('for a text overlay, Edit holds Frame and only the props the text toolbar does not cover', async () => {
+    const { r } = await mount()
+    await click('el-t')
+    await press(tb(r, 'Edit'))
+    const pop = popover(r, 'Edit')
+    await waitFor(() => expect(within(pop).getByRole('textbox', { name: 'tagline' })).toBeTruthy())
+    expect(field(pop, 'Frame')).toBeTruthy()
+    expect(within(pop).queryByRole('textbox', { name: 'fontSize' })).toBeNull()
+    expect(within(pop).queryByRole('textbox', { name: 'text' })).toBeNull()
+    expect(within(pop).queryByRole('textbox', { name: 'effect' })).toBeNull()
+  })
+
+  it('for a locked overlay the Edit popover opens with its controls off', async () => {
+    const { adapter, r } = await mount('rail', {}, withBadge())
+    await click('el-ov')
+    await press(tb(r, 'Lock'))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(tb(r, 'Edit')).not.toBeDisabled()
+    await press(tb(r, 'Edit'))
+    const pop = popover(r, 'Edit')
+    const show = await waitFor(() => within(pop).getByRole('checkbox', { name: 'show' }))
+    expect(show).toBeDisabled()
+    expect(within(pop).getByRole('textbox', { name: 'label' })).toBeDisabled()
+    expect(field(pop, 'Frame')).toBeDisabled()
+    await press(show)
+    await settle()
+    expect(adapter.saveCalls).toHaveLength(1)
+  })
+
+  it('the eye hides and shows the element through the host, also when locked; no eye without the host callback', async () => {
+    const onToggleElementVisibility = vi.fn()
+    const { r } = await mount('rail', { onToggleElementVisibility, hiddenElementIds: [] }, withBadge())
+    await click('el-ov')
+    const eye = tb(r, 'Hide from editor')
+    expect(eye.getAttribute('aria-pressed')).toBe('false')
+    await press(eye)
+    expect(onToggleElementVisibility).toHaveBeenCalledWith('el-ov')
+    await press(tb(r, 'Lock'))
+    expect(tb(r, 'Hide from editor')).not.toBeDisabled()
+    r.rerender(<CarouselEditor project={withBadge()} adapter={makeAdapter()} onProjectChange={vi.fn()} layout="rail" onToggleElementVisibility={onToggleElementVisibility} hiddenElementIds={['el-ov']} />)
+    expect(tb(r, 'Show in editor').getAttribute('aria-pressed')).toBe('true')
+    r.unmount()
+
+    const bare = await mount('rail', {}, withBadge())
+    await click('el-ov')
+    expect(tbNames(bare.r)).not.toContain('Hide from editor')
+  })
+
+  it('an open popover closes when the selected element changes', async () => {
+    const { r } = await mount()
+    await click('el-img')
+    await press(tb(r, 'Position'))
+    expect(popover(r, 'Position')).toBeTruthy()
+    await click('el-b')
+    expect(r.queryByRole('dialog', { name: 'Position' })).toBeNull()
+    expect(toolbar(r)).toBeTruthy()
+  })
+
+  it('classic is unchanged: the panel still shows the props, Frame and the eye, and there is no toolbar', async () => {
+    const onToggleElementVisibility = vi.fn()
+    const { adapter, r } = await mount('classic', { onToggleElementVisibility, hiddenElementIds: [] }, withBadge())
+    await click('el-ov')
+    expect(r.queryByRole('toolbar', { name: 'Element' })).toBeNull()
+    const show = await waitFor(() => r.getByRole('checkbox', { name: 'show' }))
+    expect(r.getByRole('spinbutton', { name: 'Frame' })).toBeTruthy()
+    await press(show)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    await press(r.getByRole('button', { name: 'Hide from editor' }))
+    expect(onToggleElementVisibility).toHaveBeenCalledWith('el-ov')
   })
 })

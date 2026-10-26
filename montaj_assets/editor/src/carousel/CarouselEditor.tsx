@@ -11,6 +11,7 @@ import SlidePropertyPanel from './SlidePropertyPanel'
 import AddElementMenu from './AddElementMenu'
 import RailLayout from './RailLayout'
 import ElementToolbar, { type ElementToolbarPopover } from './ElementToolbar'
+import { useOverlaySchemas } from './ElementControls'
 import CarouselRenderModal from './CarouselRenderModal'
 import ControlsInfoModal, { CAROUSEL_CONTROLS, LOCK_CONTROL, platformSections } from '../ControlsInfoModal'
 import { DARK_TEXT, NoteArmLayer, NotePinLayer, badgeColor, hasPoint } from './NoteLayers'
@@ -809,13 +810,16 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   const modalOpen = showControls || renderOpen || overlayPickerOpen
 
   // The rail layout's element toolbar popover (§587 M3): Position or Effects.
-  // It closes when the selection empties and when crop mode starts (Esc there
-  // is the crop's).
+  // It closes when the selection empties or its one element changes, and when
+  // crop mode starts (Esc there is the crop's).
   const railLayout = layout === 'rail'
   const [toolbarPopover, setToolbarPopover] = useState<ElementToolbarPopover | null>(null)
+  const nothingSelected = liveSelectedIds.length === 0
   useEffect(() => {
-    if (liveSelectedIds.length === 0 || cropElementId) setToolbarPopover(null)
-  }, [liveSelectedIds.length, cropElementId])
+    setToolbarPopover(null)
+  }, [selectedElementId, nothingSelected, cropElementId])
+  // Its Edit popover's overlay schemas; the classic panel loads its own.
+  const { schemas: overlaySchemas, loading: schemasLoading } = useOverlaySchemas(adapter, project.profile, railLayout)
 
   // Undo and redo, from the keys and the toolbar. An open nudge burst is
   // committed first, so Undo takes the nudge back (it is its own step) and Redo
@@ -1764,6 +1768,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
               else enterCrop(selectedElementId)
             }}
             onReplaceImage={state.isEditingAllowed ? handleReplaceImage : undefined}
+            overlaySchemas={overlaySchemas}
+            schemasLoading={schemasLoading}
+            hiddenElementIds={hiddenElementIds}
+            onToggleElementVisibility={onToggleElementVisibility}
             mode={mode}
           />
         ) : undefined

@@ -1,12 +1,15 @@
-import { useRef, useState, type ChangeEvent, type ReactNode } from 'react'
-import { ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, type LucideIcon } from 'lucide-react'
-import type { CarouselElement, ImageElement, Slide } from '../types'
+import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
+import { ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, Eye, EyeOff, type LucideIcon } from 'lucide-react'
+import type { CarouselElement, EditorAdapter, GlobalOverlay, GlobalOverlayProp, ImageElement, OverlayElement, Project, Slide } from '../types'
 import type { ReorderDirection } from '../state/project-reducer'
-import { NumberField, stepValue, SwatchInput } from '../ui'
+import { STANDARD_TEXT_PROPS } from '../overlays/contract'
+import { cn, inspectorInputClass, NumberField, stepValue, SwatchInput } from '../ui'
+import { Loader } from '../ui/Loader'
 
 // The element controls the classic SlidePropertyPanel and the rail layout's
 // element toolbar (§587 M3) share: the typed transform fields, the image's
-// Replace picker and Crop rule, the four layer-order buttons, and the slide's
+// Replace picker and Crop rule, the four layer-order buttons, an overlay's
+// schema props and Frame, the editor-only hide toggle, and the slide's
 // background colour (for the Background rail panel).
 
 /** Small muted label above an inspector control. */
@@ -196,5 +199,207 @@ export function SlideBackgroundField({ slide, onSlideChange }: { slide: Slide; o
         ariaLabel="Background color"
       />
     </div>
+  )
+}
+
+/**
+ * The overlay prop schemas, by template path (`jsxPath`): the global ones and
+ * the project profile's. `enabled` false loads nothing (a layout that has
+ * another loader).
+ */
+export function useOverlaySchemas(
+  adapter: EditorAdapter<Project>,
+  profile: string | undefined,
+  enabled = true,
+): { schemas: Map<string, GlobalOverlay>; loading: boolean } {
+  const [schemas, setSchemas] = useState<Map<string, GlobalOverlay>>(new Map())
+  const [loading, setLoading] = useState(false)
+  useEffect(() => {
+    if (!enabled) return
+    setLoading(true)
+    const promises: Promise<GlobalOverlay[]>[] = [adapter.listGlobalOverlays()]
+    if (profile) {
+      promises.push(adapter.listProfileOverlays?.(profile) ?? Promise.resolve([]))
+    }
+    Promise.all(promises)
+      .then(results => {
+        const map = new Map<string, GlobalOverlay>()
+        for (const list of results) {
+          for (const o of list) {
+            map.set(o.jsxPath, o)
+          }
+        }
+        setSchemas(map)
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [profile, enabled])
+  return { schemas, loading }
+}
+
+/** The props a text overlay's controls already write (the text toolbar and the
+ *  effect controls): its Edit list leaves them out. */
+export const TEXT_CONTROL_PROPS: ReadonlySet<string> = new Set([
+  ...STANDARD_TEXT_PROPS,
+  'effect', 'effectColor', 'effectStrength', 'fit',
+])
+
+function PropEditor({
+  prop,
+  value,
+  onChange,
+}: {
+  prop: GlobalOverlayProp
+  value: unknown
+  onChange: (v: unknown) => void
+}) {
+  const { name, type, description } = prop
+
+  if (type === 'bool') {
+    return (
+      <label className="flex cursor-pointer items-center gap-2" title={description}>
+        <input
+          type="checkbox"
+          checked={Boolean(value)}
+          onChange={e => onChange(e.target.checked)}
+          className="h-4 w-4 accent-[var(--editor-accent)]"
+        />
+        <span className="text-sm text-[var(--editor-text)]">{name}</span>
+      </label>
+    )
+  }
+
+  if (type === 'color') {
+    return (
+      <div className="flex flex-col gap-1" title={description}>
+        <span className={fieldLabelClass}>{name}</span>
+        <SwatchInput
+          value={String(value ?? '#000000')}
+          onChange={v => onChange(v)}
+          ariaLabel={name}
+        />
+      </div>
+    )
+  }
+
+  if (type === 'int' || type === 'float') {
+    return (
+      <label className="flex flex-col gap-1" title={description}>
+        <span className={fieldLabelClass}>{name}</span>
+        {/* Still writes per keystroke through the committed mutator — unlike
+            the transform boxes (see `numInput`), which write once on commit. */}
+        <NumberField
+          name={name}
+          value={Number(value ?? 0)}
+          step={type === 'float' ? 0.1 : 1}
+          onPreview={onChange}
+          onCommit={() => {}}
+          onStep={d => onChange(stepValue(Number(value ?? 0), d, { step: type === 'float' ? 0.1 : 1 }))}
+        />
+      </label>
+    )
+  }
+
+  // string fallback
+  return (
+    <label className="flex flex-col gap-1" title={description}>
+      <span className={fieldLabelClass}>{name}</span>
+      <input
+        type="text"
+        value={String(value ?? '')}
+        onChange={e => onChange(e.target.value)}
+        className={inspectorInputClass}
+      />
+    </label>
+  )
+}
+
+export interface OverlayPropsSectionProps {
+  element: OverlayElement
+  /** The template's schema; absent while loading or when it has none. */
+  schema?: GlobalOverlay | null
+  loading?: boolean
+  /** Frame and prop edits, through the panel's element handler. */
+  onElementChange: (patch: Partial<CarouselElement>) => void
+  /** Props another control already writes, left out of the list. */
+  exclude?: ReadonlySet<string>
+}
+
+/** The props of an overlay's schema that `exclude` leaves. */
+export function schemaPropsFor(schema: GlobalOverlay | null | undefined, exclude?: ReadonlySet<string>): GlobalOverlayProp[] {
+  return (schema?.props ?? []).filter(prop => !exclude?.has(prop.name))
+}
+
+/** An overlay's Frame and its schema-driven props. */
+export function OverlayPropsSection({ element, schema, loading, onElementChange, exclude }: OverlayPropsSectionProps) {
+  const props = schemaPropsFor(schema, exclude)
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-3">
+        {numInput(
+          'Frame',
+          element.frame,
+          {
+            // No preview: the frame is not a transient the state layer takes.
+            onCommit: v => { if (v !== element.frame) onElementChange({ frame: v }) },
+            onStep: v => onElementChange({ frame: v }),
+          },
+          { min: 0 },
+        )}
+      </div>
+
+      {loading && (
+        <Loader size="sm" label="Loading overlay props" />
+      )}
+
+      {!loading && props.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <span className={fieldLabelClass}>Props</span>
+          {props.map(prop => (
+            <PropEditor
+              key={prop.name}
+              prop={prop}
+              value={element.overlay.props[prop.name]}
+              onChange={v => {
+                onElementChange({
+                  overlay: {
+                    ...element.overlay,
+                    props: { ...element.overlay.props, [prop.name]: v },
+                  },
+                } as Partial<CarouselElement>)
+              }}
+            />
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+/** The eye: hides or shows the element in the editor only (never saved).
+ *  Not drawn without the host's callback. A locked element may still be hidden. */
+export function HideToggle({
+  elementId,
+  isHidden,
+  onToggle,
+  className,
+}: {
+  elementId: string
+  isHidden: boolean
+  onToggle?: (elementId: string) => void
+  className?: string
+}) {
+  if (!onToggle) return null
+  return (
+    <button
+      type="button"
+      onClick={e => { e.stopPropagation(); onToggle(elementId) }}
+      title={isHidden ? 'Show in editor' : 'Hide from editor'}
+      aria-label={isHidden ? 'Show in editor' : 'Hide from editor'}
+      aria-pressed={isHidden}
+      className={className ?? cn('flex h-7 w-7 items-center justify-center rounded text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] hover:bg-[var(--editor-surface)] hover:text-[var(--editor-text)]')}
+    >
+      {isHidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+    </button>
   )
 }

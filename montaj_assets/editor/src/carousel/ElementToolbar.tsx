@@ -1,13 +1,13 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import { Bold, Copy, Crop, Italic, Lock, LockOpen, Replace, Trash2 } from 'lucide-react'
-import type { CarouselElement, OverlayElement } from '../types'
+import type { CarouselElement, GlobalOverlay, OverlayElement } from '../types'
 import type { ReorderDirection } from '../state/project-reducer'
 import { cn } from '../ui'
 import { FontFamilyPicker, FontSizePicker } from '../text/FontPicker'
 import { caseLabel, TEXT_ALIGNS, TextBackgroundControl, TextColorControl, textFormatting } from '../text/TextFormattingToolbar'
 import { supportsEffects, supportsFit, TextEffectControls } from '../text/TextEffectControls'
 import { AlignControls, type AlignPatch } from './AlignControls'
-import { cropBlockedReason, LayerOrderButtons, TransformFields, useReplaceImagePicker } from './ElementControls'
+import { cropBlockedReason, HideToggle, LayerOrderButtons, OverlayPropsSection, schemaPropsFor, TEXT_CONTROL_PROPS, TransformFields, useReplaceImagePicker } from './ElementControls'
 import { isLocked } from './lock'
 import { isTextOverlay } from './textStyle'
 
@@ -16,7 +16,7 @@ import { isTextOverlay } from './textStyle'
 // the classic panel or a key does; nothing here writes on its own.
 
 /** The toolbar's popovers; one is open at a time. */
-export type ElementToolbarPopover = 'position' | 'effects'
+export type ElementToolbarPopover = 'position' | 'effects' | 'edit'
 
 type UpdateOverlayProp = (slideId: string, elementId: string, key: string, value: string) => Promise<void>
 
@@ -50,6 +50,12 @@ export interface ElementToolbarProps {
   /** Crop: enter crop mode for the image, or (while cropping) apply and leave it. */
   onToggleCrop: () => void
   onReplaceImage?: (slideId: string, elementId: string, file: File) => void | Promise<void>
+  /** The overlay prop schemas by template path, for the Edit popover. */
+  overlaySchemas?: Map<string, GlobalOverlay>
+  schemasLoading?: boolean
+  /** Editor-only visibility (the host's): the eye shows only with the callback. */
+  hiddenElementIds?: string[]
+  onToggleElementVisibility?: (elementId: string) => void
   mode?: 'light' | 'dark'
 }
 
@@ -210,6 +216,10 @@ export default function ElementToolbar({
   onDelete,
   onToggleCrop,
   onReplaceImage,
+  overlaySchemas,
+  schemasLoading,
+  hiddenElementIds,
+  onToggleElementVisibility,
   mode = 'dark',
 }: ElementToolbarProps) {
   const element = selection.length === 1 ? selection[0] : undefined
@@ -219,6 +229,12 @@ export default function ElementToolbar({
   const anyLocked = selection.some(isLocked)
   const allLocked = selection.length > 0 && selection.every(isLocked)
   const replace = useReplaceImagePicker(slideId, image?.id, onReplaceImage)
+  // Edit: an overlay's Frame and its schema props; for a text overlay only the
+  // props its text controls do not already write.
+  const overlay = element?.type === 'overlay' ? element : undefined
+  const overlaySchema = overlay ? overlaySchemas?.get(overlay.overlay.template) : undefined
+  const editExclude = text ? TEXT_CONTROL_PROPS : undefined
+  const canOpenEdit = !!overlay && (typeof overlay.frame === 'number' || schemaPropsFor(overlaySchema, editExclude).length > 0)
 
   // A press outside the toolbar and its popovers closes the open one.
   const rootRef = useRef<HTMLDivElement>(null)
@@ -290,6 +306,11 @@ export default function ElementToolbar({
             <Sep />
           </>
         )}
+        {canOpenEdit && (
+          <button type="button" aria-haspopup="dialog" aria-expanded={popover === 'edit'} onClick={toggle('edit')} className={cn(textBtn, popover === 'edit' && onClass)}>
+            Edit
+          </button>
+        )}
         <button type="button" aria-haspopup="dialog" aria-expanded={popover === 'position'} onClick={toggle('position')} className={cn(textBtn, popover === 'position' && onClass)}>
           Position
         </button>
@@ -304,6 +325,14 @@ export default function ElementToolbar({
         >
           {anyLocked ? <Lock className="h-4 w-4" aria-hidden="true" /> : <LockOpen className="h-4 w-4" aria-hidden="true" />}
         </button>
+        {element && (
+          <HideToggle
+            elementId={element.id}
+            isHidden={hiddenElementIds?.includes(element.id) ?? false}
+            onToggle={onToggleElementVisibility}
+            className={iconBtn}
+          />
+        )}
         <button type="button" aria-label="Duplicate" title="Duplicate" disabled={!canEdit} onClick={run(onDuplicate)} className={iconBtn}>
           <Copy className="h-4 w-4" aria-hidden="true" />
         </button>
@@ -330,6 +359,19 @@ export default function ElementToolbar({
             <AlignControls elements={selection} width={w} height={h} disabled={allLocked || !canEdit} onChange={(patches: Array<{ id: string } & AlignPatch>) => { beforeAction(); onAlignSelection(patches) }} />
           )}
           <LayerOrderButtons onMove={(d) => { beforeAction(); onMoveInStack(d) }} disabled={!canEdit} />
+        </Popover>
+      )}
+      {popover === 'edit' && overlay && (
+        <Popover label="Edit">
+          <fieldset disabled={locked || !canEdit} className="m-0 flex min-w-0 flex-col gap-4 border-0 p-0">
+            <OverlayPropsSection
+              element={overlay}
+              schema={overlaySchema}
+              loading={schemasLoading}
+              onElementChange={onElementChange}
+              exclude={editExclude}
+            />
+          </fieldset>
         </Popover>
       )}
       {popover === 'effects' && text && (

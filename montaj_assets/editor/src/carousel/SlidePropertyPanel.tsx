@@ -1,20 +1,16 @@
-import { useEffect, useState } from 'react'
-import { Crop, Eye, EyeOff, Replace } from 'lucide-react'
+import { Crop, Replace } from 'lucide-react'
 import type {
   Project,
   Slide,
   CarouselElement,
   OverlayElement,
-  GlobalOverlay,
-  GlobalOverlayProp,
   EditorAdapter,
 } from '../types'
-import { Button, cn, inspectorInputClass, NumberField, stepValue, SwatchInput } from '../ui'
-import { Loader } from '../ui/Loader'
+import { Button, cn } from '../ui'
 import { TextFormattingToolbar } from '../text/TextFormattingToolbar'
 import { TextEffectControls } from '../text/TextEffectControls'
 import { AlignControls } from './AlignControls'
-import { cropBlockedReason, fieldLabelClass, numInput, SlideBackgroundField, TransformFields, useReplaceImagePicker } from './ElementControls'
+import { cropBlockedReason, fieldLabelClass, HideToggle, OverlayPropsSection, SlideBackgroundField, TransformFields, useOverlaySchemas, useReplaceImagePicker } from './ElementControls'
 
 // Section header: SLIDE / OVERLAY / IMAGE.
 const sectionHeaderClass =
@@ -76,102 +72,6 @@ interface Props {
   mode?: 'light' | 'dark'
 }
 
-// Small eye toggle to hide/show the selected element in the editor preview only
-// (never persisted). Absent host callback → not rendered.
-function HideToggle({
-  elementId,
-  isHidden,
-  onToggle,
-}: {
-  elementId: string
-  isHidden: boolean
-  onToggle?: (elementId: string) => void
-}) {
-  if (!onToggle) return null
-  return (
-    <button
-      type="button"
-      onClick={e => { e.stopPropagation(); onToggle(elementId) }}
-      title={isHidden ? 'Show in editor' : 'Hide from editor'}
-      aria-label={isHidden ? 'Show in editor' : 'Hide from editor'}
-      aria-pressed={isHidden}
-      className="flex h-7 w-7 items-center justify-center rounded text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] hover:bg-[var(--editor-surface)] hover:text-[var(--editor-text)]"
-    >
-      {isHidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-    </button>
-  )
-}
-
-function PropEditor({
-  prop,
-  value,
-  onChange,
-}: {
-  prop: GlobalOverlayProp
-  value: unknown
-  onChange: (v: unknown) => void
-}) {
-  const { name, type, description } = prop
-
-  if (type === 'bool') {
-    return (
-      <label className="flex cursor-pointer items-center gap-2" title={description}>
-        <input
-          type="checkbox"
-          checked={Boolean(value)}
-          onChange={e => onChange(e.target.checked)}
-          className="h-4 w-4 accent-[var(--editor-accent)]"
-        />
-        <span className="text-sm text-[var(--editor-text)]">{name}</span>
-      </label>
-    )
-  }
-
-  if (type === 'color') {
-    return (
-      <div className="flex flex-col gap-1" title={description}>
-        <span className={fieldLabelClass}>{name}</span>
-        <SwatchInput
-          value={String(value ?? '#000000')}
-          onChange={v => onChange(v)}
-          ariaLabel={name}
-        />
-      </div>
-    )
-  }
-
-  if (type === 'int' || type === 'float') {
-    return (
-      <label className="flex flex-col gap-1" title={description}>
-        <span className={fieldLabelClass}>{name}</span>
-        {/* Still writes per keystroke through the committed mutator — unlike
-            the transform boxes (see `numInput`), which write once on commit. */}
-        <NumberField
-          name={name}
-          value={Number(value ?? 0)}
-          step={type === 'float' ? 0.1 : 1}
-          onPreview={onChange}
-          onCommit={() => {}}
-          onStep={d => onChange(stepValue(Number(value ?? 0), d, { step: type === 'float' ? 0.1 : 1 }))}
-        />
-      </label>
-    )
-  }
-
-  // string fallback
-  return (
-    <label className="flex flex-col gap-1" title={description}>
-      <span className={fieldLabelClass}>{name}</span>
-      <input
-        type="text"
-        value={String(value ?? '')}
-        onChange={e => onChange(e.target.value)}
-        className={inspectorInputClass}
-      />
-    </label>
-  )
-}
-
 export default function SlidePropertyPanel({
   project,
   slide,
@@ -198,31 +98,10 @@ export default function SlidePropertyPanel({
   mode = 'dark',
 }: Props) {
   // Map of jsxPath → GlobalOverlay for overlay prop schemas
-  const [overlaySchemas, setOverlaySchemas] = useState<Map<string, GlobalOverlay>>(new Map())
-  const [schemasLoading, setSchemasLoading] = useState(false)
+  const { schemas: overlaySchemas, loading: schemasLoading } = useOverlaySchemas(adapter, project.profile)
   // Replace image: the hidden file input its button opens, and whether a
   // replace is in flight (the button is off until it settles).
   const replace = useReplaceImagePicker(slide?.id, element?.id, onReplaceImage)
-
-  useEffect(() => {
-    setSchemasLoading(true)
-    const promises: Promise<GlobalOverlay[]>[] = [adapter.listGlobalOverlays()]
-    if (project.profile) {
-      promises.push(adapter.listProfileOverlays?.(project.profile) ?? Promise.resolve([]))
-    }
-    Promise.all(promises)
-      .then(results => {
-        const map = new Map<string, GlobalOverlay>()
-        for (const list of results) {
-          for (const o of list) {
-            map.set(o.jsxPath, o)
-          }
-        }
-        setOverlaySchemas(map)
-      })
-      .catch(() => {})
-      .finally(() => setSchemasLoading(false))
-  }, [project.profile])
 
   if (!slide) {
     return (
@@ -386,43 +265,12 @@ export default function SlidePropertyPanel({
                 />
               )}
 
-              <div className="grid grid-cols-2 gap-3">
-                {numInput(
-                  'Frame',
-                  overlayEl.frame,
-                  {
-                    // No preview: the frame is not a transient the state layer takes.
-                    onCommit: v => { if (v !== overlayEl.frame) onElementChange({ frame: v }) },
-                    onStep: v => onElementChange({ frame: v }),
-                  },
-                  { min: 0 },
-                )}
-              </div>
-
-              {schemasLoading && (
-                <Loader size="sm" label="Loading overlay props" />
-              )}
-
-              {!schemasLoading && overlaySchema && overlaySchema.props.length > 0 && (
-                <div className="flex flex-col gap-3">
-                  <span className={fieldLabelClass}>Props</span>
-                  {overlaySchema.props.map(prop => (
-                    <PropEditor
-                      key={prop.name}
-                      prop={prop}
-                      value={overlayEl.overlay.props[prop.name]}
-                      onChange={v => {
-                        onElementChange({
-                          overlay: {
-                            ...overlayEl.overlay,
-                            props: { ...overlayEl.overlay.props, [prop.name]: v },
-                          },
-                        } as Partial<CarouselElement>)
-                      }}
-                    />
-                  ))}
-                </div>
-              )}
+              <OverlayPropsSection
+                element={overlayEl}
+                schema={overlaySchema}
+                loading={schemasLoading}
+                onElementChange={onElementChange}
+              />
             </fieldset>
           )}
 
