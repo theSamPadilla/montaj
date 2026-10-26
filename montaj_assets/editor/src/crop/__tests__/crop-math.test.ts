@@ -1,6 +1,6 @@
 /// <reference types="vitest/globals" />
 import { renderedSourceRect, translateCropPx, cropForAspect, maxZoomForAspect, aspectLockedCornerResize, trimToAspect } from '../crop-math'
-import { fractionToWrapperPx, wrapperPxToFraction } from '../crop-math'
+import { fractionToWrapperPx, wrapperPxToFraction, croppedBox } from '../crop-math'
 
 describe('renderedSourceRect', () => {
   it('1. fits source to width when source is wider than wrapper (letterboxes top/bottom)', () => {
@@ -298,5 +298,53 @@ describe('trimToAspect (PV55)', () => {
     const crop = { x: 0.1, y: 0.1, w: 0.5, h: 0.5 }
     const c = trimToAspect({ crop, aspect: 1, srcWidth: 1000, srcHeight: 1000 })
     for (const k of ['x', 'y', 'w', 'h'] as const) expect(c[k]).toBeCloseTo(crop[k], 12)
+  })
+})
+
+describe('croppedBox (M3a)', () => {
+  const near = (a: { x: number; y: number; w: number; h: number }, b: { x: number; y: number; w: number; h: number }) => {
+    for (const k of ['x', 'y', 'w', 'h'] as const) expect(a[k]).toBeCloseTo(b[k], 6)
+  }
+
+  it('crops an uncropped 16:9 box to its right half: half as wide, shifted right, same height', () => {
+    const box = { x: 100, y: 50, w: 400, h: 225 }
+    near(croppedBox(box, undefined, { x: 0.5, y: 0, w: 0.5, h: 1 }, { width: 1600, height: 900 }), { x: 300, y: 50, w: 200, h: 225 })
+  })
+
+  it('works from the contain rectangle of a letterboxed box', () => {
+    // A 16:9 image in a 400 square box is drawn 400 x 225, 87.5 down.
+    const box = { x: 0, y: 0, w: 400, h: 400 }
+    near(croppedBox(box, undefined, { x: 0.5, y: 0, w: 0.5, h: 1 }, { width: 1600, height: 900 }), { x: 200, y: 87.5, w: 200, h: 225 })
+    // Side bands: a 9:16 image in a 400 x 200 box is drawn 112.5 x 200, 143.75 across.
+    near(croppedBox({ x: 0, y: 0, w: 400, h: 200 }, undefined, { x: 0, y: 0.5, w: 1, h: 0.5 }, { width: 900, height: 1600 }), { x: 143.75, y: 100, w: 112.5, h: 100 })
+  })
+
+  it('works from the cover placement when a side resize changed a cropped box', () => {
+    // Crop is the left half of a 1600 x 900 source (800 x 900 px, aspect 8:9);
+    // the box was then stretched to 400 x 200. The oversized image is 800 x 200
+    // and covers: scale max(800/1600, 200/900) = 0.5, drawn 800 x 450, 125 up.
+    const box = { x: 10, y: 20, w: 400, h: 200 }
+    const old = { x: 0, y: 0, w: 0.5, h: 1 }
+    // The full source maps to 800 x 450 at (10, 20 - 125 = -105): keep its 0.25..0.5 columns.
+    near(croppedBox(box, old, { x: 0.25, y: 0, w: 0.25, h: 1 }, { width: 1600, height: 900 }), { x: 210, y: -105, w: 200, h: 450 })
+  })
+
+  it('a top-offset crop on a non-square box keeps its place on the slide', () => {
+    // A 400 x 200 box showing the middle rows (.25..0.75) of a 1600 x 400 source.
+    const box = { x: 0, y: 0, w: 400, h: 200 }
+    const old = { x: 0, y: 0.25, w: 1, h: 0.5 }
+    const src = { width: 1600, height: 400 }
+    // Cover: the oversized image is 400 x 400, scale max(400/1600, 400/400) = 1, so
+    // the source is drawn 1600 x 400 with its origin at (-600, -100). Keeping
+    // x .375..0.625, y .25..0.5 of it lands on the box's top 100 rows.
+    near(croppedBox(box, old, { x: 0.375, y: 0.25, w: 0.25, h: 0.25 }, src), { x: 0, y: 0, w: 400, h: 100 })
+  })
+
+  it('equal crops, or the full frame on an uncropped image, give the same box', () => {
+    const box = { x: 5, y: 6, w: 400, h: 400 }
+    const src = { width: 1600, height: 900 }
+    expect(croppedBox(box, undefined, { x: 0, y: 0, w: 1, h: 1 }, src)).toEqual(box)
+    const c = { x: 0.1, y: 0.2, w: 0.5, h: 0.5 }
+    expect(croppedBox(box, c, { ...c }, src)).toEqual(box)
   })
 })

@@ -261,3 +261,46 @@ export function trimToAspect(args: { crop: CropFraction; aspect: number; srcWidt
   const h = (crop.w * srcWidth) / (aspect * srcHeight)
   return { x: crop.x, y: crop.y + (crop.h - h) / 2, w: crop.w, h }
 }
+
+export type SlideBox = { x: number; y: number; w: number; h: number }
+
+// The box that frames `newCrop` where the picture is drawn today (M3a), so
+// applying a crop keeps the picture's scale and the kept part stays put.
+// Everything is in slide units; crops are fractions of the source.
+// The picture is drawn as SlideCanvas draws it: an uncropped image is
+// `contain`ed in its box; a cropped one is an oversized cover image
+// (box / crop size) moved by -crop x its own size, which is not the crop's
+// shape once a side resize changed the box.
+export function croppedBox(box: SlideBox, oldCrop: CropFraction | undefined, newCrop: CropFraction, src: { width: number; height: number }): SlideBox {
+  const EPS = 1e-6
+  const old = oldCrop ?? { x: 0, y: 0, w: 1, h: 1 }
+  if (
+    Math.abs(old.x - newCrop.x) < EPS && Math.abs(old.y - newCrop.y) < EPS &&
+    Math.abs(old.w - newCrop.w) < EPS && Math.abs(old.h - newCrop.h) < EPS
+  ) return box
+  let originX: number
+  let originY: number
+  let fullW: number
+  let fullH: number
+  if (!oldCrop) {
+    const r = renderedSourceRect({ wrapperW: box.w, wrapperH: box.h, srcWidth: src.width, srcHeight: src.height })
+    originX = box.x + r.offsetX
+    originY = box.y + r.offsetY
+    fullW = r.width
+    fullH = r.height
+  } else {
+    const elW = box.w / oldCrop.w
+    const elH = box.h / oldCrop.h
+    const scale = Math.max(elW / src.width, elH / src.height)
+    fullW = src.width * scale
+    fullH = src.height * scale
+    originX = box.x - oldCrop.x * elW + (elW - fullW) / 2
+    originY = box.y - oldCrop.y * elH + (elH - fullH) / 2
+  }
+  return {
+    x: originX + newCrop.x * fullW,
+    y: originY + newCrop.y * fullH,
+    w: newCrop.w * fullW,
+    h: newCrop.h * fullH,
+  }
+}

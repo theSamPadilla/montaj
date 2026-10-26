@@ -3284,9 +3284,10 @@ async function pickCrop(r: { getByTitle: (title: string) => HTMLElement }) {
   await dragCropRightEdgeIn()
 }
 
-/** The window picked, applied: 0.75 of a 400 x 200 image is 3:2, so the 200 wide box is 133 tall. */
+/** The window picked, applied (M3a): the 400 x 200 image is drawn 200 x 100, 50 down in its 200 box,
+ *  and the box takes the left three quarters of it where they were drawn: 150 x 100, 50 lower. */
 function expectCropApplied(el: unknown, at = { x: 100, y: 100 }) {
-  expect(el).toMatchObject({ ...at, w: 200, h: 133 })
+  expect(el).toMatchObject({ x: at.x, y: at.y + 50, w: 150, h: 100 })
   const crop = (el as ImageElement).crop
   expect(crop).toBeDefined()
   expect(crop!.x).toBeCloseTo(0, 9)
