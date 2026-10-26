@@ -19,6 +19,9 @@ export function InlineTextEditor({
 }: InlineTextEditorProps): React.ReactElement {
   const [value, setValue] = useState(initialValue)
   const ref = useRef<HTMLTextAreaElement>(null)
+  // Set once the editor has handed its result back, so the blur that follows an
+  // Enter or Esc (the editor unmounting) does not write a second time.
+  const settled = useRef(false)
 
   useEffect(() => {
     const el = ref.current
@@ -41,10 +44,20 @@ export function InlineTextEditor({
     onChange(next)
   }
 
+  // Commit when the text changed, otherwise just close: an unchanged edit
+  // must not record an empty undo step.
+  function settle() {
+    if (settled.current) return
+    settled.current = true
+    if (value === initialValue) onCancel()
+    else onCommit(value)
+  }
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Escape') {
+      // Esc keeps what was typed, exactly like a click away.
       e.preventDefault()
-      onCancel()
+      settle()
     } else if (e.key === 'Enter') {
       if (e.shiftKey) {
         // Let the newline insert naturally.
@@ -52,7 +65,7 @@ export function InlineTextEditor({
       }
       // Bare Enter (without Shift) commits the text.
       e.preventDefault()
-      onCommit(value)
+      settle()
     }
   }
 
@@ -67,7 +80,7 @@ export function InlineTextEditor({
       value={value}
       onChange={handleChange}
       onKeyDown={handleKeyDown}
-      onBlur={() => onCommit(value)}
+      onBlur={settle}
       onPointerDown={stopProp}
       onPointerMove={stopProp}
       onClick={stopProp}

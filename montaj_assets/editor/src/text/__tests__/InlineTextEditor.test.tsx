@@ -68,6 +68,7 @@ describe('InlineTextEditor', () => {
   it('6. Enter (no shift) calls onCommit and calls preventDefault', () => {
     const onCommit = vi.fn()
     const { textarea } = renderEditor({ onCommit, initialValue: 'hello' })
+    fireEvent.change(textarea, { target: { value: 'hello!' } })
 
     const ev = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
     textarea.dispatchEvent(ev)
@@ -82,27 +83,59 @@ describe('InlineTextEditor', () => {
     expect(onCommit).not.toHaveBeenCalled()
   })
 
-  it('8. Cmd/Ctrl+Enter calls onCommit', () => {
+  it.each([['metaKey'], ['ctrlKey']])('8. Cmd/Ctrl+Enter (%s) calls onCommit', (mod) => {
     const onCommit = vi.fn()
     const { textarea } = renderEditor({ onCommit })
-
-    fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true })
+    fireEvent.change(textarea, { target: { value: 'changed' } })
+    fireEvent.keyDown(textarea, { key: 'Enter', [mod]: true })
     expect(onCommit).toHaveBeenCalledTimes(1)
-
-    fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true })
-    expect(onCommit).toHaveBeenCalledTimes(2)
   })
 
-  it('9. Escape calls onCancel and calls preventDefault', () => {
+  it('9. Escape commits the typed text and calls preventDefault', () => {
     const onCancel = vi.fn()
     const onCommit = vi.fn()
     const { textarea } = renderEditor({ onCancel, onCommit })
+    fireEvent.change(textarea, { target: { value: 'typed' } })
 
     const ev = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     textarea.dispatchEvent(ev)
     expect(ev.defaultPrevented).toBe(true)
-    expect(onCancel).toHaveBeenCalled()
+    expect(onCommit).toHaveBeenCalledTimes(1)
+    expect(onCommit).toHaveBeenCalledWith('typed')
+    expect(onCancel).not.toHaveBeenCalled()
+  })
+
+  it('9b. Escape then the blur that follows writes once', () => {
+    const onCommit = vi.fn()
+    const { textarea } = renderEditor({ onCommit })
+    fireEvent.change(textarea, { target: { value: 'typed' } })
+    fireEvent.keyDown(textarea, { key: 'Escape' })
+    fireEvent.blur(textarea)
+    expect(onCommit).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['Escape', (t: HTMLTextAreaElement) => fireEvent.keyDown(t, { key: 'Escape' })],
+    ['Enter', (t: HTMLTextAreaElement) => fireEvent.keyDown(t, { key: 'Enter' })],
+    ['blur', (t: HTMLTextAreaElement) => fireEvent.blur(t)],
+  ])('9c. %s with unchanged text writes nothing and closes the editor', (_name, act) => {
+    const onCommit = vi.fn()
+    const onCancel = vi.fn()
+    const { textarea } = renderEditor({ onCommit, onCancel })
+    act(textarea)
     expect(onCommit).not.toHaveBeenCalled()
+    expect(onCancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('9d. Shift+Enter leaves the newline to the textarea and closes nothing', () => {
+    const onCommit = vi.fn()
+    const onCancel = vi.fn()
+    const { textarea } = renderEditor({ onCommit, onCancel })
+    const ev = new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true })
+    textarea.dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(false)
+    expect(onCommit).not.toHaveBeenCalled()
+    expect(onCancel).not.toHaveBeenCalled()
   })
 
   it('10. pointer events do not bubble to parent', () => {
