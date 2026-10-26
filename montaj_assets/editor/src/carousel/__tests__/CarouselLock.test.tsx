@@ -721,3 +721,25 @@ describe('CarouselEditor: an external lock lands mid-gesture (§586 batch 2)', (
     expect(adapter.saveCalls).toHaveLength(0)
   })
 })
+
+describe('CarouselEditor: slide copies and deletes keep locks (§586 batch 2)', () => {
+  it('duplicating a slide keeps its locked element locked in the copy', async () => {
+    const { adapter, r } = await mount()
+    await act(async () => { fireEvent.click(r.getAllByTitle('Duplicate slide')[0]) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const copy = last(adapter).slides![1]
+    expect(copy.id).not.toBe('slide-0')
+    expect(copy.elements.map((e) => e.src)).toEqual(['a.png', 'b.png', 'c.png', undefined])
+    expect(copy.elements[0]).toMatchObject({ src: 'a.png', locked: true })
+    expect(copy.elements[1].locked).toBeUndefined()
+  })
+
+  it('the person can delete a slide that holds a locked element', async () => {
+    const project = lockProject()
+    project.slides!.push({ id: 'slide-1', base_color: '#ffffff', elements: [] } as never)
+    const { adapter, r } = await mount({}, project)
+    await act(async () => { fireEvent.click(r.getAllByTitle('Delete slide')[0]) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(last(adapter).slides!.map((s) => s.id)).toEqual(['slide-1'])
+  })
+})
