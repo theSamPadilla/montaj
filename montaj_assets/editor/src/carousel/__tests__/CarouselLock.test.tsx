@@ -729,7 +729,7 @@ describe('CarouselEditor: slide copies and deletes keep locks (§586 batch 2)', 
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
     const copy = last(adapter).slides![1]
     expect(copy.id).not.toBe('slide-0')
-    expect(copy.elements.map((e) => e.src)).toEqual(['a.png', 'b.png', 'c.png', undefined])
+    expect(copy.elements.map((e) => ('src' in e ? e.src : undefined))).toEqual(['a.png', 'b.png', 'c.png', undefined])
     expect(copy.elements[0]).toMatchObject({ src: 'a.png', locked: true })
     expect(copy.elements[1].locked).toBeUndefined()
   })
