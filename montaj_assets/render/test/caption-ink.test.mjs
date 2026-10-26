@@ -143,7 +143,7 @@ describe('ink absent or "light" is exactly as before', () => {
       for (const t of [1.2, 2.0, 2.6]) {
         const plain = JSON.stringify(render(name, t, [SEG]))
         assert.equal(JSON.stringify(render(name, t, [{ ...SEG, ink: 'light' }])), plain, `${name} light at ${t}s`)
-        assert.equal(JSON.stringify(render(name, t, [{ ...SEG, ink: 'light', inkAuto: 'card-1' }])), plain, `${name} inkAuto at ${t}s`)
+        assert.equal(JSON.stringify(render(name, t, [{ ...SEG, ink: 'light', inkAuto: { card: 'card-1', ink: 'light' } }])), plain, `${name} inkAuto at ${t}s`)
       }
     })
   }
