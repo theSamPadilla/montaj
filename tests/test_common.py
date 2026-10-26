@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -632,3 +633,57 @@ def test_a_planted_protocol_named_file_is_read_as_that_file(test_video, tmp_path
     spec = json.loads(proc.stdout)
     assert spec["input"] == "concat:clip.mp4"
     assert len(spec["keeps"]) == 2, spec["keeps"]
+
+
+# PL89: a renderer that overruns is stopped with SIGTERM first (its whole process group), so a node renderer can close
+# the Chromium it started; SIGKILL alone left that browser running with no parent.
+_posix_only = pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX")
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def test_run_stopping_returns_what_the_command_printed():
+    run_stopping = common.run_stopping
+    r = run_stopping([sys.executable, "-c", "import sys; print('hi'); sys.stderr.write('e')"], timeout=30, text=True)
+    assert (r.returncode, r.stdout.strip(), r.stderr) == (0, "hi", "e")
+
+
+@_posix_only
+def test_run_stopping_terms_the_whole_group_and_the_child_cleans_up(tmp_path):
+    run_stopping = common.run_stopping
+    marker = tmp_path / "cleaned"
+    pidfile = tmp_path / "grandchild"
+    # The child starts a grandchild (as node starts Chromium), then hangs; on SIGTERM it writes a marker and exits.
+    child = (
+        "import signal, subprocess, sys, time\n"
+        "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"open({str(pidfile)!r}, 'w').write(str(g.pid))\n"
+        f"def bye(*a):\n    open({str(marker)!r}, 'w').write('1'); sys.exit(0)\n"
+        "signal.signal(signal.SIGTERM, bye)\n"
+        "time.sleep(60)\n"
+    )
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_stopping([sys.executable, "-c", child], timeout=1.5, grace=5)
+    assert marker.exists(), "the child got SIGTERM and could clean up"
+    grandchild = int(pidfile.read_text())
+    for _ in range(50):
+        if not _alive(grandchild):
+            break
+        time.sleep(0.1)
+    assert not _alive(grandchild), "the grandchild in its group got the signal too"
+
+
+@_posix_only
+def test_run_stopping_kills_a_child_that_ignores_sigterm():
+    run_stopping = common.run_stopping
+    stubborn = "import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(60)\n"
+    t0 = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_stopping([sys.executable, "-c", stubborn], timeout=1, grace=1)
+    assert time.monotonic() - t0 < 10

@@ -13,7 +13,7 @@ import os, re, sys, argparse, subprocess, json, tempfile
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
 from cli.deps import render_runtime_dir
-from lib.common import node_child_env, fail, require_file
+from lib.common import node_child_env, fail, require_file, run_stopping
 from lib.look import curve_ids
 from lib.sheet import tile_sheet
 from lib.types.colorspace import is_hdr, DEFAULT_COLOR_SPACE
@@ -49,7 +49,7 @@ def sample_frames(project, times, frames_dir, raw=False, scene=None, sdr_curve=N
     if sdr_curve is not None:
         cmd += ["--sdr-curve", sdr_curve]
     try:
-        proc = subprocess.run(cmd, check=False, capture_output=True, env=node_child_env(), timeout=120 * len(times))
+        proc = run_stopping(cmd, timeout=120 * len(times), env=node_child_env())
     except subprocess.TimeoutExpired:
         fail("sample_failed", f"sample_frame over {len(times)} times exceeded {120 * len(times)}s")
     err = proc.stderr.decode("utf-8", errors="replace").strip()[-400:]

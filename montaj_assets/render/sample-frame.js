@@ -188,6 +188,9 @@ const SHORT_EDGE_TARGET = 1080
  */
 const SAMPLE_CACHE_VERSION = 19
 
+// PL89: the most overlay pages a sampling session keeps open (createSampleSession).
+export const SESSION_MAX_PAGES = 4
+
 // ---------------------------------------------------------------------------
 // Input manifests
 // ---------------------------------------------------------------------------
@@ -470,11 +473,15 @@ if (isMain) {
  * PL89: one sampling session for several frames in one call (--frames-dir). One browser per kind of launch, and
  * each overlay page (one component with one set of props) bundled and loaded once, kept open, then only set to each
  * frame and captured. Uses of one page run one at a time. A page that fails is closed and the next use opens a new one.
+ * At most `maxPages` stay open (each 3D page holds a WebGL context, and Chromium drops the oldest past about 16, which
+ * blanks later frames): opening one more closes the least recently used once its uses finish.
  * close() closes every page and browser and removes the bundles.
  */
-export function createSampleSession() {
+export function createSampleSession({ maxPages = SESSION_MAX_PAGES } = {}) {
   const browsers = new Map()
+  // In use order, least recently used first.
   const pages = new Map()
+  const evicting = []
   // Closing never throws: it runs on a failure, whose own error is the one to report.
   const drop = (held) => held.ready.then(async (ctx) => {
     await ctx.page.close().catch(() => {})
@@ -490,10 +497,17 @@ export function createSampleSession() {
     },
     async sample(key, open, capture) {
       let held = pages.get(key)
-      if (!held) {
+      if (held) {
+        pages.delete(key)
+      } else {
         held = { ready: open(), tail: Promise.resolve() }
-        pages.set(key, held)
+        while (pages.size >= maxPages) {
+          const [oldKey, old] = pages.entries().next().value
+          pages.delete(oldKey)
+          evicting.push(old.tail.then(() => drop(old)))
+        }
       }
+      pages.set(key, held)
       const run = held.tail.then(async () => {
         const ctx = await held.ready
         ctx.pageErrors.length = 0
@@ -514,6 +528,7 @@ export function createSampleSession() {
       const open = [...pages.values()]
       pages.clear()
       for (const held of open) await drop(held)
+      await Promise.all(evicting.splice(0))
       for (const b of browsers.values()) await b.then((x) => x.close()).catch(() => {})
       browsers.clear()
     },

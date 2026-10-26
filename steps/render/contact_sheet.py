@@ -8,7 +8,7 @@ from contextlib import nullcontext
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file  # noqa: E402
+from common import fail, require_file, run_stopping  # noqa: E402
 from sheet import tile_sheet  # noqa: E402
 sys.path.insert(0, os.path.dirname(__file__))
 from sample_frame import sample_frames  # noqa: E402
@@ -41,7 +41,7 @@ def _sample_frame(project, t, out, raw=False):
     if raw:
         cmd.append("--raw")
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        proc = run_stopping(cmd, timeout=120, text=True)
     except subprocess.TimeoutExpired:
         fail("sample_failed", f"sample_frame at {t}s exceeded 120s")
     if proc.returncode != 0 or not os.path.isfile(out):
