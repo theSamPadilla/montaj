@@ -49,6 +49,13 @@
       "description": "Sample the untouched SOURCE frame under the time instead of the composite: the clip the timeline shows at that time, decoded straight from its file, with no crop, zoom, fit, grade, image items, overlays or captions. Use it to read the footage itself (e.g. to pick crops or cut points) without making a stripped copy of the project. Source resolution; an HDR source is not tone-mapped. A time with no video gives a black frame. Not combined with scene."
     },
     {
+      "name": "no-captions",
+      "type": "bool",
+      "required": false,
+      "default": false,
+      "description": "Sample the frame without the captions overlay, to read the picture under a caption. No effect with raw or scene."
+    },
+    {
       "name": "out",
       "type": "path",
       "required": false,

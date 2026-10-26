@@ -36,6 +36,7 @@ sys.path.insert(0, MONTAJ_ROOT)
 from serve.common import get_project_dir  # noqa: E402
 from serve.caption_job import build_audio_mix_spec, caption_input_change, caption_input_fingerprint  # noqa: E402
 from lib.project_revisions import engine_guard_enabled  # noqa: E402
+from lib import caption_ink  # noqa: E402
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, update_project  # noqa: E402
 from lib.sync_clash import SyncConflict, exit_refused  # noqa: E402
 
@@ -59,6 +60,16 @@ def merge_caption_theme(track: dict, prev) -> dict:
     font, weight or per-style colour was lost on this path only).
     """
     return _merge_theme(prev, track)
+
+
+def ink_pass(project_path) -> list:
+    """Run the caption_ink pass on the project just written (a no-op, with no render, when it has no card on screen
+    anywhere). A failure is a warning for the answer, never a failed caption run."""
+    try:
+        out = caption_ink.update(project_path)
+    except Exception as e:  # noqa: BLE001 — the captions are written; ink is a refinement
+        return [f"caption ink not set ({type(e).__name__}): run caption_ink"]
+    return list((out or {}).get("warnings") or [])
 
 
 def main():
@@ -172,8 +183,9 @@ def main():
         except (OSError, ValueError):
             fail("project_not_found", f"project.json for {args.project_id} not readable")
         track = written["track"]
+        warnings = ink_pass(project_path)
 
-        print(json.dumps(track))
+        print(json.dumps({**track, "warnings": warnings} if warnings else track))
     finally:
         for tmp in (mix_spec_path, mix_wav_path, words_json_path,
                     words_srt_path, track_path):

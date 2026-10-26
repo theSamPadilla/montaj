@@ -20,6 +20,7 @@
  *   node sample-frame.js --mode frame --project <path> --at <seconds> --out <path>
  *     [--clamp-to-end]  past the end: sample the last frame, write <out>.clamped.json
  *     [--scene <id>]    one 3D alone, --at seconds into it ('' is the project's own)
+ *     [--no-captions]   the frame without the captions overlay (to read the picture under a caption)
  *   --at may repeat (2+) with --frames-dir <dir> instead of --out: one process renders every
  *   time in order to <dir>/f_0000.png, f_0001.png, ... and prints one path per line.
  *
@@ -319,6 +320,7 @@ if (isMain) {
       '    --out <path> [--clamp-to-end]\n' +
       '  sample-frame.js --mode frame --project <path> --scene <id> --at <seconds into it>\n' +
       '    --out <path>   one 3D alone; --scene \'\' is the project\'s own\n' +
+      '  sample-frame.js --mode frame --project <path> --at <seconds> --no-captions --out <path>\n' +
       '  sample-frame.js --mode frame --project <path> --at <s> --at <s> ... --frames-dir <dir>\n'
     )
     process.exit(1)
@@ -342,6 +344,7 @@ if (isMain) {
   let framesDirArg  = null
   let sdrCurveArg   = null
   let preferProxyArg = false
+  let noCaptionsArg  = false
   let rawArg        = false
   let clampToEndArg = false
   let maxShortEdgeArg = null
@@ -368,6 +371,7 @@ if (isMain) {
     if (a === '--clamp-to-end') { clampToEndArg = true; continue }
     if (a === '--prefer-proxy') { preferProxyArg = true; continue }
     if (a === '--max-short-edge') { maxShortEdgeArg = Number(argv[++i]); continue }
+    if (a === '--no-captions')  { noCaptionsArg  = true; continue }
     if (a === '--raw')          { rawArg = true; continue }
     if (a === '--scene')        { sceneArg      = argv[++i] ?? null; if (sceneArg === null) fail('missing_argument', '--scene needs a 3D id, or \'\' for the project\'s own'); continue }
     if (a === '--out')          { outArg        = argv[++i]; continue }
@@ -431,6 +435,7 @@ if (isMain) {
         outPath,
         sdrCurve: sdrCurveArg,
         preferProxy: preferProxyArg,
+        noCaptions: noCaptionsArg,
         clampToEnd: clampToEndArg,
         ...(rawArg ? {} : { session, maxShortEdge: maxShortEdgeArg }),
       })
@@ -1052,6 +1057,7 @@ export async function sampleOverlay({
  * @param {string}        opts.outPath      Where to write the output PNG
  * @param {string|null}   [opts.sdrCurve]   Look curve id for the HDR→SDR grade;
  *   null uses the master look. Ignored on SDR projects (nothing is converted).
+ * @param {boolean}       [opts.noCaptions] Leave the captions overlay out, so the frame shows the picture under a caption.
  * @param {string|null}   [opts.projectDir] The project's folder, for a parsed
  *   `projectJson`: relative paths and 3D items resolve against it. A path
  *   `projectJson` brings its own.
@@ -1063,6 +1069,7 @@ export async function sampleFrame({
   outPath,
   sdrCurve = null,
   preferProxy = false,
+  noCaptions = false,
   clampToEnd = false,
   projectDir: projectDirOpt = null,
   session = null,
@@ -1105,7 +1112,7 @@ export async function sampleFrame({
   // Cache key
   // PL89c: a sheet's frame at the design canvas is its own entry, never a full-size sample's.
   const cap = Number.isFinite(maxShortEdge) && maxShortEdge > 0 ? Math.round(maxShortEdge) : null
-  const cacheKey = buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve, preferProxy, SAMPLE_CACHE_VERSION, cap)
+  const cacheKey = buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve, preferProxy, SAMPLE_CACHE_VERSION, cap, noCaptions)
   const cachePng = join(CACHE_DIR, `${cacheKey}.png`)
   const cacheInputs = join(CACHE_DIR, `${cacheKey}.inputs.json`)
 
@@ -1283,7 +1290,7 @@ export async function sampleFrame({
   // `captions` segment render.js composites after every overlay): one overlay
   // over the whole film, sampled at this instant, on top. Without it the
   // user's AI checked a captioned project without ever seeing a caption.
-  const caption = captionOverlayFields(resolvedProject.captions)
+  const caption = noCaptions ? null : captionOverlayFields(resolvedProject.captions)
   if (caption) {
     const result = await sampleOverlay({
       componentPath: caption.componentPath,
@@ -2013,7 +2020,7 @@ function overlaySourceCacheComponent(project, projectPath) {
  * per-overlay-render key instead).
  */
 function buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve = null, preferProxy = false,
-                            version = SAMPLE_CACHE_VERSION, maxShortEdge = null) {
+                            version = SAMPLE_CACHE_VERSION, maxShortEdge = null, noCaptions = false) {
   let mtime = '0'
   if (projectPath) {
     try { mtime = String(statSync(projectPath).mtimeMs) } catch {}
@@ -2034,7 +2041,7 @@ function buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve = null, pr
   // moves when the manifest does.
   const raw = [RESOLVER_VERSION, `sample-v${version}`, mtime, String(atSeconds), colorSpace,
                MASTER_LOOK, sdrCurve ?? MASTER_LOOK, preferProxy ? 'proxy' : 'master',
-               overlaySources, ...(maxShortEdge ? [`short-${maxShortEdge}`] : [])].join('|')
+               overlaySources, ...(maxShortEdge ? [`short-${maxShortEdge}`] : []), ...(noCaptions ? ['no-captions'] : [])].join('|')
   return createHash('sha256').update(raw).digest('hex')
 }
 

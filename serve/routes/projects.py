@@ -37,7 +37,7 @@ from serve.caption_job import build_audio_mix_spec, caption_input_change, captio
 from serve.caption_theme import sanitize_theme, seed_prev
 from serve import provenance
 from serve import save_guard
-from lib import project_revisions
+from lib import caption_ink, project_revisions, sync_clash
 from serve.jobs import create_job, set_done, set_error, get_job
 from serve.routes.files import save_upload, upload_name
 from serve.disk_full import STATUS as disk_full_status, child_disk_full, detail_for as disk_full_detail, workspace_root as disk_full_root
@@ -6033,6 +6033,68 @@ def _merge_caption_theme(prev: dict, track: dict) -> dict:
     return _lib_merge_caption_theme(prev, track)
 
 
+CAPTION_INK_TIMEOUT_S = 300.0   # the step stops starting frames at 240 s on its own (caption_ink.DEADLINE_S)
+
+# Strong refs to the background ink passes (asyncio only weakly tracks fire-and-forget tasks).
+_caption_ink_tasks: set = set()
+
+
+def _caption_log(broadcaster, project_id: str, message: str) -> None:
+    broadcaster.publish(project_id, f"event: log\ndata: {json.dumps({'message': message})}\n\n")
+
+
+def _start_caption_ink(project_id: str, project_path: Path, project: dict, broadcaster, who=None) -> None:
+    """Run the ink pass as a background task, so the caption job is done (SSE `done`, the slot released) without it."""
+    task = asyncio.create_task(_run_caption_ink(project_id, project_path, project, broadcaster, who))
+    _caption_ink_tasks.add(task)
+    task.add_done_callback(_caption_ink_tasks.discard)
+
+
+async def drain_caption_ink_tasks() -> None:
+    """Wait for the ink passes in flight (the seam for tests)."""
+    while _caption_ink_tasks:
+        await asyncio.gather(*list(_caption_ink_tasks), return_exceptions=True)
+
+
+async def _run_caption_ink(project_id: str, project_path: Path, project: dict, broadcaster, who=None) -> None:
+    """After the captions are written and broadcast: when the step has anything to do (a card on screen, or ink of its
+    own to clear), run the caption_ink step (a subprocess; it renders frames) as the request's writer and broadcast the
+    project again if it wrote. Any failure is a `log` event only: it never fails the caption job."""
+    try:
+        if not caption_ink.needs_pass(project):
+            return
+        env = {**os.environ, "MONTAJ_ROOT": str(MONTAJ_ROOT)}
+        if sync_clash.state_dir():   # §482: whose run this is, as serve/routes/steps.py sets it
+            env[sync_clash.ORIGIN_ENV] = save_guard.step_origin(who)
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, str(MONTAJ_ROOT / "steps" / "transform" / "caption_ink.py"), "--project", str(project_path),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=str(MONTAJ_ROOT), env=env,
+            **_detached_kwargs())   # process-group leader, so a kill reaches the sample_frame children
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=CAPTION_INK_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            with contextlib.suppress(Exception):
+                _kill_tree(proc)
+            with contextlib.suppress(Exception):
+                await proc.wait()
+            _caption_log(broadcaster, project_id, "caption ink not set (timed out): run caption_ink")
+            return
+        if proc.returncode != 0:
+            tail = (err or b"").decode("utf-8", "replace").strip().splitlines()[-1:] or ["failed"]
+            _caption_log(broadcaster, project_id, f"caption ink not set: {tail[0][:200]}")
+            return
+        answer = {}
+        with contextlib.suppress(Exception):
+            answer = json.loads((out or b"").decode("utf-8", "replace").strip().splitlines()[-1])
+        for w in answer.get("warnings") or []:
+            _caption_log(broadcaster, project_id, f"caption ink: {w}")
+        if answer.get("changed"):
+            broadcaster.publish(project_id, _sse_data_frame(project_path.read_text(encoding="utf-8")))
+    except Exception as e:  # noqa: BLE001 — ink is a refinement of captions that are already written
+        with contextlib.suppress(Exception):
+            _caption_log(broadcaster, project_id, f"caption ink not set ({type(e).__name__}): run caption_ink")
+
+
 async def _run_caption_pipeline(
     project_id: str,
     project_dir: Path,
@@ -6192,6 +6254,7 @@ async def _run_caption_pipeline(
         project["captions"] = track
         text = _write_project_json(project_path, project)
     broadcaster.publish(project_id, _sse_data_frame(text))
+    _start_caption_ink(project_id, project_path, project, broadcaster, who)
 
     return track
 

@@ -1736,6 +1736,45 @@ test('(z2) sampleFrame clampToEnd: past the end renders the last frame and write
   })
 
 // ---------------------------------------------------------------------------
+// noCaptions: the frame without the captions overlay (--no-captions)
+// ---------------------------------------------------------------------------
+
+test('buildFrameCacheKey: a frame without captions never shares an entry with a captioned one', () => {
+  const project = { settings: { colorSpace: 'sdr_bt709' } }
+  const captioned = buildFrameCacheKey(null, project, 1.5)
+  const bare = buildFrameCacheKey(null, project, 1.5, null, false, SAMPLE_CACHE_VERSION, null, true)
+  assert.notEqual(bare, captioned)
+  assert.equal(buildFrameCacheKey(null, project, 1.5, null, false, SAMPLE_CACHE_VERSION, null, false), captioned,
+    'the default key is unchanged, so captioned frames cached before stay valid')
+})
+
+test('sampleFrame noCaptions: the captions overlay is left out, and the cache does not hand it back', { timeout: 180_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-nc-'))
+  try {
+    const fixture = makeSyntheticFixture(dir)
+    if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+    const plain = { ...fixture.project, tracks: [fixture.project.tracks[0]] }
+    const captioned = {
+      ...plain,
+      captions: { style: 'subtitle', segments: [{ id: 'c1', start: 1.0, end: 2.5, text: 'HELLO CAPTIONS', words: [] }] },
+    }
+    const withCaption = join(dir, 'with.png')
+    const bare = join(dir, 'bare.png')
+    const bareAgain = join(dir, 'bare-again.png')
+    await sampleFrame({ projectJson: captioned, atSeconds: 1.5, outPath: withCaption })
+    await sampleFrame({ projectJson: captioned, atSeconds: 1.5, outPath: bare, noCaptions: true })
+    await sampleFrame({ projectJson: captioned, atSeconds: 1.5, outPath: bareAgain, noCaptions: true })
+    assert.ok(statSync(bare).size < statSync(withCaption).size, 'the bare frame is the plain footage, smaller than the captioned one')
+    assert.ok(readFileSync(bare).equals(readFileSync(bareAgain)))
+    const plainOut = join(dir, 'plain.png')
+    await sampleFrame({ projectJson: plain, atSeconds: 1.5, outPath: plainOut })
+    assert.equal(statSync(bare).size, statSync(plainOut).size, 'noCaptions equals the project with no captions')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
 // (§59) a sampled frame draws the captions, as the export does
 // ---------------------------------------------------------------------------
 

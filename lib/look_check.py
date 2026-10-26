@@ -8,6 +8,8 @@ The pure half (the step, steps/render/look.py, runs the renderers):
   that ends before it starts, an overlay whose file is missing, stretches with no footage (black, or overlay only),
   and an item that a full-frame one stacked above it hides. Tracks switched off (`enabled: false`) draw nothing
   and are left out, as the render leaves them out (lib/project_tracks.enabled_track_items).
+- `caption_ink_issues`: captions whose ink (lib/caption_ink.py) was not checked for the card under them, or was set
+  for a card that is gone; data only, a person's ink is never flagged.
 - `measured_issues`: what an overlay's measurements (sample_overlay --measure, in the overlay's own 1080-design
   canvas) say once placed on the frame by the item's geometry (timeline-core toCssBoxPct): text off the frame, text
   that spills out of or is cut by its own box, text inside the 5% title-safe margin, text across montaj's own
@@ -263,6 +265,27 @@ def data_issues(project, project_dir):
             out.append({"t": r2(s), "id": str(seg.get("id") or "caption"), "text": f"caption {where}"})
     out += _black(rows, end)
     out += _hidden(rows)
+    return out
+
+
+def caption_ink_issues(project):
+    """[{t, id, text}] for captions whose ink (lib/caption_ink.py) is out of date: over a card the step has not
+    measured, or set for a card that is gone. Only ink the step wrote (inkAuto naming the same ink) is judged; a
+    person's ink is never flagged."""
+    from lib import caption_ink
+    out = []
+    for seg in caption_segments(project):
+        ours = caption_ink.ours(seg)
+        if not caption_ink.inkable(project, seg) or (not ours and (seg.get("ink") or "inkAuto" in seg)):
+            continue
+        mid = (_num(seg.get("start")) + _num(seg.get("end"))) / 2
+        card = caption_ink.card_under(project, mid)
+        if card is not None and (not ours or seg["inkAuto"].get("card") != card["id"]):
+            out.append({"t": r2(mid), "id": "captions",
+                        "text": f"caption over {card['id']} has not had its ink checked: run caption_ink"})
+        elif card is None and ours:
+            out.append({"t": r2(mid), "id": "captions",
+                        "text": f"caption ink was set for {seg['inkAuto'].get('card')}, now over footage: run caption_ink"})
     return out
 
 

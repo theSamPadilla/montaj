@@ -38,7 +38,8 @@ SHEET_TILE_WIDTH = 360
 SHEET_SHORT_EDGE = 1080
 
 
-def sample_frames(project, times, frames_dir, raw=False, scene=None, sdr_curve=None, prefer_proxy=False):
+def sample_frames(project, times, frames_dir, raw=False, scene=None, sdr_curve=None, prefer_proxy=False,
+                  no_captions=False):
     """Render every time in ONE node process into frames_dir (f_0000.png...); return the paths in order. Several times
     (a sheet) composite at SHEET_SHORT_EDGE; one time keeps the project's size."""
     cmd = ["node", SAMPLE_FRAME_JS, "--mode", "frame", "--project", project]
@@ -50,6 +51,8 @@ def sample_frames(project, times, frames_dir, raw=False, scene=None, sdr_curve=N
         cmd.append("--prefer-proxy")
     if raw:
         cmd.append("--raw")
+    if no_captions:
+        cmd.append("--no-captions")
     if scene is not None:
         cmd += ["--scene", scene]
     if sdr_curve is not None:
@@ -100,6 +103,9 @@ def main():
                         help="Sample the untouched SOURCE frame under --at: the clip the timeline shows "
                              "there, decoded straight from its file, with no crop, zoom, fit, grade, "
                              "image items, overlays or captions. For reading the footage itself.")
+    parser.add_argument("--no-captions", action="store_true",
+                        help="Sample the frame without the captions overlay, so the picture under a caption can be read. "
+                             "With --raw or --scene it changes nothing.")
     parser.add_argument("--out", default=None,
                         help="Output PNG path (default: <project_dir>/render/samples/frame-<at>s.png; "
                              "with several --at, the sheet: sheet-<first>-<last>s.png)")
@@ -178,7 +184,8 @@ def main():
     if len(times) > 1:
         with tempfile.TemporaryDirectory() as work:
             paths = sample_frames(args.project, times, work, raw=args.raw, scene=args.scene,
-                                  sdr_curve=sdr_forward, prefer_proxy=args.prefer_proxy)
+                                  sdr_curve=sdr_forward, prefer_proxy=args.prefer_proxy,
+                                  no_captions=args.no_captions)
             os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
             tile_sheet(paths, times, min(len(times), SHEET_COLS), SHEET_TILE_WIDTH, out)
         print(os.path.abspath(out))
@@ -190,6 +197,8 @@ def main():
         cmd.append("--prefer-proxy")
     if args.raw:
         cmd.append("--raw")
+    if args.no_captions:
+        cmd.append("--no-captions")
     if args.scene is not None:
         cmd += ["--scene", args.scene]
     if sdr_forward is not None:
