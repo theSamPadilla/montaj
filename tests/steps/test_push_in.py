@@ -236,7 +236,118 @@ def test_a_head_maps_through_the_items_crop_onto_the_canvas():
 def test_the_step_json_offers_style_and_anchor_face(tmp_path):
     spec = json.loads((REPO_ROOT / "steps" / "edit" / "push_in.json").read_text())
     params = {q["name"]: q for q in spec["params"]}
-    assert params["style"]["type"] == "enum" and params["style"]["options"] == ["push", "alternate"]
+    assert params["style"]["type"] == "enum" and params["style"]["options"][:2] == ["push", "alternate"]
     assert params["style"]["default"] == "push"
     assert params["anchor"]["type"] == "string" and "face" in params["anchor"]["description"]
     assert "follow" in params["anchor"]["description"]
+
+
+# Sam (2026-10-26): light zoom-in cuts on the head, here and there, about 10% at most; a mix of shots at 1.0 and
+# slightly zoomed. style punch holds every other clip at 1 + zoom (0.08 by default, 0.1 at most) and leaves the rest at
+# 1.0 with no framing keys.
+
+def test_punch_holds_every_other_clip_slightly_zoomed_and_leaves_the_rest_at_1(tmp_path):
+    p = project(tmp_path, [{"id": f"c{i}", "start": 2 * i, "end": 2 * i + 2} for i in range(4)])
+    out = push.run(str(p), style="punch")
+    assert out["pushed"] == 4
+    it = items_of(p)
+    for cid in ("c0", "c2"):
+        assert "keyframes" not in it[cid] or not track(it[cid], "scale"), cid
+        assert it[cid].get("scale") in (None, 1), cid
+    for cid in ("c1", "c3"):
+        assert [k["value"] for k in track(it[cid], "scale")] == [1.08, 1.08], cid
+        assert [round(k["value"], 3) for k in track(it[cid], "offsetY")] == [1.2, 1.2], cid    # (0.5 - 0.35) * 100 * 0.08
+
+
+def test_punch_on_the_face_and_never_past_ten_percent(tmp_path, monkeypatch, capsys):
+    p = project(tmp_path)
+    looked = []
+
+    def find(item, project, project_path):
+        looked.append(item["id"])
+        return [(0, 0.40, 0.30)]
+    monkeypatch.setattr(push, "find_head", find)
+    out = push.run(str(p), style="punch", anchor="face", zoom=0.1)
+    assert looked == ["c1"], "only the punched clips are looked at"
+    assert "noFace" not in out
+    c1 = items_of(p)["c1"]
+    assert [k["value"] for k in track(c1, "scale")] == [1.1, 1.1]
+    assert [round(k["value"], 3) for k in track(c1, "offsetX")] == [1.0, 1.0]
+    assert [round(k["value"], 3) for k in track(c1, "offsetY")] == [2.0, 2.0]
+    with pytest.raises(SystemExit):
+        push.run(str(p), style="punch", zoom=0.12)
+    assert "invalid_params" in capsys.readouterr().err
+
+
+def test_punch_over_an_earlier_push_takes_its_keys_off_the_unzoomed_clips_and_runs_again_the_same(tmp_path):
+    p = project(tmp_path)
+    push.run(str(p))
+    push.run(str(p), style="punch")
+    it = items_of(p)
+    assert not track(it["c0"], "scale") and not track(it["c0"], "offsetY")
+    once = Path(p).read_text()
+    out = push.run(str(p), style="punch")
+    assert Path(p).read_text() == once and out["pushed"] == 3 and "kept" not in out
+
+
+def test_the_step_json_offers_punch():
+    spec = json.loads((REPO_ROOT / "steps" / "edit" / "push_in.json").read_text())
+    style = next(q for q in spec["params"] if q["name"] == "style")
+    assert style["options"] == ["push", "alternate", "punch"] and style["default"] == "push"
+
+
+def test_the_talking_head_workflow_punches_in_on_the_face_after_the_cut():
+    wf = json.loads((REPO_ROOT / "workflows" / "overlays.json").read_text())
+    ids = [s["id"] for s in wf["steps"]]
+    punch = next(s for s in wf["steps"] if s.get("uses") == "montaj/push_in")
+    assert punch["params"] == {"style": "punch", "anchor": "face"}
+    assert "cut_apply" in punch["needs"] and ids.index(punch["id"]) < ids.index("overlays")
+    assert "says" in punch["note"], "left out when the prompt says so"
+
+
+# Sam (2026-10-26): the punch-ins are timed with words: on a stressed or key word, a sentence start or a cut, never
+# mid-word; the answer says which words. The words are the clips' transcripts (item seconds here).
+
+def words(rows):
+    """A clip_words stand-in: {item id: [(start, end, text)]} in item seconds."""
+    return lambda item, project_dir: rows.get(item["id"], [])
+
+
+def test_punch_lands_at_cuts_and_answers_the_first_word_of_each_punched_clip(tmp_path, monkeypatch):
+    p = project(tmp_path, [{"id": f"c{i}", "start": 2 * i, "end": 2 * i + 2} for i in range(3)])
+    monkeypatch.setattr(push, "clip_words", words({"c1": [(0.05, 0.4, "So"), (0.4, 0.9, "kick.")]}))
+    out = push.run(str(p), style="punch")
+    assert out["punches"] == [{"at": 2.0, "word": "So"}]
+
+
+def test_a_long_clip_punches_in_on_a_key_word_at_its_start_never_mid_word(tmp_path, monkeypatch):
+    p = project(tmp_path, [{"id": "c0", "start": 10, "end": 16}])
+    rows = [(0.0, 0.3, "and"), (0.3, 0.6, "then"), (0.6, 0.8, "the"), (1.2, 1.5, "robot"), (1.5, 1.9, "took"),
+            (2.6, 3.2, "seventy"), (3.2, 3.5, "kicks."), (3.6, 3.9, "It"), (3.9, 4.3, "kept"), (4.3, 5.6, "going.")]
+    monkeypatch.setattr(push, "clip_words", words({"c0": rows}))
+    out = push.run(str(p), style="punch")
+    s = track(items_of(p)["c0"], "scale")
+    assert [(k["t"], k["value"]) for k in s] == [(0, 1.0), (2.6, 1.08), (6, 1.08)], "in on 'seventy', after a pause"
+    assert s[0].get("easing") == "hold", "a cut in the shot, not a zoom"
+    oy = track(items_of(p)["c0"], "offsetY")
+    assert [k["t"] for k in oy] == [0, 2.6, 6] and oy[0].get("easing") == "hold"
+    assert out["punches"] == [{"at": 12.6, "word": "seventy"}]
+
+
+def test_a_long_punched_clip_comes_back_out_at_a_sentence_start(tmp_path, monkeypatch):
+    p = project(tmp_path, [{"id": "c0", "start": 0, "end": 2}, {"id": "c1", "start": 2, "end": 8}])
+    rows = [(0.0, 0.4, "Robots"), (0.4, 0.8, "fall."), (1.0, 1.4, "Mostly"), (1.4, 2.0, "sideways,"),
+            (2.0, 2.4, "honestly."), (2.9, 3.2, "But"), (3.2, 3.6, "this"), (3.6, 4.1, "one"), (4.1, 5.5, "stands.")]
+    monkeypatch.setattr(push, "clip_words", words({"c1": rows}))
+    out = push.run(str(p), style="punch")
+    s = track(items_of(p)["c1"], "scale")
+    assert [(k["t"], k["value"]) for k in s] == [(0, 1.08), (2.9, 1.0), (6, 1.0)], "out at 'But', a sentence start"
+    assert out["punches"] == [{"at": 2.0, "word": "Robots"}]
+
+
+def test_a_long_clip_with_only_small_words_or_none_near_its_ends_keeps_one_framing(tmp_path, monkeypatch):
+    p = project(tmp_path, [{"id": "c0", "start": 0, "end": 6}])
+    rows = [(0.2, 0.5, "Unitree"), (1.0, 1.3, "and"), (2.0, 2.3, "the"), (3.0, 3.3, "a"), (5.4, 5.9, "Thousands")]
+    monkeypatch.setattr(push, "clip_words", words({"c0": rows}))
+    out = push.run(str(p), style="punch")
+    assert "keyframes" not in items_of(p)["c0"] and "punches" not in out
