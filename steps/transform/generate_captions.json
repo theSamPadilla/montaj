@@ -36,6 +36,12 @@
       "description": "Caption animation style. Defaults to the prior caption track's style, then the profile's caption style (a new track also takes the profile's caption font), then 'pop'."
     },
     {
+      "name": "replace-edited",
+      "type": "bool",
+      "default": false,
+      "description": "Lines a person made or edited are kept and the new captions go around them (the answer names them as keptYours). True replaces them too: only when the person asks."
+    },
+    {
       "name": "script",
       "type": "string",
       "description": "The script the speaker read. Defaults to the project's editing prompt (its <tags> left out), so a script given there needs no param; an empty string turns it off. Caption words take its spelling and names on the transcript's timings (a misheard name or word is replaced when the two read alike, a word said twice where the script has it once is one word); words said that are not in it stay as heard. The answer counts `corrected`."
