@@ -404,7 +404,7 @@ if (isMain) {
   } else if (mode === 'frame') {
     if (!projectArg) fail('missing_argument', '--project <path> is required for --mode frame')
     if (atArg == null) fail('missing_argument', '--at <seconds> is required for --mode frame')
-    const sampleAt = (at, outPath) => sceneArg !== null
+    const sampleAt = (at, outPath, session = null) => sceneArg !== null
       ? sampleScene({
         projectJson: resolve(projectArg),
         scene: sceneArg,
@@ -419,22 +419,34 @@ if (isMain) {
         sdrCurve: sdrCurveArg,
         preferProxy: preferProxyArg,
         clampToEnd: clampToEndArg,
+        ...(rawArg ? {} : { session }),
       })
     // Several times: one process, one frame file per time in the order given, one path per line.
+    // PL89: one session for all of them (createSampleSession): one browser, each overlay page loaded once.
     const sampled = manyTimes
       ? (async () => {
         const dir = resolve(framesDirArg)
         mkdirSync(dir, { recursive: true })
-        const paths = []
-        for (let k = 0; k < atArgs.length; k++) {
-          try {
-            paths.push((await sampleAt(atArgs[k], join(dir, `f_${String(k).padStart(4, '0')}.png`))).pngPath)
-          } catch (err) {
-            err.message = `at ${atArgs[k]}s: ${err.message}`
-            throw err
+        const outPaths = atArgs.map((_, k) => join(dir, `f_${String(k).padStart(4, '0')}.png`))
+        const session = createSampleSession()
+        try {
+          if (sceneArg !== null) {
+            const got = await sampleScenes({ projectJson: resolve(projectArg), scene: sceneArg, times: atArgs, outPaths, sdrCurve: sdrCurveArg, session })
+            return { pngPath: got.map((r) => r.pngPath).join('\n') }
           }
+          const paths = []
+          for (let k = 0; k < atArgs.length; k++) {
+            try {
+              paths.push((await sampleAt(atArgs[k], outPaths[k], session)).pngPath)
+            } catch (err) {
+              err.message = `at ${atArgs[k]}s: ${err.message}`
+              throw err
+            }
+          }
+          return { pngPath: paths.join('\n') }
+        } finally {
+          await session.close()
         }
-        return { pngPath: paths.join('\n') }
       })()
       : sampleAt(atArg, resolve(outArg))
     sampled.then(result => {
@@ -453,6 +465,368 @@ if (isMain) {
 // ---------------------------------------------------------------------------
 // sampleOverlay
 // ---------------------------------------------------------------------------
+
+/**
+ * PL89: one sampling session for several frames in one call (--frames-dir). One browser per kind of launch, and
+ * each overlay page (one component with one set of props) bundled and loaded once, kept open, then only set to each
+ * frame and captured. Uses of one page run one at a time. A page that fails is closed and the next use opens a new one.
+ * close() closes every page and browser and removes the bundles.
+ */
+export function createSampleSession() {
+  const browsers = new Map()
+  const pages = new Map()
+  // Closing never throws: it runs on a failure, whose own error is the one to report.
+  const drop = (held) => held.ready.then(async (ctx) => {
+    await ctx.page.close().catch(() => {})
+    try {
+      cleanupBundle(ctx.workDir)
+    } catch { /* a bundle folder already gone */ }
+  }, () => {})
+  return {
+    /** The browser for `key` (a kind of launch), started with `launch` the first time. */
+    browserFor(key, launch) {
+      if (!browsers.has(key)) browsers.set(key, launch())
+      return browsers.get(key)
+    },
+    async sample(key, open, capture) {
+      let held = pages.get(key)
+      if (!held) {
+        held = { ready: open(), tail: Promise.resolve() }
+        pages.set(key, held)
+      }
+      const run = held.tail.then(async () => {
+        const ctx = await held.ready
+        ctx.pageErrors.length = 0
+        return { ctx, shot: await capture(ctx) }
+      })
+      held.tail = run.catch(() => {})
+      try {
+        return await run
+      } catch (err) {
+        if (pages.get(key) === held) {
+          pages.delete(key)
+          await drop(held)
+        }
+        throw err
+      }
+    },
+    async close() {
+      const open = [...pages.values()]
+      pages.clear()
+      for (const held of open) await drop(held)
+      for (const b of browsers.values()) await b.then((x) => x.close()).catch(() => {})
+      browsers.clear()
+    },
+  }
+}
+
+/**
+ * PL89: an overlay's page, bundled, loaded and mounted, ready for captureOverlay: { browser, page, guard, pageErrors,
+ * fontFailures, workDir, recordedInputs }. With a session the browser is the session's (createSampleSession) and stays
+ * open; without one it is this page's own, and the caller closes it. On a failure what it opened is closed.
+ */
+async function openOverlayPage({ componentPath, props, fps, effectiveDuration, width, height, googleFonts, projectDir, session = null }) {
+  const { htmlPath, workDir, inputs: bundleInputs, boundary, needsGoogleFonts } = await bundleComponent({
+    componentPath,
+    props,
+    fps,
+    durationFrames: effectiveDuration,
+    width,
+    height,
+    googleFonts,
+    fontsBaseDir: MONTAJ_FONTS_DIR,
+    projectDir,
+  })
+  // Record mtimes now, right after the bundle. A file edited DURING the bundle
+  // (after esbuild read it, before this stat) is recorded with its new mtime
+  // against pixels built from the old text: a small window, accepted. A file
+  // edited after this point is recorded old, so the next lookup misses.
+  const recordedInputs = statInputs([...bundleInputs, componentPath, ...collectPropFilePaths(props)])
+
+  let browser = null
+  let page = null
+  try {
+    // The props' http(s) URLs, fetched by Node before the page loads; the page
+    // is served from this and reaches nothing itself (page-guard.js). One the
+    // page asks for and could not be fetched fails the sample, below.
+    const propsCache = await prefetchPropsUrls(boundary.urls)
+
+    // Every overlay page's flags (page-guard.js), --disable-dev-shm-usage
+    // included: the container's 64MB /dev/shm crashes Chromium on heavy pages.
+    const launch = () => puppeteer.launch(overlayPageLaunchOptions({ needsGoogleFonts, disableWebSecurity: true }))
+    browser = session ? await session.browserFor(needsGoogleFonts ? 'fonts' : 'plain', launch) : await launch()
+
+    page = await browser.newPage()
+    await page.setViewport({ width, height, deviceScaleFactor: 1 })
+
+    // Before the page loads: what it may read, and that it sends nothing out.
+    const guard = await installPageGuard(page, { boundary, propsCache, needsGoogleFonts })
+
+    // Capture page errors so we can surface them on failure. Chromium's console
+    // line for a request the guard blocked is not one: the guard logs the block,
+    // and the overlay's own fallback is what the sample shows.
+    const pageErrors = []
+    // §140: a family Google refuses, or a font the network cannot fetch, is a
+    // warning, not a page error: the overlay draws with its fallback font.
+    const fontFailures = new Set()
+    page.on('pageerror', err => pageErrors.push(err.message))
+    page.on('console', msg => {
+      if (msg.type() !== 'error' || guard.isBlockNoise(msg)) return
+      const font = fontLoadFailure({ type: msg.type(), text: msg.text(), url: msg.location()?.url })
+      if (!font) { pageErrors.push(msg.text()); return }
+      if (!fontFailures.has(font)) { fontFailures.add(font); log(fontFailureWarning([font])) }
+    })
+
+    // networkidle0 is critical for font loading — fonts are not loaded until
+    // React commits to DOM, and we need the woff2 fetches to complete before
+    // we measure text layout.
+    await page.goto(toFileHref(htmlPath), { waitUntil: 'networkidle0' })
+
+    // Verify the component mounted
+    const ready = await page.evaluate(() => typeof window.__setFrame === 'function')
+    if (!ready) {
+      const errDetail = pageErrors.length ? pageErrors.join(' | ') : 'no JS errors captured'
+      const err = new Error(`window.__setFrame not initialized: ${errDetail}`)
+      err.sampleError = 'overlay_eval_failed'
+      throw err
+    }
+    return { browser, page, guard, pageErrors, fontFailures, workDir, recordedInputs }
+  } catch (err) {
+    if (page && session) await page.close().catch(() => {})
+    if (browser && !session) await browser.close()
+    cleanupBundle(workDir)
+    throw err
+  }
+}
+
+/**
+ * PL89: one frame of an open overlay page (openOverlayPage) to `outPath`: { measurements, degraded, warnings }.
+ */
+async function captureOverlay({ page, guard, pageErrors, fontFailures, componentPath, frame, measure, width, height, outPath }) {
+  let measurements = undefined
+  // A sample the page guard blocked anything in is not cached: what it shows
+  // may depend on things outside the cache key (the workspace, the network).
+  // Nor is one captured with an image still loading: it may be missing it.
+  let degraded = false
+  // §140: what the caller should know although the sample succeeded.
+  const warnings = []
+  // Commit React render at the requested frame.
+  // Note: __setFrame is always defined (it's in the shim), but calling it
+  // may trigger a React re-render that throws (e.g. a broken component).
+  // Such throws manifest as page errors, not as a rejected promise from
+  // page.evaluate, so we must check pageErrors afterwards.
+  // A 3D canvas that did not draw the frame is set again, then the sample
+  // fails as three_frame_blank (three-frame.js), never a blank 3D sample.
+  const threeRetry = threeFrameRetry({ page, frame, overlay: basename(componentPath), log, pageErrors })
+  let three = await threeRetry.set()
+
+  // Check immediately after __setFrame invocation for render errors.
+  // If the component throws during React reconciliation, it shows up here
+  // rather than causing waitForFunction to throw.
+  if (pageErrors.length > 0) {
+    const errMsg = pageErrors.join(' | ')
+    const err = new Error(`overlay render error: ${errMsg}`)
+    err.sampleError = 'overlay_eval_failed'
+    throw err
+  }
+
+  // Wait until DOM attribute confirms the frame has been committed.
+  // If the component threw during render, waitForFunction will time out —
+  // but we already checked above and would have thrown by now.
+  try {
+    await page.waitForFunction(
+      f => document.documentElement.dataset.renderedFrame === String(f),
+      { timeout: 10000 },
+      frame,
+    )
+  } catch (waitErr) {
+    // If we timed out waiting for the frame to render, check if there are
+    // page errors that explain why
+    if (pageErrors.length > 0) {
+      const err = new Error(`overlay render failed: ${pageErrors.join(' | ')}`)
+      err.sampleError = 'overlay_eval_failed'
+      throw err
+    }
+    throw waitErr
+  }
+
+  // An image the props name with no extension is fetched when the page asks
+  // for it: wait for it before capturing (page-guard.js settleOnDemand; at
+  // once when the props name none).
+  await guard.settleOnDemand()
+  // And for every image on the page: an overlay that mounts one only from a
+  // later frame inserts it in the commit just made (page-guard.js
+  // settleImages). Capped; whatever is still loading is named here.
+  const imagesMissed = await guard.settleImages()
+
+  // Double rAF: first fires after layout+paint, second after compositor flush
+  await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
+
+  // Measure DOM if requested
+  if (measure) {
+    measurements = await page.evaluate((canvasW, canvasH) => {
+      const texts = []
+
+      // Walk all elements in document body
+      function walk(el) {
+        // Skip script/style/head nodes
+        const tag = el.tagName
+        if (!tag || tag === 'SCRIPT' || tag === 'STYLE' || tag === 'HEAD') return
+
+        const text = el.textContent?.trim() ?? ''
+        if (text.length > 0) {
+          // Check if this element itself has direct text content
+          // (i.e. it's a leaf text-bearing node or has immediate text)
+          let hasDirectText = false
+          for (const child of el.childNodes) {
+            if (child.nodeType === Node.TEXT_NODE && child.textContent.trim().length > 0) {
+              hasDirectText = true
+              break
+            }
+          }
+
+          if (hasDirectText) {
+            const style = window.getComputedStyle(el)
+            // §558: the text's own extent, not only its element's box: text that spills out of a fixed-width
+            // or nowrap box (or is cut by overflow:hidden on its own element) lies outside the element's rect.
+            // The box measured is the union of the two; `spills` says the text overflows its own box.
+            const elRect = el.getBoundingClientRect()
+            // the element's own text nodes only: a positioned child is measured as its own element
+            let tl = Infinity, tt = Infinity, tr = -Infinity, tb = -Infinity
+            for (const child of el.childNodes) {
+              if (child.nodeType !== Node.TEXT_NODE || !child.textContent.trim()) continue
+              const range = document.createRange()
+              range.selectNodeContents(child)
+              for (const r of range.getClientRects()) {
+                if (r.width <= 0 && r.height <= 0) continue
+                tl = Math.min(tl, r.left); tt = Math.min(tt, r.top); tr = Math.max(tr, r.right); tb = Math.max(tb, r.bottom)
+              }
+            }
+            const hasText = tl < tr || tt < tb
+            // a glyph rising a little past a tight line-height (1.05 on a big heading) is not text lost: up and
+            // down the text widens the box (and counts as spilling) only past 30% of the font size, across 1 px
+            const fontPx = parseFloat(window.getComputedStyle(el).fontSize) || 16
+            const slackY = Math.max(2, fontPx * 0.3)
+            const left   = hasText && tl < elRect.left - 1 ? tl : elRect.left
+            const right  = hasText && tr > elRect.right + 1 ? tr : elRect.right
+            const top    = hasText && tt < elRect.top - slackY ? tt : elRect.top
+            const bottom = hasText && tb > elRect.bottom + slackY ? tb : elRect.bottom
+            const bboxX = left
+            const bboxY = top
+            const bboxW = right - left
+            const bboxH = bottom - top
+            const spills = el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + slackY
+
+            const overflowLeft   = Math.max(0, -bboxX)
+            const overflowRight  = Math.max(0, bboxX + bboxW - canvasW)
+            const overflowTop    = Math.max(0, -bboxY)
+            const overflowBottom = Math.max(0, bboxY + bboxH - canvasH)
+
+            // Walk parent chain to find first ancestor with overflow clipping.
+            //
+            // Filter out ancestors whose bbox fills (or exceeds) the viewport.
+            // The React shim's mount wrapper and the document body typically
+            // have overflow set AND span the full viewport — flagging them as
+            // a "clippingAncestor" gives false positives on every overlay
+            // element. The intentional-clip case the skill teaches agents to
+            // recognise is an ancestor SMALLER than the viewport (e.g. an
+            // animation container with a fixed window the children animate
+            // through). Only those count.
+            let clippingAncestor = null
+            let parent = el.parentElement
+            while (parent && parent !== document.documentElement) {
+              const pStyle = window.getComputedStyle(parent)
+              const overflowX = pStyle.overflowX
+              const overflowY = pStyle.overflowY
+              if (overflowX === 'hidden' || overflowX === 'clip' || overflowX === 'auto' ||
+                  overflowY === 'hidden' || overflowY === 'clip' || overflowY === 'auto') {
+                const pRect = parent.getBoundingClientRect()
+                // Skip viewport-spanning wrappers — they're not intentional clips.
+                const spansViewport = pRect.width  >= canvasW - 0.5
+                                   && pRect.height >= canvasH - 0.5
+                                   && pRect.x <= 0.5 && pRect.y <= 0.5
+                if (!spansViewport) {
+                  clippingAncestor = {
+                    tag: parent.tagName,
+                    className: parent.className || '',
+                    bbox: { x: pRect.x, y: pRect.y, w: pRect.width, h: pRect.height },
+                  }
+                  break
+                }
+              }
+              parent = parent.parentElement
+            }
+
+            texts.push({
+              text: text.slice(0, 200),
+              tag: el.tagName,
+              fontFamily: style.fontFamily,
+              fontSize: style.fontSize,
+              fontWeight: style.fontWeight,
+              position: style.position,
+              transform: style.transform,
+              bbox: { x: bboxX, y: bboxY, w: bboxW, h: bboxH },
+              spills,
+              overflow: {
+                left:   overflowLeft,
+                right:  overflowRight,
+                top:    overflowTop,
+                bottom: overflowBottom,
+              },
+              clippingAncestor,
+            })
+          }
+        }
+
+        // Recurse into children
+        for (const child of el.children) {
+          walk(child)
+        }
+      }
+
+      walk(document.body)
+
+      const anyOverflow = texts.some(t =>
+        t.overflow.left > 0 || t.overflow.right > 0 ||
+        t.overflow.top > 0  || t.overflow.bottom > 0
+      )
+
+      return {
+        viewport: { w: canvasW, h: canvasH },
+        anyOverflow,
+        texts,
+      }
+    }, width, height)
+  }
+
+  // A props image the page asked for and could not get fails the sample,
+  // naming it, rather than sampling without it.
+  try {
+    guard.assertPropsServed()
+  } catch (err) {
+    err.sampleError = 'props_fetch_failed'
+    throw err
+  }
+  // An image still loading at capture (past the cap, or inserted after the
+  // wait) keeps this sample out of the cache, so a blank is never served again.
+  const imagesLoading = imagesMissed.length > 0 || await page.evaluate(() =>
+    [...document.images].some(img => img.loading !== 'lazy' && !img.complete))
+  degraded = guard.blocked.size > 0 || imagesLoading || fontFailures.size > 0
+  if (fontFailures.size > 0) warnings.push(fontFailureWarning(fontFailures))
+
+  // Screenshot — transparent PNG (omitBackground: true matches the renderer)
+  mkdirSync(dirname(outPath), { recursive: true })
+  await page.screenshot({ path: outPath, omitBackground: true })
+  // A 3D canvas that lost its drawing during the capture (a lost WebGL
+  // context, a resize): draw it again and capture again, bounded.
+  for (let lost; (lost = await threeRetry.lost(three)); ) {
+    threeRetry.failed(lost)
+    three = await threeRetry.set()
+    await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
+    await page.screenshot({ path: outPath, omitBackground: true })
+  }
+  return { measurements, degraded, warnings }
+}
 
 /**
  * Render one overlay JSX at one frame position to a PNG.
@@ -490,6 +864,7 @@ export async function sampleOverlay({
   durationFrames = null,
   outPath,
   projectDir = null,
+  session = null,
 }) {
   if (!outPath) throw Object.assign(new Error('outPath is required'), { sampleError: 'missing_argument' })
   if (!componentPath) throw Object.assign(new Error('componentPath is required'), { sampleError: 'missing_argument' })
@@ -526,304 +901,37 @@ export async function sampleOverlay({
 
   log(`sampling overlay ${basename(componentPath)} at frame ${frame}${measure ? ' (measure)' : ''}`)
 
-  const { htmlPath, workDir, inputs: bundleInputs, boundary, needsGoogleFonts } = await bundleComponent({
-    componentPath,
-    props,
-    fps,
-    durationFrames: effectiveDuration,
-    width,
-    height,
-    googleFonts,
-    fontsBaseDir: MONTAJ_FONTS_DIR,
-    projectDir,
-  })
-  // Record mtimes now, right after the bundle. A file edited DURING the bundle
-  // (after esbuild read it, before this stat) is recorded with its new mtime
-  // against pixels built from the old text: a small window, accepted. A file
-  // edited after this point is recorded old, so the next lookup misses.
-  const recordedInputs = statInputs([...bundleInputs, componentPath, ...collectPropFilePaths(props)])
-
-  let browser = null
-  let measurements = undefined
-  // A sample the page guard blocked anything in is not cached: what it shows
-  // may depend on things outside the cache key (the workspace, the network).
-  // Nor is one captured with an image still loading: it may be missing it.
-  let degraded = false
-  // §140: what the caller should know although the sample succeeded.
-  const warnings = []
-
+  // PL89: in a session (several times in one call), an overlay's page is bundled and loaded once and kept open; each
+  // later time only sets its frame and captures. A measure never shares a page.
+  const sessionKey = session && !measure ? JSON.stringify([componentPath, props, fps, effectiveDuration, width, height, googleFonts, projectDir]) : null
+  const open = () => openOverlayPage({ componentPath, props, fps, effectiveDuration, width, height, googleFonts, projectDir, session: sessionKey ? session : null })
+  const capture = (ctx) => captureOverlay({ ...ctx, componentPath, frame, measure, width, height, outPath })
+  let recordedInputs
+  let shot
   try {
-    // The props' http(s) URLs, fetched by Node before the page loads; the page
-    // is served from this and reaches nothing itself (page-guard.js). One the
-    // page asks for and could not be fetched fails the sample, below.
-    const propsCache = await prefetchPropsUrls(boundary.urls)
-
-    // Every overlay page's flags (page-guard.js), --disable-dev-shm-usage
-    // included: the container's 64MB /dev/shm crashes Chromium on heavy pages.
-    browser = await puppeteer.launch(overlayPageLaunchOptions({ needsGoogleFonts, disableWebSecurity: true }))
-
-    const page = await browser.newPage()
-    await page.setViewport({ width, height, deviceScaleFactor: 1 })
-
-    // Before the page loads: what it may read, and that it sends nothing out.
-    const guard = await installPageGuard(page, { boundary, propsCache, needsGoogleFonts })
-
-    // Capture page errors so we can surface them on failure. Chromium's console
-    // line for a request the guard blocked is not one: the guard logs the block,
-    // and the overlay's own fallback is what the sample shows.
-    const pageErrors = []
-    // §140: a family Google refuses, or a font the network cannot fetch, is a
-    // warning, not a page error: the overlay draws with its fallback font.
-    const fontFailures = new Set()
-    page.on('pageerror', err => pageErrors.push(err.message))
-    page.on('console', msg => {
-      if (msg.type() !== 'error' || guard.isBlockNoise(msg)) return
-      const font = fontLoadFailure({ type: msg.type(), text: msg.text(), url: msg.location()?.url })
-      if (!font) { pageErrors.push(msg.text()); return }
-      if (!fontFailures.has(font)) { fontFailures.add(font); log(fontFailureWarning([font])) }
-    })
-
-    // networkidle0 is critical for font loading — fonts are not loaded until
-    // React commits to DOM, and we need the woff2 fetches to complete before
-    // we measure text layout.
-    await page.goto(toFileHref(htmlPath), { waitUntil: 'networkidle0' })
-
-    // Verify the component mounted
-    const ready = await page.evaluate(() => typeof window.__setFrame === 'function')
-    if (!ready) {
-      const errDetail = pageErrors.length ? pageErrors.join(' | ') : 'no JS errors captured'
-      const err = new Error(`window.__setFrame not initialized: ${errDetail}`)
-      err.sampleError = 'overlay_eval_failed'
-      throw err
-    }
-
-    // Commit React render at the requested frame.
-    // Note: __setFrame is always defined (it's in the shim), but calling it
-    // may trigger a React re-render that throws (e.g. a broken component).
-    // Such throws manifest as page errors, not as a rejected promise from
-    // page.evaluate, so we must check pageErrors afterwards.
-    // A 3D canvas that did not draw the frame is set again, then the sample
-    // fails as three_frame_blank (three-frame.js), never a blank 3D sample.
-    const threeRetry = threeFrameRetry({ page, frame, overlay: basename(componentPath), log, pageErrors })
-    let three = await threeRetry.set()
-
-    // Check immediately after __setFrame invocation for render errors.
-    // If the component throws during React reconciliation, it shows up here
-    // rather than causing waitForFunction to throw.
-    if (pageErrors.length > 0) {
-      const errMsg = pageErrors.join(' | ')
-      const err = new Error(`overlay render error: ${errMsg}`)
-      err.sampleError = 'overlay_eval_failed'
-      throw err
-    }
-
-    // Wait until DOM attribute confirms the frame has been committed.
-    // If the component threw during render, waitForFunction will time out —
-    // but we already checked above and would have thrown by now.
-    try {
-      await page.waitForFunction(
-        f => document.documentElement.dataset.renderedFrame === String(f),
-        { timeout: 10000 },
-        frame,
-      )
-    } catch (waitErr) {
-      // If we timed out waiting for the frame to render, check if there are
-      // page errors that explain why
-      if (pageErrors.length > 0) {
-        const err = new Error(`overlay render failed: ${pageErrors.join(' | ')}`)
-        err.sampleError = 'overlay_eval_failed'
-        throw err
+    if (sessionKey) {
+      const got = await session.sample(sessionKey, open, capture)
+      recordedInputs = got.ctx.recordedInputs
+      shot = got.shot
+    } else {
+      const ctx = await open()
+      try {
+        recordedInputs = ctx.recordedInputs
+        shot = await capture(ctx)
+        await ctx.page.close()
+      } finally {
+        await ctx.browser.close()
+        cleanupBundle(ctx.workDir)
       }
-      throw waitErr
     }
-
-    // An image the props name with no extension is fetched when the page asks
-    // for it: wait for it before capturing (page-guard.js settleOnDemand; at
-    // once when the props name none).
-    await guard.settleOnDemand()
-    // And for every image on the page: an overlay that mounts one only from a
-    // later frame inserts it in the commit just made (page-guard.js
-    // settleImages). Capped; whatever is still loading is named here.
-    const imagesMissed = await guard.settleImages()
-
-    // Double rAF: first fires after layout+paint, second after compositor flush
-    await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
-
-    // Measure DOM if requested
-    if (measure) {
-      measurements = await page.evaluate((canvasW, canvasH) => {
-        const texts = []
-
-        // Walk all elements in document body
-        function walk(el) {
-          // Skip script/style/head nodes
-          const tag = el.tagName
-          if (!tag || tag === 'SCRIPT' || tag === 'STYLE' || tag === 'HEAD') return
-
-          const text = el.textContent?.trim() ?? ''
-          if (text.length > 0) {
-            // Check if this element itself has direct text content
-            // (i.e. it's a leaf text-bearing node or has immediate text)
-            let hasDirectText = false
-            for (const child of el.childNodes) {
-              if (child.nodeType === Node.TEXT_NODE && child.textContent.trim().length > 0) {
-                hasDirectText = true
-                break
-              }
-            }
-
-            if (hasDirectText) {
-              const style = window.getComputedStyle(el)
-              // §558: the text's own extent, not only its element's box: text that spills out of a fixed-width
-              // or nowrap box (or is cut by overflow:hidden on its own element) lies outside the element's rect.
-              // The box measured is the union of the two; `spills` says the text overflows its own box.
-              const elRect = el.getBoundingClientRect()
-              // the element's own text nodes only: a positioned child is measured as its own element
-              let tl = Infinity, tt = Infinity, tr = -Infinity, tb = -Infinity
-              for (const child of el.childNodes) {
-                if (child.nodeType !== Node.TEXT_NODE || !child.textContent.trim()) continue
-                const range = document.createRange()
-                range.selectNodeContents(child)
-                for (const r of range.getClientRects()) {
-                  if (r.width <= 0 && r.height <= 0) continue
-                  tl = Math.min(tl, r.left); tt = Math.min(tt, r.top); tr = Math.max(tr, r.right); tb = Math.max(tb, r.bottom)
-                }
-              }
-              const hasText = tl < tr || tt < tb
-              // a glyph rising a little past a tight line-height (1.05 on a big heading) is not text lost: up and
-              // down the text widens the box (and counts as spilling) only past 30% of the font size, across 1 px
-              const fontPx = parseFloat(window.getComputedStyle(el).fontSize) || 16
-              const slackY = Math.max(2, fontPx * 0.3)
-              const left   = hasText && tl < elRect.left - 1 ? tl : elRect.left
-              const right  = hasText && tr > elRect.right + 1 ? tr : elRect.right
-              const top    = hasText && tt < elRect.top - slackY ? tt : elRect.top
-              const bottom = hasText && tb > elRect.bottom + slackY ? tb : elRect.bottom
-              const bboxX = left
-              const bboxY = top
-              const bboxW = right - left
-              const bboxH = bottom - top
-              const spills = el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + slackY
-
-              const overflowLeft   = Math.max(0, -bboxX)
-              const overflowRight  = Math.max(0, bboxX + bboxW - canvasW)
-              const overflowTop    = Math.max(0, -bboxY)
-              const overflowBottom = Math.max(0, bboxY + bboxH - canvasH)
-
-              // Walk parent chain to find first ancestor with overflow clipping.
-              //
-              // Filter out ancestors whose bbox fills (or exceeds) the viewport.
-              // The React shim's mount wrapper and the document body typically
-              // have overflow set AND span the full viewport — flagging them as
-              // a "clippingAncestor" gives false positives on every overlay
-              // element. The intentional-clip case the skill teaches agents to
-              // recognise is an ancestor SMALLER than the viewport (e.g. an
-              // animation container with a fixed window the children animate
-              // through). Only those count.
-              let clippingAncestor = null
-              let parent = el.parentElement
-              while (parent && parent !== document.documentElement) {
-                const pStyle = window.getComputedStyle(parent)
-                const overflowX = pStyle.overflowX
-                const overflowY = pStyle.overflowY
-                if (overflowX === 'hidden' || overflowX === 'clip' || overflowX === 'auto' ||
-                    overflowY === 'hidden' || overflowY === 'clip' || overflowY === 'auto') {
-                  const pRect = parent.getBoundingClientRect()
-                  // Skip viewport-spanning wrappers — they're not intentional clips.
-                  const spansViewport = pRect.width  >= canvasW - 0.5
-                                     && pRect.height >= canvasH - 0.5
-                                     && pRect.x <= 0.5 && pRect.y <= 0.5
-                  if (!spansViewport) {
-                    clippingAncestor = {
-                      tag: parent.tagName,
-                      className: parent.className || '',
-                      bbox: { x: pRect.x, y: pRect.y, w: pRect.width, h: pRect.height },
-                    }
-                    break
-                  }
-                }
-                parent = parent.parentElement
-              }
-
-              texts.push({
-                text: text.slice(0, 200),
-                tag: el.tagName,
-                fontFamily: style.fontFamily,
-                fontSize: style.fontSize,
-                fontWeight: style.fontWeight,
-                position: style.position,
-                transform: style.transform,
-                bbox: { x: bboxX, y: bboxY, w: bboxW, h: bboxH },
-                spills,
-                overflow: {
-                  left:   overflowLeft,
-                  right:  overflowRight,
-                  top:    overflowTop,
-                  bottom: overflowBottom,
-                },
-                clippingAncestor,
-              })
-            }
-          }
-
-          // Recurse into children
-          for (const child of el.children) {
-            walk(child)
-          }
-        }
-
-        walk(document.body)
-
-        const anyOverflow = texts.some(t =>
-          t.overflow.left > 0 || t.overflow.right > 0 ||
-          t.overflow.top > 0  || t.overflow.bottom > 0
-        )
-
-        return {
-          viewport: { w: canvasW, h: canvasH },
-          anyOverflow,
-          texts,
-        }
-      }, width, height)
-    }
-
-    // A props image the page asked for and could not get fails the sample,
-    // naming it, rather than sampling without it.
-    try {
-      guard.assertPropsServed()
-    } catch (err) {
-      err.sampleError = 'props_fetch_failed'
-      throw err
-    }
-    // An image still loading at capture (past the cap, or inserted after the
-    // wait) keeps this sample out of the cache, so a blank is never served again.
-    const imagesLoading = imagesMissed.length > 0 || await page.evaluate(() =>
-      [...document.images].some(img => img.loading !== 'lazy' && !img.complete))
-    degraded = guard.blocked.size > 0 || imagesLoading || fontFailures.size > 0
-    if (fontFailures.size > 0) warnings.push(fontFailureWarning(fontFailures))
-
-    // Screenshot — transparent PNG (omitBackground: true matches the renderer)
-    mkdirSync(dirname(outPath), { recursive: true })
-    await page.screenshot({ path: outPath, omitBackground: true })
-    // A 3D canvas that lost its drawing during the capture (a lost WebGL
-    // context, a resize): draw it again and capture again, bounded.
-    for (let lost; (lost = await threeRetry.lost(three)); ) {
-      threeRetry.failed(lost)
-      three = await threeRetry.set()
-      await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
-      await page.screenshot({ path: outPath, omitBackground: true })
-    }
-
-    await page.close()
   } catch (err) {
     // Re-surface page errors as structured error if __setFrame wasn't available
     if (!err.sampleError && err.message) {
       err.sampleError = isThreeFrameBlank(err) ? 'three_frame_blank' : 'overlay_eval_failed'
     }
     throw err
-  } finally {
-    if (browser) await browser.close()
-    cleanupBundle(workDir)
   }
+  const { measurements, degraded, warnings } = shot
 
   // Write to cache
   if (!degraded) try {
@@ -873,6 +981,7 @@ export async function sampleFrame({
   preferProxy = false,
   clampToEnd = false,
   projectDir: projectDirOpt = null,
+  session = null,
 }) {
   if (!outPath) throw new Error('outPath is required')
   if (atSeconds == null) throw new Error('atSeconds is required')
@@ -1027,6 +1136,7 @@ export async function sampleFrame({
       durationFrames: overlayDurationFrames,
       outPath: tmpOverlayOut,
       projectDir,
+      session,
     })
     overlayInputLists.push(result.inputs)
     if (result.degraded) degraded = true
@@ -1093,6 +1203,7 @@ export async function sampleFrame({
       durationFrames: Math.max(1, Math.round(totalDuration * fps)),
       outPath: join(tmpdir(), `montaj-sample-captions-${randomHex()}.png`),
       projectDir,
+      session,
     })
     overlayInputLists.push(result.inputs)
     if (result.degraded) degraded = true
@@ -1526,6 +1637,53 @@ export async function sampleScene({ projectJson, scene, atSeconds, outPath, sdrC
     audio: { tracks: [] },
   }
   return sampleFrame({ projectJson: alone, projectDir: dirname(projectPath), atSeconds: 0, outPath, sdrCurve })
+}
+
+/**
+ * PL89: sampleScenes' project: the 3D alone as one item from 0 to the last time's frame, inPoint 0, so each time is a
+ * frame of it; `frames` (each time on the frame grid), `fps`, and `order`, the times' indexes in time order (a 3D that
+ * carries state from frame to frame then only moves forward).
+ */
+export function scenesAlone({ settings = {}, scene, times }) {
+  const fps = settings.fps ?? 30
+  const frames = times.map((t) => Math.round(t * fps))
+  const alone = {
+    settings,
+    tracks: [[{
+      type: 'overlay', src: SCENE3D_SRC, start: 0, end: (Math.max(...frames) + 1) / fps,
+      props: { ...(scene === '' ? {} : { scene }), inPoint: 0 },
+    }]],
+    audio: { tracks: [] },
+  }
+  const order = times.map((_, k) => k).sort((a, b) => frames[a] - frames[b] || a - b)
+  return { alone, frames, fps, order }
+}
+
+/**
+ * PL89: several times of one 3D alone, in one session: [{ pngPath, ... }] in the order of `times`. The 3D's item starts
+ * at 0 and runs to the last time, so every time shares one page and is a frame of it: a time lands on the project's
+ * frame grid (within half a frame), as an export shows it. One time is sampleScene's, exact.
+ */
+export async function sampleScenes({ projectJson, scene, times, outPaths, sdrCurve = null, session }) {
+  if (typeof projectJson !== 'string') throw new Error('a 3D is sampled from its project.json path')
+  if (typeof scene !== 'string') throw new Error('scene must be a 3D id, or an empty string for the project\'s own')
+  for (const t of times) {
+    if (typeof t !== 'number' || !Number.isFinite(t) || t < 0) throw new Error(`--at must be 0 or more seconds into the 3D (got ${t})`)
+  }
+  const projectPath = resolve(projectJson)
+  if (!existsSync(projectPath)) throw new Error(`project.json not found: ${projectPath}`)
+  const { settings = {} } = JSON.parse(readFileSync(projectPath, 'utf8'))
+  const { alone, frames, fps, order } = scenesAlone({ settings, scene, times })
+  const out = new Array(times.length)
+  for (const k of order) {
+    try {
+      out[k] = await sampleFrame({ projectJson: alone, projectDir: dirname(projectPath), atSeconds: frames[k] / fps, outPath: outPaths[k], sdrCurve, session })
+    } catch (err) {
+      err.message = `at ${times[k]}s: ${err.message}`
+      throw err
+    }
+  }
+  return out
 }
 
 // ---------------------------------------------------------------------------

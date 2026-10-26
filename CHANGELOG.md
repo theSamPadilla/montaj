@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Added (steps): `sample_frame` takes several times and returns one labelled sheet.** `--at` repeats (up to 12; `contact_sheet` for more); `sample-frame.js` renders every time in one node process (`--frames-dir`) and the step tiles the frames, each labelled with its time, into `sheet-<first>-<last>s.png` (or `--out`). One time is unchanged. `contact_sheet` now renders all its frames in one node call too, and shares the tiling (`lib/sheet.py`).
+- **Changed (render): several times in one call share one browser and load each overlay page once.** `sample-frame.js --frames-dir` opens one sampling session (`createSampleSession`): one browser, each overlay page (one component with one set of props) bundled, loaded and mounted once, then only set to each frame and captured. A 3D alone (`--scene`) at several times plays as one item from 0, each time a frame of it, so its times land on the project's frame grid (within half a frame), as an export shows them; one time is sampled exactly, as before. Measured on a 3D scene: eight times took about 44 s (a browser, a bundle and a scene load per time) and now take about 9 s, so a `contact_sheet` answers within `run_step`'s wait. Each frame matches the same time sampled alone, pixel for pixel.
 
 ## v5.36.2
 
