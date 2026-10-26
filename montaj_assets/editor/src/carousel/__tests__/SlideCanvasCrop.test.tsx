@@ -3,7 +3,7 @@ import { createRef } from 'react'
 import { render, waitFor, act, fireEvent } from '@testing-library/react'
 import type { ImageElement, OverlayElement, Slide } from '../../types'
 import SlideCanvas, { type SlideCanvasCropControl } from '../SlideCanvas'
-import { drawnSourceRect } from '../../crop/crop-math'
+import { croppedBox, drawnSourceRect } from '../../crop/crop-math'
 
 beforeEach(() => {
   ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
@@ -535,6 +535,47 @@ describe('SlideCanvas: re-crop at the current scale (M3b)', () => {
     expect(fns.updateImageCrop).not.toHaveBeenCalled()
     expect(fns.commit).not.toHaveBeenCalled()
     expect(fns.onExitCrop).toHaveBeenCalledTimes(1)
+  })
+
+  it('a letterboxed uncropped image: the window starts on the picture\'s contain rect, unmoved writes nothing, moved gives croppedBox\'s box', async () => {
+    // A 16:9 source in the 200 x 200 box is drawn 200 x 112.5, 43.75 down.
+    const src = { width: 1600, height: 900 }
+    const { fns } = mountCanvas(slideWith(IMG))
+    await loadSource(src.width, src.height)
+    expectCrop(inSlide(cropWindow()!, IMG, 1), { x: 100, y: 143.75, w: 200, h: 112.5 })
+    expectCrop(inSlide(imageArea(), IMG, 1), { x: 100, y: 143.75, w: 200, h: 112.5 })
+    await esc()
+    expect(fns.resizeElement).not.toHaveBeenCalled()
+    expect(fns.updateImageCrop).not.toHaveBeenCalled()
+    expect(fns.commit).not.toHaveBeenCalled()
+
+    // Again: the right edge 50 in, then the window 20 right.
+    const again = mountCanvas(slideWith(IMG))
+    await act(async () => { loadImage(again.r.container.querySelector('img[alt="Crop source"]') as HTMLImageElement, src.width, src.height) })
+    const inThis = (sel: string) => again.r.container.querySelector(sel) as HTMLElement
+    await drag(inThis('[data-testid="crop-handle-e"]'), -50, 0)
+    await drag(inThis('[data-testid="crop-move"]'), 20, 0)
+    await esc()
+    const crop = again.fns.updateImageCrop.mock.calls[0][2] as Crop
+    expectCrop(crop, { x: 0.1, y: 0, w: 0.75, h: 1 })
+    const want = croppedBox(IMG, undefined, crop, src)
+    expect(want.x).toBeCloseTo(120, 9)
+    expect(want.y).toBeCloseTo(143.75, 9)
+    expect(again.fns.resizeElement).toHaveBeenCalledWith('slide-0', 'el-img', {
+      x: Math.round(want.x), y: Math.round(want.y), w: Math.round(want.w), h: Math.round(want.h),
+    })
+  })
+
+  it('a source that fails to load leaves the element\'s own picture showing in crop mode, and writes nothing', async () => {
+    const { fns } = mountCanvas(slideWith(CROPPED))
+    await act(async () => { fireEvent.error(cropSource()!) })
+    expect((wrapperOf('el-img').firstElementChild as HTMLElement).style.visibility).toBe('')
+    expect(cropSource()!.style.visibility).toBe('hidden')
+    expect(cropWindow()).toBeNull()
+    await esc()
+    expect(fns.resizeElement).not.toHaveBeenCalled()
+    expect(fns.updateImageCrop).not.toHaveBeenCalled()
+    expect(fns.commit).not.toHaveBeenCalled()
   })
 
   it('on that box, a window moved right by N moves the box right by N at its size', async () => {

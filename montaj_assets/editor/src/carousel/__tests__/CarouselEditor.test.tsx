@@ -3794,6 +3794,69 @@ describe('CarouselEditor: a crop that keeps what you picked (§556 M4)', () => {
   })
 })
 
+// ── The margin past the slide in crop mode (M3b) ─────────────────────────────
+//
+// The crop picture reaches past the slide into the margin, dimmed, and takes
+// no pointer there: a press in the margin over it is still a press on the
+// empty canvas, which applies the crop.
+
+describe('CarouselEditor: a press in the margin over the crop picture (M3b)', () => {
+  it('exits crop and applies the window, as one undo step', async () => {
+    // The middle half of a 400 x 200 source in the 200 x 200 box at the slide's
+    // left edge: the picture is drawn 400 x 200 from x -100, past the slide.
+    const adapter = makeFakeAdapter()
+    const project = makeProject({
+      slides: [{
+        id: 'slide-0',
+        base_color: '#ffffff',
+        elements: [{ id: 'el-img', type: 'image', src: 'a.png', x: 0, y: 100, w: 200, h: 200, rotation: 0, crop: { x: 0.25, y: 0, w: 0.5, h: 1 } }],
+      }],
+    })
+    const r = render(<CarouselEditor project={project} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await plainClick('el-img')
+    await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
+    await loadCropSource()
+
+    const scale = parseFloat(canvasRoot().style.width) / 1080
+    const area = chromeOf('el-img').querySelector('[data-testid="crop-image-area"]') as HTMLElement
+    // The picture starts 100 slide units left of the slide, and lets the pointer through.
+    expect(parseFloat(area.style.left) / scale).toBeCloseTo(-100, 9)
+    expect(area.style.pointerEvents).toBe('none')
+    expect((document.querySelector('[data-slide-chrome]') as HTMLElement).style.pointerEvents).toBe('none')
+
+    // The window 40 right.
+    const move = chromeOf('el-img').querySelector('[data-testid="crop-move"]') as HTMLElement
+    await act(async () => {
+      pointer(move, 'pointerdown', { clientX: 0, clientY: 0 })
+      pointer(move, 'pointermove', { clientX: 40 * scale, clientY: 0 })
+      pointer(move, 'pointerup', { clientX: 40 * scale, clientY: 0 })
+      fireEvent.click(move)
+    })
+    expect(adapter.saveCalls).toHaveLength(0)
+
+    // A press in the margin, left of the slide, where the dimmed picture is drawn.
+    const margin = document.querySelector('[data-canvas-margin]') as HTMLElement
+    await act(async () => {
+      pointer(margin, 'pointerdown', { clientX: 2, clientY: 150 })
+      pointer(window, 'pointerup', { clientX: 2, clientY: 150 })
+      fireEvent.click(margin)
+    })
+    await waitFor(() => expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 40, y: 100, w: 200, h: 200 }))
+    const crop = (elementsOf(lastSave(adapter))[0] as ImageElement).crop!
+    expect(crop.x).toBeCloseTo(0.35, 9)
+    expect(crop.w).toBeCloseTo(0.5, 9)
+    expect(inCrop()).toBe(false)
+
+    // One undo step puts it back.
+    const saves = adapter.saveCalls.length
+    await key('z', { metaKey: true })
+    await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThan(saves))
+    expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 0, y: 100, w: 200, h: 200, crop: { x: 0.25, y: 0, w: 0.5, h: 1 } })
+    expect(r.getByLabelText('Undo')).toBeDisabled()
+  })
+})
+
 // ── Typed numbers in the property panel are one step (M9) ────────────────────
 //
 // X, Y, W, H and rotation preview while typing (a transient) and write once, on
