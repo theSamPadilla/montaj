@@ -174,6 +174,31 @@ def test_sample_frame_help_lists_sdr_curve():
     assert "--sdr-curve" in r.stdout
 
 
+# ── --no-captions: the frame without the captions overlay ───────────────────
+
+def test_no_captions_threaded_to_node_argv(fake_node_env, tmp_path):
+    project = _write_project(tmp_path, "sdr_bt709")
+    proc = run_step_env(STEP, fake_node_env, "--project", str(project), "--at", "1.0",
+                        "--no-captions", "--out", str(tmp_path / "f.png"))
+    assert proc.returncode == 0, proc.stderr
+    assert "--no-captions" in json.loads(proc.stdout)
+
+
+def test_captions_stay_on_by_default(fake_node_env, tmp_path):
+    project = _write_project(tmp_path, "sdr_bt709")
+    proc = run_step_env(STEP, fake_node_env, "--project", str(project), "--at", "1.0",
+                        "--out", str(tmp_path / "f.png"))
+    assert proc.returncode == 0, proc.stderr
+    assert "--no-captions" not in json.loads(proc.stdout)
+
+
+def test_schema_declares_no_captions():
+    from tests.conftest import REPO_ROOT
+    schema = json.loads((REPO_ROOT / "steps" / "render" / "sample_frame.json").read_text())
+    p = next(p for p in schema["params"] if p["name"] == "no-captions")
+    assert p["type"] == "bool" and p.get("required") is False and p.get("default") is False
+
+
 # ── --scene: one 3D alone (§308) ─────────────────────────────────────────────
 
 def test_scene_threaded_to_node_argv(fake_node_env, tmp_path):
@@ -293,6 +318,15 @@ def test_several_times_make_one_node_call_and_one_sheet(frames_node_env, tmp_pat
     assert out == str(tmp_path / "render" / "samples" / "sheet-1.0-4.0s.png")
     img = Image.open(out)
     assert img.size[0] == 3 * 360 + 4 * 4  # cols = min(n, 4), tile width 360
+
+
+def test_several_times_forward_no_captions(frames_node_env, tmp_path):
+    project = _write_project(tmp_path, None)
+    before = len(_calls(frames_node_env))
+    proc = run_step_env(STEP, frames_node_env, "--project", str(project), "--no-captions",
+                        "--at", "1", "--at", "2")
+    assert proc.returncode == 0, proc.stderr
+    assert "--no-captions" in _calls(frames_node_env)[before:][0]
 
 
 def test_several_times_name_raw_and_scene_sheets(frames_node_env, tmp_path):

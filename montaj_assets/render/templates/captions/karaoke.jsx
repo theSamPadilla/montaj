@@ -27,7 +27,7 @@ export default function Karaoke({
   if (!active.length) return null
 
   const theme = { frame, fps, t, color, highlightColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }
-  return <>{captionGroups(active).map((g, i) => renderSegment(g.seg, g.seg.id ?? i, segmentTheme(g.seg, theme), g.lines.map(l => renderLine(l, segmentTheme(l, theme), frame, fps))))}</>
+  return <>{captionGroups(active).map((g, i) => renderSegment(g.seg, g.seg.id ?? i, segmentTheme(g.seg, theme), g.lines.map(l => renderLine(l, segmentTheme(l, theme), frame, fps, isDark(g.seg)))))}</>
 }
 
 /**
@@ -127,7 +127,7 @@ function renderSegment(seg, key, { frame, fps, t, color, highlightColor, fontSiz
             fontWeight,
             fontFamily,
             color: highlightColor,
-            textShadow: '0 2px 12px rgba(0,0,0,0.85)',
+            textShadow: isDark(seg) ? 'none' : '0 2px 12px rgba(0,0,0,0.85)',
             letterSpacing,
             lineHeight,
             textTransform,
@@ -158,7 +158,7 @@ function renderSegment(seg, key, { frame, fps, t, color, highlightColor, fontSiz
           fontSize,
           fontWeight,
           fontFamily,
-          textShadow: '0 2px 12px rgba(0,0,0,0.85)',
+          textShadow: isDark(seg) ? 'none' : '0 2px 12px rgba(0,0,0,0.85)',
           letterSpacing,
           lineHeight,
           textTransform,
@@ -173,7 +173,7 @@ function renderSegment(seg, key, { frame, fps, t, color, highlightColor, fontSiz
               ? interpolate(frame, [wordStartFrame, wordEndFrame], [0, 1])
               : spoken ? 1 : 0
             // §558: a word's own colour (words[].color) shows except while it is spoken
-            const wordColor = active ? highlightColor : (w.color ?? (spoken ? highlightColor : (seg.color ?? color)))
+            const wordColor = active ? highlightColor : (w.color ?? (spoken ? highlightColor : (isDark(seg) ? INK : (seg.color ?? color))))
             return (
               <span
                 key={i}
@@ -197,14 +197,14 @@ function renderSegment(seg, key, { frame, fps, t, color, highlightColor, fontSiz
 
 /** §244: a translation under its caption, as karaoke's plain line: the
  *  spoken colour, no reveal (the box already fades in). */
-function renderLine(seg, { fontSize, fontFamily, fontWeight, highlightColor, letterSpacing, lineHeight, textTransform }) {
+function renderLine(seg, { fontSize, fontFamily, fontWeight, highlightColor, letterSpacing, lineHeight, textTransform }, frame, fps, dark = isDark(seg)) {
   return (
     <div key={seg.id ?? seg.start} data-caption-id={seg.id} style={{
       fontSize,
       fontWeight,
       fontFamily,
-      color: seg.color ?? highlightColor,
-      textShadow: '0 2px 12px rgba(0,0,0,0.85)',
+      color: dark ? INK : (seg.color ?? highlightColor),
+      textShadow: dark ? 'none' : '0 2px 12px rgba(0,0,0,0.85)',
       letterSpacing,
       lineHeight,
       textTransform,
@@ -213,6 +213,18 @@ function renderLine(seg, { fontSize, fontFamily, fontWeight, highlightColor, let
     </div>
   )
 }
+
+/**
+ * Caption ink. A segment with `ink: "dark"` (written by the caption_ink step
+ * or chosen by a person) is drawn as dark ink on paper: the base text takes
+ * INK and loses its outline and shadow. Accents (the spoken word, a word's
+ * own colour, highlight-box's box) stay as they are. A translation stacked
+ * under a caption takes the ink of the caption it sits under. Duplicated in
+ * the seven text-over-picture templates (plate and subtitle draw their own
+ * box and ignore it); keep INK and isDark identical in each.
+ */
+const INK = '#1c1c1e'
+const isDark = seg => seg.ink === 'dark'
 
 /**
  * One segment's theme: a styling field set on the segment wins over the

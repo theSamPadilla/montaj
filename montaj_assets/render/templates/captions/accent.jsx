@@ -76,7 +76,7 @@ export default function Accent({
   if (!active.length) return null
   const theme = { t, color, accentColor, fontSize, fontFamily, fontWeight, accentFontFamily, scriptFontFamily, textAlign, letterSpacing, lineHeight, textTransform }
   const blocks = captionGroups(active)
-    .map((g, i) => (g.seg.hero ? renderHero : renderRunning)(g.seg, g.seg.id ?? i, segmentTheme(g.seg, theme), g.lines.map(l => renderLine(l, segmentTheme(l, theme), frame, fps))))
+    .map((g, i) => (g.seg.hero ? renderHero : renderRunning)(g.seg, g.seg.id ?? i, segmentTheme(g.seg, theme), g.lines.map(l => renderLine(l, segmentTheme(l, theme), frame, fps, isDark(g.seg)))))
     .filter(Boolean)
   return blocks.length ? <>{blocks}</> : null
 }
@@ -179,13 +179,13 @@ export function heroLines(words) {
   return [units.slice(0, best), units.slice(best)]
 }
 
-function wordStyle(w, size, th, { running }) {
+function wordStyle(w, size, th, { running, dark }) {
   const kind = w.accent === 'script' && running ? 'serif' : w.accent
   const base = {
     display: 'inline-block',
     fontFamily: th.fontFamily, fontWeight: th.fontWeight, fontSize: size,
     letterSpacing: th.letterSpacing, lineHeight: th.lineHeight, textTransform: th.textTransform,
-    color: th.color, textShadow: TEXT_SHADOW, whiteSpace: 'pre',
+    color: dark ? INK : th.color, textShadow: dark ? 'none' : TEXT_SHADOW, whiteSpace: 'pre',
   }
   if (kind === 'serif') return { ...base, fontFamily: th.accentFontFamily, fontWeight: 700, fontStyle: 'italic', fontSize: size * SERIF_SCALE, letterSpacing: '-0.02em', color: th.accentColor }
   if (kind === 'sans') return { ...base, color: th.accentColor }
@@ -220,9 +220,10 @@ function renderRunning(seg, key, th, lines = []) {
   const words = isTranslation(seg) ? [] : (seg.words || [])
   const windows = words.length ? runWindows(words, th.fontSize * caseWidth(th)) : []
   const win = [...windows].reverse().find(w => th.t >= w[0].start)
+  const dark = isDark(seg)
   return renderBlock(seg, key, th, win ? win.map((w, i) => (
     // §558: a word's own colour (words[].color) beats its accent colour and the base
-    <span key={i} style={{ ...wordStyle(w, th.fontSize, th, { running: true }), color: w.color ?? (ACCENTS.has(w.accent) ? th.accentColor : (seg.color ?? th.color)) }}>
+    <span key={i} style={{ ...wordStyle(w, th.fontSize, th, { running: true, dark }), color: w.color ?? (ACCENTS.has(w.accent) ? th.accentColor : (dark ? INK : (seg.color ?? th.color))) }}>
       {(i ? ' ' : '') + w.word}
     </span>
   )) : null, lines)
@@ -234,6 +235,7 @@ function renderHero(seg, key, th, translations = []) {
   const lines = heroLines(words)
   const indentOf = (line, li) => (line[0].script && line[0].main ? SCRIPT_INDENT : li > 0 ? LINE2_INDENT : 0)
   // A hero line wider than the frame would wrap and clip: shrink the block until its widest line fits.
+  const dark = isDark(seg)
   const base = th.fontSize * HERO_SCALE
   const widest = Math.max(0, ...lines.map((line, li) => {
     const mains = line.filter(u => u.main)
@@ -248,7 +250,7 @@ function renderHero(seg, key, th, translations = []) {
     if (run.length) {
       lineDivs.push(
         <div key={`s${li}`} style={{ marginBottom: -size * SCRIPT_GAP }}>
-          {run.map((w, i) => <span key={i} style={{ ...wordStyle(w, size, th, { running: false }), color: w.color ?? seg.color ?? th.color, ...vis(w) }}>{(i ? ' ' : '') + w.word}</span>)}
+          {run.map((w, i) => <span key={i} style={{ ...wordStyle(w, size, th, { running: false, dark }), color: w.color ?? (dark ? INK : (seg.color ?? th.color)), ...vis(w) }}>{(i ? ' ' : '') + w.word}</span>)}
         </div>,
       )
     }
@@ -258,7 +260,7 @@ function renderHero(seg, key, th, translations = []) {
     lineDivs.push(
       <div key={`l${li}`} style={{ paddingLeft: size * indent }}>
         {mains.map((u, i) => (
-          <span key={i} style={{ ...wordStyle(u.main, size, th, { running: false }), ...(u.main.color ? { color: u.main.color } : ACCENTS.has(u.main.accent) ? null : { color: seg.color ?? th.color }), ...vis(u.main) }}>
+          <span key={i} style={{ ...wordStyle(u.main, size, th, { running: false, dark }), ...(u.main.color ? { color: u.main.color } : ACCENTS.has(u.main.accent) ? null : { color: dark ? INK : (seg.color ?? th.color) }), ...vis(u.main) }}>
             {(i ? ' ' : '') + u.main.word}
           </span>
         ))}
@@ -276,7 +278,7 @@ function renderHero(seg, key, th, translations = []) {
  *  the stack's gap alone, the g of "developing" touched the line). */
 const LINE_SCALE = 0.3
 const LINE_CLEARANCE = 0.22
-function renderLine(seg, th, frame, fps) {
+function renderLine(seg, th, frame, fps, dark = isDark(seg)) {
   return (
     <div key={seg.id ?? seg.start} data-caption-id={seg.id} style={{
       marginTop: Math.round(th.fontSize * LINE_CLEARANCE),
@@ -286,14 +288,26 @@ function renderLine(seg, th, frame, fps) {
       letterSpacing: th.letterSpacing,
       lineHeight: 1.15,
       textTransform: th.textTransform,
-      color: seg.color ?? th.color,
-      textShadow: TEXT_SHADOW,
+      color: dark ? INK : (seg.color ?? th.color),
+      textShadow: dark ? 'none' : TEXT_SHADOW,
       opacity: lineOpacity(seg, frame, fps),
     }}>
       {seg.text}
     </div>
   )
 }
+
+/**
+ * Caption ink. A segment with `ink: "dark"` (written by the caption_ink step
+ * or chosen by a person) is drawn as dark ink on paper: the base text takes
+ * INK and loses its outline and shadow. Accents (the spoken word, a word's
+ * own colour, highlight-box's box) stay as they are. A translation stacked
+ * under a caption takes the ink of the caption it sits under. Duplicated in
+ * the seven text-over-picture templates (plate and subtitle draw their own
+ * box and ignore it); keep INK and isDark identical in each.
+ */
+const INK = '#1c1c1e'
+const isDark = seg => seg.ink === 'dark'
 
 /**
  * One segment's theme: a styling field set on the segment wins over the
