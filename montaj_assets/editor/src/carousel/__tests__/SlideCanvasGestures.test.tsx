@@ -279,7 +279,8 @@ describe('SlideCanvas: a gesture whose release never arrives ends where it is (ย
   ]
 
   it.each(ways)('%s commits the drag once at its last preview, then nothing follows the pointer and the next click is not swallowed', async (_way, end) => {
-    const c = setup(image({ id: 'a' }), [image({ id: 'b', x: 500 })])
+    // 'b' sits clear of every edge 'a' passes, so nothing snaps (ยง586 M7).
+    const c = setup(image({ id: 'a' }), [image({ id: 'b', x: 500, y: 600 })])
     await act(async () => {
       pointer(c.wrapper, 'pointerdown', { clientX: 0, clientY: 0, ...held })
       pointer(window, 'pointermove', { clientX: 40, clientY: 20, ...held })
