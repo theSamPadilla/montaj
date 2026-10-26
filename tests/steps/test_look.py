@@ -257,7 +257,8 @@ def test_text_across_the_captions_while_a_caption_shows_is_reported(tmp_path):
     # pop draws at 72.6-76.0% of a 1920 frame: y 1394-1459 (measured)
     path, _ = _with_captions(tmp_path, overlays=[{"id": "ov-low", "start": 2, "end": 4}, {"id": "ov-late", "start": 5, "end": 7}])
     out = look.run(str(path), measure_fn=_fake_measure({"ov-low": [("Name", 100, 1380, 400, 60)], "ov-late": [("Name", 100, 1380, 400, 60)]}))
-    assert out["issues"] == ['3.0s ov-low: text "Name" crosses the captions (1.0-3.0s)'], out
+    assert out["issues"] == ['3.0s ov-low: text "Name" crosses the captions (1.0-3.0s): move it up 47 px'], out
+    assert "look again" in out["then"]
 
 
 def test_a_bigger_or_moved_caption_moves_its_band(tmp_path):
@@ -317,10 +318,39 @@ def test_app_zones_apply_to_tall_frames_and_the_title_safe_margin_to_every_frame
     ({}, ("Title", 900, 100, 400, 80), (1080, 1920), ['text "Title" runs off the frame: move it left 274 px']),
     ({}, ("Corner", 20, 30, 400, 80), (1080, 1920), ['text "Corner" inside the 5% title-safe margin: move it right 34 px and down 66 px']),
     ({"scale": 0.5}, ("Edge", -480, 600, 400, 80), (1080, 1920), ['text "Edge" inside the 5% title-safe margin: move it right 48 px']),
-    ({}, ("Wide", 30, 600, 1040, 80), (1080, 1920), ['text "Wide" inside the 5% title-safe margin: make it at most 972 px wide']),
+    ({}, ("Wide", 30, 600, 1040, 80), (1080, 1920), ['text "Wide" inside the 5% title-safe margin: make it at most 972 px wide, keeping it centred']),
 ])
 def test_a_safe_area_issue_says_how_far_to_move_the_text(item, box, frame, want):
     assert [i["text"] for i in lc.measured_issues(item, _texts(box), *frame, 1, "ov")] == want
+
+
+# PL89e: "move it up 65 px" took a credit off the apps' controls and onto the captions (1292-1432 px for "outline"),
+# and "move it left 40 px" slid a centred stack off-centre. The hint clears every zone at once (the margin, the
+# controls, the right-side buttons, any caption band on screen), narrows a centred block instead of sliding it, and
+# says the room when nothing fits. One hint per text, on its first issue, so it is applied once.
+BAND = [(1292, 1432, 47.7, 51.8)]
+
+
+@pytest.mark.parametrize("box,bands,want", [
+    (("PhoneBot", 100, 1470, 760, 165), BAND,
+     ["text \"PhoneBot\" over the apps' bottom controls: move it up 343 px"]),
+    (("old phone", 140, 1000, 800, 80), (),
+     ["text \"old phone\" under the apps' right-side buttons: make it at most 680 px wide, keeping it centred"]),
+    (("Tag", 200, 1350, 400, 60), BAND,
+     ['text "Tag" crosses the captions (47.7-51.8s): move it down 82 px']),
+    (("Big", 100, 300, 600, 1400), BAND,
+     ['text "Big" crosses the captions (47.7-51.8s): make it at most 1196 px tall, the most room clear of every zone',
+      "text \"Big\" over the apps' bottom controls"]),
+])
+def test_the_move_hint_clears_every_zone_at_once(box, bands, want):
+    assert [i["text"] for i in lc.measured_issues({}, _texts(box), 1080, 1920, 1, "ov", bands)] == want
+
+
+def test_an_answer_with_move_hints_says_to_run_look_again():
+    hinted = [{"t": 1.0, "id": "ov", "text": "text \"Tag\" crosses the captions (1-2s): move it down 82 px"}]
+    plain = [{"t": 1.0, "id": "ov", "text": "text \"Tag\" spills out of its box"}]
+    assert "look again" in lc.answer(hinted)["then"]
+    assert "then" not in lc.answer(plain)
 
 
 def test_a_switched_off_track_draws_nothing(tmp_path):

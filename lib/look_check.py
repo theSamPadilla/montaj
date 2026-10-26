@@ -421,67 +421,126 @@ def text_boxes(measurement, item, frame_w, frame_h):
     return out
 
 
-def move_to_fit(box, x_lo, x_hi, y_lo, y_hi, sx=1.0, sy=1.0):
-    """PL89c: how far to move a text box (on the frame) so it lies inside [x_lo, x_hi] x [y_lo, y_hi] (None leaves
-    that side open), in the overlay's own px (the item's scale `sx`, `sy` undone, rounded up): "move it right 34 px
-    and up 12 px", or "make it at most 972 px wide" when it can't fit that way. The agent fixes in one rewrite, not
-    by guessing."""
+# The hints' own words, so an answer can tell that it carries one (answer: then run look again).
+HINTS = (": move it ", ": make it at most ")
+CENTRED = 0.02    # a block whose middle is this share of the width from the frame's middle is centred: narrow it, never slide
+
+
+def _free_spans(lo, hi, cuts):
+    """[lo, hi] with every open interval in `cuts` taken out, as closed intervals."""
+    out = [(lo, hi)] if hi >= lo else []
+    for a, b in cuts:
+        nxt = []
+        for x, y in out:
+            if b <= x or a >= y:
+                nxt.append((x, y))
+                continue
+            if a > x:
+                nxt.append((x, a))
+            if b < y:
+                nxt.append((b, y))
+        out = nxt
+    return out
+
+
+def move_to_fit(box, frame_w, frame_h, *, tall=False, bands=(), sx=1.0, sy=1.0):
+    """PL89c, PL89e: the smallest change that puts a text box (on the frame) clear of every zone at once: the 5%
+    title-safe margin, and on a tall frame the apps' bottom controls and right-side buttons, and any caption band
+    (top, bottom, ...) on screen. In the overlay's own px (the item's scale `sx`, `sy` undone, rounded up): "move it
+    right 34 px and down 66 px"; "make it at most 680 px wide, keeping it centred" for a centred block (sliding it
+    would take it off-centre); "make it at most 1196 px tall, the most room clear of every zone" when no move fits.
+    "" when it is clear already. PL89e: one zone's move ("up 65 px", off the controls) landed a credit on the
+    captions; the hint now weighs them all."""
     import math
-    x0, y0, x1, y1 = box["x"], box["y"], box["x"] + box["w"], box["y"] + box["h"]
-    px = lambda d, s: math.ceil(round(d / (s or 1), 6))  # noqa: E731
+    x0, y0, w, h = box["x"], box["y"], box["w"], box["h"]
+    ceil_px = lambda d, s: math.ceil(round(abs(d) / (s or 1), 6))  # noqa: E731  a distance, in the overlay's px
+    floor_px = lambda d, s: math.floor(round(d / (s or 1), 6))  # noqa: E731  a size, in the overlay's px
+    mx, my = frame_w * SAFE_MARGIN, frame_h * SAFE_MARGIN
+    y_hi = min(frame_h - my, frame_h - BOTTOM_UI_PX) if tall else frame_h - my
+    cuts = [(b[0], b[1]) for b in bands]
+    room = _free_spans(my, y_hi, cuts)                                       # where text may be, top to bottom
+    free = _free_spans(my, y_hi - h, [(top - h, bottom) for top, bottom in cuts])   # where its top may be
+    if not free:
+        most = max((b - a for a, b in room), default=0)
+        return f"make it at most {floor_px(most, sy)} px tall, the most room clear of every zone"
+    centred = abs(x0 + w / 2 - frame_w / 2) <= frame_w * CENTRED
+    rb = (frame_h * RIGHT_UI_Y[0], frame_h * RIGHT_UI_Y[1])
+    tops = {min(max(y0, a), b) for a, b in free}                       # the nearest top in each free stretch
+    if tall:                                                           # or just clear of the buttons' band
+        tops |= {t for t in (rb[0] - h, rb[1]) if any(a <= t <= b for a, b in free)}
+    best = None
+    for top in sorted(tops, key=lambda t: abs(t - y0)):
+        x_hi = frame_w - mx
+        if tall and top < rb[1] and top + h > rb[0]:
+            x_hi = min(x_hi, frame_w - RIGHT_UI_PX)
+        if centred:
+            width = 2 * min(frame_w / 2 - mx, x_hi - frame_w / 2)
+            horiz, cost = (None, 0) if w <= width + 1e-6 else (("narrow", width), w - width)
+        elif w > x_hi - mx:
+            horiz, cost = ("narrow", x_hi - mx), w - (x_hi - mx)
+        else:
+            dx = mx - x0 if x0 < mx else (x_hi - (x0 + w) if x0 + w > x_hi else 0)
+            horiz, cost = (("move", dx) if dx else None), abs(dx)
+        total = cost + abs(top - y0)
+        if best is None or total < best[0] - 1e-6:
+            best = (total, top - y0, horiz)
+    _, dy, horiz = best
     parts = []
-    for lo, hi, a, b, s, near, far, size in ((x_lo, x_hi, x0, x1, sx, "right", "left", "wide"),
-                                             (y_lo, y_hi, y0, y1, sy, "down", "up", "tall")):
-        if lo is not None and hi is not None and b - a > hi - lo:
-            parts.append(f"make it at most {math.floor(round((hi - lo) / (s or 1), 6))} px {size}")
-        elif lo is not None and a < lo:
-            parts.append(f"move it {near} {px(lo - a, s)} px")
-        elif hi is not None and b > hi:
-            parts.append(f"move it {far} {px(b - hi, s)} px")
-    if len(parts) == 2 and all(p.startswith("move it ") for p in parts):
-        parts[1] = parts[1][len("move it "):]
-    return " and ".join(parts)
+    if horiz and horiz[0] == "narrow":
+        parts.append(f"make it at most {floor_px(horiz[1], sx)} px wide" + (", keeping it centred" if centred else ""))
+    elif horiz:
+        parts.append(f"move it {'right' if horiz[1] > 0 else 'left'} {ceil_px(horiz[1], sx)} px")
+    if abs(dy) > 1e-6:
+        v = f"{'down' if dy > 0 else 'up'} {ceil_px(dy, sy)} px"
+        parts.append(f"{'and ' if parts and parts[0].startswith('move it') else 'and move it ' if parts else 'move it '}{v}")
+    return " ".join(parts)
 
 
 def measured_issues(item, measurement, frame_w, frame_h, t, label, bands=()):
     """[{t, id, text}] from one overlay's measurements: at most one issue of each kind per item. `bands`:
-    caption_bands for the item's span. Each safe-area issue (off the frame, the title-safe margin, the apps' bottom
-    controls or right-side buttons) ends with how far to move the text (move_to_fit)."""
+    caption_bands for the item's span. A text's first zone issue (off the frame, the title-safe margin, the captions,
+    the apps' bottom controls or right-side buttons) ends with the one change that clears them all (move_to_fit);
+    its other zone issues name the zone only, so the change is made once."""
     out, seen = [], set()
     tall = frame_h >= frame_w * TALL
     mx, my = frame_w * SAFE_MARGIN, frame_h * SAFE_MARGIN
     sx = _num(item.get("scaleX", item.get("scale", 1)), 1)
     sy = _num(item.get("scaleY", item.get("scale", 1)), 1)
 
-    def fix(b, *bounds):
-        how = move_to_fit(b, *bounds, sx=sx, sy=sy)
-        return f": {how}" if how else ""
-
     def add(kind, text):
         if kind not in seen:
             seen.add(kind)
             out.append({"t": r2(t), "id": label, "text": text})
+            return True
+        return False
 
     for text, b, clipped, spills in text_boxes(measurement, item, frame_w, frame_h):
         quote = f' "{text}"' if text else ""
         x0, y0, x1, y1 = b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"]
+        hinted = []
+
+        def zone(kind, words):
+            how = "" if hinted else move_to_fit(b, frame_w, frame_h, tall=tall, bands=bands, sx=sx, sy=sy)
+            if add(kind, f"text{quote} {words}" + (f": {how}" if how else "")) and how:
+                hinted.append(kind)
+
         if x0 < -OVERFLOW_PX or y0 < -OVERFLOW_PX or x1 > frame_w + OVERFLOW_PX or y1 > frame_h + OVERFLOW_PX:
-            add("off", f"text{quote} runs off the frame{fix(b, mx, frame_w - mx, my, frame_h - my)}")
+            zone("off", "runs off the frame")
             continue   # off the frame says it all
         if spills:
             add("spill", f"text{quote} spills out of its box")
         elif clipped:
             add("clip", f"text{quote} is cut off by its box")
         if x0 < mx or y0 < my or x1 > frame_w - mx or y1 > frame_h - my:
-            add("margin", f"text{quote} inside the 5% title-safe margin{fix(b, mx, frame_w - mx, my, frame_h - my)}")
+            zone("margin", "inside the 5% title-safe margin")
         for top, bottom, s, e in bands:
             if y0 < bottom and top < y1:
-                add("captions", f"text{quote} crosses the captions ({r2(s)}-{r2(e)}s)")
+                zone("captions", f"crosses the captions ({r2(s)}-{r2(e)}s)")
                 break
         if tall and y1 > frame_h - BOTTOM_UI_PX:
-            add("bottom", f"text{quote} over the apps' bottom controls{fix(b, None, None, None, frame_h - BOTTOM_UI_PX)}")
+            zone("bottom", "over the apps' bottom controls")
         if tall and x1 > frame_w - RIGHT_UI_PX and y0 < frame_h * RIGHT_UI_Y[1] and y1 > frame_h * RIGHT_UI_Y[0]:
-            add("right", f"text{quote} under the apps' right-side buttons{fix(b, None, frame_w - RIGHT_UI_PX, None, None)}")
+            zone("right", "under the apps' right-side buttons")
     return out
 
 
@@ -529,6 +588,8 @@ def answer(issues, *, extra=None, cap=300, line=None):
     base = {"ok": not issues, **(extra or {})}
     if not issues:
         return base
+    if any(h in i["text"] for i in issues for h in HINTS):   # PL89e: the agent applied the hints and stopped
+        base["then"] = "Run look again after these edits: each change is measured from the layout as it is now."
     line = line or (lambda i: f'{i["t"]}s {i["id"]}: {i["text"]}')
     lines = [line(i) for i in sorted(issues, key=lambda x: (x["t"], x["id"]))]
     kept = []
