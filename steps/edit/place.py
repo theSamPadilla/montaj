@@ -32,14 +32,18 @@ from steps.speech.transcribe import transcribe as transcribe_file  # noqa: E402
 
 PRESETS_DIR = os.path.join(MONTAJ_ROOT, "montaj_assets", "render", "templates", "presets")
 # PL89c: flow, ring and rule animate an idea (a signal travelling, a live subject, a limit drawn under it) in one call.
-PRESETS = {"lower_third": "lower-third.jsx", "callout": "callout.jsx", "flow": "flow.jsx", "ring": "ring.jsx", "rule": "rule.jsx"}
+PRESETS = {"lower_third": "lower-third.jsx", "callout": "callout.jsx", "flow": "flow.jsx", "ring": "ring.jsx", "rule": "rule.jsx",
+           # PL89 round 9 (cost): labels on a 3D shot from its marks, and stat numerals: configured, never written
+           "scene_labels": "scene-labels.jsx", "stat": "stat.jsx"}
+# scene_labels reads one scene's marks: its copy is per scene, the import naming overlays/_marks/<scene>.json
+SCENE_ID = re.compile(r"[a-z0-9-]{1,48}")
 # PL89: copied by frame_broll's card; not a place preset (place.json lists only the two above).
 COPIED_PRESETS = {**PRESETS, "footage_card": "footage-card.jsx"}
 DEFAULT_FOR_S = 3.0
 # PL89b: an id a new item may take, as the timeline's ids are written (never a path part).
 ITEM_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 # A preset's copy in overlays/ (lower-third.jsx, callout-2.jsx, ...): drawn as made, its fonts left as they are.
-PRESET_COPY = re.compile(r"(?:%s)(?:-\d+)?\.jsx" % "|".join(re.escape(os.path.splitext(f)[0]) for f in COPIED_PRESETS.values()))
+PRESET_COPY = re.compile(r"(?:(?:%s)(?:-\d+)?|scene-labels-[a-z0-9-]+)\.jsx" % "|".join(re.escape(os.path.splitext(f)[0]) for f in COPIED_PRESETS.values()))
 # The most placements one call takes, and the most times its one sheet shows.
 MAX_ITEMS = 24
 SHEET_MAX = 8
@@ -146,7 +150,7 @@ def _is_graphic(it):
     return it.get("type") == "overlay" and not str(it.get("src", "")).startswith("engine:")
 
 
-def preset_file(project_dir, preset, referenced, check=None):
+def preset_file(project_dir, preset, referenced, check=None, scene=None):
     """The preset copied into the project's overlays/: (project-relative path, made by this call). An identical file
     is reused only when an item in the tracks as read already points at it (one this call made and another reuses
     could otherwise be removed by this call's refusal); otherwise the first free name, `-2`, `-3`... Never over a
@@ -156,6 +160,9 @@ def preset_file(project_dir, preset, referenced, check=None):
     with open(src, "rb") as f:
         body = f.read()
     stem, ext = os.path.splitext(COPIED_PRESETS[preset])
+    if scene is not None:   # scene_labels: a copy per scene, reading its marks
+        body = body.replace(b"__SCENE__", scene.encode())
+        stem = f"{stem}-{scene}"
     overlays = os.path.join(project_dir, "overlays")
     if os.path.lexists(overlays) and not os.path.isdir(overlays):
         fail("overlays_not_a_folder", "The project's overlays is not a folder (a file or a broken link).")
@@ -344,6 +351,13 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
         fail("invalid_params", "language is a code such as en, es, pt-BR, or auto.")
     at_s, phrase, take = parse_at(at)
     extra_props = parse_props(props)
+    scene = None
+    if preset == "scene_labels":
+        scene = extra_props.get("marks")
+        if not isinstance(scene, str) or not SCENE_ID.fullmatch(scene):
+            fail("invalid_params", "scene_labels takes props.marks: the scene id whose labels it draws (its direct_scene mark).")
+        if not os.path.isfile(os.path.join(os.path.dirname(project_path), "overlays", "_marks", f"{scene}.json")):
+            fail("invalid_params", f"No marks for scene {scene}: run direct_scene with a mark (and end) on it first.")
     on_disk = _load(project_path)
     read_rev = project_revisions.revision_of(on_disk.get("tracks"))
     project = normalize_tracks(on_disk)
@@ -396,7 +410,7 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
             except sync_clash.SyncConflict as e:
                 sync_clash.exit_refused(e.body)
         referenced = {it.get("src") for t in project["tracks"] for it in t.get("items", []) if isinstance(it.get("src"), str)}
-        rel, made = preset_file(project_dir, preset, referenced, sync_check)
+        rel, made = preset_file(project_dir, preset, referenced, sync_check, scene)
         src = "./" + rel
     elif overlay:
         src = overlay_src(project_dir, overlay)

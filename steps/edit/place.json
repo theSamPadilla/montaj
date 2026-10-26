@@ -50,10 +50,12 @@
         "callout",
         "flow",
         "ring",
-        "rule"
+        "rule",
+        "scene_labels",
+        "stat"
       ],
       "required": false,
-      "description": "An engine preset instead of overlay. lower_third: props text, subtitle. callout: props text, anim (pop, slide, fade). Moving, to show an idea before any text: flow (a signal travelling between labels): props points (\"phone > computer > motors\"), at?; ring (a pulse on a live subject): props x, y (shares of the frame), label?; rule (a line drawn under a subject with a word): props text, y, width?."
+      "description": "An engine preset instead of overlay. lower_third: props text, subtitle. callout: props text, anim (pop, slide, fade). Moving, to show an idea before any text: flow (a signal travelling between labels): props points (\"phone > computer > motors\"), at?; ring (a pulse on a live subject): props x, y (shares of the frame), label?; rule (a line drawn under a subject with a word): props text, y, width?. scene_labels (labels riding a 3D shot, from its marks): props marks (the scene id), labels [{part, text, at}] (scene seconds), rule? {text, at}, from (its inPoint). stat (numerals one after another, centred): props stats [{value, unit?, sub?, at}] (item seconds)."
     },
     {
       "name": "props",
