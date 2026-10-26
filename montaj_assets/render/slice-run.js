@@ -68,6 +68,9 @@ export function overlayDescriptor(spec, base) {
   // the spec actually has tracks, so a static overlay's descriptor keeps no
   // `keyframes` key at all and takes the byte-identical filter path.
   if (spec.keyframes?.length) base.keyframes = spec.keyframes
+  // A 3D stage (render.js `scene3d`): a full-screen one keeps the footage's
+  // graphics white (encode-segment.js overlayWhiteNits). Absent otherwise.
+  if (spec.scene3d === true) base.scene3d = true
   return base
 }
 
