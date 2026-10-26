@@ -3,13 +3,26 @@
   "description": "Look at a video: a grid sheet (default), every frame (frames all), one full frame at a time (at), or one labelled sheet of many times (at repeated, up to 36): find a source's moments in one call. Look at footage in two calls: a sheet of each clip, then one sheet of the moments you pick.",
   "input": {
     "type": "video",
-    "description": "Source video file"
+    "description": "Source video file",
+    "required": false
   },
   "output": {
     "type": "image",
     "description": "JPEG image — contact sheet (grid mode) or single frame (--at mode), or a directory path followed by frame list (all-frames mode)."
   },
   "params": [
+    {
+      "name": "inputs",
+      "type": "path",
+      "description": "Several clips: ONE sheet, a row per clip (cols frames each, default 6), each tile labelled with its name and time. At most 12.",
+      "repeatable": true
+    },
+    {
+      "name": "names",
+      "type": "string",
+      "description": "A label per inputs clip (its clip id).",
+      "repeatable": true
+    },
     {
       "name": "cols",
       "type": "int",

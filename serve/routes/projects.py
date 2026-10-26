@@ -50,6 +50,7 @@ from lib import project_lock as _project_lock_mod
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, project_lock, project_lock_async, write_json_atomic
 from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwargs
 from lib.overlay_validation import overlay_item_errors
+from lib import shots as _shots
 from lib.caption_profile_look import caption_words_args, resolve_style_and_look
 from lib.caption_script import script_of, spell_from_script
 from lib.caption_translation import TranslationError, apply_show, apply_translation, show_new_language, finish_regenerated_track, is_translation, merge_caption_theme as _lib_merge_caption_theme, record_source_language
@@ -4418,6 +4419,20 @@ async def list_generated(project_id: str, project_dir: Path = Depends(get_projec
     file is gone or changed size since (GET .../provenance marks those `stale`).
     Read in a thread: it stats every entry's file."""
     return {"dir": str(project_dir), "generated": await asyncio.to_thread(provenance.generated, project_dir)}
+
+
+@router.get("/projects/{project_id}/shots")
+async def list_shots(project_id: str, project_dir: Path = Depends(get_project_dir)):
+    """The labelled shots of the project's sources (the `shots` step; lib/shots.py): `{"shots": {clip id: {"src",
+    "shots": [{n, start, end, motion, label?}]}}}` for every source and timeline video whose file has a sidecar of its
+    current version. Read-only, no lock (project.json is written by atomic rename). In a thread: it stats each file."""
+    def read():
+        try:
+            project = json.loads((project_dir / "project.json").read_text())
+        except (OSError, ValueError):
+            return {}
+        return _shots.project_shots(project) if isinstance(project, dict) else {}
+    return {"shots": await asyncio.to_thread(read)}
 
 
 def _provenance_refused(e: ValueError) -> HTTPException:

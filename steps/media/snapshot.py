@@ -53,9 +53,40 @@ def times_sheet(src, times, cols, out):
         tile_sheet(paths, times, cols, SHEET_TILE_WIDTH, out, label_px=SHEET_LABEL_PX)
 
 
+MAX_CLIPS = 12
+CLIP_COLS = 6
+
+
+def clips_sheet(inputs, names, cols, out):
+    """ONE sheet of several clips: a row per clip, `cols` frames spread over each, every tile labelled with the clip's
+    name and the time, fitted into the same square box (takes and screen recordings of any shape)."""
+    times, srcs, labels = [], [], []
+    for src, name in zip(inputs, names):
+        d = get_duration(src)
+        for k in range(cols):
+            t = round(d * (k + 0.5) / cols, 2)
+            times.append(t)
+            srcs.append(src)
+            labels.append(f"{name} {t:.1f}s")
+    with tempfile.TemporaryDirectory() as work:
+        paths = [os.path.join(work, f"f_{i:04d}.png") for i in range(len(times))]
+
+        def grab(i):
+            run([ffmpeg_bin(), "-y", "-ss", ff_seconds(times[i]), "-i", ff_input(srcs[i]),
+                 "-frames:v", "1", "-vf", f"scale={SHEET_TILE_WIDTH * 2}:-2", paths[i]])
+            check_output(paths[i])
+
+        with ThreadPoolExecutor(SEEKS_AT_ONCE) as pool:
+            list(pool.map(grab, range(len(times))))
+        tile_sheet(paths, labels, cols, SHEET_TILE_WIDTH, out, label_px=SHEET_LABEL_PX, box_height=SHEET_TILE_WIDTH)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate a frame grid contact sheet or single-frame extraction from a video")
-    parser.add_argument("--input",   required=True, help="Source video file")
+    parser.add_argument("--input",   default=None, help="Source video file")
+    parser.add_argument("--inputs",  action="append", default=None,
+                        help="Several clips (repeat it): ONE sheet, a row per clip (--cols frames each, default 6)")
+    parser.add_argument("--names",   action="append", default=None, help="A label per --inputs clip (its clip id)")
     parser.add_argument("--cols",    type=int, default=3, help="Grid columns (default: 3)")
     parser.add_argument("--rows",    type=int, default=3, help="Grid rows (default: 3)")
     parser.add_argument("--start",   type=float, default=0.0, help="Window start in seconds (default: 0)")
@@ -69,6 +100,21 @@ def main():
     parser.add_argument("--out",     help="Output file path (grid and --at modes) or directory (all-frames mode)")
     args = parser.parse_args()
 
+    if args.inputs:
+        if len(args.inputs) > MAX_CLIPS:
+            fail("invalid_args", f"{len(args.inputs)} clips > {MAX_CLIPS}; name the clips you want.")
+        for p in args.inputs:
+            require_file(p)
+        names = list(args.names or [])
+        names += [os.path.splitext(os.path.basename(p))[0] for p in args.inputs[len(names):]]
+        cols = args.cols if "--cols" in sys.argv else CLIP_COLS
+        out = args.out or f"{os.path.splitext(args.inputs[0])[0]}_clips.jpg"
+        clips_sheet(args.inputs, names, max(1, min(cols, 10)), out)
+        check_output(out)
+        print(out)
+        return
+    if not args.input:
+        fail("invalid_args", "Pass input (a video), or inputs (several clips, one sheet).")
     require_file(args.input)
     duration = get_duration(args.input)
 
