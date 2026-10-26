@@ -1,0 +1,46 @@
+{
+  "name": "frame_broll",
+  "category": "edit",
+  "description": "Frame a landscape clip on a vertical timeline (b-roll) in one call, never a blind centre crop: track follows its moving subject with a keyframed crop; card insets the whole frame on paper with corner brackets and a 'Footage: <source>' credit, above the captions; auto (default) tracks one clear subject, else cards. A human edit since the read is refused. Answers with a sheet of the clip's range.",
+  "input": {
+    "type": "project",
+    "description": "The project id, its folder, or the absolute path of its project.json"
+  },
+  "output": {
+    "type": "json",
+    "description": "{id, mode (track, card or none), why?, keys? (crop keys), found? (frames with the subject), card? (the overlay's id), path (the sheet)}. detail adds the crop width and the card's box."
+  },
+  "params": [
+    {
+      "name": "project",
+      "type": "path",
+      "required": true,
+      "description": "The project id, its folder, or the absolute path of its project.json"
+    },
+    {
+      "name": "item",
+      "type": "string",
+      "required": true,
+      "description": "The b-roll clip's item id (a video on an upper track)."
+    },
+    {
+      "name": "mode",
+      "type": "enum",
+      "options": ["auto", "track", "card"],
+      "default": "auto",
+      "description": "auto: track one clear moving subject, else card. track: a crop that follows the subject. card: the whole frame inset."
+    },
+    {
+      "name": "source",
+      "type": "string",
+      "required": false,
+      "description": "Where the footage is from, for the card's credit: 'PhoneBot project video' gives 'Footage: PhoneBot project video'."
+    },
+    {
+      "name": "detail",
+      "type": "bool",
+      "required": false,
+      "description": "Also answer the crop width and the card's box."
+    }
+  ]
+}

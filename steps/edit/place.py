@@ -32,6 +32,8 @@ from steps.speech.transcribe import transcribe as transcribe_file  # noqa: E402
 
 PRESETS_DIR = os.path.join(MONTAJ_ROOT, "montaj_assets", "render", "templates", "presets")
 PRESETS = {"lower_third": "lower-third.jsx", "callout": "callout.jsx"}
+# PL89: copied by frame_broll's card; not a place preset (place.json lists only the two above).
+COPIED_PRESETS = {**PRESETS, "footage_card": "footage-card.jsx"}
 DEFAULT_FOR_S = 3.0
 VERSION_MESSAGE = "version: before place"
 STEP_LOCK_TIMEOUT = 30.0
@@ -132,10 +134,10 @@ def preset_file(project_dir, preset, referenced, check=None):
     could otherwise be removed by this call's refusal); otherwise the first free name, `-2`, `-3`... Never over a
     different file, never through a link, never outside the project folder. `check(rel)` (the Studio sync file check)
     is asked of the name chosen, before the file is made."""
-    src = os.path.join(PRESETS_DIR, PRESETS[preset])
+    src = os.path.join(PRESETS_DIR, COPIED_PRESETS[preset])
     with open(src, "rb") as f:
         body = f.read()
-    stem, ext = os.path.splitext(PRESETS[preset])
+    stem, ext = os.path.splitext(COPIED_PRESETS[preset])
     overlays = os.path.join(project_dir, "overlays")
     if os.path.lexists(overlays) and not os.path.isdir(overlays):
         fail("overlays_not_a_folder", "The project's overlays is not a folder (a file or a broken link).")
