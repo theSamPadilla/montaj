@@ -189,6 +189,9 @@ const SHORT_EDGE_TARGET = 1080
  * 22: PL89g, each text also holds `color` and `plate` (an opaque background
  *    behind it in the overlay), which look reads its contrast against. 21's
  *    entries hold neither, so every label would go unchecked.
+ * 23: PL89j, each text also holds `opacity` (its own and its ancestors'),
+ *    which look blends its fill by. 22's entries hold none, so a label drawn
+ *    dim reads as full strength.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -196,7 +199,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 22
+const SAMPLE_CACHE_VERSION = 23
 
 // PL89: the most overlay pages a sampling session keeps open (createSampleSession).
 export const SESSION_MAX_PAGES = 4
@@ -928,12 +931,20 @@ async function captureOverlay({ page, guard, pageErrors, fontFailures, component
               const alpha = parts.length > 3 ? parseFloat(parts[3]) : (m ? 1 : 0)
               if (alpha >= 0.8) { plate = `rgb(${parts.slice(0, 3).join(', ')})`; break }
             }
+            // PL89j: how strongly the text is drawn: its own and its ancestors' opacity (a label dimmed until its
+            // state comes is ink at 0.32, which its colour alone does not say)
+            let opacity = 1
+            for (let p = el; p && p !== document.documentElement; p = p.parentElement) {
+              const o = parseFloat(window.getComputedStyle(p).opacity)
+              if (Number.isFinite(o)) opacity *= o
+            }
 
             texts.push({
               text: text.slice(0, 200),
               tag: el.tagName,
               color: style.color,
               plate,
+              opacity: Math.round(opacity * 1000) / 1000,
               fontFamily: style.fontFamily,
               fellBack,
               fontSize: style.fontSize,

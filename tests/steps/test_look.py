@@ -277,6 +277,92 @@ def test_a_label_with_too_little_contrast_against_the_picture_behind_it_is_an_is
     assert lc.contrast_issues({}, white, 1080, 1920, 1, "ov", None) == []
 
 
+# PL89j: the footage card's credit sits on the card's own paper (a box-shadow, not a background, so no plate). look read
+# it against the b-roll under the card (1.2 : 1, three times) and missed the card's pale labels on that paper. With the
+# overlay's own render, a text is read against what is around its glyphs: the overlay's own paint where it covers, else
+# the picture.
+def _card_png(tmp_path, paper, glyphs=(), name="card"):
+    """A rendered overlay at the design size: `paper` over the whole frame (None: transparent), and each glyph run as
+    a filled box ((x, y, w, h), rgb) the way text lands in its glyph box."""
+    from PIL import Image, ImageDraw
+    path = tmp_path / f"{name}.png"
+    im = Image.new("RGBA", (1080, 1920), (*paper, 255) if paper else (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    for (x, y, w, h), rgb in glyphs:
+        for k in range(x + 2, x + w - 2, 9):   # strokes, with paper between them, as letters have
+            d.rectangle((k, y + 4, k + 3, y + h - 4), fill=(*rgb, 255))
+    im.save(path)
+    return str(path)
+
+
+def test_a_text_on_its_own_card_is_read_against_the_card_not_the_picture_under_it(tmp_path):
+    video = _backdrop(tmp_path, (110, 110, 110))
+    credit = _coloured("Footage: Unitree", (400, 900, 280, 30), "rgb(120, 120, 120)")
+    # against the video alone it looks unreadable (the old false positive)...
+    assert lc.contrast_issues({}, credit, 1080, 1920, 27.6, "ov-card", video) != []
+    # ...but it sits on the card's cream paper, where it reads
+    card = _card_png(tmp_path, (235, 233, 226), [((400, 900, 280, 30), (120, 120, 120))])
+    assert lc.contrast_issues({}, credit, 1080, 1920, 27.6, "ov-card", video, card) == []
+
+
+def test_a_pale_label_on_its_own_card_is_an_issue_even_with_no_picture(tmp_path):
+    label = _coloured("hurts", (650, 1050, 160, 40), "rgb(232, 170, 150)")
+    card = _card_png(tmp_path, (230, 228, 220), [((650, 1050, 160, 40), (232, 170, 150))])
+    got = [i["text"] for i in lc.contrast_issues({}, label, 1080, 1920, 45.9, "ov-force", None, card)]
+    assert len(got) == 1 and got[0].startswith('text "hurts" is 1.') and "against its own background" in got[0], got
+    assert got[0].endswith("give it a darker fill"), got
+
+
+def test_a_text_on_a_transparent_overlay_is_still_read_against_the_picture(tmp_path):
+    shirt = _backdrop(tmp_path, (182, 194, 191))
+    white = _coloured("computer", (400, 900, 280, 50), "rgb(255, 255, 255)")
+    clear = _card_png(tmp_path, None, [((400, 900, 280, 50), (255, 255, 255))])
+    got = [i["text"] for i in lc.contrast_issues({}, white, 1080, 1920, 22.0, "ov-chain", shirt, clear)]
+    assert len(got) == 1 and "against the picture behind it" in got[0], got
+    # a transparent overlay and no picture: nothing to read it against
+    assert lc.contrast_issues({}, white, 1080, 1920, 22.0, "ov-chain", None, clear) == []
+
+
+def test_a_dimmed_label_is_read_at_the_strength_it_is_drawn(tmp_path):
+    # PL89j: the gauge's end labels are dark ink at opacity 0.32 until their state comes; the colour alone says 15 : 1
+    paper = (230, 228, 220)
+    dim = 0.32
+    drawn = tuple(round(c * dim + p * (1 - dim)) for c, p in zip((29, 27, 22), paper))
+    card = _card_png(tmp_path, paper, [((150, 1050, 200, 40), drawn)])
+    label = _coloured("slips", (150, 1050, 200, 40), "rgb(29, 27, 22)")
+    label["texts"][0]["opacity"] = dim
+    got = [i["text"] for i in lc.contrast_issues({}, label, 1080, 1920, 45.9, "ov-force", None, card)]
+    assert len(got) == 1 and '"slips"' in got[0] and "against its own background" in got[0], got
+    label["texts"][0]["opacity"] = 1
+    full = _card_png(tmp_path, paper, [((150, 1050, 200, 40), (29, 27, 22))], name="full")
+    assert lc.contrast_issues({}, label, 1080, 1920, 45.9, "ov-force", None, full) == []
+    label["texts"][0]["opacity"] = 0.05   # not in yet: nothing to read
+    assert lc.contrast_issues({}, label, 1080, 1920, 45.9, "ov-force", None, card) == []
+
+
+def test_look_reads_a_card_label_against_the_card_it_measured(tmp_path):
+    path, _ = _project(tmp_path, overlays=[{"id": "ov-card", "start": 1, "end": 3}])
+    video = _backdrop(tmp_path, (110, 110, 110))
+
+    def measure(item, path_, frame, duration, fps, w, h, out):
+        _card_png(Path(os.path.dirname(out)), (235, 233, 226), [((400, 900, 280, 30), (120, 120, 120))],
+                  name=os.path.basename(out)[:-4])
+        return _coloured("Footage: Unitree", (400, 900, 280, 30), "rgb(120, 120, 120)"), None
+    out = look.run(str(path), detail=True, measure_fn=measure, backdrops_fn=lambda pp, p, entries: {e["label"]: video for e in entries})
+    assert not any(": 1 against" in i for i in out.get("issues", [])), out
+
+
+def test_look_measures_one_of_each_overlay_before_repeats(tmp_path):
+    # PL89j: 17 footage cards filled the 12 measures, so the two explainer cards late in the cut went unmeasured
+    cards = [{"id": f"card-{k}", "start": k, "end": k + 1, "src": "./overlays/card.jsx", "jsx": None} for k in range(14)]
+    path, _ = _project(tmp_path, base=((0, 20),), overlays=cards + [{"id": "ov-grip", "start": 16, "end": 17}])
+    (path.parent / "overlays" / "card.jsx").write_text("export default function C() { return <div>c</div> }")
+    fake = _fake_measure({})
+    out = look.run(str(path), at=[k + 0.5 for k in range(14)], measure_fn=fake)   # every card on screen, the grip not
+    assert "ov-grip" in [c[0] for c in fake.calls], fake.calls
+    assert len(fake.calls) == 12 and out["unmeasured"] == 3
+
+
 def test_the_picture_behind_an_overlay_is_every_track_below_it_without_captions():
     p = {"settings": {"fps": 30}, "captions": {"segments": [{"text": "hi", "start": 0, "end": 1}]},
          "tracks": [{"id": "main", "items": [{"id": "v", "type": "video", "src": "/x.mp4", "start": 0, "end": 5}]},
@@ -331,6 +417,30 @@ def test_look_through_the_real_measurer_finds_the_text_off_the_frame(tmp_path):
     wide_issues = [i for i in out["issues"] if "ov-wide" in i]
     assert any("runs off the frame" in i for i in wide_issues), out
     assert not any("ov-fits" in i for i in out["issues"]), out
+
+
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+def test_the_real_measurer_reads_a_card_credit_against_the_cards_own_paper(tmp_path):
+    # PL89j: the footage card's paper is a box-shadow (no plate). Its grey credit is fine on the paper; a pale label on
+    # the same paper is not, whatever the picture under the card.
+    card = ("export default function O() { return <div style={{position: 'absolute', inset: 0}}>"
+            "<div style={{position: 'absolute', left: 60, top: 500, width: 960, height: 540, boxShadow: '0 0 0 3000px #ebe9e2'}} />"
+            "<div style={{position: 'absolute', left: 380, top: 1080, fontSize: 30, color: 'rgb(120, 120, 120)'}}>Footage: Unitree</div>"
+            "<div style={{position: 'absolute', left: 700, top: 1300, fontSize: 40, color: 'rgb(232, 170, 150)'}}>hurts</div>"
+            "</div> }")
+    # and a label drawn dim (ink at opacity 0.32, its state not yet come) on the same paper
+    gauge = ("export default function O() { return <div style={{position: 'absolute', inset: 0, background: '#ebe9e2'}}>"
+             "<div style={{position: 'absolute', left: 200, top: 1100, fontSize: 40, color: '#1D1B16', opacity: 0.32}}>slips</div>"
+             "</div> }")
+    path, _ = _project(tmp_path, overlays=[{"id": "ov-card", "start": 1, "end": 3, "jsx": card},
+                                           {"id": "ov-gauge", "start": 4, "end": 6, "jsx": gauge}])
+    video = _backdrop(tmp_path, (110, 110, 110))
+    out = look.run(str(path), detail=True, backdrops_fn=lambda pp, p, entries: {e["label"]: video for e in entries})
+    assert out["overlays"] == 2, out
+    said = [i for i in out.get("issues", []) if ": 1 against" in i]
+    assert len(said) == 2, out
+    assert '"hurts"' in said[0] and "against its own background" in said[0], out
+    assert '"slips"' in said[1] and "ov-gauge" in said[1], out
 
 
 @pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
