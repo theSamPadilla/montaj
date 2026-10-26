@@ -710,7 +710,8 @@ def _labels(b, units, is_filler):
         label = (_SPAN_LABEL if span else _LABEL).get(why.rstrip("?"))
         if label is None or units[ui][0].fixed:
             return
-        entry = (label, frozenset(span) if span else None, other if other != ui else None)
+        # a noise? label names no other take: it is about the sound under the words
+        entry = (label, frozenset(span) if span else None, other if other != ui and label != "noise?" else None)
         if entry not in out.setdefault(ui, []):
             out[ui].append(entry)
     section_of = {ui: s for s, sec in enumerate(sel.sections) for ui in sec}
@@ -727,6 +728,10 @@ def _labels(b, units, is_filler):
         add(ui, "repeat", pos, None)
     for ui, span, why in list(sel.suggest) + list(offers):
         add(ui, why, span, sel.partner.get(ui))
+    for ui, entries in out.items():
+        # a whole-take label that names its other take says all a bare one would
+        named = {lb for lb, span, other in entries if span is None and other is not None}
+        out[ui] = [e for e in entries if not (e[1] is None and e[2] is None and e[0] in named)]
     return out
 
 
