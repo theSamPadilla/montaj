@@ -423,8 +423,17 @@ def text_boxes(measurement, item, frame_w, frame_h):
             clipped = (_num(bb.get("x")) < _num(a.get("x")) - OVERFLOW_PX or _num(bb.get("y")) < _num(a.get("y")) - OVERFLOW_PX
                        or _num(bb.get("x")) + _num(bb.get("w")) > _num(a.get("x")) + _num(a.get("w")) + OVERFLOW_PX
                        or _num(bb.get("y")) + _num(bb.get("h")) > _num(a.get("y")) + _num(a.get("h")) + OVERFLOW_PX)
+        g = t.get("glyphs")
+        if isinstance(g, dict) and _num(g.get("w")) > 0 and _num(g.get("h")) > 0:
+            b["glyphs"] = placed_box(g, item, frame_w, frame_h)   # PL89f: the text's own extent (glyphs_of)
         out.append((str(t.get("text") or "")[:24], b, clipped, t.get("spills") is True))
     return out
+
+
+def glyphs_of(box):
+    """PL89f: the text's own extent on the frame when the measurer gave it, else its box. A centred title in a full-width
+    box spans the width as a box; its glyphs say where the text is."""
+    return box.get("glyphs") or box
 
 
 # The hints' own words, so an answer can tell that it carries one (answer: then run look again).
@@ -530,29 +539,31 @@ def measured_issues(item, measurement, frame_w, frame_h, t, label, bands=()):
     for text, b, clipped, spills in text_boxes(measurement, item, frame_w, frame_h):
         quote = f' "{text}"' if text else ""
         x0, y0, x1, y1 = b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"]
+        g = glyphs_of(b)   # the zones and their hints read the text itself; off the frame reads the box
+        gx0, gy0, gx1, gy1 = g["x"], g["y"], g["x"] + g["w"], g["y"] + g["h"]
         hinted = []
 
-        def zone(kind, words):
-            how = "" if hinted else move_to_fit(b, frame_w, frame_h, tall=tall, bands=bands, sx=sx, sy=sy)
+        def zone(kind, words, box=g):
+            how = "" if hinted else move_to_fit(box, frame_w, frame_h, tall=tall, bands=bands, sx=sx, sy=sy)
             if add(kind, f"text{quote} {words}" + (f": {how}" if how else "")) and how:
                 hinted.append(kind)
 
         if x0 < -OVERFLOW_PX or y0 < -OVERFLOW_PX or x1 > frame_w + OVERFLOW_PX or y1 > frame_h + OVERFLOW_PX:
-            zone("off", "runs off the frame")
+            zone("off", "runs off the frame", b)
             continue   # off the frame says it all
         if spills:
             add("spill", f"text{quote} spills out of its box")
         elif clipped:
             add("clip", f"text{quote} is cut off by its box")
-        if x0 < mx or y0 < my or x1 > frame_w - mx or y1 > frame_h - my:
+        if gx0 < mx or gy0 < my or gx1 > frame_w - mx or gy1 > frame_h - my:
             zone("margin", "inside the 5% title-safe margin")
         for top, bottom, s, e in bands:
-            if y0 < bottom and top < y1:
+            if gy0 < bottom and top < gy1:
                 zone("captions", f"crosses the captions ({r2(s)}-{r2(e)}s)")
                 break
-        if tall and y1 > frame_h - BOTTOM_UI_PX:
+        if tall and gy1 > frame_h - BOTTOM_UI_PX:
             zone("bottom", "over the apps' bottom controls")
-        if tall and x1 > frame_w - RIGHT_UI_PX and y0 < frame_h * RIGHT_UI_Y[1] and y1 > frame_h * RIGHT_UI_Y[0]:
+        if tall and gx1 > frame_w - RIGHT_UI_PX and gy0 < frame_h * RIGHT_UI_Y[1] and gy1 > frame_h * RIGHT_UI_Y[0]:
             zone("right", "under the apps' right-side buttons")
     return out
 

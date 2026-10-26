@@ -346,6 +346,35 @@ def test_the_move_hint_clears_every_zone_at_once(box, bands, want):
     assert [i["text"] for i in lc.measured_issues({}, _texts(box), 1080, 1920, 1, "ov", bands)] == want
 
 
+# PL89f: a centred title written as a full-width box always measured as "inside the title-safe margin" (its element
+# spans the width), and the hint told the agent to narrow "UCLA" to 972 px. The zone checks and their hints use the
+# text's own glyphs when the measurer gives them; with none (an older measure), the box as before.
+def _glyphed(text, box, glyphs):
+    t = _texts((text, *box))
+    t["texts"][0]["glyphs"] = dict(zip("xywh", glyphs))
+    return t
+
+
+def test_a_full_width_centred_title_is_judged_by_its_glyphs():
+    assert lc.measured_issues({}, _glyphed("UCLA", (0, 300, 1080, 110), (430, 310, 220, 90)), 1080, 1920, 1, "ov") == []
+    edge = _glyphed("Edge", (0, 600, 1080, 80), (20, 610, 400, 60))
+    assert [i["text"] for i in lc.measured_issues({}, edge, 1080, 1920, 1, "ov")] == [
+        'text "Edge" inside the 5% title-safe margin: move it right 34 px']
+    # the glyphs, not the box, decide the captions and the controls too
+    low = _glyphed("Low", (0, 1300, 1080, 300), (440, 1200, 200, 60))
+    assert lc.measured_issues({}, low, 1080, 1920, 1, "ov", [(1292, 1432, 1, 2)]) == []
+
+
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+def test_the_real_measurer_does_not_call_a_full_width_centred_title_inside_the_margin(tmp_path):
+    title = ("export default function O() { return <div style={{position: 'absolute', "
+             "left: 0, top: 300, width: 1080, textAlign: 'center', fontSize: 96, color: 'white'}}>UCLA</div> }")
+    path, _ = _project(tmp_path, overlays=[{"id": "ov-title", "start": 1, "end": 3, "jsx": title}])
+    out = look.run(str(path), detail=True)
+    assert out["overlays"] == 1, out   # measured, not failed
+    assert not any("ov-title" in i and ("margin" in i or "error" in i) for i in out.get("issues", [])), out
+
+
 def test_an_answer_with_move_hints_says_to_run_look_again():
     hinted = [{"t": 1.0, "id": "ov", "text": "text \"Tag\" crosses the captions (1-2s): move it down 82 px"}]
     plain = [{"t": 1.0, "id": "ov", "text": "text \"Tag\" spills out of its box"}]

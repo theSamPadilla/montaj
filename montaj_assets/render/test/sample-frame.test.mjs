@@ -1813,3 +1813,26 @@ test('(§59) sampleFrame: the captions are drawn (the export\'s own caption over
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// ---------------------------------------------------------------------------
+// PL89f: a centred title written as a full-width box (left 0, width 1080, textAlign center) measures its element as
+// the whole width, so every zone check called it inside the title-safe margin and look told the agent to narrow the
+// four letters "UCLA". Each text also reports `glyphs`: its own text's extent, which the zone checks use.
+// ---------------------------------------------------------------------------
+test('(pl89f) sampleOverlay --measure: a full-width centred title reports its glyphs apart from its box', { timeout: 60_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-glyphs-'))
+  try {
+    const jsxPath = join(dir, 'title.jsx')
+    writeFileSync(jsxPath, "export default function T() { return <div style={{ position: 'absolute', left: 0, top: 300, width: 1080, " +
+      "textAlign: 'center', fontSize: 96, fontFamily: 'monospace', color: 'white' }}>UCLA</div> }\n")
+    const result = await sampleOverlay({ componentPath: jsxPath, frame: 0, fps: 30, width: 1080, height: 1920, outPath: join(dir, 'out.png'), measure: true })
+    const t = result.measurements.texts.find((x) => x.text.includes('UCLA'))
+    assert.ok(t, 'the title is measured')
+    assert.equal(Math.round(t.bbox.w), 1080, 'the box is the element: the full width')
+    assert.ok(t.glyphs && t.glyphs.w > 100 && t.glyphs.w < 400, `the glyphs are the four letters: ${JSON.stringify(t.glyphs)}`)
+    assert.ok(Math.abs(t.glyphs.x + t.glyphs.w / 2 - 540) < 4, `centred: ${JSON.stringify(t.glyphs)}`)
+    assert.ok(t.glyphs.y >= t.bbox.y - 1 && t.glyphs.h > 40, `on its line: ${JSON.stringify(t.glyphs)}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
