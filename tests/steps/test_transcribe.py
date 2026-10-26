@@ -241,7 +241,8 @@ def _words(result):
 
 def test_fit_pauses_moves_a_word_out_of_the_silence(tone_pause_tone, tmp_path, fake_whisper_env):
     proc = run_step_env("transcribe.py", fake_whisper_env,
-                        "--input", str(tone_pause_tone), "--out", str(tmp_path / "out"), "--fit-pauses")
+                        "--input", str(tone_pause_tone), "--out", str(tmp_path / "out"), "--fit-pauses",
+                        "--whole-file")      # the full-file run's fit (by runs, a word never sits in a silence)
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout)
     data, offsets = _words(result)
@@ -257,7 +258,7 @@ def test_fit_pauses_moves_a_word_out_of_the_silence(tone_pause_tone, tmp_path, f
 
 def test_without_fit_pauses_the_word_times_are_whisper_s(tone_pause_tone, tmp_path, fake_whisper_env):
     proc = run_step_env("transcribe.py", fake_whisper_env,
-                        "--input", str(tone_pause_tone), "--out", str(tmp_path / "out"))
+                        "--input", str(tone_pause_tone), "--out", str(tmp_path / "out"), "--whole-file")
     assert proc.returncode == 0, proc.stderr
     data, offsets = _words(json.loads(proc.stdout))
     assert "fit_pauses" not in data["montaj"]
