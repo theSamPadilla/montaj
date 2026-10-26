@@ -1,6 +1,6 @@
 /**
  * lower-third.jsx: a name card (§558, place's `lower_third` preset). Name on top, a smaller second line under it,
- * an accent bar on the left, on a soft dark plate. Placed bottom-left with its bottom 36% up the frame, above
+ * a thin accent rule between them (never a bar down the left edge, which reads as made by an AI), on a soft dark plate. Placed bottom-left with its bottom 36% up the frame, above
  * montaj's own captions (which draw between 56% and 76% of the height), clear of the apps' right-side buttons on a
  * tall phone frame and inside the 5% title-safe margin. Each line shrinks to fit the card's width, or wraps to two
  * lines (never cut off). Slides in over ~0.35 s and fades out over the last ~0.3 s, both done
@@ -18,7 +18,7 @@
  *   textAlign   default 'left'
  *   textTransform default 'none'
  *   bgColor     the plate (default 'rgba(0, 0, 0, 0.55)'; 'transparent' for none)
- *   accent      the bar's colour (default '#00b4d8')
+ *   accent      the rule's colour (default '#00b4d8')
  *   canvasW, canvasH  the design canvas in px; place sets them (default 1080 x 1920)
  *   anim        'slide' | 'fade' | 'pop' (default 'slide')
  */
@@ -44,8 +44,8 @@ export default function LowerThird() {
   const right = H >= W * 1.7 ? 220 : Math.round(W * 0.05)
   const subtitle = p.subtitle === undefined ? 'Title' : String(p.subtitle)
   const name = String(p.text || 'Name Surname')
-  // the card's text width: the frame less the left margin, the right margin, the bar and the padding
-  const textW = W - 64 - right - 8 - 20 - 52
+  // the card's text width: the frame less the left margin, the right margin and the padding
+  const textW = W - 64 - right - 60
   // about 0.58 em per character at a heavy weight: each line on one line inside the card, or, when that would go
   // below 28 px, on two lines at 24 px or more
   const oneLine = (n) => Math.floor(textW / Math.max(1, n * 0.58))
@@ -64,15 +64,13 @@ export default function LowerThird() {
   return (
     <div style={{
       position: 'absolute', left: 64, bottom,
-      display: 'flex', alignItems: 'stretch', gap: 20, padding: '22px 30px 22px 22px', borderRadius: 18,
+      display: 'flex', flexDirection: 'column', gap: 10, padding: '22px 30px', borderRadius: 18,
       background: p.bgColor || 'rgba(0, 0, 0, 0.55)', opacity: fadeIn * fadeOut,
       transform: `translateX(${x}px) scale(${scale})`, transformOrigin: 'left bottom',
     }}>
-      <div style={{ width: 8, borderRadius: 4, background: p.accent || '#00b4d8', flex: '0 0 auto' }} />
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <div style={{ ...text, ...line(name.length), fontSize: size, fontWeight: p.fontWeight || '800', lineHeight: 1.05 }}>{name}</div>
-        {subtitle ? <div style={{ ...text, ...line(subtitle.length), fontSize: Math.min(subSize, size), fontWeight: 500, opacity: 0.85, lineHeight: 1.15 }}>{subtitle}</div> : null}
-      </div>
+      <div style={{ ...text, ...line(name.length), fontSize: size, fontWeight: p.fontWeight || '800', lineHeight: 1.05 }}>{name}</div>
+      <div style={{ width: Math.round(size * 1.2), height: 3, background: p.accent || '#00b4d8' }} />
+      {subtitle ? <div style={{ ...text, ...line(subtitle.length), fontSize: Math.min(subSize, size), fontWeight: 500, opacity: 0.85, lineHeight: 1.15 }}>{subtitle}</div> : null}
     </div>
   )
 }
