@@ -3,6 +3,7 @@
 A 5-image portrait (4:5) carousel, its own git repository. The measurer is faked except in the last test, which
 measures a real headline through sample_overlay.
 """
+import copy
 import json
 import shutil
 import subprocess
@@ -492,30 +493,59 @@ def _box5(el):
     return tuple(el[k] for k in ("x", "y", "w", "h", "rotation"))
 
 
-def test_a_locked_headline_keeps_its_box_through_edit_and_headlines_but_takes_the_rest(tmp_path):
+def _locked_el(d):
+    return copy.deepcopy(headline(proj(d)["slides"][0]))
+
+
+def test_a_headlines_call_leaves_a_locked_headline_exactly_as_stored_and_names_it(tmp_path):
     d = make_carousel(tmp_path)
     run(d, headlines=json.dumps(HEADS))
     lid = _lock_headline(d)
-    out = run(d, edit=json.dumps({"slide": 1, "headline": "New words", "color": "red", "position": "bottom", "style": "label"}))
-    el = headline(proj(d)["slides"][0])
-    assert _box5(el) == (33, 44, 555, 222, 7) and el["locked"] is True
-    assert el["overlay"]["props"]["text"] == "New words" and el["overlay"]["props"]["color"] == "red"
-    assert el["overlay"]["props"]["bgColor"] == "#ffffff"
-    assert out["locked"] == [lid] and out["changed"] == [1]
+    before, el0 = proj(d), _locked_el(d)
     out = run(d, headlines=json.dumps(["Third text"]))
-    el = headline(proj(d)["slides"][0])
-    assert _box5(el) == (33, 44, 555, 222, 7) and el["overlay"]["props"]["text"] == "Third text"
-    assert "locked" not in out, "a text-only change never tried to move it"
+    assert headline(proj(d)["slides"][0]) == el0 and proj(d) == before
+    assert out["locked"] == [lid] and out["changed"] == [] and "headlines" not in out
+    assert len([e for e in proj(d)["slides"][0]["elements"] if e.get("id") == lid]) == 1
 
 
-def test_a_style_alone_restyles_a_locked_headline_without_moving_it(tmp_path):
+def test_a_style_call_leaves_a_locked_headline_exactly_as_stored(tmp_path):
     d = make_carousel(tmp_path)
     run(d, headlines=json.dumps(HEADS))
     lid = _lock_headline(d)
+    before = proj(d)
     out = run(d, style="label")
-    el = headline(proj(d)["slides"][0])
-    assert _box5(el) == (33, 44, 555, 222, 7) and el["overlay"]["props"]["bgColor"] == "#ffffff"
-    assert "locked" not in out, "a restyle never tried to move it"
+    assert proj(d)["slides"][0] == before["slides"][0] and out["locked"] == [lid]
+    assert 1 not in out["changed"] and out["headlines"] == {"restyled": 4}
+
+
+def test_an_edit_of_text_colour_and_position_leaves_a_locked_headline_exactly_as_stored(tmp_path):
+    d = make_carousel(tmp_path)
+    run(d, headlines=json.dumps(HEADS))
+    lid = _lock_headline(d)
+    before = proj(d)
+    out = run(d, edit=json.dumps({"slide": 1, "headline": "New words", "color": "red", "position": "bottom", "style": "label"}))
+    assert proj(d) == before and out["locked"] == [lid] and out["changed"] == []
+
+
+def test_a_locked_headline_is_the_slides_headline_and_no_second_one_is_added(tmp_path):
+    d = make_carousel(tmp_path)
+    run(d, headlines=json.dumps(HEADS))
+    lid = _lock_headline(d)
+    n = len(proj(d)["slides"][0]["elements"])
+    out = run(d, headlines=json.dumps(["Other"]))
+    els = proj(d)["slides"][0]["elements"]
+    assert len(els) == n and out["locked"] == [lid]
+
+
+def test_other_slides_change_while_a_locked_headline_on_one_is_kept(tmp_path):
+    d = make_carousel(tmp_path)
+    run(d, headlines=json.dumps(HEADS))
+    lid = _lock_headline(d)
+    el0 = _locked_el(d)
+    out = run(d, headlines=json.dumps(["A", "B"]))
+    p = proj(d)["slides"]
+    assert headline(p[0]) == el0 and headline(p[1])["overlay"]["props"]["text"] == "B"
+    assert out["locked"] == [lid] and out["changed"] == [2] and out["headlines"] == {"replaced": 1}
 
 
 def test_an_unlocked_headline_moves_as_before_and_locked_false_is_unlocked(tmp_path):

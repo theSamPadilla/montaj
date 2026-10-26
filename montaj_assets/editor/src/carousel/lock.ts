@@ -1,6 +1,6 @@
 import type { CarouselElement } from '../types'
 
-/** Whether `el` is locked (§586 M5): selectable and styleable, not placeable. */
+/** Whether `el` is locked (§586 M5): selectable, copyable and layerable; its place and content are fixed. */
 export const isLocked = (el: CarouselElement | undefined): boolean => el?.locked === true
 
 /**
