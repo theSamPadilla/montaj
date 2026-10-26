@@ -20,9 +20,9 @@
     {
       "name": "item",
       "type": "string",
-      "required": true,
+      "required": false,
       "repeatable": true,
-      "description": "The b-roll clip's item id (a video on an upper track); a list frames them all in one call (at most 12): read in parallel, one write, one sheet."
+      "description": "The b-roll clip's item id on an upper track (add the clip to an upper track first); a list frames them all in one call (at most 12): read in parallel, one write, one sheet. Left out, the answer names the b-roll on the timeline."
     },
     {
       "name": "mode",
@@ -35,7 +35,7 @@
       "name": "source",
       "type": "string",
       "required": false,
-      "description": "Where the footage is from, for the card's credit: 'PhoneBot project video' gives 'Footage: PhoneBot project video'."
+      "description": "Where the footage is from, for the card's credit: 'PhoneBot project video' gives 'Footage: PhoneBot project video'. Left out, the credit comes from the source's title, site or downloaded file name."
     },
     {
       "name": "detail",

@@ -96,6 +96,43 @@ def profile_matte(project):
             "brackets": not re.search(r"\bno (?:decorative )?(?:borders?|frames?|framing)\b|\bwithout (?:decorative )?borders?\b", line, re.I)}
 
 
+ADD_FIRST = "add the clip to an upper track first, then pass its item id"
+PLATFORMS = {"youtube": "YouTube", "vimeo": "Vimeo", "tiktok": "TikTok", "instagram": "Instagram"}
+
+
+def default_credit(source):
+    """PL89e: the card's credit when no `source` is passed, from the clip's source record: its title or name, else its
+    URL's site, else a downloaded file's own name ("youtube-<slug>-<id>" gives "Footage: <Slug> · YouTube"); '' for the
+    person's own footage."""
+    source = source or {}
+    for k in ("title", "name", "sourceTitle"):
+        if isinstance(source.get(k), str) and source[k].strip():
+            return f"Footage: {source[k].strip()}"
+    url = source.get("url") or source.get("sourceUrl")
+    if isinstance(url, str) and url.strip():
+        from urllib.parse import urlparse
+        host = urlparse(url.strip()).netloc.lower()
+        host = host[4:] if host.startswith("www.") else host
+        if host:
+            return f"Footage: {host}"
+    stem = os.path.splitext(os.path.basename(str(source.get("src") or "")))[0]
+    m = re.match(r"^youtube-(?:(.+)-)?([A-Za-z0-9_-]{11})$", stem)
+    if m:
+        slug = (m.group(1) or "").replace("-", " ").replace("_", " ").strip()
+        return f"Footage: {slug.title()} · YouTube" if slug else "Footage: YouTube"
+    for prefix, label in PLATFORMS.items():
+        if stem.startswith(prefix + "-"):
+            return f"Footage: {label}"
+    return ""
+
+
+def source_of(project, item):
+    """The project's source record for a timeline item: the one with the same file (by real path)."""
+    real = os.path.realpath(str(item.get("src") or ""))
+    return next((s for s in (project.get("sources") or []) if isinstance(s, dict) and s.get("src")
+                 and os.path.realpath(str(s["src"])) == real), {"src": item.get("src")})
+
+
 def caption_band(project, start, end, width, height):
     """(top, bottom) as shares of the height where the captions draw over [start, end): the project's own style, or
     every style's band on a tall frame when it has no captions yet (they are usually added later)."""
@@ -148,7 +185,9 @@ def analyse(project, on_disk, project_path, item_id, mode, matte=None):
     or {"id", "mode": "none", "why"} for a clip that needs nothing. Raises ItemRefused."""
     hit = place.find_item(project, item_id)
     if hit is None:
-        raise ItemRefused("item_not_found", f"No item {item_id} on the timeline.")
+        if any(isinstance(src, dict) and src.get("id") == item_id for src in project.get("sources") or []):
+            raise ItemRefused("item_not_found", f"{item_id} is a source id, not a timeline item: {ADD_FIRST}.")
+        raise ItemRefused("item_not_found", f"No item {item_id} on the timeline: {ADD_FIRST}.")
     ti, _, item = hit
     if item.get("type") != "video" or ti == 0:
         raise ItemRefused("not_broll", f"{item_id} is not a video clip on an upper track (b-roll); the first track is the main footage.")
@@ -236,7 +275,8 @@ def analyse(project, on_disk, project_path, item_id, mode, matte=None):
     box = [round((1 - CARD_SCALE) / 2, 4), round(CARD_CENTER_Y - card_h / 2, 4), CARD_SCALE, round(card_h, 4)]
     return {"id": item_id, "mode": mode, "why": why, "probed": probed, "crop_w": crop_w, "box": box, "start": start,
             "end": end, "W": W, "H": H, "track_keys": [(item_t(st), round(p["x"], 4)) for st, p in zip(times, path["points"])] if mode == "track" else None,
-            "found_boxes": found, "found": path["found"], "n": n, "crossed": crossed, "zoom": zoom}
+            "found_boxes": found, "found": path["found"], "n": n, "crossed": crossed, "zoom": zoom,
+            "default_credit": default_credit(source_of(project, item))}
 
 
 def run(project_path, item_id, *, mode="auto", source=None, detail=False, sampler=None):
@@ -248,9 +288,13 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
     if mode not in ("auto", "track", "card"):
         fail("invalid_params", "mode is auto, track or card.")
     single = isinstance(item_id, str)
-    ids = [item_id] if single else list(dict.fromkeys(str(i) for i in item_id))
+    ids = [item_id] if single else list(dict.fromkeys(str(i) for i in (item_id or []) if str(i).strip()))
     if not ids:
-        fail("invalid_params", "item is one item id or a list of them.")
+        doc, _ = read_tracks(project_path)
+        doc = normalize_tracks(doc)
+        broll = [it.get("id") for t in doc["tracks"][1:] for it in t.get("items", []) if it.get("type") == "video"]
+        on = f" (on the timeline now: {', '.join(map(str, broll[:12]))})" if broll else ""
+        fail("missing_item", f"Pass item: the b-roll clip's item id on an upper track{on}. Not on the timeline yet: {ADD_FIRST}.")
     if len(ids) > MAX_ITEMS:
         fail("invalid_params", f"At most {MAX_ITEMS} items in one call.")
     on_disk, read_rev = read_tracks(project_path)
@@ -317,7 +361,7 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
                 subject = [[t, *[round(v, 4) for v in p["box"]]] for t, p in pl["found_boxes"]]
                 start, end = pl["start"], pl["end"]
                 card = {"id": place._new_id(doc), "type": "overlay", "src": preset_src, "start": start, "end": end,
-                        "props": {"box": ",".join(str(v) for v in pl["box"]), "credit": credit,
+                        "props": {"box": ",".join(str(v) for v in pl["box"]), "credit": credit or pl.get("default_credit", ""),
                                   "subject": json.dumps(simplify_boxes(subject)) if subject else "",
                                   "canvasW": str(pl["W"]), "canvasH": str(pl["H"]), "for": pl["id"],
                                   **({"paper": matte["paper"]} if matte else {}),
@@ -385,7 +429,7 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
             out["card"] = written[pl["id"]]["card"]
             if pl["zoom"]:
                 out["zoom"] = pl["zoom"]
-            if not credit:
+            if not credit and not pl.get("default_credit"):
                 out["note"] = "no credit: pass source for a 'Footage: <source>' line"
         if detail:
             out["crop_w"], out["box"] = pl["crop_w"], pl["box"]
@@ -436,7 +480,7 @@ def simplify_boxes(subject, tol=0.01):
 def build_parser():
     parser = argparse.ArgumentParser(description="Frame a landscape clip on a vertical timeline: follow its subject, or inset it as a card")
     parser.add_argument("--project", required=True, help="The project id, its folder, or its project.json")
-    parser.add_argument("--item", required=True, action="append", help="The b-roll clip's item id; repeat it for several")
+    parser.add_argument("--item", action="append", help="The b-roll clip's item id; repeat it for several")
     parser.add_argument("--mode", default="auto", choices=["auto", "track", "card"], help="auto (default), track or card")
     parser.add_argument("--source", default=None, help="Where the footage is from, for the card's credit line")
     parser.add_argument("--detail", action="store_true", help="Also answer the crop width and the card's box")
@@ -450,7 +494,7 @@ def main():
         project_path = os.path.join(project_path, "project.json")
     if not os.path.isfile(project_path):
         fail("file_not_found", f"No project.json at {args.project}")
-    items = args.item[0] if len(args.item) == 1 else args.item
+    items = None if not args.item else args.item[0] if len(args.item) == 1 else args.item
     print(json.dumps(run(project_path, items, mode=args.mode, source=args.source, detail=args.detail)))
 
 

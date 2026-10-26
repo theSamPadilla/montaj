@@ -446,3 +446,63 @@ def test_no_zoom_when_the_subject_crosses_the_frame(tmp_path):
     out = fb.run(str(p), "br-1", mode="card", sampler=stub_sampler())
     item, _ = item_of(p, "br-1")
     assert "sourceCrop" not in item and "zoom" not in out
+
+
+# PL89e: the agent called frame_broll with no item, then with a source id, before the clips were on the timeline; and
+# passed no source, so the cards had no credit.
+def with_sources(p, src_name=None):
+    doc = json.loads(Path(p).read_text())
+    item = doc["tracks"][1]["items"][0]
+    doc["sources"] = [{"id": "clip-5-834c4a", "type": "video", "src": item["src"]}]
+    Path(p).write_text(json.dumps(doc, indent=2))
+    return p
+
+
+def test_no_item_answers_what_to_pass_and_the_broll_on_the_timeline(tmp_path, capsys):
+    p = project(tmp_path)
+    with pytest.raises(SystemExit):
+        fb.run(str(p), None, mode="card", sampler=stub_sampler())
+    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert err["error"] == "missing_item"
+    assert "add the clip to an upper track first, then pass its item id" in err["message"] and "br-1" in err["message"]
+
+
+def test_a_source_id_says_it_is_a_source_and_to_add_the_clip_first(tmp_path, capsys):
+    p = with_sources(project(tmp_path))
+    with pytest.raises(SystemExit):
+        fb.run(str(p), "clip-5-834c4a", mode="card", sampler=stub_sampler())
+    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert err["error"] == "item_not_found"
+    assert "clip-5-834c4a is a source id" in err["message"]
+    assert "add the clip to an upper track first, then pass its item id" in err["message"]
+    out = fb.run(str(p), ["clip-5-834c4a", "br-1"], mode="card", sampler=stub_sampler())
+    assert "add the clip to an upper track first" in out["items"][0]["message"] and out["items"][1]["mode"] == "card"
+
+
+@pytest.mark.parametrize("name, credit", [
+    ("youtube-phonebot-o_Q4rFSNZuE.mp4", "Footage: Phonebot · YouTube"),
+    ("youtube-o_Q4rFSNZuE.mp4", "Footage: YouTube"),
+    ("IMG_1167.MOV", ""),
+])
+def test_the_credit_defaults_from_the_downloaded_source_name(name, credit):
+    assert fb.default_credit({"src": f"/w/{name}"}) == credit
+
+
+def test_a_source_title_or_url_wins_over_the_file_name():
+    assert fb.default_credit({"src": "/w/youtube-x-o_Q4rFSNZuE.mp4", "title": "PhoneBot: a phone walks"}) == "Footage: PhoneBot: a phone walks"
+    assert fb.default_credit({"src": "/w/a.mp4", "url": "https://www.example.org/watch?v=1"}) == "Footage: example.org"
+
+
+def test_a_card_with_no_source_passed_gets_the_default_credit(tmp_path):
+    p = project(tmp_path)
+    doc = json.loads(Path(p).read_text())
+    src = Path(doc["tracks"][1]["items"][0]["src"])
+    renamed = src.with_name("youtube-phonebot-o_Q4rFSNZuE.mp4")
+    src.rename(renamed)
+    for t in doc["tracks"]:
+        for it in t["items"]:
+            it["src"] = str(renamed)
+    Path(p).write_text(json.dumps(doc, indent=2))
+    out = fb.run(str(p), "br-1", mode="card", sampler=stub_sampler())
+    card = next(it for t in json.loads(Path(p).read_text())["tracks"] for it in t["items"] if it.get("id") == out["card"])
+    assert card["props"]["credit"] == "Footage: Phonebot · YouTube" and "note" not in out
