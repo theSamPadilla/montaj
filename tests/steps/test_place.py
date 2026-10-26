@@ -363,6 +363,35 @@ def test_an_animated_preset_renders_every_word_inside_the_frame_and_the_safe_are
         assert w in shown, out
 
 
+# ── fonts a preset is given (PL89e) ───────────────────────────────────────────────────────────────────────────────
+# 52's round-6 notes: the ring got fontFamily "JetBrains Mono" bare, no font loaded it, and the label drew in Times.
+# A preset's face loads (place gives the item its Google Font) and ends in a generic family, so it never falls to serif.
+
+@pytest.mark.parametrize("name", sorted(place.PRESETS) + ["footage_card"])
+def test_every_preset_ends_a_bare_face_in_a_generic_family(name):
+    code = (Path(place.PRESETS_DIR) / place.COPIED_PRESETS[name]).read_text()
+    assert "p.fontFamily ||" not in code, f"{name}: a bare face would fall back to serif"
+    assert "withGeneric(p.fontFamily" in code, name
+
+
+def test_a_preset_given_a_font_gets_it_as_a_google_font(tmp_path):
+    d = make_project(tmp_path)
+    out = run(d, at="2", preset="ring", props=json.dumps({"label": "LIVE", "fontFamily": "JetBrains Mono", "fontWeight": "700"}))
+    item = tracks(d)[1]["items"][0]
+    assert any(s.startswith("JetBrains+Mono") for s in item.get("googleFonts", [])), item
+    assert out.get("fonts") == item["googleFonts"]
+    run(d, at="10", preset="callout", props=json.dumps({"text": "3x"}))
+    assert "googleFonts" not in tracks(d)[1]["items"][1], "no font named, none added (the preset's own default)"
+
+
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+def test_a_bare_face_renders_with_its_generic_family(tmp_path):
+    d = make_project(tmp_path)
+    out = run(d, at="2", for_s=3, preset="rule", props=json.dumps({"text": "flat ground only", "fontFamily": "Nonexistent Face"}),
+              measure_fn=look.measure, detail=True)
+    assert not out.get("issues"), out
+
+
 # ── review 1 (write safety) ───────────────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("kw,err", [

@@ -16,6 +16,13 @@
  *   period      seconds between rings (default '1.4')
  *   canvasW, canvasH  the design canvas in px; place sets them (default 1080 x 1920)
  */
+// A face it is given ends in a generic family, so a face that does not load falls back to its kind, never to serif.
+const withGeneric = (f, d) => {
+  const s = String(f || '').trim()
+  if (!s) return d
+  return /(^|,)\s*(serif|sans-serif|monospace|system-ui|cursive|fantasy|ui-[a-z-]+)\s*$/i.test(s) ? s : `${s}, ${/mono|code|courier/i.test(s) ? 'ui-monospace, monospace' : 'system-ui, sans-serif'}`
+}
+
 export default function Ring() {
   const p = props || {}
   const W = Number(p.canvasW) > 0 ? Number(p.canvasW) : 1080
@@ -46,7 +53,7 @@ export default function Ring() {
       </svg>
       {label ? (
         <div style={{ position: 'absolute', left: lx, top: p.side === 'above' ? y - r - 24 : y + r + 24, transform: `translate(-50%, ${p.side === 'above' ? '-100%' : '0'}) ${m.style.transform}`, transformOrigin: 'center',
-          fontFamily: p.fontFamily || 'Inter, system-ui, sans-serif', fontWeight: p.fontWeight || '800', fontSize: size, letterSpacing: '0.06em',
+          fontFamily: withGeneric(p.fontFamily, 'Inter, system-ui, sans-serif'), fontWeight: p.fontWeight || '800', fontSize: size, letterSpacing: '0.06em',
           color, whiteSpace: 'nowrap', textShadow: light ? '0 2px 12px rgba(0,0,0,0.55)' : 'none' }}>{label}</div>
       ) : null}
     </div>
