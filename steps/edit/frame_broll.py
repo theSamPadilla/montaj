@@ -146,8 +146,8 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
     band = caption_band(project, start, end, W, H)
     # a full-height crop keeps the source's heights, so the subject's box is where it lands on screen
     boxes_found = [p["box"] for p in path["points"] if p["box"] is not None]
-    low = under_captions(boxes_found, band)              # mostly under them: auto cards it
-    crossed = under_captions(boxes_found, band, 0.05)    # crossed by them at all: said, for the AI to judge
+    # text off the subject (Sam): the captions crossing the followed subject in most of the clip makes auto card it
+    crossed = under_captions(boxes_found, band, 0.05)
     if mode == "auto":
         if path["cluttered"] > 0.3 * n:
             mode, why = "card", "the camera moves, so there is no one subject to follow"
@@ -155,8 +155,9 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
             mode, why = "card", "no moving subject was found in most of the clip"
         elif path["capture"] < 0.5:
             mode, why = "card", "what moves is wider than the crop"
-        elif low > UNDER_CAPTIONS:
-            mode, why = "card", "a crop that follows the subject puts it under the captions; the card keeps it above them"
+        elif crossed > UNDER_CAPTIONS:
+            mode, why = "card", ("a crop that follows the subject puts the captions across it; the card keeps it "
+                                 "above them (or move the captions and run mode track)")
         else:
             mode = "track"
     elif mode == "track" and path["found"] == 0:
