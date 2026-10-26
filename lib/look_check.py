@@ -23,6 +23,7 @@ import json
 import os
 import re
 
+from lib import footage_credit
 from lib.project_tracks import enabled_track_items
 
 MAX_TIMES = 12
@@ -252,6 +253,11 @@ def data_issues(project, project_dir):
                 out.append({"t": r2(s), "id": lab, "text": "starts before 0"})
             if ti > 0 and footage > 0 and e > footage + 0.05:
                 out.append({"t": r2(e), "id": lab, "text": f"runs past the footage ({r2(footage)}s)"})
+            # PL89e: a footage card (frame_broll's) for third-party footage with no credit.
+            if it.get("type") == "overlay" and footage_credit.is_footage_card(it):
+                owed = footage_credit.owed_credit(project, project_dir, it)
+                if owed:
+                    out.append({"t": r2(s), "id": lab, "text": f'third-party footage with no credit: set its credit ("{owed}") or run frame_broll again'})
             # An engine-drawn item (a 3D scene, src "engine:scene3d") has no file of its own.
             if it.get("type") == "overlay" and not str(it.get("src") or "").startswith("engine:"):
                 p = overlay_path(it, project_dir)

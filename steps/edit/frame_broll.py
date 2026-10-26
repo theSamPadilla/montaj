@@ -21,6 +21,8 @@ from lib import look_check as lc, project_revisions, subject_track, sync_clash  
 from lib.common import fail, ffmpeg_bin, ffprobe_value, ff_seconds, ff_input, get_duration  # noqa: E402
 from lib.project_lock import update_project_or_fail  # noqa: E402
 from lib.project_tracks import normalize_tracks  # noqa: E402
+from lib.footage_credit import (  # noqa: E402,F401  (frame_broll's own names, kept for its callers and tests)
+    PLATFORMS, default_credit, is_footage_card, profile_wants_no_credits, provenance_of, source_of, titles_notes)
 from lib.project_versions import commit_version, is_own_repo  # noqa: E402
 import steps.edit.place as place  # noqa: E402
 
@@ -71,23 +73,7 @@ def profile_matte(project):
     styleProfilePath): {"paper": its colour (the line's first #hex, else DEFAULT_MATTE), "brackets": False when the line
     says no borders} for the first line there about mattes; None when the notes say nothing about mattes (or there are
     no notes)."""
-    path = ((project or {}).get("profileSnapshot") or {}).get("styleProfilePath")
-    if not isinstance(path, str) or not os.path.isfile(path):
-        return None
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            text = f.read(200_000)
-    except OSError:
-        return None
-    section, inside = [], False
-    for line in text.splitlines():
-        if line.lstrip().startswith("#"):
-            if inside:
-                break
-            inside = bool(re.search(r"titles?\b.*overlays?", line, re.I))
-            continue
-        if inside:
-            section.append(line)
+    section = titles_notes(project)
     line = next((l for l in section if re.search(r"\bmattes?\b", l, re.I)), None)
     if line is None:
         return None
@@ -97,54 +83,6 @@ def profile_matte(project):
 
 
 ADD_FIRST = "add the clip to an upper track first, then pass its item id"
-PLATFORMS = {"youtube": "YouTube", "vimeo": "Vimeo", "tiktok": "TikTok", "instagram": "Instagram"}
-
-
-def provenance_of(project_dir, path):
-    """The file's entry in the project's provenance record (assets/.provenance.json, serve/provenance.py), or {}."""
-    if not project_dir or not path:
-        return {}
-    try:
-        from serve import provenance
-        return provenance.merged(project_dir).get(provenance.key_for(project_dir, path)) or {}
-    except Exception:  # noqa: BLE001  (no record, a path outside the project: no entry)
-        return {}
-
-
-def default_credit(source, project_dir=None):
-    """PL89e: the card's credit when no `source` is passed, from the clip's source: the title of its source record or
-    of its provenance (where it was downloaded from), else the site of its URL, else a downloaded file's own name
-    ("youtube-<slug>-<id>" gives "Footage: <Slug> · YouTube"); '' for the person's own footage."""
-    source = source or {}
-    prov = provenance_of(project_dir, source.get("src"))
-    for v in (source.get("title"), source.get("name"), source.get("sourceTitle"), prov.get("title")):
-        if isinstance(v, str) and v.strip():
-            return f"Footage: {v.strip()}"
-    url = source.get("url") or source.get("sourceUrl") or prov.get("sourceUrl")
-    if isinstance(url, str) and url.strip():
-        from urllib.parse import urlparse
-        host = urlparse(url.strip()).netloc.lower()
-        host = host[4:] if host.startswith("www.") else host
-        if host:
-            return f"Footage: {host}"
-    stem = os.path.splitext(os.path.basename(str(source.get("src") or "")))[0]
-    m = re.match(r"^youtube-(?:(.+)-)?([A-Za-z0-9_-]{11})$", stem)
-    if m:
-        slug = (m.group(1) or "").replace("-", " ").replace("_", " ").strip()
-        return f"Footage: {slug.title()} · YouTube" if slug else "Footage: YouTube"
-    for prefix, label in PLATFORMS.items():
-        if stem.startswith(prefix + "-"):
-            return f"Footage: {label}"
-    return ""
-
-
-def source_of(project, item):
-    """The project's source record for a timeline item: the one with the same file (by real path)."""
-    real = os.path.realpath(str(item.get("src") or ""))
-    return next((s for s in (project.get("sources") or []) if isinstance(s, dict) and s.get("src")
-                 and os.path.realpath(str(s["src"])) == real), {"src": item.get("src")})
-
-
 def caption_band(project, start, end, width, height):
     """(top, bottom) as shares of the height where the captions draw over [start, end): the project's own style, or
     every style's band on a tall frame when it has no captions yet (they are usually added later)."""
@@ -332,6 +270,9 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
         return {k: plans[0][k] for k in ("id", "mode", "why")}
 
     credit = f"Footage: {source.strip()}" if source and source.strip() else ""
+    # PL89e: third-party footage keeps its source line (default_credit) even when given an empty source, unless the
+    # profile's notes ask for no credits; the answer says which.
+    no_credits = profile_wants_no_credits(on_disk)
     made, preset_src = False, None
     if any(pl["mode"] == "card" for pl in todo):
         def sync_check(rel):
@@ -373,7 +314,7 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
                 subject = [[t, *[round(v, 4) for v in p["box"]]] for t, p in pl["found_boxes"]]
                 start, end = pl["start"], pl["end"]
                 card = {"id": place._new_id(doc), "type": "overlay", "src": preset_src, "start": start, "end": end,
-                        "props": {"box": ",".join(str(v) for v in pl["box"]), "credit": credit or pl.get("default_credit", ""),
+                        "props": {"box": ",".join(str(v) for v in pl["box"]), "credit": credit or ("" if no_credits else pl.get("default_credit", "")),
                                   "subject": json.dumps(simplify_boxes(subject)) if subject else "",
                                   "canvasW": str(pl["W"]), "canvasH": str(pl["H"]), "for": pl["id"],
                                   **({"paper": matte["paper"]} if matte else {}),
@@ -441,7 +382,10 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
             out["card"] = written[pl["id"]]["card"]
             if pl["zoom"]:
                 out["zoom"] = pl["zoom"]
-            if not credit and not pl.get("default_credit"):
+            if not credit and pl.get("default_credit") and not no_credits:
+                out["credit"] = (f"kept {pl['default_credit']}: third-party footage keeps its source line"
+                                 if source is not None else f"{pl['default_credit']} (from the clip's source)")
+            elif not credit and not pl.get("default_credit"):
                 out["note"] = "no credit: pass source for a 'Footage: <source>' line"
         if detail:
             out["crop_w"], out["box"] = pl["crop_w"], pl["box"]
@@ -457,12 +401,6 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
     elif sheet_times:
         out["sheet_error"] = sheet_error
     return out
-
-
-def is_footage_card(item):
-    """An overlay made from the footage-card preset (place.COPIED_PRESETS' file, wherever it was copied)."""
-    src = str(item.get("src") or "")
-    return item.get("type") == "overlay" and os.path.basename(src).startswith(os.path.splitext(place.COPIED_PRESETS["footage_card"])[0])
 
 
 def drop_own_cards(doc, plan):

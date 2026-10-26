@@ -518,3 +518,34 @@ def test_the_credit_reads_the_title_from_the_files_provenance(tmp_path):
     assert fb.default_credit({"src": str(video)}, str(d)) == "Footage: PhoneBot: a phone that walks"
     (d / "assets" / ".provenance.json").write_text(json.dumps({video.name: {"kind": "web", "via": "url", "sourceUrl": "https://www.example.org/v.mp4"}}))
     assert fb.default_credit({"src": str(video)}, str(d)) == "Footage: example.org"
+
+
+# PL89e: third-party footage keeps its credit even when the agent passes source "", unless the profile says no credits.
+def youtube_project(tmp_path):
+    p = project(tmp_path)
+    doc = json.loads(Path(p).read_text())
+    src = Path(doc["tracks"][1]["items"][0]["src"])
+    renamed = src.with_name("youtube-phonebot-o_Q4rFSNZuE.mp4")
+    src.rename(renamed)
+    for t in doc["tracks"]:
+        for it in t["items"]:
+            it["src"] = str(renamed)
+    Path(p).write_text(json.dumps(doc, indent=2))
+    return p
+
+
+def card_credit(p, card_id):
+    return next(it for t in json.loads(Path(p).read_text())["tracks"] for it in t["items"] if it.get("id") == card_id)["props"]["credit"]
+
+
+def test_an_empty_source_keeps_a_third_party_credit_and_says_so(tmp_path):
+    p = youtube_project(tmp_path)
+    out = fb.run(str(p), "br-1", mode="card", source="", sampler=stub_sampler())
+    assert card_credit(p, out["card"]) == "Footage: Phonebot · YouTube"
+    assert "kept" in out["credit"] and "Footage: Phonebot · YouTube" in out["credit"]
+
+
+def test_a_profile_that_wants_no_credits_lets_an_empty_source_drop_it(tmp_path):
+    p = with_profile(youtube_project(tmp_path), "## Titles & overlays\n- No source credits on screen.\n")
+    out = fb.run(str(p), "br-1", mode="card", source="", sampler=stub_sampler())
+    assert card_credit(p, out["card"]) == ""

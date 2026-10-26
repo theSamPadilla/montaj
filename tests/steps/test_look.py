@@ -578,3 +578,30 @@ def test_look_reports_the_top_slot(tmp_path):
     fake = _fake_measure({f"kw-{k}": [("keyword", 340, 120, 400, 90)] for k in range(3)})
     out = look.run(str(path), measure_fn=fake, detail=True)
     assert any("top-slot" in i and "one top slot" in i for i in out["issues"]), out["issues"]
+
+
+# PL89e: the UCLA footage went out on cards with no credit. A footage card (frame_broll's) for third-party footage
+# (its source has a title, URL or provenance, or is a download) with an empty credit is said.
+def _card_project(tmp_path, src_name, credit):
+    clip = {"id": "br-1", "type": "video", "src": f"/x/{src_name}", "start": 1, "end": 3, "inPoint": 0, "outPoint": 2}
+    card = {"id": "ov-card", "type": "overlay", "src": "./overlays/footage-card.jsx", "start": 1, "end": 3,
+            "props": {"credit": credit, "for": "br-1"}}
+    path, p = _project(tmp_path, extra_tracks=[{"id": "b", "items": [clip]}, {"id": "c", "items": [card]}])
+    return path, p
+
+
+def test_a_third_party_footage_card_with_no_credit_is_said(tmp_path):
+    path, p = _card_project(tmp_path, "youtube-phonebot-o_Q4rFSNZuE.mp4", "")
+    found = [i for i in lc.data_issues(p, str(path.parent)) if i["id"] == "ov-card"]
+    assert found and "credit" in found[0]["text"] and "Footage: Phonebot · YouTube" in found[0]["text"]
+
+
+def test_own_footage_or_a_credited_card_is_not_said(tmp_path):
+    a = tmp_path / "a"
+    a.mkdir()
+    path, p = _card_project(a, "IMG_1167.MOV", "")
+    assert [i for i in lc.data_issues(p, str(path.parent)) if "credit" in i["text"]] == []
+    b = tmp_path / "b"
+    b.mkdir()
+    path, p = _card_project(b, "youtube-phonebot-o_Q4rFSNZuE.mp4", "Footage: UCLA")
+    assert [i for i in lc.data_issues(p, str(path.parent)) if "credit" in i["text"]] == []
