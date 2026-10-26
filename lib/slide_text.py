@@ -332,23 +332,22 @@ def headline_element(text, *, style, position, width, height, runtime_dir, color
             "frame": 0, **_box(position, width, height), "rotation": 0}
 
 
-GEOMETRY = ("x", "y", "w", "h", "rotation")
-
-
 def _keep_locked(before, after):
-    """Put back the geometry of every locked element (`locked: true`, a person's lock in the editor) the call touched,
-    in `after` (the slide as written) from `before` (as read). The ids of those whose box it put back."""
+    """Put back every locked element (`locked: true`, a person's lock in the editor) the call changed in any way,
+    in `after` (the slide as written), exactly as it was in `before` (as read). The ids of those it put back."""
     kept = []
-    old = {el.get("id"): el for el in before.get("elements") or [] if isinstance(el, dict)}
-    for k, el in enumerate(after.get("elements") or []):
-        prev = old.get(el.get("id")) if isinstance(el, dict) else None
-        if prev is None or prev.get("locked") is not True or all(el.get(g) == prev.get(g) for g in GEOMETRY):
+    els = after.setdefault("elements", [])
+    for k, prev in enumerate(before.get("elements") or []):
+        if not isinstance(prev, dict) or prev.get("locked") is not True:
             continue
-        after["elements"][k] = {**el, **{g: prev[g] for g in GEOMETRY if g in prev}}
-        for g in GEOMETRY:
-            if g not in prev:
-                after["elements"][k].pop(g, None)
-        kept.append(el["id"])
+        at = next((j for j, el in enumerate(els) if isinstance(el, dict) and el.get("id") == prev.get("id")), None)
+        if at is not None and els[at] == prev:
+            continue
+        if at is None:
+            els.insert(min(k, len(els)), copy.deepcopy(prev))
+        else:
+            els[at] = copy.deepcopy(prev)
+        kept.append(prev["id"])
     return kept
 
 
@@ -488,6 +487,7 @@ def apply(slides, *, headlines=None, edit=None, order=None, style=None, width=10
         raise SlideError("The project has no slides and no images. Add images to the carousel in Montaj first.")
     out = copy.deepcopy(slides)
     changed, counts, kept = [s.get("id") for s in out] if made else [], {"added": 0, "replaced": 0, "restyled": 0}, []
+    tally = []   # (slide index, count key) of each headline change, to take back one a lock reverted
     if isinstance(heads, dict):
         by_slide = [None] * len(out)
         for ref, h in heads.items():
@@ -509,6 +509,7 @@ def apply(slides, *, headlines=None, edit=None, order=None, style=None, width=10
                 kept.append(f"slide {i + 1}: two headlines are marked as the step's (a duplicate): kept both")
             elif what:
                 counts[what] += 1
+                tally.append((i, what))
                 if out[i].get("id") not in changed:
                     changed.append(out[i].get("id"))
     elif style is not None and edit is None:
@@ -522,6 +523,7 @@ def apply(slides, *, headlines=None, edit=None, order=None, style=None, width=10
             if el != sl["elements"][marked[0]]:
                 sl["elements"][marked[0]] = el
                 counts["restyled"] += 1
+                tally.append((i, "restyled"))
                 if sl.get("id") not in changed:
                     changed.append(sl.get("id"))
     if edit is not None:
@@ -541,8 +543,11 @@ def apply(slides, *, headlines=None, edit=None, order=None, style=None, width=10
     if not made:
         for i, sl in enumerate(out):
             locked += [k for k in _keep_locked(slides[i], sl) if k not in locked]
-        # a slide whose only change was a locked box put back is no change
+        # a slide whose only changes were locked elements put back is no change
         changed = [c for c in changed if any(sl.get("id") == c and sl != slides[i] for i, sl in enumerate(out))]
+        for i, what in tally:
+            if out[i] == slides[i]:
+                counts[what] -= 1
     moved = False
     if isinstance(new_order, dict):
         pair = new_order.get("swap") if set(new_order) == {"swap"} else None
