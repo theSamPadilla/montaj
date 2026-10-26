@@ -189,15 +189,36 @@ def test_v5_checks_still_pass_on_a_labeled_plan(tmp_path, monkeypatch):
     v5.checked(d, plan, applied, before)
 
 
-def test_a_bad_seam_is_fixed_by_restoring_the_version_then_applying_the_edited_plan(tmp_path, monkeypatch, capsys):
-    """After an apply the project is cut, so an edited plan applied on top is refused as stale. The answer's undo
-    names the version from before the cut: restored, the same plan, edited, applies."""
-    d = tc.spoken_project(tmp_path, RETAKE)
+
+def test_a_bad_seam_after_the_apply_is_fixed_with_speech_edit_keeping_the_persons_edits(tmp_path, monkeypatch):
+    """After an apply the project is cut: an edited plan applied on top is refused as stale, and no tool restores a
+    version (that is the person's, in Versions). So a bad seam is fixed on the cut project, the way select-takes' step 6
+    says: speech_text, move the line back from ## Unused, speech_edit. An edit the person made since the apply stays."""
+    from tests.conftest import run_step
+    lines = ["hello there my friends.", "it can follow a person.", "it can follow a person now.", "thanks all."]
+    d = tc.spoken_project(tmp_path, lines)
     _, text = plan_of(d, monkeypatch)
-    applied = apply(d, monkeypatch)
-    assert applied["undo"].startswith("Restore the latest version")          # HEAD holds the project before the cut
-    (d / "cut-plan.md").write_text(without(text, "A1"))
-    assert tc.refused(d, "--plan", str(d / "cut-plan.md"), monkeypatch=monkeypatch, capsys=capsys) == "stale_plan"
-    (d / "project.json").write_text(tc.git(d, "show", "HEAD:project.json"))     # restore the version
-    apply(d, monkeypatch)
-    assert tc.said_text(d) == RETAKE[1]
+    apply(d, monkeypatch, without(without(text, "A2"), "A4"))        # A4 deleted by mistake
+    assert tc.said_text(d) == " ".join(lines[:1] + lines[2:3])
+    p = json.loads((d / "project.json").read_text())
+    p["name"] = "Renamed by the person"
+    (d / "project.json").write_text(json.dumps(p, indent=2))
+    proc = run_step("speech_text.py", "--project", str(d / "project.json"))
+    assert proc.returncode == 0, proc.stderr
+    st = json.loads(proc.stdout)["text"]
+    head, unused = st.split("\n## Unused\n", 1)
+    back = next(r for r in unused.splitlines() if r.lstrip("*").startswith("A4 "))
+    (d / "speech-text.md").write_text(head.rstrip("\n") + "\n" + back.lstrip("*") + "\n")
+    proc = run_step("speech_edit.py", "--project", str(d / "project.json"), "--text", str(d / "speech-text.md"))
+    assert proc.returncode == 0, proc.stderr
+    assert tc.said_text(d) == " ".join(lines[:1] + lines[2:])
+    assert json.loads((d / "project.json").read_text())["name"] == "Renamed by the person"
+
+
+def test_select_takes_never_tells_the_agent_to_restore_a_version():
+    """Review blocker 2: no tool restores a project version, so the skill's plan section never asks the agent to."""
+    skill = (tc.REPO_ROOT / "skills" / "select-takes" / "SKILL.md").read_text()
+    section = skill.split("## Between a cut plan and its apply", 1)[1].split("\n## ", 1)[0]
+    step6 = section.split("\n6. ", 1)[1]
+    assert "undo" not in step6 and step6.count("restore") == step6.count("ask the person to restore"), step6
+    assert "`speech_edit`" in step6 and "in Versions" in step6
