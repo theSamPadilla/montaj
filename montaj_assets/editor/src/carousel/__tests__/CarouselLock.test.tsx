@@ -379,7 +379,7 @@ describe('CarouselEditor: lock key and crop, select all, distribute (§586 M5)',
     const { adapter, r } = await mount({ lockKey: true })
     await click('el-b')
     await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
-    const source = wrapperOf('el-b').querySelector<HTMLImageElement>('img[alt="Crop source"]')!
+    const source = chromeOf('el-b').querySelector<HTMLImageElement>('img[alt="Crop source"]')!
     await act(async () => { loadImage(source, 200, 300) })
     const handle = chromeOf('el-b').querySelector('[data-testid="crop-handle-e"]') as HTMLElement
     const root = document.querySelector('[data-interactive]') as HTMLElement

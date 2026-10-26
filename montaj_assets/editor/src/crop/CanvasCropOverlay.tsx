@@ -2,6 +2,7 @@ import * as React from 'react'
 import type { ImageElement } from '../types'
 import {
   renderedSourceRect,
+  drawnSourceRect,
   fractionToWrapperPx,
   applyCropHandleDrag,
   translateCropPx,
@@ -50,29 +51,40 @@ export type CanvasCropOverlayProps = {
   onDragEnd?: () => void
   /**
    * Draws the window's border and its eight handles inside the overlay. A host
-   * that draws them over its own clip (§586 M4: the slide canvas's chrome
-   * layer, past the slide edge) passes false and renders `CanvasCropHandles`
-   * there. Default true.
+   * that draws them apart, outside a clip the overlay sits in (§586 M4),
+   * passes false and renders `CanvasCropHandles` there. Default true. The
+   * slide canvas draws the whole overlay in its chrome layer (M3b).
    */
   handles?: boolean
+  /**
+   * Where the full source is drawn. 'contain' (default): contained in the
+   * box. 'current' (M3b): where the picture is drawn on the slide now, at the
+   * scale and place the element's crop gives it, past the box, so the window
+   * on that crop sits on the box. Draws past the overlay: the host gives it
+   * room.
+   */
+  fit?: 'contain' | 'current'
 }
 
 /** What the window's border and handles need: the overlay's props bar the image's. */
 export type CanvasCropHandlesProps = Pick<
   CanvasCropOverlayProps,
-  'element' | 'scale' | 'localCrop' | 'onLocalCropChange' | 'srcDims' | 'onDragEnd'
+  'element' | 'scale' | 'localCrop' | 'onLocalCropChange' | 'srcDims' | 'onDragEnd' | 'fit'
 >
 
 // The window in box pixels and the press that drags it or one of its handles.
 // The overlay and the handles each hold one, so a host may draw the handles
 // apart from the image: each press is measured on its own from where it began.
-function useCropWindow({ element, scale, localCrop, onLocalCropChange, srcDims, onDragEnd }: CanvasCropHandlesProps) {
+function useCropWindow({ element, scale, localCrop, onLocalCropChange, srcDims, onDragEnd, fit = 'contain' }: CanvasCropHandlesProps) {
   const wrapperW = element.w * scale
   const wrapperH = element.h * scale
 
-  const rendered = srcDims
-    ? renderedSourceRect({ wrapperW, wrapperH, srcWidth: srcDims.width, srcHeight: srcDims.height })
-    : null
+  // Where the full source is drawn, in box pixels.
+  const rendered = !srcDims
+    ? null
+    : fit === 'current'
+      ? drawnSourceRect({ w: wrapperW, h: wrapperH }, element.crop, srcDims)
+      : renderedSourceRect({ wrapperW, wrapperH, srcWidth: srcDims.width, srcHeight: srcDims.height })
   const windowPx = rendered ? fractionToWrapperPx({ crop: localCrop, rendered }) : null
 
   // What is held: a handle (resizes the window) or the window itself ('move',
@@ -104,9 +116,9 @@ function useCropWindow({ element, scale, localCrop, onLocalCropChange, srcDims, 
       onPointerUp()
       return
     }
-    if (!srcDims) return
+    if (!srcDims || !rendered) return
     const deltaPx = { x: e.clientX - drag.startClient.x, y: e.clientY - drag.startClient.y }
-    const geometry = { wrapperW, wrapperH, srcWidth: srcDims.width, srcHeight: srcDims.height }
+    const geometry = { wrapperW, wrapperH, srcWidth: srcDims.width, srcHeight: srcDims.height, rendered }
     onLocalCropChange(
       drag.handle === 'move'
         ? translateCropPx({ crop: drag.startCrop, deltaPx, ...geometry })
@@ -129,7 +141,7 @@ function useCropWindow({ element, scale, localCrop, onLocalCropChange, srcDims, 
     onLostPointerCapture: onPointerUp,
   })
 
-  return { windowPx, press }
+  return { rendered, windowPx, press }
 }
 
 /**
@@ -195,10 +207,19 @@ export function CanvasCropOverlay({
   srcDims,
   onDragEnd,
   handles = true,
+  fit = 'contain',
 }: CanvasCropOverlayProps) {
   const srcUrl = resolveImageSrc(element)
-  const windowProps = { element, scale, localCrop, onLocalCropChange, srcDims, onDragEnd }
-  const { windowPx, press } = useCropWindow(windowProps)
+  const windowProps = { element, scale, localCrop, onLocalCropChange, srcDims, onDragEnd, fit }
+  const { rendered, windowPx, press } = useCropWindow(windowProps)
+  // 'current' draws the image area over the whole picture as drawn (M3b); it
+  // loads unseen, filling the box, until its size is known.
+  const at = fit === 'current' ? rendered : null
+  const areaStyle: React.CSSProperties = at
+    ? { left: at.offsetX, top: at.offsetY, width: at.width, height: at.height }
+    : { inset: 0 }
+  // The window's corners in pixels of the image area.
+  const hole = windowPx && { x: windowPx.x - (at?.offsetX ?? 0), y: windowPx.y - (at?.offsetY ?? 0), w: windowPx.w, h: windowPx.h }
 
   // Only the image area clips: the handles at its edge stay whole (§586 M4).
   return (
@@ -208,8 +229,8 @@ export function CanvasCropOverlay({
         e.stopPropagation()
       }}
     >
-      <div data-testid="crop-image-area" style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
-        {/* Letterbox preview of the full source image */}
+      <div data-testid="crop-image-area" style={{ position: 'absolute', ...areaStyle, overflow: 'hidden', pointerEvents: 'none' }}>
+        {/* Letterbox preview of the full source image, or the picture as drawn */}
         <img
           src={srcUrl}
           alt="Crop source"
@@ -223,11 +244,12 @@ export function CanvasCropOverlay({
             width: '100%',
             height: '100%',
             objectFit: 'contain',
+            visibility: fit === 'current' && !at ? 'hidden' : undefined,
             pointerEvents: 'none',
           }}
         />
 
-        {windowPx && (
+        {hole && (
           /* Dark dimming mask outside the crop window */
           <div
             data-testid="crop-dim"
@@ -237,11 +259,11 @@ export function CanvasCropOverlay({
               background: 'rgba(0, 0, 0, 0.55)',
               clipPath: `polygon(
                 0 0, 100% 0, 100% 100%, 0 100%, 0 0,
-                ${windowPx.x}px ${windowPx.y}px,
-                ${windowPx.x}px ${windowPx.y + windowPx.h}px,
-                ${windowPx.x + windowPx.w}px ${windowPx.y + windowPx.h}px,
-                ${windowPx.x + windowPx.w}px ${windowPx.y}px,
-                ${windowPx.x}px ${windowPx.y}px
+                ${hole.x}px ${hole.y}px,
+                ${hole.x}px ${hole.y + hole.h}px,
+                ${hole.x + hole.w}px ${hole.y + hole.h}px,
+                ${hole.x + hole.w}px ${hole.y}px,
+                ${hole.x}px ${hole.y}px
               )`,
               pointerEvents: 'none',
             }}

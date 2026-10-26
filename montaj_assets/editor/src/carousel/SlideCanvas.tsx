@@ -8,11 +8,13 @@ import {
   buildElementTransform,
   roundResizedBox,
   type ResizeHandle as ResizeHandleId,
+  type GapSegment,
+  type SnapBox,
   type SnapGuide,
 } from '../gestures'
 import { OverlayPreview } from '../preview/OverlayPreview'
-import { CanvasCropOverlay, CanvasCropHandles } from '../crop/CanvasCropOverlay'
-import { croppedBox } from '../crop/crop-math'
+import { CanvasCropOverlay } from '../crop/CanvasCropOverlay'
+import { croppedBox, shownCrop } from '../crop/crop-math'
 import { InlineTextEditor } from '../text/InlineTextEditor'
 import { ensureGoogleFontsLoaded } from '../lib/google-fonts'
 import { isLocked } from './lock'
@@ -26,6 +28,18 @@ import { elementsAt, isLayerPress, nextLayerDown, pointInElement } from './hitTe
 // `resolveImageSrc` (Montaj's adapter does).
 function resolveAssetDefault(src: string): string {
   return src
+}
+
+// A group drag that snapped nothing shows no guide or gap.
+const NO_SNAP: { guides: SnapGuide[]; gaps: GapSegment[] } = { guides: [], gaps: [] }
+
+// The snap guide's look, shared by the slide-long guides and the equal-gap segments.
+const GUIDE_STYLE: React.CSSProperties = {
+  position: 'absolute',
+  background: '#ff2d88',
+  boxShadow: '0 0 6px 1px rgba(255,45,136,0.9)',
+  pointerEvents: 'none',
+  zIndex: 999,
 }
 
 // ── Resize / Rotate handle geometry ────────────────────────────────────────────
@@ -100,12 +114,19 @@ function sameCrop(a: Crop, b: Crop): boolean {
 }
 
 /** A crop in progress (§556 M4): the image, the slide it is on, the file it was
- *  started on, and the window picked so far (source fractions). */
-type CropSession = { slideId: string; elementId: string; src: string; localCrop: Crop }
+ *  started on, and the window picked so far (source fractions); null until the
+ *  window is moved, while it is the part the box shows (M3b). */
+type CropSession = { slideId: string; elementId: string; src: string; localCrop: Crop | null }
 
-/** The window starts as the crop the image has: the whole source when none. */
+/** The window starts on the box: the part of the source the image shows. */
 function startCrop(slideId: string, el: ImageElement): CropSession {
-  return { slideId, elementId: el.id, src: el.src, localCrop: el.crop ?? FULL_FRAME }
+  return { slideId, elementId: el.id, src: el.src, localCrop: null }
+}
+
+/** The window of `open` on `el`: the part the box shows until it is moved (M3b). */
+function windowOf(open: CropSession, el: ImageElement, dims: { width: number; height: number } | undefined): Crop {
+  if (open.localCrop) return open.localCrop
+  return dims ? shownCrop(el, el.crop, dims) : el.crop ?? FULL_FRAME
 }
 
 /** How crop mode ends: `apply` writes the window picked, as one undo step, and
@@ -366,6 +387,13 @@ export default function SlideCanvas({
   // no commit, no undo step.
   const elementById = (id: string) => slide.elements.find((e) => e.id === id)
 
+  // What a drag snaps to besides the slide (§586 M7): every element shown on
+  // this canvas that is not being dragged.
+  const snapTargets = (dragged: readonly string[]): SnapBox[] =>
+    slide.elements
+      .filter((e) => !dragged.includes(e.id) && !hiddenSet?.has(e.id))
+      .map((e) => ({ x: e.x, y: e.y, w: e.w, h: e.h, rotation: e.rotation }))
+
   const drag = useOverlayDrag({
     scale,
     slide: { w: width, h: height },
@@ -419,12 +447,13 @@ export default function SlideCanvas({
   // folds into one undo step with the box, then a commit. Every call is made
   // in this tick, so nothing the caller does next lands between them. Writes
   // nothing when the image is not on this slide, its size is not known yet,
-  // or the window is the crop the image already has.
+  // or the window is the crop the image already has or the part its box shows.
   function writeCrop(open: CropSession): Promise<void> {
     const el = open.slideId === sid ? slide.elements.find((e) => e.id === open.elementId) : undefined
     const dims = dimsOf(open)
-    if (el?.type !== 'image' || !dims) return Promise.resolve()
+    if (el?.type !== 'image' || !dims || !open.localCrop) return Promise.resolve()
     if (sameCrop(open.localCrop, el.crop ?? FULL_FRAME)) return Promise.resolve()
+    if (sameCrop(open.localCrop, shownCrop(el, el.crop, dims))) return Promise.resolve()
     const writes: Array<Promise<void> | undefined> = []
     // The box takes the kept region's place at the picture's current scale.
     const next = croppedBox(el, el.crop, open.localCrop, dims)
@@ -595,16 +624,28 @@ export default function SlideCanvas({
   const heldPressRef = useRef<{ x: number; y: number; moved: boolean } | null>(null)
 
   // ── Group drag (§156): every selected element moves by one delta, one undo step ──
-  const groupRef = useRef<{ start: { x: number; y: number }; members: GroupMember[]; latest: GroupDragResult | null } | null>(null)
-  const [groupGuides, setGroupGuides] = useState<SnapGuide[]>([])
-  const groupHandlers = useRef({ move: (_c: { x: number; y: number }) => {}, up: () => {} })
+  const groupRef = useRef<{
+    start: { x: number; y: number }
+    members: GroupMember[]
+    others: SnapBox[]
+    latest: GroupDragResult | null
+  } | null>(null)
+  const [groupSnap, setGroupSnap] = useState<{ guides: SnapGuide[]; gaps: GapSegment[] }>(NO_SNAP)
+  const groupHandlers = useRef({ move: (_c: { x: number; y: number }, _skipSnap: boolean) => {}, up: () => {} })
   groupHandlers.current = {
-    move: (cursor) => {
+    move: (cursor, skipSnap) => {
       const g = groupRef.current
       if (!g) return
-      const result = groupDragMove(g.members, { dx: cursor.x - g.start.x, dy: cursor.y - g.start.y }, scale, { w: width, h: height })
+      const result = groupDragMove(
+        g.members,
+        { dx: cursor.x - g.start.x, dy: cursor.y - g.start.y },
+        scale,
+        { w: width, h: height },
+        g.others,
+        { skip: skipSnap },
+      )
       g.latest = result
-      setGroupGuides(result.guides)
+      setGroupSnap(result.guides.length || result.gaps.length ? { guides: result.guides, gaps: result.gaps } : NO_SNAP)
       for (const p of result.positions) {
         const m = g.members.find((mm) => mm.id === p.id)
         applyPreviewTransform(p.id, p.x, p.y, m?.rotation ?? 0)
@@ -613,7 +654,7 @@ export default function SlideCanvas({
     up: () => {
       const g = groupRef.current
       groupRef.current = null
-      setGroupGuides([])
+      setGroupSnap(NO_SNAP)
       const result = g?.latest
       if (!g || !result || (result.dx === 0 && result.dy === 0)) return
       swallowClickRef.current = true
@@ -663,10 +704,12 @@ export default function SlideCanvas({
       const cursor = { x: e.clientX, y: e.clientY }
       const held = heldPressRef.current
       if (held && (cursor.x !== held.x || cursor.y !== held.y)) held.moved = true
-      if (activeGesture.current === 'drag') drag.onPointerMove(cursor)
+      // Cmd (Ctrl on Windows) held during a drag snaps nothing while it is held.
+      const skipSnap = e.metaKey || e.ctrlKey
+      if (activeGesture.current === 'drag') drag.onPointerMove(cursor, { skipSnap })
       else if (activeGesture.current === 'resize') resize.onPointerMove(cursor, { shiftKey: e.shiftKey })
       else if (activeGesture.current === 'rotate') rotate.onPointerMove(cursor)
-      else if (activeGesture.current === 'group') groupHandlers.current.move(cursor)
+      else if (activeGesture.current === 'group') groupHandlers.current.move(cursor, skipSnap)
     }
     const onUp = () => end(true)
     const onCancel = () => end(false)
@@ -743,6 +786,9 @@ export default function SlideCanvas({
           // Editor-only visibility: omit hidden elements from this canvas.
           if (hiddenSet?.has(element.id)) return null
           const inCrop = cropSession?.elementId === element.id
+          // The crop overlay draws the picture once its size is known (M3b):
+          // the element's own is hidden under it, so it is not drawn twice.
+          const ownHidden = inCrop && dimsOf(cropSession) !== undefined
 
           const wrapperStyle: React.CSSProperties = {
             position: 'absolute',
@@ -766,7 +812,7 @@ export default function SlideCanvas({
               const m = slide.elements.find((el) => el.id === id)
               if (m && !isLocked(m)) members.push({ id: m.id, x: m.x, y: m.y, w: m.w, h: m.h, rotation: m.rotation })
             }
-            groupRef.current = { start: { x: e.clientX, y: e.clientY }, members, latest: null }
+            groupRef.current = { start: { x: e.clientX, y: e.clientY }, members, others: snapTargets(selectedIds), latest: null }
             activeGesture.current = 'group'
           }
           const startDrag = (e: React.PointerEvent, el: Slide['elements'][number]) => {
@@ -775,6 +821,7 @@ export default function SlideCanvas({
               el.id,
               { x: e.clientX, y: e.clientY },
               { x: el.x, y: el.y, w: el.w, h: el.h, rotation: el.rotation },
+              snapTargets([el.id]),
             )
           }
 
@@ -803,7 +850,7 @@ export default function SlideCanvas({
             // lies on top (§586 M1): a move drags it, or the whole selection.
             // Without a move the click selects the topmost. A locked one waits.
             const held = selectedUnder(e)
-            if (held && held.id !== element.id) {
+            if (held && held.id !== element.id && held.id !== editingId) {
               if (selectedIds.length > 1) startGroupDrag(e)
               else if (!isLocked(held)) {
                 heldPressRef.current = { x: e.clientX, y: e.clientY, moved: false }
@@ -830,10 +877,7 @@ export default function SlideCanvas({
 
           const innerContent =
             element.type === 'image' ? (
-              // While actively cropping this element, the CanvasCropOverlay draws
-              // the full source with a draggable window on top — so show the plain
-              // (uncropped) base beneath it. Otherwise honor the committed crop.
-              element.crop && !inCrop ? (
+              element.crop ? (
                 // Cropped display: render the crop sub-rect [cx,cx+cw]×[cy,cy+ch]
                 // (fractions of the source) scaled to cover the element box. This
                 // mirrors Montaj's renderer (render/templates/slide.jsx): an
@@ -844,7 +888,7 @@ export default function SlideCanvas({
                 // a share of the box's width. `maxWidth/maxHeight: 'none'`
                 // defeats Tailwind preflight's `img { max-width: 100% }`, which
                 // would otherwise clamp the oversized image.
-                <div style={{ width: '100%', height: '100%', overflow: 'hidden' }}>
+                <div style={{ width: '100%', height: '100%', overflow: 'hidden', visibility: ownHidden ? 'hidden' : undefined }}>
                   <img
                     src={resolveSrc(element)}
                     draggable={false}
@@ -869,7 +913,7 @@ export default function SlideCanvas({
                   // 'contain'). Logos/escudos placed in a fixed box must keep
                   // their aspect (letterboxed) in BOTH paths; `cover` here would
                   // crop them in the preview and diverge from the final PNG.
-                  style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
+                  style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', visibility: ownHidden ? 'hidden' : undefined }}
                   alt=""
                 />
               )
@@ -915,35 +959,25 @@ export default function SlideCanvas({
                 // The press already toggled it.
                 if (e.shiftKey && onToggleSelect && !cropSession) return
                 // A gesture just ended here: keep the selection.
-                if (swallowClickRef.current) { swallowClickRef.current = false; return }
+                if (swallowClickRef.current) {
+                  swallowClickRef.current = false
+                  if (e.detail < 2) clickBaseRef.current = null
+                  return
+                }
                 // Released inside the selected element with another on top: the
                 // top one is selected, and a double-click may still be for the first.
                 const held = selectedUnder(e)
+                // The second click of a double-click lands on the top element
+                // too, and leaves the first click's base standing; any other
+                // click that is not under the selection ends it.
                 if (held && held.id !== element.id) clickBaseRef.current = { id: held.id, at: Date.now() }
+                else if (e.detail < 2) clickBaseRef.current = null
                 onSelect?.(element.id)
               } : undefined}
               onPointerDown={handlePointerDownDrag}
               onDoubleClick={interactive ? (e) => handleDoubleClick(element, e) : undefined}
             >
               {innerContent}
-
-              {/* In-canvas crop overlay for the image being cropped. Its window's
-                  border and handles are drawn in the chrome layer. */}
-              {inCrop && element.type === 'image' && cropSession && (
-                <CanvasCropOverlay
-                  element={element}
-                  resolveImageSrc={resolveSrc}
-                  scale={scale}
-                  localCrop={cropSession.localCrop}
-                  onLocalCropChange={(next) => changeCropSession((open) => ({ ...open, localCrop: next }))}
-                  onSrcDimsLoaded={(dims) => setCropSrcDims({ src: element.src, ...dims })}
-                  srcDims={dimsOf(cropSession)}
-                  // The click the browser sends after a window drag changes
-                  // nothing, even when let go off the image.
-                  onDragEnd={() => { swallowClickRef.current = true }}
-                  handles={false}
-                />
-              )}
             </div>
           )
         })}
@@ -979,42 +1013,35 @@ export default function SlideCanvas({
           onClick={(e) => { e.stopPropagation(); swallowClickRef.current = false }}
         >
           <div style={{ position: 'absolute', left: margin, top: margin, width: displayW, height: displayH }}>
-            {/* Snap guides — drawn at the drag hook's reported guide axes. */}
-            {(groupGuides.length > 0 ? groupGuides : drag.guides).map((g: SnapGuide, i) =>
+            {/* Snap guides — drawn at the drag hook's reported guide axes. A
+                drag and a group drag never run at once. */}
+            {(groupSnap !== NO_SNAP ? groupSnap : drag).guides.map((g: SnapGuide, i) =>
               g.axis === 'x' ? (
                 <div
                   key={`gx-${i}`}
                   data-testid="snap-guide-x"
-                  style={{
-                    position: 'absolute',
-                    left: g.at * scale - 1,
-                    top: 0,
-                    width: 2,
-                    height: displayH,
-                    background: '#ff2d88',
-                    boxShadow: '0 0 6px 1px rgba(255,45,136,0.9)',
-                    pointerEvents: 'none',
-                    zIndex: 999,
-                  }}
+                  style={{ ...GUIDE_STYLE, left: g.at * scale - 1, top: 0, width: 2, height: displayH }}
                 />
               ) : (
                 <div
                   key={`gy-${i}`}
                   data-testid="snap-guide-y"
-                  style={{
-                    position: 'absolute',
-                    left: 0,
-                    top: g.at * scale - 1,
-                    width: displayW,
-                    height: 2,
-                    background: '#ff2d88',
-                    boxShadow: '0 0 6px 1px rgba(255,45,136,0.9)',
-                    pointerEvents: 'none',
-                    zIndex: 999,
-                  }}
+                  style={{ ...GUIDE_STYLE, left: 0, top: g.at * scale - 1, width: displayW, height: 2 }}
                 />
               ),
             )}
+            {/* Equal gaps (§586 M7): each gap a short segment in the guide's look. */}
+            {(groupSnap !== NO_SNAP ? groupSnap : drag).gaps.map((g: GapSegment, i) => (
+              <div
+                key={`gap-${i}`}
+                data-testid="snap-gap"
+                style={
+                  g.axis === 'x'
+                    ? { ...GUIDE_STYLE, left: g.from * scale, top: g.at * scale - 1, width: (g.to - g.from) * scale, height: 2 }
+                    : { ...GUIDE_STYLE, left: g.at * scale - 1, top: g.from * scale, width: 2, height: (g.to - g.from) * scale }
+                }
+              />
+            ))}
 
             {slide.elements.map((element) => {
               if (hiddenSet?.has(element.id)) return null
@@ -1022,8 +1049,8 @@ export default function SlideCanvas({
               const isOutlined = selectedIds.includes(element.id)
               const isSelected = selectedElementId === element.id
               const locked = isLocked(element)
-              if (!isOutlined && !isSelected) return null
               const inCrop = cropSession?.elementId === element.id
+              if (!isOutlined && !isSelected && !inCrop) return null
               const isRotated = (element.rotation ?? 0) !== 0
 
               return (
@@ -1044,16 +1071,22 @@ export default function SlideCanvas({
                     pointerEvents: 'none',
                   }}
                 >
-                  {/* The crop window's border and handles, whole at the image's edge. */}
+                  {/* The crop overlay for the image being cropped (M3b): the whole
+                      picture at its scale on the slide, past the box and the slide
+                      edge, its window on the box and its handles whole at the
+                      image's edge. */}
                   {inCrop && element.type === 'image' && cropSession && (
-                    <CanvasCropHandles
+                    <CanvasCropOverlay
                       element={element}
+                      resolveImageSrc={resolveSrc}
                       scale={scale}
-                      localCrop={cropSession.localCrop}
+                      fit="current"
+                      localCrop={windowOf(cropSession, element, dimsOf(cropSession))}
                       onLocalCropChange={(next) => changeCropSession((open) => ({ ...open, localCrop: next }))}
+                      onSrcDimsLoaded={(dims) => setCropSrcDims({ src: element.src, ...dims })}
                       srcDims={dimsOf(cropSession)}
-                      // The click the browser sends after a handle drag changes
-                      // nothing, even when let go off the image.
+                      // The click the browser sends after a window or handle drag
+                      // changes nothing, even when let go off the image.
                       onDragEnd={() => { swallowClickRef.current = true }}
                     />
                   )}

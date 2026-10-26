@@ -1,6 +1,6 @@
 /// <reference types="vitest/globals" />
 import { renderedSourceRect, translateCropPx, cropForAspect, maxZoomForAspect, aspectLockedCornerResize, trimToAspect } from '../crop-math'
-import { fractionToWrapperPx, wrapperPxToFraction, croppedBox } from '../crop-math'
+import { fractionToWrapperPx, wrapperPxToFraction, croppedBox, drawnSourceRect, shownCrop } from '../crop-math'
 
 describe('renderedSourceRect', () => {
   it('1. fits source to width when source is wider than wrapper (letterboxes top/bottom)', () => {
@@ -346,5 +346,45 @@ describe('croppedBox (M3a)', () => {
     expect(croppedBox(box, undefined, { x: 0, y: 0, w: 1, h: 1 }, src)).toEqual(box)
     const c = { x: 0.1, y: 0.2, w: 0.5, h: 0.5 }
     expect(croppedBox(box, c, { ...c }, src)).toEqual(box)
+  })
+})
+
+describe('the picture as drawn (M3b)', () => {
+  const near = (a: Record<string, number>, b: Record<string, number>) => {
+    for (const k of Object.keys(b)) expect(a[k]).toBeCloseTo(b[k], 9)
+  }
+  const SRC = { width: 1600, height: 900 }
+
+  it('an uncropped image is drawn contained in its box', () => {
+    near(drawnSourceRect({ w: 400, h: 400 }, undefined, SRC), { offsetX: 0, offsetY: 87.5, width: 400, height: 225 })
+  })
+
+  it('a cropped image is drawn at its cover placement, past the box', () => {
+    // The right half of the source in a box of its shape: the source is twice the box wide.
+    near(drawnSourceRect({ w: 200, h: 225 }, { x: 0.5, y: 0, w: 0.5, h: 1 }, SRC), { offsetX: -200, offsetY: 0, width: 400, height: 225 })
+    // The left half stretched to 400 x 200 (as croppedBox's side-resize case): 800 x 450, 125 up.
+    near(drawnSourceRect({ w: 400, h: 200 }, { x: 0, y: 0, w: 0.5, h: 1 }, SRC), { offsetX: 0, offsetY: -125, width: 800, height: 450 })
+  })
+
+  it('the part a box shows is its crop when the box has the crop\'s shape, the full frame when uncropped', () => {
+    const crop = { x: 0.5, y: 0, w: 0.5, h: 1 }
+    expect(shownCrop({ w: 200, h: 225 }, crop, SRC)).toEqual(crop)
+    expect(shownCrop({ w: 400, h: 400 }, undefined, SRC)).toEqual({ x: 0, y: 0, w: 1, h: 1 })
+  })
+
+  it('a box a side resize changed shows less of its crop, and croppedBox puts that part back on the box', () => {
+    const box = { x: 10, y: 20, w: 400, h: 200 }
+    const old = { x: 0, y: 0, w: 0.5, h: 1 }
+    const shown = shownCrop(box, old, SRC)
+    near(shown, { x: 0, y: 125 / 450, w: 0.5, h: 200 / 450 })
+    near(croppedBox(box, old, shown, SRC), box)
+  })
+
+  it('a drag over the drawn picture measures in its pixels and keeps the window inside it', () => {
+    // A 400 x 225 picture drawn at (-200, 0) of the box: 40 px is a tenth of it.
+    const rendered = { offsetX: -200, offsetY: 0, width: 400, height: 225 }
+    const geometry = { wrapperW: 200, wrapperH: 225, srcWidth: 1600, srcHeight: 900, rendered }
+    near(translateCropPx({ crop: { x: 0.5, y: 0, w: 0.5, h: 1 }, deltaPx: { x: -40, y: 0 }, ...geometry }), { x: 0.4, y: 0, w: 0.5, h: 1 })
+    near(applyCropHandleDrag({ handle: 'w', initialCrop: { x: 0.5, y: 0, w: 0.5, h: 1 }, deltaPx: { x: -1000, y: 0 }, ...geometry }), { x: 0, y: 0, w: 1, h: 1 })
   })
 })

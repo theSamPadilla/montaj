@@ -39,7 +39,7 @@ function pointer(target: EventTarget, type: 'pointerdown' | 'pointermove' | 'poi
 }
 const wrapperOf = (id: string) => document.querySelector(`[data-element-id="${id}"]`) as HTMLElement
 
-function mount(selected: string[], elements = stack(), extra: Partial<React.ComponentProps<typeof SlideCanvas>> = {}) {
+function mount(selected: string[], elements: Slide['elements'] = stack(), extra: Partial<React.ComponentProps<typeof SlideCanvas>> = {}) {
   const fns = {
     moveElement: vi.fn(async (_s: string, _id: string, _x: number, _y: number) => {}),
     commit: vi.fn(async () => {}),
@@ -181,10 +181,37 @@ describe('SlideCanvas: a press inside the selected box drags the selected (§586
   it('the clicks of a double-click still end on the selected lower image', async () => {
     const fns = mount(['el-1'])
     await tap('el-3', ALL)
-    await tap('el-3', ALL)
+    await tap('el-3', { ...ALL, detail: 2 })
     await act(async () => { fireEvent.doubleClick(wrapperOf('el-3'), ALL) })
     expect(fns.onEnterCrop).toHaveBeenCalledWith('el-1')
     expect(fns.onSelect.mock.calls[fns.onSelect.mock.calls.length - 1][0]).toBe('el-1')
+  })
+
+  it('a double-click on the top element right after a click moved the selection to it is for the top one', async () => {
+    const fns = mount(['el-1'])
+    await tap('el-3', ALL)
+    await tap('el-3', { ...ALL, detail: 1 })
+    await tap('el-3', { ...ALL, detail: 2 })
+    await act(async () => { fireEvent.doubleClick(wrapperOf('el-3'), ALL) })
+    expect(fns.onEnterCrop).toHaveBeenCalledTimes(1)
+    expect(fns.onEnterCrop).toHaveBeenCalledWith('el-3')
+  })
+
+  it('a press-and-move in the overlap does not drag the element being edited inline', async () => {
+    const text = (id: string, x: number, y: number): Slide['elements'][number] => ({
+      id, type: 'overlay', overlay: { template: '/o/text.jsx', props: { text: 'Hi' } }, frame: 0, x, y, w: 200, h: 200, rotation: 0,
+    })
+    const fns = mount(['el-1'], [text('el-1', 100, 100), img('el-2', 150, 150)])
+    await act(async () => { fireEvent.doubleClick(wrapperOf('el-2'), ALL) })
+    await dragOn('el-2', ALL)
+    expect(fns.moveElement.mock.calls.map((c) => c[1])).not.toContain('el-1')
+  })
+
+  it('a drag of the selected lower element snaps to a neighbour like any drag', async () => {
+    const fns = mount(['el-1'], [img('el-1', 100, 100), img('el-2', 150, 150), img('el-3', 400, 500)])
+    // el-1's left edge ends at 394, 6 from el-3's at 400.
+    await dragOn('el-2', ALL, 294, 0)
+    expect(fns.moveElement).toHaveBeenCalledWith('s', 'el-1', 400, 100)
   })
 
   it('a press outside the selected box hits the topmost', async () => {

@@ -1,10 +1,11 @@
-import { snapToSlide, type SnapGuide } from '../gestures'
+import { snapToSlideAndElements, type GapSegment, type SmartSnapOptions, type SnapBox, type SnapGuide } from '../gestures'
 import { coveredUnion, type Box } from './AlignControls'
 
 // Moving several selected elements at once (§156). Every member moves by the
 // same delta, so the group keeps its shape. Snapping follows the single drag
 // (`useOverlayDrag`): the same dead zone and snap distance, applied to the box
-// the whole group covers, so no member snaps on its own.
+// the whole group covers, so no member snaps on its own. It snaps to the slide
+// and to `others`, the visible elements not in the group (§586 M7).
 
 // Same values as useOverlayDrag's DEAD_ZONE_PX and SNAP_PX.
 const DEAD_ZONE_PX = 12
@@ -18,6 +19,7 @@ export interface GroupDragResult {
   dx: number
   dy: number
   guides: SnapGuide[]
+  gaps: GapSegment[]
 }
 
 /**
@@ -29,23 +31,28 @@ export function groupDragMove(
   cursor: { dx: number; dy: number },
   scale: number,
   slide: { w: number; h: number },
+  others: readonly SnapBox[] = [],
+  opts: SmartSnapOptions = {},
 ): GroupDragResult {
   let dx = cursor.dx / scale
   let dy = cursor.dy / scale
   let guides: SnapGuide[] = []
+  let gaps: GapSegment[] = []
   const inDeadZone = cursor.dx * cursor.dx + cursor.dy * cursor.dy < DEAD_ZONE_PX * DEAD_ZONE_PX
   if (!inDeadZone && members.length > 0) {
     const u = coveredUnion(members)
     const proposed = { x: u.left + dx, y: u.top + dy, w: u.right - u.left, h: u.bottom - u.top }
-    const snap = snapToSlide(proposed, slide, Math.max(SNAP_PX / scale, 1))
+    const snap = snapToSlideAndElements(proposed, slide, others, Math.max(SNAP_PX / scale, 1), opts)
     dx = snap.position.x - u.left
     dy = snap.position.y - u.top
     guides = snap.guides
+    gaps = snap.gaps
   }
   return {
     positions: members.map((m) => ({ id: m.id, x: m.x + dx, y: m.y + dy })),
     dx,
     dy,
     guides,
+    gaps,
   }
 }

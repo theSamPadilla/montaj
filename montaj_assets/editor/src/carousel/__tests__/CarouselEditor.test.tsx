@@ -557,6 +557,7 @@ describe('CarouselEditor — editor-core integration', () => {
         ['Ctrl', 'Shift', 'Z'],
         ['Delete'],
         ['N'],
+        ['T'],
         ['Ctrl', 'C'],
         ['Ctrl', 'X'],
         ['Ctrl', 'V'],
@@ -568,6 +569,8 @@ describe('CarouselEditor — editor-core integration', () => {
         ['Ctrl', '['],
         ['Ctrl', 'Alt', ']'],
         ['Ctrl', 'Alt', '['],
+        ['Ctrl', 'Alt', 'C'],
+        ['Ctrl', 'Alt', 'V'],
         ['Esc'],
       ])
 
@@ -1773,7 +1776,7 @@ describe('CarouselEditor: one keymap (§556)', () => {
     await waitFor(() => findInteractiveWrapper('el-img'))
     await plainClick('el-img')
     await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
-    const source = findInteractiveWrapper('el-img').querySelector<HTMLImageElement>('img[alt="Crop source"]')
+    const source = chromeOf('el-img').querySelector<HTMLImageElement>('img[alt="Crop source"]')
     expect(source).not.toBeNull()
     // A 2:1 source in the 200 x 200 box, its right quarter cropped off (§556 M4:
     // an untouched crop writes nothing).
@@ -1784,7 +1787,7 @@ describe('CarouselEditor: one keymap (§556)', () => {
     // The crop applied, and the box takes its 3:2 shape.
     await waitFor(() => expectCropApplied(elementsOf(lastSave(adapter))[0]))
     // Crop mode is over, and the image is still the one selected.
-    expect(findInteractiveWrapper('el-img').querySelector('img[alt="Crop source"]')).toBeNull()
+    expect(chromeOf('el-img').querySelector('img[alt="Crop source"]')).toBeNull()
     expect(handlesOn('el-img')).toBe(true)
     const calls = onSelectionChange.mock.calls
     expect(calls[calls.length - 1][0]?.id).toBe('el-img')
@@ -2777,7 +2780,7 @@ describe('CarouselEditor: Esc deselects (§556 M2)', () => {
     await waitFor(() => findInteractiveWrapper('el-img'))
     await plainClick('el-img')
     await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
-    const source = findInteractiveWrapper('el-img').querySelector<HTMLImageElement>('img[alt="Crop source"]')
+    const source = chromeOf('el-img').querySelector<HTMLImageElement>('img[alt="Crop source"]')
     await act(async () => { loadImage(source!, 400, 200) })
     await dragCropRightEdgeIn()
 
@@ -2876,7 +2879,7 @@ describe('CarouselEditor: where the element keys do not act (§556 M2)', () => {
     await plainClick('el-a')
     await key('c', CMD)
     await act(async () => { fireEvent.click(await r.findByTitle('Crop image')) })
-    expect(findInteractiveWrapper('el-a').querySelector('img[alt="Crop source"]')).not.toBeNull()
+    expect(chromeOf('el-a').querySelector('img[alt="Crop source"]')).not.toBeNull()
 
     for (const [k, init] of KEYS.filter(([k]) => k !== 'Escape')) {
       const e = await key(k, init)
@@ -2886,7 +2889,7 @@ describe('CarouselEditor: where the element keys do not act (§556 M2)', () => {
     expect(adapter.saveCalls).toHaveLength(0)
     expect(posOf(liveProject(onProjectChange))).toEqual([[100, 100], [500, 400], [700, 700]])
     // Still in crop mode, and still the one image selected.
-    expect(findInteractiveWrapper('el-a').querySelector('img[alt="Crop source"]')).not.toBeNull()
+    expect(chromeOf('el-a').querySelector('img[alt="Crop source"]')).not.toBeNull()
     expect(outlined('el-a')).toBe(true)
   })
 
@@ -3263,12 +3266,12 @@ function canvasRoot(): HTMLElement {
 }
 
 function inCrop(id = 'el-img'): boolean {
-  return findInteractiveWrapper(id).querySelector('img[alt="Crop source"]') !== null
+  return chromeOf(id).querySelector('img[alt="Crop source"]') !== null
 }
 
 /** The crop source of `id`, loaded as a 400 x 200 image. */
 async function loadCropSource(id = 'el-img') {
-  const source = findInteractiveWrapper(id).querySelector<HTMLImageElement>('img[alt="Crop source"]')
+  const source = chromeOf(id).querySelector<HTMLImageElement>('img[alt="Crop source"]')
   if (!source) throw new Error(`${id} is not in crop mode`)
   await act(async () => { loadImage(source, 400, 200) })
 }
@@ -3795,6 +3798,69 @@ describe('CarouselEditor: a crop that keeps what you picked (§556 M4)', () => {
   })
 })
 
+// ── The margin past the slide in crop mode (M3b) ─────────────────────────────
+//
+// The crop picture reaches past the slide into the margin, dimmed, and takes
+// no pointer there: a press in the margin over it is still a press on the
+// empty canvas, which applies the crop.
+
+describe('CarouselEditor: a press in the margin over the crop picture (M3b)', () => {
+  it('exits crop and applies the window, as one undo step', async () => {
+    // The middle half of a 400 x 200 source in the 200 x 200 box at the slide's
+    // left edge: the picture is drawn 400 x 200 from x -100, past the slide.
+    const adapter = makeFakeAdapter()
+    const project = makeProject({
+      slides: [{
+        id: 'slide-0',
+        base_color: '#ffffff',
+        elements: [{ id: 'el-img', type: 'image', src: 'a.png', x: 0, y: 100, w: 200, h: 200, rotation: 0, crop: { x: 0.25, y: 0, w: 0.5, h: 1 } }],
+      }],
+    })
+    const r = render(<CarouselEditor project={project} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await plainClick('el-img')
+    await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
+    await loadCropSource()
+
+    const scale = parseFloat(canvasRoot().style.width) / 1080
+    const area = chromeOf('el-img').querySelector('[data-testid="crop-image-area"]') as HTMLElement
+    // The picture starts 100 slide units left of the slide, and lets the pointer through.
+    expect(parseFloat(area.style.left) / scale).toBeCloseTo(-100, 9)
+    expect(area.style.pointerEvents).toBe('none')
+    expect((document.querySelector('[data-slide-chrome]') as HTMLElement).style.pointerEvents).toBe('none')
+
+    // The window 40 right.
+    const move = chromeOf('el-img').querySelector('[data-testid="crop-move"]') as HTMLElement
+    await act(async () => {
+      pointer(move, 'pointerdown', { clientX: 0, clientY: 0 })
+      pointer(move, 'pointermove', { clientX: 40 * scale, clientY: 0 })
+      pointer(move, 'pointerup', { clientX: 40 * scale, clientY: 0 })
+      fireEvent.click(move)
+    })
+    expect(adapter.saveCalls).toHaveLength(0)
+
+    // A press in the margin, left of the slide, where the dimmed picture is drawn.
+    const margin = document.querySelector('[data-canvas-margin]') as HTMLElement
+    await act(async () => {
+      pointer(margin, 'pointerdown', { clientX: 2, clientY: 150 })
+      pointer(window, 'pointerup', { clientX: 2, clientY: 150 })
+      fireEvent.click(margin)
+    })
+    await waitFor(() => expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 40, y: 100, w: 200, h: 200 }))
+    const crop = (elementsOf(lastSave(adapter))[0] as ImageElement).crop!
+    expect(crop.x).toBeCloseTo(0.35, 9)
+    expect(crop.w).toBeCloseTo(0.5, 9)
+    expect(inCrop()).toBe(false)
+
+    // One undo step puts it back.
+    const saves = adapter.saveCalls.length
+    await key('z', { metaKey: true })
+    await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThan(saves))
+    expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 0, y: 100, w: 200, h: 200, crop: { x: 0.25, y: 0, w: 0.5, h: 1 } })
+    expect(r.getByLabelText('Undo')).toBeDisabled()
+  })
+})
+
 // ── Typed numbers in the property panel are one step (M9) ────────────────────
 //
 // X, Y, W, H and rotation preview while typing (a transient) and write once, on
@@ -3945,5 +4011,102 @@ describe('CarouselEditor: typed panel numbers are one undo step', () => {
     await enter(size)
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
     expect((elementsOf(lastSave(adapter))[0] as OverlayElement).overlay.props.fontSize).toBe('120px')
+  })
+})
+
+describe('CarouselEditor: add text and text style keys (§586 M10)', () => {
+  const OPT_CMD = { metaKey: true, altKey: true }
+  const TPL = { name: 'static-text', description: '', jsxPath: 'static-text.jsx', props: [{ name: 'text', type: 'string' as const, default: 'Hello' }, { name: 'color', type: 'color' as const, default: '#000' }] }
+
+  function textEl(id: string, props: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+    return { id, type: 'overlay' as const, overlay: { template: 'static-text.jsx', props }, frame: 0, x: 100, y: 100, w: 300, h: 100, rotation: 0, ...extra }
+  }
+  function textProject(): Project {
+    return makeProject({
+      slides: [{
+        id: 'slide-0', base_color: '#ffffff',
+        elements: [
+          textEl('t-a', { text: 'Source', color: '#ff0000', fontSize: '64', fontFamily: '"Syne"', effect: 'shadow', effectColor: '#111111' }, { googleFonts: ['Syne:wght@800'] }),
+          textEl('t-b', { text: 'Bee', color: '#000', fontSize: '10', fontFamily: 'system-ui' }),
+          textEl('t-c', { text: 'Sea', color: '#000' }),
+        ],
+      }],
+    } as Partial<Project>)
+  }
+  async function mountText(withTemplate = true) {
+    const adapter = makeFakeAdapter()
+    if (withTemplate) adapter.getDefaultTextOverlay = vi.fn(async () => TPL)
+    const onProjectChange = vi.fn()
+    render(<CarouselEditor project={textProject()} adapter={adapter} onProjectChange={onProjectChange} />)
+    await waitFor(() => findInteractiveWrapper('t-a'))
+    await act(async () => {})
+    return { adapter, onProjectChange }
+  }
+  const propsOf = (p: Project, id: string) => (p.slides![0].elements.find((e) => e.id === id) as { overlay: { props: Record<string, unknown> }; googleFonts?: string[] })
+
+  it('T adds one centred text box in one undo step; a held T adds one', async () => {
+    const { adapter } = await mountText()
+    const e = await key('t')
+    expect(e.defaultPrevented).toBe(true)
+    await key('t', { repeat: true })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const added = lastSave(adapter).slides![0].elements[3] as unknown as { x: number; y: number; w: number; h: number; overlay: { template: string } }
+    expect(lastSave(adapter).slides![0].elements).toHaveLength(4)
+    expect(added.overlay.template).toBe('static-text.jsx')
+    expect(added.x + added.w / 2).toBe(540)
+    expect(added.y + added.h / 2).toBe(540)
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(lastSave(adapter).slides![0].elements).toHaveLength(3)
+  })
+
+  it('T does nothing while typing, with a modifier, or with no text template', async () => {
+    const { adapter } = await mountText()
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    await key('t', {}, input)
+    input.remove()
+    for (const mod of [{ metaKey: true }, { ctrlKey: true }, { altKey: true }, { shiftKey: true }]) await key('t', mod)
+    expect(adapter.saveCalls).toHaveLength(0)
+    const bare = await mountText(false)
+    await key('t')
+    expect(bare.adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('Opt+Cmd+C then Opt+Cmd+V styles every selected text box in one undo step, keeping text', async () => {
+    const { adapter } = await mountText()
+    await plainClick('t-a')
+    const c = await key('c', { ...OPT_CMD, code: 'KeyC' })
+    expect(c.defaultPrevented).toBe(true)
+    expect(adapter.saveCalls).toHaveLength(0)
+    await plainClick('t-b')
+    await shiftClick('t-c')
+    const v = await key('√', { ...OPT_CMD, code: 'KeyV' })
+    expect(v.defaultPrevented).toBe(true)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const b = propsOf(lastSave(adapter), 't-b')
+    const c2 = propsOf(lastSave(adapter), 't-c')
+    expect(b.overlay.props).toEqual({ text: 'Bee', color: '#ff0000', fontSize: '64', fontFamily: '"Syne"' })
+    expect(b.googleFonts).toEqual(['Syne:wght@800'])
+    expect(c2.overlay.props).toEqual({ text: 'Sea', color: '#ff0000' })
+    expect(c2.googleFonts).toBeUndefined()
+
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(propsOf(lastSave(adapter), 't-b').overlay.props.color).toBe('#000')
+    expect(propsOf(lastSave(adapter), 't-c').overlay.props.color).toBe('#000')
+  })
+
+  it('Opt+Shift+Cmd+V, and the keys while typing, do nothing', async () => {
+    const { adapter } = await mountText()
+    await plainClick('t-a')
+    await key('c', { ...OPT_CMD, code: 'KeyC' })
+    await plainClick('t-b')
+    await key('v', { ...OPT_CMD, shiftKey: true, code: 'KeyV' })
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    await key('v', { ...OPT_CMD, code: 'KeyV' }, input)
+    input.remove()
+    expect(adapter.saveCalls).toHaveLength(0)
   })
 })

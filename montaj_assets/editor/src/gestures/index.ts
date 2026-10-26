@@ -5,11 +5,11 @@ export { startResize, nextResizeBox, roundResizedBox } from './helpers/resize';
 export type { ResizeHandle, ResizeState, ResizeOptions } from './helpers/resize';
 export { startRotate, nextRotation } from './helpers/rotate';
 export type { RotateState } from './helpers/rotate';
-export { snapToSlide } from './helpers/snap';
-export type { SnapGuide, SnapResult } from './helpers/snap';
+export { snapToSlide, snapToSlideAndElements } from './helpers/snap';
+export type { SnapGuide, SnapResult, SnapBox, GapSegment, SmartSnapResult, SmartSnapOptions } from './helpers/snap';
 
 export { useOverlayDrag } from './hooks/useOverlayDrag';
-export type { UseOverlayDragArgs, UseOverlayDragReturn } from './hooks/useOverlayDrag';
+export type { UseOverlayDragArgs, UseOverlayDragReturn, DragModifiers } from './hooks/useOverlayDrag';
 export { useOverlayResize } from './hooks/useOverlayResize';
 export type { UseOverlayResizeArgs, UseOverlayResizeReturn, ResizeModifiers } from './hooks/useOverlayResize';
 export { useOverlayRotate } from './hooks/useOverlayRotate';
