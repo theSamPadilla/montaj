@@ -12,8 +12,12 @@ dropped lines.
 2. `transcribe_runs` cuts one 16 kHz mono clip a run, [start - CONTEXT_S, end + PAD_S], and gives ALL the clips to
    whisper-cli in ONE call (the model loads once; BATCH clips at most to a call, for the command line's length on
    Windows). "auto" is detected once, on the longest run, so tiny clips cannot each guess another language.
-3. A clip's words are the ones at or after its run's start (less PAD_S): the words before are the context, which the
-   run before holds. Their times are mapped to the source's clock and clamped into the run, in order. A run of under
+3. A clip is its run less PAD_S to its run plus PAD_S, with no context, except a run shorter than SHORT_RUN_S: it gets
+   up to CONTEXT_S before it, so a lone word keeps its context. Whisper stamps a clip's opening words from the clip's
+   own 0.0, so a time rule cannot tell them from context; a context clip drops its echo by TEXT instead: the longest
+   run of its opening words equal, in order, to the last words of the runs before (their transcript), and with no
+   such match only the words whose END lies before the run's start less PAD_S. Every other word is kept; its time
+   is mapped to the source's clock and clamped into the run, in order. A run of under
    HALLUCINATION_RUN_S whose words are only a stock phrase whisper writes on a blip ("Thank you.") has none.
 4. The file is whisper's own shape (`transcription[]`, one word an entry, offsets in ms) with `run` on each word and
    `montaj.by == "runs"` with `montaj.runs`, the runs themselves, so every reader still works. `runs_of`, `run_of` and
@@ -35,8 +39,9 @@ from lib import speech_energy
 
 VERSION = "speech-runs v1"
 BLIP_S = 0.1                     # a run with less voice than this is a blip: no clip (whisper writes "Thank you." on it)
-CONTEXT_S = 1.5                  # a clip opens this long before its run, so a lone word keeps its context ...
-PAD_S = 0.2                      # ... and ends this long after it
+SHORT_RUN_S = 1.0                # a run shorter than this gets context before it ...
+CONTEXT_S = 1.5                  # ... up to this long, so a lone word keeps its context
+PAD_S = 0.2                      # every clip opens and ends this long beside its run
 BATCH = 40                       # clips to one whisper-cli call (the command line's length on Windows)
 HALLUCINATION_RUN_S = 0.6        # a run shorter than this whose words are only a stock phrase has none
 HALLUCINATIONS = ("thank you", "thanks for watching", "you", "bye")
@@ -74,8 +79,12 @@ def _decode(media, wav_path):
         fail("transcription_failed", f"Reading the audio of {os.path.basename(media)} failed.")
 
 
+def _has_context(run):
+    return run[1] - run[0] < SHORT_RUN_S
+
+
 def _clip_spans(runs, total):
-    return [(max(0.0, a - CONTEXT_S), min(total, b + PAD_S)) for a, b in runs]
+    return [(max(0.0, a - (CONTEXT_S if _has_context((a, b)) else PAD_S)), min(total, b + PAD_S)) for a, b in runs]
 
 
 def _write_clips(wav_path, spans, folder):
@@ -133,8 +142,24 @@ def _clamp(words, lo, hi):
     return [tuple(w) for w in out]
 
 
-def _words_of_run(doc, clip_start, run):
-    """[(text, start, end)] on the source's clock: the clip's words from the run's start (less PAD_S) on, clamped."""
+def _echo(words, before):
+    """How many of `words` (the clip's, in order) are the echo of `before` (the texts of the words just before the
+    run): the longest opening of `words` equal, by lib.speech_lines.norm and in order, to the end of `before`. Words
+    that norm to nothing are skipped in the comparison and dropped with the echo around them."""
+    from lib.speech_lines import norm
+    prev = [n for n in (norm(t) for t in before) if n]
+    pos = [i for i, (t, _, _) in enumerate(words) if norm(t)]
+    heard = [norm(words[i][0]) for i in pos]
+    for k in range(min(len(prev), len(heard)), 0, -1):
+        if heard[:k] == prev[-k:]:
+            return pos[k - 1] + 1
+    return 0
+
+
+def _words_of_run(doc, clip_start, run, before=None):
+    """[(text, start, end)] on the source's clock, clamped into the run. All the clip's words, except the echo of the
+    runs before it in a context clip (`before`: their words' texts; None for a clip with no context): the longest
+    opening equal to their end, else the words that END before the run's start less PAD_S."""
     lo, hi = run
     got = []
     for e in doc.get("transcription", []):
@@ -142,9 +167,10 @@ def _words_of_run(doc, clip_start, run):
         o = e.get("offsets") or {}
         if not text.strip() or _SPECIAL.match(text) or "from" not in o or "to" not in o:
             continue
-        s, t = clip_start + o["from"] / 1000.0, clip_start + o["to"] / 1000.0
-        if (s + t) / 2 >= lo - PAD_S:
-            got.append((text, s, t))
+        got.append((text, clip_start + o["from"] / 1000.0, clip_start + o["to"] / 1000.0))
+    if before is not None:
+        k = _echo(got, before)
+        got = got[k:] if k else [w for w in got if w[2] >= lo - PAD_S]
     return _clamp(got, lo, hi)
 
 
@@ -187,9 +213,13 @@ def transcribe_runs(media, out_prefix, model, language):
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
-    entries = []
+    entries, said = [], []          # said: (run end, the texts of the run's words) so far, hallucinations too
     for i, (run_, clip) in enumerate(zip(runs, clips)):
-        words = _words_of_run(docs[clip], spans[i][0], run_)
+        before = None
+        if _has_context(run_):
+            before = [t for end, texts in said if end > spans[i][0] for t in texts]
+        words = _words_of_run(docs[clip], spans[i][0], run_, before)
+        said.append((run_[1], [t for t, _, _ in words]))
         if _hallucination(words, run_):
             continue
         for t, s, e in words:

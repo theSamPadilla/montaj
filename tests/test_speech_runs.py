@@ -123,10 +123,10 @@ def test_clips_run_in_batches(tmp_path, fake, monkeypatch):
 
 def test_the_guard_gets_the_summed_clip_length(tmp_path, fake):
     f = fake()
-    media = make_wav(tmp_path / "a.wav", [(3.0, 4.0), (6.0, 7.0)], 8.0)
+    media = make_wav(tmp_path / "a.wav", [(3.0, 4.5), (6.0, 7.5)], 8.0)
     sr.transcribe_runs(media, str(tmp_path / "out"), "model.bin", "en")
-    # each clip is its run plus 1.5 s of context and 0.2 s of pad: 2 x 2.7 s
-    assert f.calls[0]["duration_s"] == pytest.approx(5.4, abs=0.15)
+    # a run of 1 s or more has no context: each clip is its run plus 0.2 s of pad each side, 2 x 1.9 s
+    assert f.calls[0]["duration_s"] == pytest.approx(3.8, abs=0.15)
 
 
 # ── words: context dropped, clamped in order ────────────────────────────────
@@ -163,15 +163,55 @@ def test_a_word_of_no_length_gets_two_milliseconds(tmp_path, fake):
         assert w["offsets"]["to"] - w["offsets"]["from"] >= 2
 
 
+# ── the opening words of a clip ─────────────────────────────────────────────
+
+def by_run(tmp_path):
+    out = {}
+    for w in load(tmp_path / "out")["transcription"]:
+        out.setdefault(w["run"], []).append(w)
+    return out
+
+
+def test_a_long_run_s_clip_has_no_context_so_words_stamped_at_zero_are_kept(tmp_path, fake):
+    # run 1.0-3.0 (2 s): its clip opens 0.2 s before it. Whisper stamps the opening words from the clip's own 0.0.
+    f = fake({0: [("You", 0.0, 0.3), ("may", 0.3, 0.6), ("already", 0.6, 1.0), ("have", 1.0, 1.4)]})
+    media = make_wav(tmp_path / "a.wav", [(1.0, 3.0)], 4.0)
+    sr.transcribe_runs(media, str(tmp_path / "out"), "model.bin", "en")
+    words = by_run(tmp_path)[0]
+    assert [w["text"].strip() for w in words] == ["You", "may", "already", "have"]
+    assert all(0.99 <= w["offsets"]["from"] / 1000 <= w["offsets"]["to"] / 1000 <= 3.01 for w in words)
+
+
+def test_a_short_run_with_context_drops_the_previous_runs_echoed_tail_by_text(tmp_path, fake):
+    # run 0 is 0.5-2.0 (clip from 0.3); run 1 is 3.0-3.5 (0.5 s: a clip from 1.5). Whisper writes run 0's last words
+    # again at the clip's start, stamped INSIDE run 1, then the real word.
+    fake({0: [("Mount", 0.3, 0.6), ("the", 0.6, 0.9), ("phone", 0.9, 1.4)],
+          1: [("the", 1.5, 1.7), ("phone", 1.7, 1.9), ("Compute.", 1.9, 2.3)]})
+    media = make_wav(tmp_path / "a.wav", [(0.5, 2.0), (3.0, 3.5)], 5.0)
+    sr.transcribe_runs(media, str(tmp_path / "out"), "model.bin", "en")
+    got = by_run(tmp_path)
+    assert [w["text"].strip() for w in got[0]] == ["Mount", "the", "phone"]
+    assert [w["text"].strip() for w in got[1]] == ["Compute."]
+
+
+def test_a_short_run_whose_echo_does_not_match_keeps_the_words_that_end_inside_it(tmp_path, fake):
+    fake({0: [("Mount", 0.3, 0.6), ("phone", 0.9, 1.4)],
+          1: [("stray", 0.0, 0.4),                 # source 1.5-1.9: ends before the run (3.0) less the pad
+              ("other", 1.5, 1.9), ("thing", 1.9, 2.3)]})
+    media = make_wav(tmp_path / "a.wav", [(0.5, 2.0), (3.0, 3.5)], 5.0)
+    sr.transcribe_runs(media, str(tmp_path / "out"), "model.bin", "en")
+    assert [w["text"].strip() for w in by_run(tmp_path)[1]] == ["other", "thing"]
+
+
 # ── hallucinations ──────────────────────────────────────────────────────────
 
 def test_thank_you_on_a_short_run_is_dropped_and_a_real_short_word_kept(tmp_path, fake):
     # run 0 and run 1 are 0.3 s of sound; run 2 is 1.0 s
-    # a clip opens 1.5 s before its run: run 0 at clip time 0.5, runs 1 and 2 at 1.5
+    # a short run's clip opens 1.5 s before it (run 0: at 0, so 0.5; run 1: 1.5); a long run's 0.2 s (run 2: 0.2)
     fake({0: [("Thank", 0.5, 0.7), ("you.", 0.7, 1.0)],
           1: [("Compute.", 1.5, 1.9)],
-          2: [("Thank", 1.5, 2.0), ("you.", 2.0, 2.5)]})
-    media = make_wav(tmp_path / "a.wav", [(0.5, 0.8), (2.0, 2.3), (4.0, 5.0)], 6.0)
+          2: [("Thank", 0.2, 0.7), ("you.", 0.7, 1.2)]})
+    media = make_wav(tmp_path / "a.wav", [(0.5, 0.8), (2.0, 2.3), (4.0, 5.2)], 6.0)
     sr.transcribe_runs(media, str(tmp_path / "out"), "model.bin", "en")
     data = load(tmp_path / "out")
     by_run = {}
