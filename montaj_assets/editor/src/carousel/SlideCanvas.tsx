@@ -17,6 +17,7 @@ import { InlineTextEditor } from '../text/InlineTextEditor'
 import { ensureGoogleFontsLoaded } from '../lib/google-fonts'
 import { isLocked } from './lock'
 import { groupDragMove, type GroupDragResult, type GroupMember } from './groupDrag'
+import { elementsAt, isLayerPress, nextLayerDown, pointInElement } from './hitTest'
 
 // Neutral fallback used only when no host `resolveImageSrc` is injected. The
 // package must not synthesize a host-shaped URL (e.g. Montaj's `/api/files`):
@@ -520,20 +521,61 @@ export default function SlideCanvas({
     endTextEdit()
   }
 
+  // The slide-space point under a mouse event: the root sits at the slide's
+  // corner, and its drawn size says how far the display is zoomed past `scale`.
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const slidePoint = (e: { clientX: number; clientY: number }) => {
+    const rect = rootRef.current?.getBoundingClientRect()
+    if (!rect) return { x: e.clientX / scale, y: e.clientY / scale }
+    const zoom = rect.width > 0 ? (width * scale) / rect.width : 1
+    return { x: ((e.clientX - rect.left) * zoom) / scale, y: ((e.clientY - rect.top) * zoom) / scale }
+  }
+
+  // The selected element a press at `e` is inside (frontmost first), when it is
+  // not in crop: pressing inside it acts on it, whatever lies on top (§586 M1).
+  const selectedUnder = (e: { clientX: number; clientY: number }) => {
+    const id = elementsAt(slidePoint(e), slide.elements, hiddenSet).find(
+      (hit) => selectedIds.includes(hit) && cropSession?.elementId !== hit,
+    )
+    return id ? elementById(id) : undefined
+  }
+
+  // The selected element a click released inside, when another lay on top and
+  // took the selection: a double-click's first click moves the selection off
+  // the element the double-click is for, so it is remembered a moment.
+  const clickBaseRef = useRef<{ id: string; at: number } | null>(null)
+  const DOUBLE_CLICK_MS = 600
+
+  // The element a double-click on `element` is for: the one the clicks before
+  // it began on, else the selected one under the pointer, else `element`.
+  const doubleClickTarget = (e: React.MouseEvent, element: Slide['elements'][number]) => {
+    const base = clickBaseRef.current
+    clickBaseRef.current = null
+    if (base && Date.now() - base.at < DOUBLE_CLICK_MS) {
+      const el = elementById(base.id)
+      if (el && pointInElement(slidePoint(e), el)) return el
+    }
+    return selectedUnder(e) ?? element
+  }
+
   // Double-click on an element, or on its handles: an overlay edits its text;
   // an image crops, as its Crop button does: not while turned (the crop math
   // is for an upright box), nor again in crop. Absent `onEnterCrop` → an
   // image takes no double-click.
-  const doubleClickOf = (element: Slide['elements'][number]): React.MouseEventHandler | undefined =>
-    element.type === 'overlay'
-      ? (e) => { e.stopPropagation(); beginTextEdit(element) }
-      : onEnterCrop
-        ? (e) => {
-            e.stopPropagation()
-            // A locked image is not cropped (§586 M5).
-            if (!isLocked(element) && cropSession?.elementId !== element.id && (element.rotation ?? 0) === 0) onEnterCrop(element.id)
-          }
-        : undefined
+  const handleDoubleClick = (element: Slide['elements'][number], e: React.MouseEvent) => {
+    const target = doubleClickTarget(e, element)
+    const reselect = () => { if (selectedElementId !== target.id) onSelect?.(target.id) }
+    if (target.type === 'overlay') {
+      e.stopPropagation()
+      reselect()
+      beginTextEdit(target)
+    } else if (onEnterCrop) {
+      e.stopPropagation()
+      reselect()
+      // A locked image is not cropped (§586 M5).
+      if (!isLocked(target) && cropSession?.elementId !== target.id && (target.rotation ?? 0) === 0) onEnterCrop(target.id)
+    }
+  }
 
   // ── Pointer wiring shared by drag/resize/rotate ──
   // We attach window-level move/up listeners while a gesture is active so the
@@ -547,6 +589,10 @@ export default function SlideCanvas({
   // the pointer. The next press on the canvas clears it, so a release off the
   // canvas, whose click never comes here, cannot swallow a later click.
   const swallowClickRef = useRef(false)
+
+  // A drag of the selected element under another (§586 M1) selects the topmost
+  // on release when it never moved, so its click must not be swallowed.
+  const heldPressRef = useRef<{ x: number; y: number; moved: boolean } | null>(null)
 
   // ── Group drag (§156): every selected element moves by one delta, one undo step ──
   const groupRef = useRef<{ start: { x: number; y: number }; members: GroupMember[]; latest: GroupDragResult | null } | null>(null)
@@ -601,7 +647,9 @@ export default function SlideCanvas({
       else if (gesture === 'group') groupHandlers.current.up()
       // A group drag decides for itself: a press on a member that did not move
       // is a click, and collapses the selection to that member.
-      if (swallowClick && (gesture === 'drag' || gesture === 'resize' || gesture === 'rotate')) swallowClickRef.current = true
+      const unmoved = heldPressRef.current?.moved === false
+      heldPressRef.current = null
+      if (swallowClick && !(gesture === 'drag' && unmoved) && (gesture === 'drag' || gesture === 'resize' || gesture === 'rotate')) swallowClickRef.current = true
     }
     const onMove = (e: PointerEvent) => {
       // A mouse that moves with no button held has lost its release (the window
@@ -613,6 +661,8 @@ export default function SlideCanvas({
         return
       }
       const cursor = { x: e.clientX, y: e.clientY }
+      const held = heldPressRef.current
+      if (held && (cursor.x !== held.x || cursor.y !== held.y)) held.moved = true
       if (activeGesture.current === 'drag') drag.onPointerMove(cursor)
       else if (activeGesture.current === 'resize') resize.onPointerMove(cursor, { shiftKey: e.shiftKey })
       else if (activeGesture.current === 'rotate') rotate.onPointerMove(cursor)
@@ -645,6 +695,7 @@ export default function SlideCanvas({
 
   return (
     <div
+      ref={rootRef}
       data-interactive={interactive ? 'true' : undefined}
       role={interactive ? 'group' : 'presentation'}
       aria-label={interactive ? 'Slide canvas' : undefined}
@@ -708,13 +759,56 @@ export default function SlideCanvas({
             cursor: interactive && !isLocked(element) ? 'grab' : 'default',
           }
 
+          // Every selected, unlocked element, as one drag moves them (§156).
+          const startGroupDrag = (e: React.PointerEvent) => {
+            const members: GroupMember[] = []
+            for (const id of selectedIds) {
+              const m = slide.elements.find((el) => el.id === id)
+              if (m && !isLocked(m)) members.push({ id: m.id, x: m.x, y: m.y, w: m.w, h: m.h, rotation: m.rotation })
+            }
+            groupRef.current = { start: { x: e.clientX, y: e.clientY }, members, latest: null }
+            activeGesture.current = 'group'
+          }
+          const startDrag = (e: React.PointerEvent, el: Slide['elements'][number]) => {
+            activeGesture.current = 'drag'
+            drag.onPointerDown(
+              el.id,
+              { x: e.clientX, y: e.clientY },
+              { x: el.x, y: el.y, w: el.w, h: el.h, rotation: el.rotation },
+            )
+          }
+
           const handlePointerDownDrag = (e: React.PointerEvent) => {
-            if (!interactive || inCrop || editingId === element.id) return
+            if (!interactive || editingId === element.id) return
+            const layerPress = isLayerPress(e)
+            if (inCrop && !layerPress) return
             e.preventDefault()
             e.stopPropagation()
+            // Cmd-press (Ctrl off a Mac) selects the next element down under
+            // the pointer and starts nothing; a crop in progress is applied.
+            // Its click, which would select the top one, changes nothing.
+            if (layerPress) {
+              swallowClickRef.current = true
+              const next = nextLayerDown(elementsAt(slidePoint(e), slide.elements, hiddenSet), selectedIds)
+              if (cropRef.current) leaveCrop('apply').catch(() => {})
+              if (next) onSelect?.(next)
+              return
+            }
             // Shift toggles membership and drags nothing. Crop mode ignores shift.
             if (e.shiftKey && onToggleSelect && !cropSession) {
               onToggleSelect(element.id)
+              return
+            }
+            // A press inside a selected element's box acts on it though another
+            // lies on top (§586 M1): a move drags it, or the whole selection.
+            // Without a move the click selects the topmost. A locked one waits.
+            const held = selectedUnder(e)
+            if (held && held.id !== element.id) {
+              if (selectedIds.length > 1) startGroupDrag(e)
+              else if (!isLocked(held)) {
+                heldPressRef.current = { x: e.clientX, y: e.clientY, moved: false }
+                startDrag(e, held)
+              }
               return
             }
             // A press on a locked element starts nothing (§586 M5): it is only
@@ -727,22 +821,11 @@ export default function SlideCanvas({
             // A press on a member of a multi-selection drags the whole group;
             // its locked members stay where they are.
             if (selectedIds.length > 1 && selectedIds.includes(element.id)) {
-              const members: GroupMember[] = []
-              for (const id of selectedIds) {
-                const m = slide.elements.find((el) => el.id === id)
-                if (m && !isLocked(m)) members.push({ id: m.id, x: m.x, y: m.y, w: m.w, h: m.h, rotation: m.rotation })
-              }
-              groupRef.current = { start: { x: e.clientX, y: e.clientY }, members, latest: null }
-              activeGesture.current = 'group'
+              startGroupDrag(e)
               return
             }
             onSelect?.(element.id)
-            activeGesture.current = 'drag'
-            drag.onPointerDown(
-              element.id,
-              { x: e.clientX, y: e.clientY },
-              { x: element.x, y: element.y, w: element.w, h: element.h, rotation: element.rotation },
-            )
+            startDrag(e, element)
           }
 
           const innerContent =
@@ -833,10 +916,14 @@ export default function SlideCanvas({
                 if (e.shiftKey && onToggleSelect && !cropSession) return
                 // A gesture just ended here: keep the selection.
                 if (swallowClickRef.current) { swallowClickRef.current = false; return }
+                // Released inside the selected element with another on top: the
+                // top one is selected, and a double-click may still be for the first.
+                const held = selectedUnder(e)
+                if (held && held.id !== element.id) clickBaseRef.current = { id: held.id, at: Date.now() }
                 onSelect?.(element.id)
               } : undefined}
               onPointerDown={handlePointerDownDrag}
-              onDoubleClick={interactive ? doubleClickOf(element) : undefined}
+              onDoubleClick={interactive ? (e) => handleDoubleClick(element, e) : undefined}
             >
               {innerContent}
 
@@ -944,7 +1031,7 @@ export default function SlideCanvas({
                   key={element.id}
                   ref={setChromeRef(element.id)}
                   data-chrome-for={element.id}
-                  onDoubleClick={doubleClickOf(element)}
+                  onDoubleClick={(e) => handleDoubleClick(element, e)}
                   style={{
                     position: 'absolute',
                     left: 0,
