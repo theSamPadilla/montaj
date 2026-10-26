@@ -472,21 +472,32 @@ def test_a_caption_over_a_card_whose_ink_was_not_checked_is_reported():
 
 
 def test_a_caption_whose_ink_was_checked_for_this_card_is_fine():
-    assert lc.caption_ink_issues(_ink_project([{"start": 1, "end": 2, "ink": "dark", "inkAuto": "paper"}])) == []
+    assert lc.caption_ink_issues(_ink_project([{"start": 1, "end": 2, "ink": "dark", "inkAuto": {"card": "paper", "ink": "dark"}}])) == []
 
 
 def test_ink_set_for_a_card_that_is_gone_is_reported():
-    issues = lc.caption_ink_issues(_ink_project([{"start": 5, "end": 6, "ink": "dark", "inkAuto": "paper"}]))
+    issues = lc.caption_ink_issues(_ink_project([{"start": 5, "end": 6, "ink": "dark", "inkAuto": {"card": "paper", "ink": "dark"}}]))
     assert len(issues) == 1 and "paper" in issues[0]["text"] and "now over footage" in issues[0]["text"]
 
 
 def test_a_persons_ink_is_never_flagged():
+    auto = {"card": "paper", "ink": "dark"}
     assert lc.caption_ink_issues(_ink_project([{"start": 1, "end": 2, "ink": "light"},
-                                                {"start": 5, "end": 6, "ink": "dark"}])) == []
+                                                {"start": 5, "end": 6, "ink": "dark"},
+                                                {"start": 1, "end": 2, "ink": "light", "inkAuto": auto},
+                                                {"start": 5, "end": 6, "ink": "light", "inkAuto": auto},
+                                                {"start": 1, "end": 2, "inkAuto": auto},
+                                                {"start": 5, "end": 6, "inkAuto": auto}])) == []
+
+
+def test_ink_the_step_wrote_for_another_card_is_reported():
+    auto = {"card": "old", "ink": "dark"}
+    issues = lc.caption_ink_issues(_ink_project([{"start": 1, "end": 2, "ink": "dark", "inkAuto": auto}]))
+    assert len(issues) == 1 and "paper" in issues[0]["text"] and "not had its ink checked" in issues[0]["text"]
 
 
 def test_translations_and_the_boxed_styles_are_not_flagged_for_ink():
-    segs = [{"start": 1, "end": 2, "ink": "dark", "inkAuto": "paper"},
+    segs = [{"start": 1, "end": 2, "ink": "dark", "inkAuto": {"card": "paper", "ink": "dark"}},
             {"start": 1, "end": 2, "lang": "es", "translationOf": ["cap-0"]}]
     assert lc.caption_ink_issues(_ink_project(segs)) == []
     for style in ("plate", "subtitle"):

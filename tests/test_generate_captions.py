@@ -551,7 +551,7 @@ def _run_step_with_ink(tmp_path, monkeypatch, capsys, with_card, renderer):
         if "transcribe.py" in " ".join(cmd):
             (proj_dir / "_caption_words.json").write_text("{}")
     monkeypatch.setattr(mod, "run", fake_run)
-    monkeypatch.setattr(mod.caption_ink, "frame_renderer", lambda project_path: renderer)
+    monkeypatch.setattr(mod.caption_ink, "frame_renderer", lambda project_path, out_dir, deadline=None: renderer)
     monkeypatch.setattr(_sys, "argv", ["generate_captions.py", "--project-id", "p1"])
     mod.main()
     return json.loads(path.read_text()), json.loads(capsys.readouterr().out.strip().splitlines()[-1])
@@ -566,7 +566,7 @@ def test_ink_pass_runs_for_a_project_with_a_card(tmp_path, monkeypatch, capsys):
         return str(p)
     doc, printed = _run_step_with_ink(tmp_path, monkeypatch, capsys, True, light)
     seg = doc["captions"]["segments"][0]
-    assert seg["ink"] == "dark" and seg["inkAuto"] == "card"
+    assert seg["ink"] == "dark" and seg["inkAuto"] == {"card": "card", "ink": "dark"}
     assert "warnings" not in printed
 
 
@@ -598,7 +598,7 @@ class _InkProc(_FakeCaptionProc):
     def __init__(self, returncode=0, out=b"", err=b"", hang=False, on_run=None):
         super().__init__(returncode)
         self._out, self._err, self._hang, self._on_run = out, err, hang, on_run
-        self.killed = False
+        self.killed = self.waited = False
 
     async def communicate(self):
         if self._hang:
@@ -607,31 +607,52 @@ class _InkProc(_FakeCaptionProc):
             self._on_run()
         return self._out, self._err
 
+    async def wait(self):
+        self.waited = True
+
     def kill(self):
         self.killed = True
 
 
-def _route_ink_run(tmp_path, monkeypatch, with_card, ink_proc):
+WROTE = b'{"dark": 1, "light": 0, "cleared": 0, "kept": 0, "changed": true}\n'
+
+
+def _route_ink_run(tmp_path, monkeypatch, with_card, ink_proc, who=None, drain=True, segments=None):
+    """(track, broadcaster, argv of every subprocess, project dir, kwargs of the ink step's spawn, ink passes still
+    running when the pipeline returned)."""
     from serve.routes.projects import _run_caption_pipeline
 
-    calls = []
+    argvs, ink_kwargs = [], []
+    monkeypatch.setattr(projects_mod, "_kill_tree", lambda p: p.kill())   # the fake has no process group
 
     async def exec_(*args, **kwargs):
-        calls.append([str(a) for a in args])
-        return ink_proc if any(str(a).endswith("caption_ink.py") for a in args) else _FakeCaptionProc()
+        argvs.append([str(a) for a in args])
+        if any(str(a).endswith("caption_ink.py") for a in args):
+            ink_kwargs.append(kwargs)
+            return ink_proc
+        return _FakeCaptionProc()
 
     monkeypatch.setattr(projects_mod.asyncio, "create_subprocess_exec", exec_)
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
-    (project_dir / "_caption_track.json").write_text(json.dumps({"style": "pop", "segments": [{"text": "hi", "start": 1, "end": 2}]}))
+    (project_dir / "_caption_track.json").write_text(json.dumps({"style": "pop", "segments": segments or [{"text": "hi", "start": 1, "end": 2}]}))
     project = {"tracks": [{"id": "m", "items": [{"id": "v", "type": "video", "src": "/x/a.mov", "start": 0, "end": 4,
                                                  "inPoint": 0, "outPoint": 4}]},
                           {"id": "o", "items": [{"id": "card", "type": "overlay", "src": "engine:scene3d", "start": 0,
                                                  "end": 4, "opaque": True}] if with_card else []}]}
     broadcaster = _FakeBroadcaster()
-    track = asyncio.run(_run_caption_pipeline("proj-ink", project_dir, project, model="base.en", language="auto",
-                                              style="pop", broadcaster=broadcaster))
-    return track, broadcaster, calls, project_dir
+
+    async def run():
+        track = await _run_caption_pipeline("proj-ink", project_dir, project, model="base.en", language="auto",
+                                            style="pop", broadcaster=broadcaster, who=who)
+        running = len(projects_mod._caption_ink_tasks)
+        if not drain:
+            for t in list(projects_mod._caption_ink_tasks):
+                t.cancel()
+        await projects_mod.drain_caption_ink_tasks()
+        return track, running
+    track, running = asyncio.run(run())
+    return track, broadcaster, argvs, project_dir, ink_kwargs, running
 
 
 def test_route_runs_the_ink_step_when_a_card_exists_and_broadcasts_the_result(tmp_path, monkeypatch):
@@ -640,8 +661,7 @@ def test_route_runs_the_ink_step_when_a_card_exists_and_broadcasts_the_result(tm
         doc = json.loads(p.read_text())
         doc["captions"]["segments"][0]["ink"] = "dark"
         p.write_text(json.dumps(doc))
-    track, b, calls, d = _route_ink_run(tmp_path, monkeypatch, True,
-                                        _InkProc(out=b'{"dark": 1, "light": 0, "cleared": 0, "kept": 0}\n', on_run=ink_wrote))
+    track, b, calls, d, _, _ = _route_ink_run(tmp_path, monkeypatch, True, _InkProc(out=WROTE, on_run=ink_wrote))
     ink = [c for c in calls if c[1].endswith("caption_ink.py")]
     assert len(ink) == 1 and ink[0][2:] == ["--project", str(d / "project.json")]
     assert len([f for f in b.frames if f.startswith("data:")]) == 2, "the write, then the ink"
@@ -650,9 +670,39 @@ def test_route_runs_the_ink_step_when_a_card_exists_and_broadcasts_the_result(tm
 
 
 def test_route_skips_the_ink_step_without_a_card(tmp_path, monkeypatch):
-    _, b, calls, _ = _route_ink_run(tmp_path, monkeypatch, False, _InkProc())
+    _, b, calls, _, _, _ = _route_ink_run(tmp_path, monkeypatch, False, _InkProc())
     assert not [c for c in calls if c[1].endswith("caption_ink.py")]
     assert len([f for f in b.frames if f.startswith("data:")]) == 1
+
+
+def test_route_runs_the_step_to_clear_its_own_ink_when_no_card_remains(tmp_path, monkeypatch):
+    own = [{"text": "hi", "start": 1, "end": 2, "ink": "dark", "inkAuto": {"card": "gone", "ink": "dark"}}]
+    _, _, calls, _, _, _ = _route_ink_run(tmp_path, monkeypatch, False, _InkProc(), segments=own)
+    assert [c for c in calls if c[1].endswith("caption_ink.py")]
+
+
+def test_route_does_not_broadcast_again_when_the_step_wrote_nothing(tmp_path, monkeypatch):
+    out = b'{"dark": 1, "light": 0, "cleared": 0, "kept": 0, "changed": false}\n'
+    _, b, _, _, _, _ = _route_ink_run(tmp_path, monkeypatch, True, _InkProc(out=out))
+    assert len([f for f in b.frames if f.startswith("data:")]) == 1
+
+
+def test_route_gives_the_step_the_requests_write_origin_and_its_own_process_group(tmp_path, monkeypatch):
+    from lib import sync_clash
+    monkeypatch.setattr(sync_clash, "state_dir", lambda: "/x")
+    human = projects_mod.save_guard.SyncWho("human")
+    _, _, _, _, kw, _ = _route_ink_run(tmp_path, monkeypatch, True, _InkProc(), who=human)
+    assert kw[0]["env"][sync_clash.ORIGIN_ENV] == "human" and kw[0]["env"]["MONTAJ_ROOT"]
+    assert kw[0].get("start_new_session") is True or "creationflags" in kw[0]
+    (tmp_path / "proj").rename(tmp_path / "proj2")
+    _, _, _, _, kw, _ = _route_ink_run(tmp_path, monkeypatch, True, _InkProc())
+    assert kw[0]["env"][sync_clash.ORIGIN_ENV] == "ai", "a request with no writer is the AI's"
+
+
+def test_route_job_is_done_before_the_ink_pass_ends(tmp_path, monkeypatch):
+    track, _, _, _, _, running = _route_ink_run(tmp_path, monkeypatch, True, _InkProc(hang=True), drain=False)
+    assert track["segments"][0]["text"] == "hi" and running == 1, "returned with the pass still running"
+    assert not projects_mod._caption_ink_tasks
 
 
 @pytest.mark.parametrize("proc", [
@@ -660,16 +710,16 @@ def test_route_skips_the_ink_step_without_a_card(tmp_path, monkeypatch):
     _InkProc(out=b"not json"),
 ])
 def test_route_ink_failure_is_only_a_log_event(tmp_path, monkeypatch, proc):
-    track, b, _, _ = _route_ink_run(tmp_path, monkeypatch, True, proc)
+    track, b, _, _, _, _ = _route_ink_run(tmp_path, monkeypatch, True, proc)
     assert track["segments"][0]["text"] == "hi"
     assert len([f for f in b.frames if f.startswith("data:")]) == 1
     if proc.returncode:
         assert any(f.startswith("event: log") and "caption ink not set" in f for f in b.frames)
 
 
-def test_route_ink_timeout_is_only_a_log_event(tmp_path, monkeypatch):
+def test_route_ink_timeout_kills_the_tree_waits_and_is_only_a_log_event(tmp_path, monkeypatch):
     monkeypatch.setattr(projects_mod, "CAPTION_INK_TIMEOUT_S", 0.05)
     proc = _InkProc(hang=True)
-    track, b, _, _ = _route_ink_run(tmp_path, monkeypatch, True, proc)
-    assert proc.killed and track["segments"][0]["text"] == "hi"
+    track, b, _, _, _, _ = _route_ink_run(tmp_path, monkeypatch, True, proc)
+    assert proc.killed and proc.waited and track["segments"][0]["text"] == "hi"
     assert any("timed out" in f for f in b.frames)

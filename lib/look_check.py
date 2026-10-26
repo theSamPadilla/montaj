@@ -270,20 +270,22 @@ def data_issues(project, project_dir):
 
 def caption_ink_issues(project):
     """[{t, id, text}] for captions whose ink (lib/caption_ink.py) is out of date: over a card the step has not
-    measured, or set for a card that is gone. A person's ink (no inkAuto) is never flagged."""
+    measured, or set for a card that is gone. Only ink the step wrote (inkAuto naming the same ink) is judged; a
+    person's ink is never flagged."""
     from lib import caption_ink
     out = []
     for seg in caption_segments(project):
-        if not caption_ink.inkable(project, seg) or (seg.get("ink") and not seg.get("inkAuto")):
+        ours = caption_ink.ours(seg)
+        if not caption_ink.inkable(project, seg) or (not ours and (seg.get("ink") or "inkAuto" in seg)):
             continue
         mid = (_num(seg.get("start")) + _num(seg.get("end"))) / 2
         card = caption_ink.card_under(project, mid)
-        if card is not None and seg.get("inkAuto") != card["id"]:
+        if card is not None and (not ours or seg["inkAuto"].get("card") != card["id"]):
             out.append({"t": r2(mid), "id": "captions",
                         "text": f"caption over {card['id']} has not had its ink checked: run caption_ink"})
-        elif card is None and seg.get("inkAuto"):
+        elif card is None and ours:
             out.append({"t": r2(mid), "id": "captions",
-                        "text": f"caption ink was set for {seg['inkAuto']}, now over footage: run caption_ink"})
+                        "text": f"caption ink was set for {seg['inkAuto'].get('card')}, now over footage: run caption_ink"})
     return out
 
 

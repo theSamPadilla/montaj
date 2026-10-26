@@ -3,12 +3,14 @@
 
 Over a light full-screen card (an opaque 3D or JSX paper card) a caption draws dark, so it reads; elsewhere it draws
 as its style does. The step renders the frame without captions at each caption's middle, measures the band the caption
-draws in, and writes `ink` ("dark" or "light") and `inkAuto` (the card's id) on the caption. An `ink` a person set
-(no `inkAuto`) is never changed. Ink the step wrote is cleared when the card is gone.
+draws in, and writes `ink` ("dark" or "light") and `inkAuto` ({card, ink}: what it wrote) on the caption. An `ink` is the
+step's only while `inkAuto` names the same ink; any other ink (none, edited, removed) is a person's and never changed.
+Ink the step wrote is cleared when the card is gone. It stops starting frames after 240 s (those captions are left as
+they are, with a warning) and writes the ones it has.
 
 The write: `captions` only, under the project lock, onto the captions as they are now; refused (`project_changed`,
-nothing written) when a caption it changes was edited meanwhile. Prints one short JSON: {dark, light, cleared, kept,
-warnings?}.
+nothing written) when a caption it changes, or the captions' style, was edited meanwhile. Prints one short JSON: {dark,
+light, cleared, kept, changed, warnings?}; `changed` is whether anything was written.
 """
 import argparse, json, os, sys
 
@@ -19,7 +21,7 @@ from lib.common import fail  # noqa: E402
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly  # noqa: E402
 from lib.sync_clash import SyncConflict, exit_refused  # noqa: E402
 
-EMPTY = {"dark": 0, "light": 0, "cleared": 0, "kept": 0}
+EMPTY = {"dark": 0, "light": 0, "cleared": 0, "kept": 0, "changed": False}
 
 
 def run(project_path, render_fn=None):

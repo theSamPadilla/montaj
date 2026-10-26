@@ -2,22 +2,29 @@
 
 Over a full-screen light card (a 3D scene's paper backdrop, a JSX paper card, both `opaque: true`) white captions with
 a black outline barely read. The project data says what to draw, so the editor preview, sample_frame and the export
-all draw the same thing: `captions.segments[i].ink` is "dark" or "light", and `inkAuto` (the id of the card measured
-under the caption) marks a value this module wrote. An `ink` with no `inkAuto` is a person's choice: never changed.
+all draw the same thing: `captions.segments[i].ink` is "dark" or "light", and `inkAuto` ({card, ink}: the card measured
+under the caption and the ink written for it) records what this module wrote. An `ink` is this module's only when
+`inkAuto` is there and names the same ink; any other combination is a person's choice: never changed.
 
 - `card_under`: the full-frame opaque overlay on top at a time.
 - `band` / `luminance`: the caption's rows of the frame, and the mean relative luminance of a render over them.
 - `plan`: what each caption should say, from a render of the backdrop (the frame without the captions).
+- `needs_pass`: whether the step has anything to do (a card to measure, or ink of ours to clear).
 - `update`: plan + the guarded write of `captions` only.
 """
+import copy
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from lib import look_check as lc
 from lib import project_revisions
+from lib.proc import detached_kwargs, kill_tree
 from lib.project_lock import update_project
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -30,6 +37,9 @@ INK_STYLES = ("accent", "clean", "highlight-box", "karaoke", "outline", "pop", "
 LIGHT_L = 0.5
 RENDER_WORKERS = 3
 RENDER_TIMEOUT_S = 90
+# The step's own wall clock for the frames: one not started by then counts as failed, so the caller's timeout (serve's
+# 300 s) never has to kill it.
+DEADLINE_S = 240
 LOCK_TIMEOUT = 30.0
 _LUM = (0.2126, 0.7152, 0.0722)   # Rec.709
 
@@ -59,7 +69,29 @@ def _mid(seg):
 
 
 def _key(seg, index):
-    return seg["id"] if seg.get("id") else index
+    """("id", id) for a segment with an id, else ("i", index in the raw list): typed, so an id is never read as an
+    index."""
+    sid = seg.get("id")
+    return ("id", sid) if sid and isinstance(sid, (str, int)) else ("i", index)
+
+
+def ours(seg):
+    """True for an ink this module wrote: `inkAuto` there and naming the ink the segment still has. Ink with no
+    inkAuto, ink that differs from it (edited) and inkAuto with no ink (removed) are a person's choice."""
+    auto = seg.get("inkAuto")
+    return isinstance(auto, dict) and seg.get("ink") in ("dark", "light") and auto.get("ink") == seg.get("ink")
+
+
+def _raw_segments(project):
+    caps = project.get("captions")
+    segs = caps.get("segments") if isinstance(caps, dict) else None
+    return segs if isinstance(segs, list) else []
+
+
+def needs_pass(project):
+    """True when the step has something to do: a caption, and a card to measure or ink of ours to clear."""
+    segs = lc.caption_segments(project)
+    return bool(segs) and bool(cards(project) or any(ours(s) for s in segs))
 
 
 def cards(project):
@@ -130,32 +162,28 @@ def luminance(png_path, box, frame=None):
 
 
 def _run_group(cmd, timeout):
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **detached_kwargs())
     try:
         out, err = proc.communicate(timeout=timeout)
         return proc.returncode, out, err
     except subprocess.TimeoutExpired:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
-        else:
-            import signal
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                proc.kill()
+        kill_tree(proc)
         proc.communicate()
         return None
 
 
-def frame_renderer(project_path):
-    """render_fn(t) -> the path of the project's frame at `t` without the captions (sample_frame --no-captions)."""
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(project_path)), "render", "samples", "caption-ink")
-
+def frame_renderer(project_path, out_dir, deadline=None):
+    """render_fn(t) -> the path of the project's frame at `t` without the captions (sample_frame --no-captions), written
+    into `out_dir`. A frame is given RENDER_TIMEOUT_S, or what is left until `deadline` (time.monotonic) when sooner."""
     def render(t):
-        os.makedirs(out_dir, exist_ok=True)
+        timeout = RENDER_TIMEOUT_S
+        if deadline is not None:
+            timeout = min(timeout, deadline - time.monotonic())
+            if timeout <= 0:
+                raise RuntimeError("out of time")
         out = os.path.join(out_dir, f"ink-{t:.3f}s.png")
         r = _run_group([sys.executable, SAMPLE_FRAME_PY, "--project", project_path, "--at", f"{t:.3f}",
-                        "--no-captions", "--out", out], RENDER_TIMEOUT_S)
+                        "--no-captions", "--out", out], timeout)
         if r is None:
             raise RuntimeError("timed out")
         if r[0] != 0 or not os.path.isfile(out):
@@ -164,21 +192,22 @@ def frame_renderer(project_path):
     return render
 
 
-def plan(project, render_fn, width, height):
-    """(changes, counts, warnings). changes: {segment id (index when it has none): {"ink", "inkAuto"} or None to
-    clear}. render_fn(t) -> a PNG path of the backdrop at `t`; one render per distinct caption middle, three at a time."""
+def plan(project, render_fn, width, height, deadline=None):
+    """(changes, counts, warnings). changes: {segment key: {"ink", "inkAuto": {"card", "ink"}} or None to clear}, keyed
+    by `_key` over the raw segment list. render_fn(t) -> a PNG path of the backdrop at `t`; one render per distinct
+    caption middle, three at a time. A frame not started by `deadline` (time.monotonic) counts as failed."""
     counts = {"dark": 0, "light": 0, "cleared": 0, "kept": 0}
     changes, warnings, todo = {}, [], []   # todo: (key, mid, box, card id)
-    for i, seg in enumerate(lc.caption_segments(project)):
-        if not inkable(project, seg):
+    for i, seg in enumerate(_raw_segments(project)):
+        if not isinstance(seg, dict) or not inkable(project, seg):
             continue
-        if seg.get("ink") and not seg.get("inkAuto"):
+        if not ours(seg) and (seg.get("ink") or "inkAuto" in seg):
             counts["kept"] += 1
             continue
         mid = _mid(seg)
         card = card_under(project, mid)
         if card is None:
-            if seg.get("inkAuto"):
+            if ours(seg):
                 changes[_key(seg, i)] = None
                 counts["cleared"] += 1
             continue
@@ -191,6 +220,8 @@ def plan(project, render_fn, width, height):
     pngs, failed = {}, {}
 
     def one(t):
+        if deadline is not None and time.monotonic() >= deadline:
+            return t, None, "out of time"
         try:
             return t, render_fn(t), None
         except Exception as e:  # noqa: BLE001 — a failed frame leaves its captions as they are
@@ -213,22 +244,36 @@ def plan(project, render_fn, width, height):
         except Exception as e:  # noqa: BLE001
             warnings.append(f"frame at {lc.r2(mid)}s unreadable ({str(e)[:60]})")
             continue
-        changes[key] = {"ink": "dark" if light else "light", "inkAuto": card_id}
-        counts["dark" if light else "light"] += 1
+        ink = "dark" if light else "light"
+        changes[key] = {"ink": ink, "inkAuto": {"card": card_id, "ink": ink}}
+        counts[ink] += 1
     return changes, counts, warnings
 
 
-def apply_changes(segments, changes, read):
-    """Write `changes` onto the fresh `segments`. `read` is {key: (text, start, end)} as the plan read them; a changed
-    segment that differs on disk (or is gone) raises InkProjectChanged. Returns True when anything changed."""
+def _captions_of(project):
+    caps = project.get("captions")
+    if not isinstance(caps, dict) or not isinstance(caps.get("segments"), list):
+        raise InkProjectChanged("captions")
+    return caps
+
+
+def apply_changes(fresh, changes, read):
+    """Write `changes` onto the fresh project's captions. `read` is {key: the whole segment as the plan read it}: a
+    changed segment that is gone, is not the only one with its key, differs from what was read in any field, or lies
+    under another card now raises InkProjectChanged, and nothing is written. Returns True when anything changed."""
+    segments = _captions_of(fresh)["segments"]
+    found = {}
+    for key, change in changes.items():
+        hits = [s for i, s in enumerate(segments) if isinstance(s, dict) and _key(s, i) == key]
+        if len(hits) != 1 or hits[0] != read[key]:
+            raise InkProjectChanged(key)
+        card = (card_under(fresh, _mid(hits[0])) or {}).get("id")
+        if card != (change["inkAuto"]["card"] if change else None):
+            raise InkProjectChanged(key)
+        found[key] = hits[0]
     changed = False
     for key, change in changes.items():
-        if isinstance(key, int):
-            seg = segments[key] if 0 <= key < len(segments) and not segments[key].get("id") else None
-        else:
-            seg = next((s for s in segments if isinstance(s, dict) and s.get("id") == key), None)
-        if not isinstance(seg, dict) or (seg.get("text"), seg.get("start"), seg.get("end")) != read[key]:
-            raise InkProjectChanged(key)
+        seg = found[key]
         if change is None:
             for f in ("ink", "inkAuto"):
                 changed |= seg.pop(f, None) is not None
@@ -240,30 +285,49 @@ def apply_changes(segments, changes, read):
 
 def update(project_path, render_fn=None, timeout=LOCK_TIMEOUT):
     """Read the project, plan, and write `captions` only (under the project lock, onto the fresh captions).
-    Returns the answer ({dark, light, cleared, kept, warnings?}) or None when there is nothing to do (no captions, no
-    card and no ink of ours). Raises InkProjectChanged; lock errors (ProjectLockTimeout, ProjectReadOnly,
-    SyncConflict) pass through."""
+    Returns the answer ({dark, light, cleared, kept, changed, warnings?}; `changed` is whether anything was written) or
+    None when there is nothing to do (see needs_pass). Raises InkProjectChanged; lock errors (ProjectLockTimeout,
+    ProjectReadOnly, SyncConflict) pass through."""
     project_path = os.path.abspath(project_path)
     with open(project_path, encoding="utf-8") as f:
         project = json.load(f)
-    segs = lc.caption_segments(project)
-    if not segs or not (cards(project) or any(s.get("inkAuto") for s in segs)):
+    if not needs_pass(project):
         return None
     width, height = lc.design_size(project)
-    changes, counts, warnings = plan(project, render_fn or frame_renderer(project_path), width, height)
+    caps = project["captions"]
+    read_rev = project_revisions.revisions_of(project, ["captions"]) if project_revisions.engine_guard_enabled() else None
+    read_rest = copy.deepcopy({k: v for k, v in caps.items() if k != "segments"})
+    read = {_key(s, i): copy.deepcopy(s) for i, s in enumerate(caps["segments"]) if isinstance(s, dict)}
+    samples = None
+    deadline = None
+    if render_fn is None:
+        deadline = time.monotonic() + DEADLINE_S
+        base = os.path.join(os.path.dirname(project_path), "render", "samples")
+        os.makedirs(base, exist_ok=True)
+        samples = tempfile.mkdtemp(prefix="caption-ink-", dir=base)   # this run's frames; another pass shares none
+        render_fn = frame_renderer(project_path, samples, deadline)
+    try:
+        changes, counts, warnings = plan(project, render_fn, width, height, deadline)
+    finally:
+        if samples:
+            shutil.rmtree(samples, ignore_errors=True)
     out = dict(counts)
     if warnings:
         out["warnings"] = warnings
+    out["changed"] = False
     if not changes:
         return out
-    read_segments = project["captions"]["segments"]
-    index_of = {id(s): i for i, s in enumerate(read_segments)}
-    read = {(_key(s, index_of[id(s)])): (s.get("text"), s.get("start"), s.get("end")) for s in segs}
 
     def apply(fresh):
-        caps = fresh.get("captions")
-        if not isinstance(caps, dict) or not isinstance(caps.get("segments"), list):
+        fresh_caps = _captions_of(fresh)
+        if read_rev is not None:   # §477: the captions field as read against now
+            if project_revisions.stale_fields(fresh, ["captions"], read_rev)["stale"]:
+                raise InkProjectChanged("captions")
+        elif {k: v for k, v in fresh_caps.items() if k != "segments"} != read_rest:   # style, showLangs, ...
             raise InkProjectChanged("captions")
-        return fresh if apply_changes(caps["segments"], changes, read) else None
+        if apply_changes(fresh, changes, read):
+            out["changed"] = True
+            return fresh
+        return None
     update_project(project_path, apply, timeout=timeout)
     return out
