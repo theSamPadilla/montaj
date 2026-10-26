@@ -149,3 +149,28 @@ def build_profile_snapshot(profile_name: str | None) -> dict | None:
         if isinstance(preferences, dict):
             snapshot["preferences"] = preferences
     return snapshot
+
+
+
+def profile_preferences(project: dict) -> dict:
+    """The project's profile preferences: live from the profile's preferences.json (a later change to the profile
+    counts), else the project's `profileSnapshot.preferences` (frozen at init), else {}. A profile name that is not a
+    plain name is never read from disk."""
+    name = project.get("profile")
+    if isinstance(name, str) and NAME_RE.match(name):
+        try:
+            live = json.loads((_profile_dir(name) / "preferences.json").read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            live = None
+        if isinstance(live, dict):
+            return live
+    snap = (project.get("profileSnapshot") or {}).get("preferences")
+    return snap if isinstance(snap, dict) else {}
+
+
+def profile_caption_style(project: dict) -> str | None:
+    """The caption style the project's profile asks for (`captionStyle`, see profile_preferences), or None when it
+    names none or one the renderer does not know."""
+    from lib.caption_style import STYLES
+    style = profile_preferences(project).get("captionStyle")
+    return style if style in STYLES else None

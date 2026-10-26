@@ -50,6 +50,7 @@ from lib import project_lock as _project_lock_mod
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, project_lock, project_lock_async, write_json_atomic
 from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwargs
 from lib.overlay_validation import overlay_item_errors
+from lib.caption_profile_look import resolve_style_and_look
 from lib.caption_translation import TranslationError, apply_show, apply_translation, show_new_language, finish_regenerated_track, is_translation, merge_caption_theme as _lib_merge_caption_theme, record_source_language
 from lib.project_tracks import normalize_tracks, track_items
 from lib.project_migrate import converge
@@ -6316,11 +6317,13 @@ async def generate_captions(
     if missing:
         raise HTTPException(503, detail={"error": "whisper_model_missing", "message": missing})
     language = body.get("language") or "auto"
-    style = body.get("style") or (project.get("captions") or {}).get("style") or "pop"
+    # Style: the body's, else the track's, else the profile's, else 'pop'.
+    style, look = resolve_style_and_look(body.get("style"), project)
     # A style profile's caption look (fontFamily/googleFonts + the style's
     # emphasis colour), seeded into the saved track where it doesn't already
-    # have a value — see serve/caption_theme.py.
-    theme = sanitize_theme(body.get("theme"))
+    # have a value — see serve/caption_theme.py. The editor sends it as
+    # `theme`; a caller that sends none (MCP) gets the same look from the profile.
+    theme = sanitize_theme(body["theme"]) if "theme" in body else sanitize_theme(look)
 
     # Temp paths the pipeline writes; mirrored here so the generator's `finally`
     # can unlink them (kept identical to the pipeline's own paths).
