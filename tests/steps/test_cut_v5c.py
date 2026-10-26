@@ -73,13 +73,13 @@ def test_a_run_of_words_with_no_sound_between_its_neighbours_goes_as_inaudible(t
 def test_the_videos_first_word_with_sound_in_its_span_is_never_sent_to_unused(tmp_path, monkeypatch):
     """(b) and the edge rule: the video's first word's span ends 30 ms into the next word's onset (that sound is the
     next word's), so none of it is its own; it holds a frame at the speech level less 30 dB, so it is never removed
-    (inaudible, tail or edge): kept in ## Cut, at most offered."""
+    (inaudible, tail or edge): kept in ## Cut."""
     c, t = seq(0.6, "we went out today.".split())
     words = [("so", 0.10, 0.63)] + on_own(c)
     d = v5.project(tmp_path, monkeypatch, [("vo", tones_of(c), round(t + 0.8, 2), words)], room=ROOM)
     plan, text, applied, said, before = v5.plan_apply(d, monkeypatch)
     cut, unused = tc.sections(text)
-    assert said[0] == "so" and all(r.endswith("?]") for r in unused), (said, text)     # an offer at most
+    assert said[0] == "so" and not any(re.search(r"\bso\b", r) for r in unused), (said, text)
     assert not gone(tags(text, "so")), text
     v5.checked(d, plan, applied, before, v5.kept_tones("vo", tones_of(c)))
 

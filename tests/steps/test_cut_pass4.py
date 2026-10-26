@@ -62,6 +62,11 @@ def room_project(tmp_path, monkeypatch, clips, **kw):
     return tc.tone_project(tmp_path, clips)
 
 
+def unused_soft(text):
+    """PL89: "soft" went with the silence, listed under ## Unused tagged inaudible."""
+    return any(re.match(r"^A\d+ soft \[[\d.]+ inaudible\]$", r) for r in tc.sections(text)[1])
+
+
 def assert_flat_ok(d, text=""):
     """cut_checks' flat and edge checks (flat.py, exactly): no flat run over max-pause in a kept item, at most LEAD_S
     of flat at the video's lead and tail."""
@@ -71,7 +76,7 @@ def assert_flat_ok(d, text=""):
     return rep
 
 
-# ── the red case: whisper's spans stretched over silences, and an offered soft word ────────────────────────────
+# ── the red case: whisper's spans stretched over silences, and a soft word ────────────────────────────
 
 STRETCHED = (
     [(0.30, 0.60, SP), (2.10, 2.40, SP), (2.45, 2.75, SP), (4.70, 5.00, ROOM + 7), (5.45, 5.75, SP), (5.80, 6.10, SP)],
@@ -94,7 +99,7 @@ def test_stretched_spans_and_an_offered_soft_word_keep_no_long_silence(tmp_path,
     assert_flat_ok(d, text)
     lost = [(a, b) for a, b, db in spans if db >= ROOM + 10 and cover(d, a, b) < 0.99]
     assert not lost, (lost, tc.kept_iv(d))
-    assert cover(d, 4.25, 5.45) * 1.2 <= 0.05 and "inaudible]" in plan.get("cut", ""), (tc.kept_iv(d), text)
+    assert cover(d, 4.25, 5.45) * 1.2 <= 0.05 and unused_soft(text), (tc.kept_iv(d), text)
     assert_no_unwarned_island(d, plan, applied)
 
 
@@ -157,10 +162,10 @@ def test_a_clips_flat_tail_is_trimmed(tmp_path, monkeypatch):
 # the drift fuzz under the flat check: test_cut_v5's, with every check (cut_checks)
 
 
-def a6_offer(unused):
-    """The fuzzy retake? offer of A6's take ("Then drag it onto the timeline.", at 10.7, naming the later take at
-    17.8): its rows, which v5 cuts at the take's silences, so the line ids are the ones its words have now."""
-    rows = [r for r in unused if re.search(r" retake\? A\d+ 17\.8\]$", r)]
+def a6_offer(cut):
+    """The fuzzy retake? label on A6's take ("Then drag it onto the timeline.", at 10.7, naming the later take at
+    17.8): its rows in ## Cut, which v5 cuts at the take's silences, so the line ids are the ones its words have now."""
+    rows = [r for r in cut if re.search(r" retake\? A\d+ 17\.8\]$", r)]
     text = " ".join(re.sub(r"\{[\d.]+\}|\[[^]]*\]", "", r).split(None, 1)[1] for r in rows)
     return " ".join(text.split()) == "Then drag it onto the timeline." and bool(re.search(r"\[10\.7 retake\? A\d+ 17\.8\]$",
                                                                                             rows[0]))
@@ -168,9 +173,9 @@ def a6_offer(unused):
 
 # ── the take rules read the spans as they were (fix pass 4 is the timeline only) ───────────────────────────────
 
-def test_the_trim_leaves_the_take_rules_their_offer(tmp_path, stub_transcribe, monkeypatch):  # noqa: F811
+def test_the_trim_leaves_the_take_rules_their_label(tmp_path, stub_transcribe, monkeypatch):  # noqa: F811
     """The fixture's real pauses inside whisper's spans are cut (v5: by layer 1, so A6's line is several rows, where
-    b7639ba5 showed "drag it {0.08} onto"), and the fuzzy retake? offer of A6 is still made (F1 splits clauses at
+    b7639ba5 showed "drag it {0.08} onto"), and the fuzzy retake? label on A6 is still made (F1 splits clauses at
     punctuation and units, not at the cut's silences)."""
     stub_transcribe(tc.retake_transcript())
     d = tc.make_project(tmp_path)
@@ -178,4 +183,4 @@ def test_the_trim_leaves_the_take_rules_their_offer(tmp_path, stub_transcribe, m
     text = (d / "cut-plan.md").read_text()
     cut, unused = tc.sections(text)
     assert BASE_A6 not in cut and any(re.match(r"A\d+ drag it \[", r) for r in cut), cut     # the trim is on
-    assert a6_offer(unused), unused
+    assert a6_offer(cut), cut
