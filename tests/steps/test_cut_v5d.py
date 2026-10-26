@@ -14,6 +14,7 @@ from lib.speech_units import filler_test
 from tests import cut_checks
 from tests.steps import test_cut as tc
 from tests.steps import test_cut_v5 as v5
+from tests.steps.test_cut_pass3 import apply_without_labeled
 
 ROOM = -57.0
 EN_FILLER = filler_test("en")
@@ -120,7 +121,7 @@ def test_the_kungfu_clips_repeated_clause_plans_and_plays_what_it_says(tmp_path,
     assert [k for *_, k in pl[19:25]] == ["inaudible"] * 6, pl[19:25]
     plan, text, applied, said, before = v5.plan_apply(d, monkeypatch)
     rows = tc.sections(text)[0]
-    row = next(r for r in rows if re.match(r"^A\d+ ka lo \[4\.4\]$", r))
+    row = next(r for r in rows if re.match(r"^A\d+ ka lo\b.* \[4\.4( [^]]*)?\]$", r))
     assert row, rows
     assert covered(d, 33.42 - OFF, 33.75 - OFF) > 0.99, tc.kept_iv(d)
     assert not cut_checks.check(d, before, (), (plan, applied)), cut_checks.check(d, before, (), (plan, applied))
@@ -138,7 +139,7 @@ def test_a_parked_inaudible_run_repeating_its_lines_words_is_a_line_of_its_own()
     ref.layers["a"], ref.raw["a"], ref.placed["a"], ref.kinds["a"] = lay, ws, placed, kind
     assert kind[2] == kind[3] == "inaudible", kind
     assert 2 in ref._line_breaks("a"), ref._line_breaks("a")
-    # a parked run that repeats no word of its line stays in it (its * row, as before)
+    # a parked run that repeats no word of its line stays in it (its row, as before)
     ws2 = [Word(0, "ka", "ka", 0.3, 0.6), Word(1, "lo", "lo", 0.6, 0.9), Word(2, "tu", "tu", 1.2, 1.5),
            Word(3, "ri", "ri", 1.5, 1.8), Word(4, "meeno.", "meeno", 2.5, 3.0)]
     placed, kind = se.place(ws2, lay, ref.breath)

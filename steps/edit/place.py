@@ -210,8 +210,6 @@ def resolve_time(project, project_path, project_dir, at_s, phrase, take, languag
         extra["also"] = found.also
         issues.append({"t": lc.r2(found.start), "id": "phrase",
                        "text": f"said in {len(found.also) + 1} sentences: used {lc.r2(found.start)}s, also {', '.join(f'{t}s' for t in found.also)}"})
-    if found.note:
-        extra["note"] = found.note
     return found.start, found.take, issues, extra, {"said": found.text, "sayings": found.said, "language": spoken}
 
 

@@ -8,7 +8,7 @@
   },
   "output": {
     "type": "json",
-    "description": "{id, start, end, track, take?, also? (each other sentence that says the phrase), note?, issues?}. detail adds src, said (the matched words), language and the measured text."
+    "description": "{id, start, end, track, take?, also? (each other sentence that says the phrase), issues?}. detail adds src, said (the matched words), language and the measured text."
   },
   "params": [
     {
