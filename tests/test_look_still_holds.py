@@ -63,7 +63,7 @@ def test_a_3d_item_moves_only_where_its_camera_or_its_cast_does(tmp_path):
 
 def test_an_overlay_using_motion_counts_as_moving(tmp_path):
     (tmp_path / "overlays").mkdir()
-    (tmp_path / "overlays" / "live.jsx").write_text("export default function L() { const m = motion({ frame, fps }); return <div style={{ opacity: m.in }} /> }")
+    (tmp_path / "overlays" / "live.jsx").write_text("export default function L() { const m = Motion.motion(frame, fps, duration); return <div style={{ opacity: m.opacity }} /> }")
     (tmp_path / "overlays" / "still.jsx").write_text("export default function S() { return <div>x</div> }")
     live = {"id": "o", "type": "overlay", "src": "./overlays/live.jsx", "start": 0, "end": 10}
     still = {"id": "o", "type": "overlay", "src": "./overlays/still.jsx", "start": 0, "end": 10}
