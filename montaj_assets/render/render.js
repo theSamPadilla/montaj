@@ -1565,6 +1565,7 @@ async function prepareVideoItems(videoItems, targetFor,
     item.probedWidth  = geom?.width  ?? null
     item.probedHeight = geom?.height ?? null
     item.probedAlpha  = geom?.alpha  ?? null
+    item.probedPixFmt = geom?.pixFmt ?? null
     if (!transferCache.has(item.src)) {
       transferCache.set(item.src, probeColorTransfer(item.src))
     }

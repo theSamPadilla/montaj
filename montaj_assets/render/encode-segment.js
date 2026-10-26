@@ -244,17 +244,19 @@ export function parseVideoGeometry(probe) {
     width: quarterTurn ? h : w,
     height: quarterTurn ? w : h,
     alpha: typeof s.pix_fmt === 'string' && ALPHA_PIX_FMT.test(s.pix_fmt),
+    pixFmt: typeof s.pix_fmt === 'string' ? s.pix_fmt : null,
   }
 }
 
 /**
- * Probe a video file's display size and whether its pixel format has alpha.
- * One ffprobe; null on any failure. render.js calls this once per unique
- * final `src` and stamps the result on `probedWidth` / `probedHeight` /
- * `probedAlpha` — see buildVideoItemFilterParts for what they decide.
+ * Probe a video file's display size, whether its pixel format has alpha, and
+ * that format. One ffprobe; null on any failure. render.js calls this once per
+ * unique final `src` and stamps the result on `probedWidth` / `probedHeight` /
+ * `probedAlpha` / `probedPixFmt` — see buildVideoItemFilterParts and
+ * animatedVideoCrop for what they decide.
  *
  * @param {string} filePath
- * @returns {{width: number, height: number, alpha: boolean} | null}
+ * @returns {{width: number, height: number, alpha: boolean, pixFmt: string|null} | null}
  */
 export function probeVideoGeometry(filePath) {
   const result = spawnSync(FFPROBE, [
@@ -978,7 +980,7 @@ function sampleCropRects(item, kind, timeOffset, duration) {
  * @returns {{ hold: string } | { chain: string, bw: number, bh: number,
  *   S: number, downscaled: boolean, peakW: number, peakH: number }}
  */
-function movingCropChain(item, SW, SH, boxW, boxH, sampled, timeOffset, onCap, budgetPx, shownW, shownH) {
+function movingCropChain(item, SW, SH, boxW, boxH, sampled, timeOffset, onCap, budgetPx, shownW, shownH, evenX = false) {
   const { cropTracks, rects } = sampled
   let x0 = 1, y0 = 1, x1 = 0, y1 = 0, minW = 1, minH = 1, kMax = 0
   for (const c of rects) {
@@ -1029,7 +1031,11 @@ function movingCropChain(item, SW, SH, boxW, boxH, sampled, timeOffset, onCap, b
   const bw = sText ? Math.max(1, Math.floor(boxW / S)) : boxW
   const bh = sText ? Math.max(1, Math.floor(boxH / S)) : boxH
   // ceil, never round: the box must always fit inside the resized union.
-  const x = `round(((${X})*${SW}-${ux})*${kS}+((${W})*${SW}*${kS}-${bw})/2)`
+  const xPx = `round(((${X})*${SW}-${ux})*${kS}+((${W})*${SW}*${kS}-${bw})/2)`
+  // evenX (oddCropSafe): clamped first, because crop's own clamp can land on an
+  // odd x. Against the scale's width, never `iw`: crop's expressions read the
+  // first frame's size (the stale-clamp trap, WHY THIS SHAPE, above).
+  const x = evenX ? `2*floor(clip(${xPx},0,ceil(${uw}*${kS})-${bw})/2)` : xPx
   const y = `round(((${Y})*${SH}-${uy})*${kS}+((${H})*${SH}*${kS}-${bh})/2)`
   // NOTHING may ever sit between the eval=frame `scale` and the fixed `crop`
   // below, for either kind, in EITHER branch (full resolution, or 1/S): not
@@ -1084,6 +1090,20 @@ function animatedImageCrop(item, boxW, boxH, timeOffset, duration, onCap, budget
 }
 
 /**
+ * Whether ffmpeg's exact `crop` may start at an odd x in frames of `pixFmt`.
+ * MEASURED (ffmpeg 8.1.2, one frame cropped at x 1074 and 1075): at the odd x,
+ * yuv420p10le and yuv422p10le misread their chroma and come out magenta (a keyed
+ * pan on an HLG clip did on 61 of 129 frames), and p010le swaps U and V;
+ * yuv420p and yuv444p10le are the same at both. Safe: 8-bit planar formats, and
+ * formats with no horizontal subsampling. Any other, or no probe, is unsafe.
+ */
+function oddCropSafe(pixFmt) {
+  if (typeof pixFmt !== 'string') return false
+  return /^yuv[ja]?4(20|22|11|10)p$/.test(pixFmt)
+    || /^(yuva?444p|yuvj444p|gbra?p|gray|ya\d|rgb|bgr|argb|abgr|rgba|bgra|0rgb|0bgr)/.test(pixFmt)
+}
+
+/**
  * The keyframed source crop of a VIDEO (PV55 phase 2), as a chain for the crop
  * slot of buildVideoItemFilterParts: its output is a CONSTANT `width`x`height`
  * frame holding the crop rect at each instant, so the decrease-fit, the colour
@@ -1102,8 +1122,10 @@ function animatedImageCrop(item, boxW, boxH, timeOffset, duration, onCap, budget
  *
  * The rect is cover-fitted into that frame, so a key whose pixel aspect is off
  * by validate's 1% tolerance (or by the even rounding) trims a sliver instead
- * of reading past the rect. The caller has checked `hasCropKeyframes` and a
- * positive `sourceWidth`/`sourceHeight` (the size every video crop is in).
+ * of reading past the rect. In a format where an odd crop x breaks the chroma
+ * (oddCropSafe) the window moves on even x only. The caller has checked
+ * `hasCropKeyframes` and a positive `sourceWidth`/`sourceHeight` (the size every
+ * video crop is in).
  * Returns `{ chain, width, height }`, or `{ hold: reason }` for a rect that is
  * not finite and positive (the caller then holds the crop at the segment start).
  *
@@ -1136,7 +1158,7 @@ function animatedVideoCrop(item, fitW, fitH, timeOffset, duration, onCap, budget
   const BW = Math.max(2, Math.min(RW, Math.round(shown.width / 2) * 2))
   const BH = Math.max(2, Math.min(RH, Math.round(shown.height / 2) * 2))
   const m = movingCropChain(item, SW, SH, BW, BH, sampled, timeOffset, onCap, budgetPx,
-    Math.max(1, shown.width), Math.max(1, shown.height))
+    Math.max(1, shown.width), Math.max(1, shown.height), !oddCropSafe(item.probedPixFmt))
   if (m.hold) return m
   if (m.downscaled) warnCropDownscaled('video', item, m, budgetPx)
   return { chain: m.chain, width: m.bw, height: m.bh }

@@ -245,3 +245,30 @@ describe('PV55 phase 2 D1: the fixed crop is cut at the size it is SHOWN', () =>
     assert.ok(checked >= 20, `the sweep must reach the shown-size branch: ${checked}`)
   })
 })
+
+// ffmpeg's exact `crop` at an odd x misreads the chroma of a deeper-than-8-bit
+// 4:2:0 or 4:2:2 frame (MEASURED, ffmpeg 8.1.2: a keyed pan on an HLG
+// yuv420p10le clip came out solid magenta on 61 of 129 frames) and swaps U and V
+// in p010le (oddCropSafe). Such a source pans on even x; an 8-bit planar or an
+// unsubsampled one keeps its one-pixel x and its chain is unchanged. The
+// pixels: video-crop.integration.
+describe('a keyed video crop never crops a deep or semi-planar 4:2:x frame at an odd x', () => {
+  const xOf = (c) => /crop=\d+:\d+:x='([^']*)':y='/.exec(c)[1]
+  const chainFor = (probedPixFmt) => chainOf(build(vid({ keyframes: PAN, probedPixFmt })))
+  test('an 8-bit planar or an unsubsampled source keeps the one-pixel x', () => {
+    for (const fmt of ['yuv420p', 'yuvj420p', 'yuv422p', 'yuvj422p', 'yuv444p', 'yuv444p10le', 'yuva444p12le', 'gbrp10le', 'rgb24']) {
+      assert.match(xOf(chainFor(fmt)), /^round\(/, fmt)
+    }
+  })
+  test('a deeper 4:2:0 or 4:2:2, a semi-planar one, or an unknown format pans on even x', () => {
+    for (const fmt of ['yuv420p10le', 'yuv422p10le', 'yuv420p12le', 'p010le', 'nv12', 'yuyv422', null, undefined]) {
+      const x = xOf(chainFor(fmt))
+      assert.ok(x.startsWith('2*floor(clip(round(') && /,0,ceil\(\d+\*[^']*\)-\d+\)\/2\)$/.test(x), `${fmt}: ${x}`)
+      assert.ok(!/\b(iw|in_w|ow|out_w)\b/.test(x), `never the first frame's size (the stale-clamp trap): ${x}`)
+    }
+  })
+  test('only x changes: the rest of the chain is the 8-bit one', () => {
+    const strip = (c) => c.replace(/x='[^']*'/, "x=''")
+    assert.equal(strip(chainFor('yuv420p10le')), strip(chainFor('yuv420p')))
+  })
+})
