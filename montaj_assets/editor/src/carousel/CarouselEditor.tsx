@@ -1282,6 +1282,50 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     }
   }
 
+  // A typed X, Y, W, H or rotation is one edit: each keystroke previews as a
+  // transient, and Enter or blur writes it once. `panelEdit` holds where the
+  // edit started and where it stands, so a value typed back to the start
+  // records nothing.
+  type PanelBox = { x: number; y: number; w: number; h: number; rotation: number }
+  const panelEdit = useRef<{ slideId: string; elementId: string; start: PanelBox; now: PanelBox } | null>(null)
+
+  function handlePanelElementPreview(patch: Partial<CarouselElement>) {
+    if (!selectedSlideId || !selectedElementId) return
+    const el = slides.find(s => s.id === selectedSlideId)?.elements.find(e => e.id === selectedElementId)
+    if (!el) return
+    let edit = panelEdit.current
+    if (!edit || edit.slideId !== selectedSlideId || edit.elementId !== selectedElementId) {
+      const start = { x: el.x, y: el.y, w: el.w, h: el.h, rotation: el.rotation ?? 0 }
+      edit = { slideId: selectedSlideId, elementId: selectedElementId, start, now: start }
+      panelEdit.current = edit
+    }
+    const now = { ...edit.now }
+    for (const k of ['x', 'y', 'w', 'h', 'rotation'] as const) {
+      const v = patch[k]
+      if (typeof v === 'number') now[k] = v
+    }
+    edit.now = now
+    if ('x' in patch || 'y' in patch || 'w' in patch || 'h' in patch) {
+      void state.resizeElement(edit.slideId, edit.elementId, { x: now.x, y: now.y, w: now.w, h: now.h })
+    }
+    if ('rotation' in patch) void state.rotateElement(edit.slideId, edit.elementId, now.rotation)
+  }
+
+  function handlePanelElementCommit() {
+    const edit = panelEdit.current
+    panelEdit.current = null
+    if (!edit) return
+    const same = (['x', 'y', 'w', 'h', 'rotation'] as const).every(k => edit.now[k] === edit.start[k])
+    if (same) state.discardTransient()
+    else void state.commit()
+  }
+
+  function handlePanelElementCancel() {
+    if (!panelEdit.current) return
+    panelEdit.current = null
+    state.discardTransient()
+  }
+
   function handleSlideChange(patch: Partial<Slide>) {
     if (selectedSlideId) void state.updateSlide(selectedSlideId, patch)
   }
@@ -1576,6 +1620,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             adapter={adapter}
             onSlideChange={handleSlideChange}
             onElementChange={handlePanelElementChange}
+            onElementPreview={handlePanelElementPreview}
+            onElementCommit={handlePanelElementCommit}
+            onElementCancel={handlePanelElementCancel}
             onDeleteSlide={handleDeleteSlide}
             onDuplicateSlide={handleDuplicateSlide}
             onDeleteElement={handleDeleteElement}

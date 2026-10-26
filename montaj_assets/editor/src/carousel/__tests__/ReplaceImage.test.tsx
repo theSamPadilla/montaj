@@ -318,7 +318,10 @@ describe('Replace image: the editor', () => {
 
     await pickFile(newFile())
     // While the upload runs the box becomes 400 x 200.
-    await act(async () => { fireEvent.change(r.getByRole('spinbutton', { name: 'W' }), { target: { value: '400' } }) })
+    // A typed width is written on blur, not per keystroke.
+    const w = r.getByRole('spinbutton', { name: 'W' })
+    await act(async () => { fireEvent.change(w, { target: { value: '400' } }) })
+    await act(async () => { fireEvent.blur(w) })
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
     expect(imageIn(lastSave(adapter)).w).toBe(400)
 

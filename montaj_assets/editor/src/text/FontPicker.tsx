@@ -270,21 +270,11 @@ export function FontSizePicker({ value, onChange, disabled, min = 8, max = 9999,
   // keeping a second copy of the same fix alongside NumberField's.
   const numericValue = parseFontSizeNumeric(value)
 
-  // Commit immediately on every keystroke. Debouncing here is the wrong call
-  // for typography — the rendered text is the live preview, so delaying the
-  // write delays user feedback. `onPreview` points at this function for that
-  // reason: there is no separate "final" edit here, every valid keystroke
-  // already writes through — and that write is itself a COMMITTED, async
-  // mutator (`onChange` flows to `TextFormattingToolbar`'s
-  // `void updateOverlayProp(...)`, a real round trip; `value` only reflects
-  // it once the promise resolves). `onCommit` is therefore a no-op below,
-  // NOT this same function: blur has nothing left to do once typing already
-  // persisted the edit, and re-firing `commit` there would race the async
-  // write — `outgoing !== value` could still read true for a value
-  // `onPreview` already sent, because `value` has not caught up yet, and
-  // that would fire a second, fully redundant `updateOverlayProp` (and
-  // undo entry) for the same edit. `SlidePropertyPanel`'s `numInput` faces
-  // the identical hazard against its own async mutator — see its comment.
+  // A typed size is ONE edit, written on Enter or blur: no write per
+  // keystroke, so "120" is one undo step and one save, not three. `onChange`
+  // flows to `TextFormattingToolbar`'s `void updateOverlayProp(...)`, a
+  // committed mutator, and a transient preview is not available for it. A
+  // stepper click is its own discrete write.
   //
   // CSS font-size requires a unit; a unitless value is invalid and the
   // overlay template falls back to its default. The picker is number-only
@@ -309,8 +299,8 @@ export function FontSizePicker({ value, onChange, disabled, min = 8, max = 9999,
     <NumberField
       name="Font size"
       value={numericValue}
-      onPreview={commit}
-      onCommit={() => {}}
+      onPreview={() => {}}
+      onCommit={commit}
       onStep={step}
       disabled={disabled}
       min={min}

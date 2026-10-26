@@ -29,6 +29,15 @@ interface Props {
   onSlideChange: (patch: Partial<Slide>) => void
   onElementChange: (patch: Partial<CarouselElement>) => void
   /**
+   * A typed X, Y, W, H or rotation, as it is typed: a preview only, nothing
+   * recorded. `onElementCommit` then writes it once (Enter or blur) and
+   * `onElementCancel` (Esc) gives it up. Without them the boxes write once on
+   * commit through `onElementChange`, with no preview.
+   */
+  onElementPreview?: (patch: Partial<CarouselElement>) => void
+  onElementCommit?: () => void
+  onElementCancel?: () => void
+  /**
    * Every selected element (§156). With two or more, the panel shows only the
    * align buttons, aligning them to the box they cover, through
    * `onAlignSelection`.
@@ -101,39 +110,48 @@ function HideToggle({
 // same string keeps the accessible name identical to what a screen reader
 // announced before this converted from a bare `<input>`.
 //
-// This box has no distinct preview/commit split today — every valid keystroke
-// already writes straight through the caller's `onChange`, which is a
-// COMMITTED mutator (see CarouselEditor's `handlePanelElementChange`: it goes
-// through `state.resizeElement(...).then(() => state.commit())`, an async
-// round trip). `onPreview` reproduces that keystroke-writes-through behaviour
-// exactly. `onCommit` is deliberately a no-op rather than the same `onChange`:
-// the old bare `<input>` had no `onBlur` handler at all, so blur committed
-// nothing extra, and because the mutator above is async, `value` cannot be
-// trusted to have caught up with the last keystroke by blur time — wiring
-// `onCommit` to `onChange` would risk firing a second, fully redundant
-// resize/commit (and undo entry) for the same edit. What DOES change here is
-// that typing no longer gets stomped mid-edit by a re-render carrying a
-// stale value back down while the async write is in flight (NumberField's own
-// `draft`, see its doc comment, is the fix).
+// A typed number is ONE edit: `onPreview` shows it as it is typed (a transient,
+// nothing recorded) and `onCommit` writes it once, on Enter or blur. A box with
+// no `onPreview` shows nothing until then. `onCancel` (Esc) gives the typed
+// value up: it drops the preview, then blurs so NumberField releases its draft
+// and shows the value the project holds. A stepper click is its own discrete
+// edit (`onStep`), one write per click.
+interface NumInputHandlers {
+  onPreview?: (v: number) => void
+  onCommit: (v: number) => void
+  onCancel?: () => void
+  onStep: (v: number) => void
+}
+
 function numInput(
   label: string,
   value: number,
-  onChange: (v: number) => void,
+  h: NumInputHandlers,
   opts?: { min?: number; max?: number; step?: number }
 ) {
+  const step = opts?.step ?? 1
   return (
     <label className="flex flex-col gap-1">
       <span className={fieldLabelClass}>{label}</span>
-      <NumberField
-        name={label}
-        value={value}
-        onPreview={onChange}
-        onCommit={() => {}}
-        min={opts?.min}
-        max={opts?.max}
-        step={opts?.step ?? 1}
-        onStep={d => onChange(stepValue(value, d, { step: opts?.step ?? 1, min: opts?.min, max: opts?.max }))}
-      />
+      <div
+        onKeyDown={e => {
+          if (e.key !== 'Escape' || !h.onCancel) return
+          h.onCancel()
+          e.stopPropagation()
+          ;(e.target as HTMLElement).blur()
+        }}
+      >
+        <NumberField
+          name={label}
+          value={value}
+          onPreview={h.onPreview ?? (() => {})}
+          onCommit={h.onCommit}
+          min={opts?.min}
+          max={opts?.max}
+          step={step}
+          onStep={d => h.onStep(stepValue(value, d, { step, min: opts?.min, max: opts?.max }))}
+        />
+      </div>
     </label>
   )
 }
@@ -180,10 +198,8 @@ function PropEditor({
     return (
       <label className="flex flex-col gap-1" title={description}>
         <span className={fieldLabelClass}>{name}</span>
-        {/* No distinct preview/commit split here either — see `numInput`'s
-            comment above for why `onCommit` is a no-op rather than `onChange`
-            again: `onChange` already writes through per keystroke via an
-            async committed mutator, and blur previously fired nothing. */}
+        {/* Still writes per keystroke through the committed mutator — unlike
+            the transform boxes (see `numInput`), which write once on commit. */}
         <NumberField
           name={name}
           value={Number(value ?? 0)}
@@ -216,6 +232,9 @@ export default function SlidePropertyPanel({
   element,
   onSlideChange,
   onElementChange,
+  onElementPreview,
+  onElementCommit,
+  onElementCancel,
   selection,
   onAlignSelection,
   onDeleteSlide,
@@ -269,6 +288,27 @@ export default function SlidePropertyPanel({
   }
 
   const overlayEl = element?.type === 'overlay' ? (element as OverlayElement) : null
+
+  // X, Y, W, H and rotation: preview while typing, one write on Enter or blur.
+  // Without the preview hooks (a host panel with only `onElementChange`) the
+  // write still happens once, on commit.
+  const transformInput = (
+    label: string,
+    value: number,
+    key: 'x' | 'y' | 'w' | 'h' | 'rotation',
+    opts?: { min?: number; max?: number },
+  ) =>
+    numInput(
+      label,
+      value,
+      {
+        onPreview: onElementPreview ? v => onElementPreview({ [key]: v }) : undefined,
+        onCommit: onElementPreview ? () => onElementCommit?.() : v => onElementChange({ [key]: v }),
+        onCancel: onElementPreview ? onElementCancel : undefined,
+        onStep: v => onElementChange({ [key]: v }),
+      },
+      opts,
+    )
   const overlaySchema = overlayEl ? overlaySchemas.get(overlayEl.overlay.template) : null
 
   const slideId = slide.id
@@ -364,12 +404,12 @@ export default function SlidePropertyPanel({
           {/* Transform */}
           <div className="flex flex-col gap-3">
             <div className="grid grid-cols-2 gap-3">
-              {numInput('X', element.x, v => onElementChange({ x: v }))}
-              {numInput('Y', element.y, v => onElementChange({ y: v }))}
-              {numInput('W', element.w, v => onElementChange({ w: v }), { min: 1 })}
-              {numInput('H', element.h, v => onElementChange({ h: v }), { min: 1 })}
+              {transformInput('X', element.x, 'x')}
+              {transformInput('Y', element.y, 'y')}
+              {transformInput('W', element.w, 'w', { min: 1 })}
+              {transformInput('H', element.h, 'h', { min: 1 })}
             </div>
-            {numInput('Rotation', element.rotation ?? 0, v => onElementChange({ rotation: v }), { min: -360, max: 360 })}
+            {transformInput('Rotation', element.rotation ?? 0, 'rotation', { min: -360, max: 360 })}
           </div>
 
           <AlignControls
@@ -452,7 +492,16 @@ export default function SlidePropertyPanel({
               )}
 
               <div className="grid grid-cols-2 gap-3">
-                {numInput('Frame', overlayEl.frame, v => onElementChange({ frame: v }), { min: 0 })}
+                {numInput(
+                  'Frame',
+                  overlayEl.frame,
+                  {
+                    // No preview: the frame is not a transient the state layer takes.
+                    onCommit: v => { if (v !== overlayEl.frame) onElementChange({ frame: v }) },
+                    onStep: v => onElementChange({ frame: v }),
+                  },
+                  { min: 0 },
+                )}
               </div>
 
               {schemasLoading && (
