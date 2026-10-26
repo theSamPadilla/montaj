@@ -9,6 +9,7 @@ import { useProjectState } from '../state/use-project-state'
 import SlideCanvas, { type CropExit, type SlideCanvasCropControl } from './SlideCanvas'
 import SlidePropertyPanel from './SlidePropertyPanel'
 import AddElementMenu from './AddElementMenu'
+import RailLayout from './RailLayout'
 import CarouselRenderModal from './CarouselRenderModal'
 import ControlsInfoModal, { CAROUSEL_CONTROLS, LOCK_CONTROL, platformSections } from '../ControlsInfoModal'
 import { DARK_TEXT, NoteArmLayer, NotePinLayer, badgeColor, hasPoint } from './NoteLayers'
@@ -381,7 +382,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 // ── CarouselEditor ────────────────────────────────────────────────────────────
 
-export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, onProvideRenderTrigger, onProvideCarouselApi, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default', onError, renderSaveTimeoutMs = RENDER_SAVE_TIMEOUT_MS, lockKey = false }: Props<P>) {
+export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, onProvideRenderTrigger, onProvideCarouselApi, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default', onError, renderSaveTimeoutMs = RENDER_SAVE_TIMEOUT_MS, lockKey = false, layout = 'classic', railPanels }: Props<P>) {
   const state = useProjectState(adapter, initialProject.id, initialProject)
   const project = state.project
   const slides = project.slides ?? []
@@ -1556,91 +1557,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   const availH = Math.max(0, canvasContainerSize.h - 2 * CANVAS_MARGIN - HINT_RESERVE)
   const canvasScale = Math.min(availW / w, availH / h, 1)
 
-  return (
-    <div ref={containerRef} className="flex flex-col h-full overflow-y-auto bg-[var(--editor-bg)] text-[var(--editor-text)]">
-      {/* TOP: slide rail | canvas | editing panel (right). Fixed viewport-relative
-          height with min-h-0 so each of the three columns establishes its own
-          independent scroll context; the project-media region flows beneath and
-          the whole editor scrolls vertically. */}
-      <div className="flex flex-shrink-0 h-[78vh] min-h-0 overflow-hidden">
-      <SlideGrid
-        project={project}
-        slides={slides}
-        selectedSlideId={selectedSlideId}
-        onSelect={id => { applyCrop(); setSelectedSlideId(id); setSelectedElementId(null) }}
-        onAdd={handleAddSlide}
-        onDuplicate={handleDuplicateSlide}
-        onDelete={handleDeleteSlide}
-        onReorder={handleReorderSlides}
-        resolveImageSrc={adapter.resolveImageSrc}
-        compileOverlay={(t) => adapter.compileOverlay(t)}
-        noteTones={noteTones}
-        onPinClick={onPinClick}
-      />
-
-      {/* CANVAS COLUMN: a pinned toolbar row on top, then the independently
-          scrolling slide-rendering area below it. */}
-      <div className="relative flex-1 flex flex-col min-h-0 overflow-hidden">
-        {/* TOOLBAR ROW: Refresh on the left; host toolbar actions + Render on the
-            right. Pinned (shrink-0) above the scrolling canvas area. */}
-        <div className="flex-shrink-0 flex items-center justify-between gap-2 px-4 py-3 border-b border-[var(--editor-border)]">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleRefresh}
-              disabled={refreshing}
-              className={`flex items-center gap-2 px-3 py-2 rounded-md border transition-colors ${
-                refreshState === 'err'
-                  ? (mode === 'light' ? 'text-red-700 border-red-300 bg-red-50 hover:bg-red-100' : 'text-red-300 border-red-500/40 bg-red-950/60 hover:bg-red-900/70')
-                  : 'text-[var(--editor-text)] border-[var(--editor-border)] bg-[color-mix(in_srgb,var(--editor-surface)_80%,transparent)] hover:text-[var(--editor-text)] hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)]'
-              }`}
-              title={refreshState === 'err' ? 'Refresh failed — check connection' : 'Refresh project'}
-            >
-              {refreshState === 'err' ? <AlertCircle size={18} /> : <RefreshCw size={18} className={refreshing ? 'animate-spin' : ''} />}
-              <span className="text-xs font-medium">Refresh</span>
-            </button>
-            <button
-              onClick={() => undo()}
-              disabled={!state.canUndo && !cropElementId}
-              className="flex items-center justify-center p-2 rounded-md border border-[var(--editor-border)] bg-[color-mix(in_srgb,var(--editor-surface)_80%,transparent)] text-[var(--editor-text)] transition-colors hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)] disabled:opacity-40 disabled:cursor-not-allowed"
-              title={`Undo (${shortcutText(['⌘', 'Z'])})`}
-              aria-label="Undo"
-            >
-              <Undo2 size={18} />
-            </button>
-            <button
-              onClick={() => redo()}
-              disabled={!state.canRedo || !!cropElementId}
-              className="flex items-center justify-center p-2 rounded-md border border-[var(--editor-border)] bg-[color-mix(in_srgb,var(--editor-surface)_80%,transparent)] text-[var(--editor-text)] transition-colors hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)] disabled:opacity-40 disabled:cursor-not-allowed"
-              title={`Redo (${shortcutText(['⌘', '⇧', 'Z'])})`}
-              aria-label="Redo"
-            >
-              <Redo2 size={18} />
-            </button>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {slots?.toolbarActions}
-            {!onProvideRenderTrigger && <button
-              onClick={handleRender}
-              disabled={rendering || project.status === 'pending' || slides.length === 0}
-              className="flex items-center gap-2 px-3 py-2 rounded-md border border-[var(--editor-accent)] bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] hover:opacity-90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              title={
-                project.status === 'pending'
-                  ? 'Wait for the agent to finish before rendering'
-                  : slides.length === 0
-                  ? 'Add slides before rendering'
-                  : 'Render all slides as PNGs'
-              }
-            >
-              <Download size={18} />
-              <span className="text-xs font-medium">{rendering ? 'Starting…' : 'Render'}</span>
-            </button>}
-          </div>
-        </div>
-
-        {/* SCROLL AREA: the slide viewport. ResizeObserver lives here so
-            canvasScale measures the slide-rendering area, not the toolbar. */}
-        <div ref={canvasContainerRef} className="relative flex-1 flex flex-col items-center justify-center gap-4 overflow-y-auto min-h-0 p-4">
+  const railLayout = layout === 'rail'
+  // The slide viewport's content, shared by both layouts.
+  const canvasInner = (
+    <>
         {showPendingSurface ? (
           <div className="flex flex-col items-center gap-6 text-center max-w-lg w-full">
             {slots?.pendingStatus ?? (
@@ -1742,6 +1662,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 {armedSlideId === selectedSlide.id && <NoteArmLayer layerRef={armLayerRef} onPlace={placeArmedNote} />}
               </SlideCanvas>
             </div>
+            {!railLayout && (
             <div className="flex-shrink-0 flex items-center justify-center gap-1.5 text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] max-w-md">
               <span className="text-center">
                 Drag to reposition, resize/rotate via handles, double-click text to edit or an image to crop. {shortcutText(['⌘', 'Z'])} to undo.
@@ -1756,6 +1677,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 <Info size={13} />
               </button>
             </div>
+            )}
           </>
         ) : (
           <div className="text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] text-sm">No slides yet. Add one in the left panel.</div>
@@ -1768,6 +1690,125 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             <button onClick={state.clearError} className="ml-2 underline">dismiss</button>
           </div>
         )}
+    </>
+  )
+
+  const railShell = (
+    <RailLayout
+      topLeft={slots?.carouselTopLeft}
+      topRight={slots?.carouselTopRight}
+      size={[w, h]}
+      onUndo={undo}
+      onRedo={redo}
+      canUndo={state.canUndo || !!cropElementId}
+      canRedo={state.canRedo && !cropElementId}
+      canvas={
+        <div ref={canvasContainerRef} className="relative flex-1 flex flex-col items-center justify-center gap-4 overflow-y-auto min-h-0 p-4">
+          {canvasInner}
+        </div>
+      }
+      panels={{
+        media: slots?.carouselMediaPanel,
+        brand: slots?.carouselBrandPanel,
+        notes: slots?.carouselNotesPanel,
+        ...railPanels,
+      }}
+      onBeforeToggle={applyCrop}
+      slideIds={slides.map((sl) => sl.id)}
+      selectedSlideId={selectedSlideId}
+      onSelectSlide={(id) => { applyCrop(); setSelectedSlideId(id); setSelectedElementId(null) }}
+      onOpenControls={() => setShowControls(true)}
+    />
+  )
+
+  return (
+    <div ref={containerRef} className={`flex flex-col h-full ${railLayout ? 'overflow-hidden' : 'overflow-y-auto'} bg-[var(--editor-bg)] text-[var(--editor-text)]`}>
+      {railLayout ? railShell : (
+      <>
+      {/* TOP: slide rail | canvas | editing panel (right). Fixed viewport-relative
+          height with min-h-0 so each of the three columns establishes its own
+          independent scroll context; the project-media region flows beneath and
+          the whole editor scrolls vertically. */}
+      <div className="flex flex-shrink-0 h-[78vh] min-h-0 overflow-hidden">
+      <SlideGrid
+        project={project}
+        slides={slides}
+        selectedSlideId={selectedSlideId}
+        onSelect={id => { applyCrop(); setSelectedSlideId(id); setSelectedElementId(null) }}
+        onAdd={handleAddSlide}
+        onDuplicate={handleDuplicateSlide}
+        onDelete={handleDeleteSlide}
+        onReorder={handleReorderSlides}
+        resolveImageSrc={adapter.resolveImageSrc}
+        compileOverlay={(t) => adapter.compileOverlay(t)}
+        noteTones={noteTones}
+        onPinClick={onPinClick}
+      />
+
+      {/* CANVAS COLUMN: a pinned toolbar row on top, then the independently
+          scrolling slide-rendering area below it. */}
+      <div className="relative flex-1 flex flex-col min-h-0 overflow-hidden">
+        {/* TOOLBAR ROW: Refresh on the left; host toolbar actions + Render on the
+            right. Pinned (shrink-0) above the scrolling canvas area. */}
+        <div className="flex-shrink-0 flex items-center justify-between gap-2 px-4 py-3 border-b border-[var(--editor-border)]">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className={`flex items-center gap-2 px-3 py-2 rounded-md border transition-colors ${
+                refreshState === 'err'
+                  ? (mode === 'light' ? 'text-red-700 border-red-300 bg-red-50 hover:bg-red-100' : 'text-red-300 border-red-500/40 bg-red-950/60 hover:bg-red-900/70')
+                  : 'text-[var(--editor-text)] border-[var(--editor-border)] bg-[color-mix(in_srgb,var(--editor-surface)_80%,transparent)] hover:text-[var(--editor-text)] hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)]'
+              }`}
+              title={refreshState === 'err' ? 'Refresh failed — check connection' : 'Refresh project'}
+            >
+              {refreshState === 'err' ? <AlertCircle size={18} /> : <RefreshCw size={18} className={refreshing ? 'animate-spin' : ''} />}
+              <span className="text-xs font-medium">Refresh</span>
+            </button>
+            <button
+              onClick={() => undo()}
+              disabled={!state.canUndo && !cropElementId}
+              className="flex items-center justify-center p-2 rounded-md border border-[var(--editor-border)] bg-[color-mix(in_srgb,var(--editor-surface)_80%,transparent)] text-[var(--editor-text)] transition-colors hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)] disabled:opacity-40 disabled:cursor-not-allowed"
+              title={`Undo (${shortcutText(['⌘', 'Z'])})`}
+              aria-label="Undo"
+            >
+              <Undo2 size={18} />
+            </button>
+            <button
+              onClick={() => redo()}
+              disabled={!state.canRedo || !!cropElementId}
+              className="flex items-center justify-center p-2 rounded-md border border-[var(--editor-border)] bg-[color-mix(in_srgb,var(--editor-surface)_80%,transparent)] text-[var(--editor-text)] transition-colors hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)] disabled:opacity-40 disabled:cursor-not-allowed"
+              title={`Redo (${shortcutText(['⌘', '⇧', 'Z'])})`}
+              aria-label="Redo"
+            >
+              <Redo2 size={18} />
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {slots?.toolbarActions}
+            {!onProvideRenderTrigger && <button
+              onClick={handleRender}
+              disabled={rendering || project.status === 'pending' || slides.length === 0}
+              className="flex items-center gap-2 px-3 py-2 rounded-md border border-[var(--editor-accent)] bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] hover:opacity-90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              title={
+                project.status === 'pending'
+                  ? 'Wait for the agent to finish before rendering'
+                  : slides.length === 0
+                  ? 'Add slides before rendering'
+                  : 'Render all slides as PNGs'
+              }
+            >
+              <Download size={18} />
+              <span className="text-xs font-medium">{rendering ? 'Starting…' : 'Render'}</span>
+            </button>}
+          </div>
+        </div>
+
+        {/* SCROLL AREA: the slide viewport. ResizeObserver lives here so
+            canvasScale measures the slide-rendering area, not the toolbar. */}
+        <div ref={canvasContainerRef} className="relative flex-1 flex flex-col items-center justify-center gap-4 overflow-y-auto min-h-0 p-4">
+        {canvasInner}
         </div>
       </div>
 
@@ -1826,6 +1867,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         <div className="flex-shrink-0 border-t border-[var(--editor-border)] w-full flex flex-col">
           {slots.assetsPanel}
         </div>
+      )}
+      </>
       )}
 
       {/* Controls window. A host that passes `renderControls` draws it; it is

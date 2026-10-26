@@ -1235,7 +1235,23 @@ export interface EditorSlots {
    * Versions), and N opens that page. Absent → nothing is rendered.
    */
   notesPanel?: ReactNode
+  /** `layout="rail"` only: the top bar's left side (file actions). */
+  carouselTopLeft?: ReactNode
+  /** `layout="rail"` only: the top bar's right side (title, Send for review, Export). */
+  carouselTopRight?: ReactNode
+  /** `layout="rail"` only: the Media rail item's side panel. */
+  carouselMediaPanel?: ReactNode
+  /** `layout="rail"` only: the Brand rail item's side panel. */
+  carouselBrandPanel?: ReactNode
+  /** `layout="rail"` only: the Notes rail item's right panel. */
+  carouselNotesPanel?: ReactNode
 }
+
+/** The carousel editor's layouts: today's (`classic`) or the rail layout. */
+export type CarouselLayout = 'classic' | 'rail'
+
+/** The rail layout's items, in order. `notes` opens the right panel; the others the side panel. */
+export type CarouselRailItemId = 'media' | 'elements' | 'text' | 'brand' | 'ai-image' | 'layers' | 'background' | 'notes'
 
 // ── Controls window ───────────────────────────────────────────────────────────
 // Declared here rather than in ControlsInfoModal (which re-exports the two
@@ -1320,6 +1336,14 @@ export interface CarouselRenderModalContext<P extends Project = Project> {
  * transport; theme and slots are optional, and `readOnly` disables mutation.
  */
 export interface CarouselEditorProps<P extends Project = Project> {
+  /**
+   * `'classic'` (default) is today's layout. `'rail'` swaps in the top bar, the
+   * icon rail with its side panel, the right panel and the bottom bar; the host
+   * fills them through the `carousel*` slots and `railPanels`.
+   */
+  layout?: CarouselLayout
+  /** `layout="rail"`: content for a rail item's panel, winning over its slot and the placeholder. */
+  railPanels?: Partial<Record<CarouselRailItemId, ReactNode>>
   project: P
   adapter: EditorAdapter<P>
   onProjectChange?: (p: P) => void

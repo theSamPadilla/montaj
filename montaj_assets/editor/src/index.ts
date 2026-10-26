@@ -70,6 +70,8 @@ export type {
   EditorContext,
   EditorTheme,
   EditorSlots,
+  CarouselLayout,
+  CarouselRailItemId,
   CarouselEditorProps,
   VideoEditorProps,
   RenderModalContext,
