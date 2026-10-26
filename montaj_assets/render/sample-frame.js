@@ -183,6 +183,9 @@ const SHORT_EDGE_TARGET = 1080
  * 20: a full-canvas overlay measured fully opaque hides the footage below it,
  *    flagged `opaque` or not. A frame cached before took the footage through
  *    the composite's yuv420 round trip, a few levels off the culled frame.
+ * 21: PL89f, each text also holds `glyphs` (its own text's extent, apart from
+ *    its box) and `fellBack` (its face did not load). 20's entries hold
+ *    neither, so a full-width centred title reads as inside the margin.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -190,7 +193,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 20
+const SAMPLE_CACHE_VERSION = 21
 
 // PL89: the most overlay pages a sampling session keeps open (createSampleSession).
 export const SESSION_MAX_PAGES = 4
@@ -891,6 +894,9 @@ async function captureOverlay({ page, guard, pageErrors, fontFailures, component
               position: style.position,
               transform: style.transform,
               bbox: { x: bboxX, y: bboxY, w: bboxW, h: bboxH },
+              // PL89f: the text's own extent, apart from its box. A centred title in a full-width box measures the
+              // whole width as its box; the zone checks (margin, captions, the apps' controls) read the glyphs.
+              glyphs: hasText ? { x: tl, y: tt, w: tr - tl, h: tb - tt } : null,
               spills,
               overflow: {
                 left:   overflowLeft,
