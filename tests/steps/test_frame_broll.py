@@ -212,3 +212,9 @@ def test_a_subject_under_the_captions_is_carded_by_auto_and_said_by_track(tmp_pa
     b.mkdir()
     out = fb.run(str(project(b, y=220)), "br-1", mode="track", sampler=stub_sampler())
     assert out["mode"] == "track" and any("captions" in i for i in out["issues"])
+
+
+def test_auto_cards_a_subject_the_captions_only_cross(tmp_path):
+    # the box at y 120-210 of 360 (33-58%): a full-height crop has the caption band (56-76%) crossing its foot
+    out = fb.run(str(project(tmp_path, y=120)), "br-1", sampler=stub_sampler())
+    assert out["mode"] == "card" and "captions" in out["why"]
