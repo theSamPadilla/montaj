@@ -52,9 +52,15 @@ def sample_frames(project, times, frames_dir, raw=False, scene=None, sdr_curve=N
         proc = subprocess.run(cmd, check=False, capture_output=True, env=node_child_env(), timeout=120 * len(times))
     except subprocess.TimeoutExpired:
         fail("sample_failed", f"sample_frame over {len(times)} times exceeded {120 * len(times)}s")
-    paths = proc.stdout.decode("utf-8", errors="replace").split()
-    if proc.returncode != 0 or len(paths) != len(times) or not all(os.path.isfile(p) for p in paths):
-        fail("sample_failed", f"sample_frame failed: {proc.stderr.decode('utf-8', errors='replace').strip()[-400:]}")
+    err = proc.stderr.decode("utf-8", errors="replace").strip()[-400:]
+    if proc.returncode != 0:
+        fail("sample_failed", f"sample_frame failed: {err}")
+    paths = proc.stdout.decode("utf-8", errors="replace").splitlines()
+    if len(paths) != len(times):
+        fail("sample_failed", f"sample_frame expected {len(times)} frame paths, got {len(paths)}: {err}")
+    missing = [p for p in paths if not os.path.isfile(p)]
+    if missing:
+        fail("sample_failed", f"sample_frame reported frames that do not exist: {missing[0]}")
     return paths
 
 
@@ -130,21 +136,7 @@ def main():
             name = f"3d-{args.scene}-{times[0]}s.png" if args.scene else f"3d-{times[0]}s.png"
         out = os.path.join(samples_dir, name)
 
-    cmd = ["node", SAMPLE_FRAME_JS, "--mode", "frame", "--project", args.project]
-    if len(times) == 1:
-        cmd += ["--at", str(times[0]), "--out", out]
-    else:
-        for t in times:
-            cmd += ["--at", str(t)]
-
-    if args.prefer_proxy:
-        cmd.append("--prefer-proxy")
-
-    if args.raw:
-        cmd.append("--raw")
-
-    if args.scene is not None:
-        cmd += ["--scene", args.scene]
+    sdr_forward = None
 
     if args.sdr_curve is not None:
         # Fail loudly here rather than let sample-frame.js's own manifest check
@@ -164,7 +156,7 @@ def main():
         color_space = (project.get("settings") or {}).get("colorSpace") or DEFAULT_COLOR_SPACE
 
         if is_hdr(color_space):
-            cmd += ["--sdr-curve", args.sdr_curve]
+            sdr_forward = args.sdr_curve
         else:
             # SDR projects have nothing to grade — the curve only feeds the
             # HDR->SDR LUT chain (see sample-frame.js's `hdrProject` gate). Not
@@ -175,21 +167,27 @@ def main():
                         f"is '{color_space}' (SDR)",
             }) + "\n")
 
-    env = node_child_env()
-
     if len(times) > 1:
         with tempfile.TemporaryDirectory() as work:
-            cmd += ["--frames-dir", work]
-            result = subprocess.run(cmd, check=False, capture_output=True, env=env)
-            sys.stderr.write(result.stderr.decode("utf-8", errors="replace"))
-            sys.stderr.flush()
-            paths = result.stdout.decode("utf-8", errors="replace").split()
-            if result.returncode != 0 or len(paths) != len(times):
-                sys.exit(result.returncode or 1)
+            paths = sample_frames(args.project, times, work, raw=args.raw, scene=args.scene,
+                                  sdr_curve=sdr_forward, prefer_proxy=args.prefer_proxy)
             os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
             tile_sheet(paths, times, min(len(times), SHEET_COLS), SHEET_TILE_WIDTH, out)
         print(os.path.abspath(out))
         return
+
+    cmd = ["node", SAMPLE_FRAME_JS, "--mode", "frame", "--project", args.project,
+           "--at", str(times[0]), "--out", out]
+    if args.prefer_proxy:
+        cmd.append("--prefer-proxy")
+    if args.raw:
+        cmd.append("--raw")
+    if args.scene is not None:
+        cmd += ["--scene", args.scene]
+    if sdr_forward is not None:
+        cmd += ["--sdr-curve", sdr_forward]
+
+    env = node_child_env()
 
     result = subprocess.run(cmd, check=False, capture_output=True, env=env)
     sys.stdout.write(result.stdout.decode("utf-8", errors="replace"))

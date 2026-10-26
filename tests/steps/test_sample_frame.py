@@ -258,6 +258,11 @@ def frames_node_env(tmp_path_factory) -> dict:
             fd = a[a.index("--frames-dir") + 1]
             os.makedirs(fd, exist_ok=True)
             n = a.count("--at")
+            if os.environ.get("FAKE_SPACE"):
+                fd = os.path.join(fd, "John Smith")
+                os.makedirs(fd, exist_ok=True)
+            if os.environ.get("FAKE_SHORT"):
+                n -= 1
             for i in range(n):
                 p = os.path.join(fd, "f_%04d.png" % i)
                 Image.new("RGB", (640, 360), (i * 20, 0, 0)).save(p)
@@ -323,3 +328,19 @@ def test_every_time_is_validated_with_a_scene(tmp_path):
     assert proc.returncode != 0 and "invalid_at" in proc.stderr
     proc = run_step_env(STEP, {}, "--project", str(project), "--raw", "--scene", "rig", "--at", "1", "--at", "2")
     assert proc.returncode != 0 and "invalid_args" in proc.stderr
+
+
+def test_frame_paths_with_spaces_are_kept_whole(frames_node_env, tmp_path):
+    project = _write_project(tmp_path, None)
+    proc = run_step_env(STEP, {**frames_node_env, "FAKE_SPACE": "1"}, "--project", str(project),
+                        "--at", "1", "--at", "2")
+    assert proc.returncode == 0, proc.stderr
+    assert Path(proc.stdout.strip()).is_file()
+
+
+def test_wrong_number_of_frame_paths_fails_naming_both(frames_node_env, tmp_path):
+    project = _write_project(tmp_path, None)
+    proc = run_step_env(STEP, {**frames_node_env, "FAKE_SHORT": "1"}, "--project", str(project),
+                        "--at", "1", "--at", "2", "--at", "3")
+    assert proc.returncode != 0
+    assert "sample_failed" in proc.stderr and "expected 3" in proc.stderr and "got 2" in proc.stderr
