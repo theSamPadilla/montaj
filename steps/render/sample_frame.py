@@ -33,8 +33,14 @@ SHEET_COLS = 4
 SHEET_TILE_WIDTH = 360
 
 
+# PL89c: several times are a sheet, whose tiles are a few hundred px wide: their frames composite at the design canvas
+# (short edge 1080, where the overlays render and the type floors are measured), not a 4K project's own size.
+SHEET_SHORT_EDGE = 1080
+
+
 def sample_frames(project, times, frames_dir, raw=False, scene=None, sdr_curve=None, prefer_proxy=False):
-    """Render every time in ONE node process into frames_dir (f_0000.png...); return the paths in order."""
+    """Render every time in ONE node process into frames_dir (f_0000.png...); return the paths in order. Several times
+    (a sheet) composite at SHEET_SHORT_EDGE; one time keeps the project's size."""
     cmd = ["node", SAMPLE_FRAME_JS, "--mode", "frame", "--project", project]
     for t in times:
         cmd += ["--at", str(t)]
@@ -48,6 +54,8 @@ def sample_frames(project, times, frames_dir, raw=False, scene=None, sdr_curve=N
         cmd += ["--scene", scene]
     if sdr_curve is not None:
         cmd += ["--sdr-curve", sdr_curve]
+    if len(times) > 1 and not raw:
+        cmd += ["--max-short-edge", str(SHEET_SHORT_EDGE)]
     try:
         proc = run_stopping(cmd, timeout=120 * len(times), env=node_child_env())
     except subprocess.TimeoutExpired:

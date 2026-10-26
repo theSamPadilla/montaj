@@ -344,6 +344,7 @@ if (isMain) {
   let preferProxyArg = false
   let rawArg        = false
   let clampToEndArg = false
+  let maxShortEdgeArg = null
   let sceneArg      = null
   // shared
   let outArg        = null
@@ -366,6 +367,7 @@ if (isMain) {
     if (a === '--sdr-curve')    { sdrCurveArg   = argv[++i]; continue }
     if (a === '--clamp-to-end') { clampToEndArg = true; continue }
     if (a === '--prefer-proxy') { preferProxyArg = true; continue }
+    if (a === '--max-short-edge') { maxShortEdgeArg = Number(argv[++i]); continue }
     if (a === '--raw')          { rawArg = true; continue }
     if (a === '--scene')        { sceneArg      = argv[++i] ?? null; if (sceneArg === null) fail('missing_argument', '--scene needs a 3D id, or \'\' for the project\'s own'); continue }
     if (a === '--out')          { outArg        = argv[++i]; continue }
@@ -430,7 +432,7 @@ if (isMain) {
         sdrCurve: sdrCurveArg,
         preferProxy: preferProxyArg,
         clampToEnd: clampToEndArg,
-        ...(rawArg ? {} : { session }),
+        ...(rawArg ? {} : { session, maxShortEdge: maxShortEdgeArg }),
       })
     // Several times: one process, one frame file per time in the order given, one path per line.
     // PL89: one session for all of them (createSampleSession): one browser, each overlay page loaded once.
@@ -1064,6 +1066,7 @@ export async function sampleFrame({
   clampToEnd = false,
   projectDir: projectDirOpt = null,
   session = null,
+  maxShortEdge = null,
 }) {
   if (!outPath) throw new Error('outPath is required')
   if (atSeconds == null) throw new Error('atSeconds is required')
@@ -1100,7 +1103,9 @@ export async function sampleFrame({
   }
 
   // Cache key
-  const cacheKey = buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve, preferProxy)
+  // PL89c: a sheet's frame at the design canvas is its own entry, never a full-size sample's.
+  const cap = Number.isFinite(maxShortEdge) && maxShortEdge > 0 ? Math.round(maxShortEdge) : null
+  const cacheKey = buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve, preferProxy, SAMPLE_CACHE_VERSION, cap)
   const cachePng = join(CACHE_DIR, `${cacheKey}.png`)
   const cacheInputs = join(CACHE_DIR, `${cacheKey}.inputs.json`)
 
@@ -1130,8 +1135,15 @@ export async function sampleFrame({
   const aspectRatio = SHORT_EDGE_TARGET / Math.min(aspectW, aspectH)
   const renderWidth  = Math.round(aspectW * aspectRatio / 2) * 2
   const renderHeight = Math.round(aspectH * aspectRatio / 2) * 2
-  const actualWidth  = settings.resolution?.[0] ?? renderWidth
-  const actualHeight = settings.resolution?.[1] ?? renderHeight
+  let actualWidth  = settings.resolution?.[0] ?? renderWidth
+  let actualHeight = settings.resolution?.[1] ?? renderHeight
+  // PL89c: a sheet's frames composite at most at `maxShortEdge` (the design canvas the overlays render at), not a 4K
+  // project's own size; a single sample keeps it.
+  if (cap && Math.min(actualWidth, actualHeight) > cap) {
+    const k = cap / Math.min(actualWidth, actualHeight)
+    actualWidth = Math.round(actualWidth * k / 2) * 2
+    actualHeight = Math.round(actualHeight * k / 2) * 2
+  }
 
   // Validate timestamp
   const totalDuration = getTotalDurationSeconds(resolvedProject)
@@ -2001,7 +2013,7 @@ function overlaySourceCacheComponent(project, projectPath) {
  * per-overlay-render key instead).
  */
 function buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve = null, preferProxy = false,
-                            version = SAMPLE_CACHE_VERSION) {
+                            version = SAMPLE_CACHE_VERSION, maxShortEdge = null) {
   let mtime = '0'
   if (projectPath) {
     try { mtime = String(statSync(projectPath).mtimeMs) } catch {}
@@ -2022,7 +2034,7 @@ function buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve = null, pr
   // moves when the manifest does.
   const raw = [RESOLVER_VERSION, `sample-v${version}`, mtime, String(atSeconds), colorSpace,
                MASTER_LOOK, sdrCurve ?? MASTER_LOOK, preferProxy ? 'proxy' : 'master',
-               overlaySources].join('|')
+               overlaySources, ...(maxShortEdge ? [`short-${maxShortEdge}`] : [])].join('|')
   return createHash('sha256').update(raw).digest('hex')
 }
 
