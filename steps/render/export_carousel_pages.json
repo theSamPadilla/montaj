@@ -1,11 +1,11 @@
 {
   "name": "export_carousel_pages",
-  "description": "Export a carousel as web pages. Writes one still HTML page per slide (slide-01.html ...), plain HTML and CSS with no scripts, and index.html, one page that swipes through all of them, into a new folder. The images a slide uses are copied beside the pages (assets/) with relative paths, so the folder opens anywhere. Fonts load from Google Fonts the first time the pages open. With list true, writes nothing and lists the slides. The pages go in a new folder inside out (slides, then slides 2, ...); nothing already there is changed.",
+  "description": "Export a carousel as web pages, in one new zip inside out (slides.zip, then slides 2.zip, ...; nothing already there is changed). Inside, one folder holds a still HTML page per slide (slide-01.html ...), plain HTML and CSS with no scripts, index.html, which swipes through them, and the images the slides use (assets/) with relative paths, so it opens anywhere once unzipped. Fonts load from Google Fonts the first time the pages open. With list true, writes nothing and lists the slides.",
   "input": { "type": "none", "description": "No file input: operates on a carousel project (see the project param)." },
-  "output": { "type": "json", "description": "{dir, pages: [slide-NN.html ...], index, files: [paths relative to dir], warnings: [...]}; with list: {items: [{index, id}]}" },
+  "output": { "type": "json", "description": "{zip, pages: [slide-NN.html ...], index, files: [paths inside the zip's folder], warnings: [...]}; with list: {items: [{index, id}]}" },
   "params": [
     { "name": "project", "type": "path", "required": true, "description": "The project id, its folder, or the absolute path of its project.json" },
-    { "name": "out", "type": "path", "required": false, "outKind": "export", "description": "The folder to put the pages' new folder in (required unless list is true). Outside the workspace it must be an existing folder that is not hidden and not a system or app folder." },
+    { "name": "out", "type": "path", "required": false, "outKind": "export", "description": "The folder to put the zip in (required unless list is true). Outside the workspace it must be an existing folder that is not hidden and not a system or app folder." },
     { "name": "slides", "type": "string", "required": false, "description": "Only these slides, as a comma-separated list of slide numbers from 1 (default: all)" },
     { "name": "list", "type": "bool", "required": false, "description": "List the slides and write nothing" }
   ]
