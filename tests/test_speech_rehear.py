@@ -63,6 +63,9 @@ def test_when_the_whole_phrase_is_heard_once_again_its_held_word_on_is_heard_alo
 def test_a_hearing_that_loses_or_changes_the_words_is_never_taken():
     lost = lambda s, e: [("And", s, s + 0.2), ("I'll...", s + 0.2, e)]
     assert rh.rehear_phrase(lost, E1[0:3]) is None
+    # a second saying only repeats the phrase's own words: a word whisper made up ("X") is never put in
+    made_up = lambda s, e: [("X", s, s + 0.1), ("But", s + 0.1, s + 0.3), ("in", s + 0.3, s + 0.5), ("all", s + 0.5, e)]
+    assert rh.rehear_phrase(made_up, E1[0:3]) is None
 
 
 def test_the_transcript_takes_the_new_words_and_keeps_a_copy(tmp_path):

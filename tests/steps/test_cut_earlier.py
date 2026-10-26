@@ -25,3 +25,27 @@ def test_earlier_rows_are_not_counted_as_left_in_unused():
     plain, why_left = cut._untagged(text)
     assert why_left == {"inaudible": 1}
     assert "B1 This\n" in plain
+
+
+# PL89i (2b): once the slow phrases were heard again, the kung fu plan showed "E1 But in In" before "E1 but in all
+# seriousness" and "E6 And if you And" before "E6 you move or get scared": restarts right before the full line, with no
+# label (the take rules want 3 words or more). A row that opens like the very next row of its clip is a retake of it;
+# a row that ends by starting itself over names the words before the restart. Only next to each other.
+class _Wd:
+    def __init__(self, text):
+        self.text, self.norm = text, cut.norm(text)
+
+
+class _Row:
+    def __init__(self, line, text):
+        self.line, self.words = line, [_Wd(t) for t in text.split()]
+
+
+def test_a_row_that_opens_like_the_next_row_of_its_clip_is_its_restart():
+    assert cut._restart(_Row("E1", "But in In"), _Row("E1", "but in all seriousness, this is actually")) == ("row", None)
+    assert cut._restart(_Row("E6", "And if you And"), _Row("E6", "you move or get scared,")) == ("words", 3)
+    # not next to each other, another clip, one word, or the same opening of a different sentence's own full line
+    assert cut._restart(_Row("E1", "But in In"), None) is None
+    assert cut._restart(_Row("E1", "But in In"), _Row("F1", "but in all")) is None
+    assert cut._restart(_Row("E1", "But"), _Row("E1", "but in all")) is None
+    assert cut._restart(_Row("D5", "Yeah, I don't think that kid would have been"), _Row("D6", "car was also going like really slow.")) is None

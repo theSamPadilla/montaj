@@ -91,11 +91,18 @@ def _clean(heard):
 
 
 def _better(orig, new):
-    """The new words are more and hold the old ones in order."""
+    """The new words are more, hold the old ones in order, and every word added is one of the phrase's own: a second
+    saying repeats the phrase (a word whisper made up, such as a lone "X", is never put in)."""
     if len(new) <= len(orig):
         return False
-    want, it = [_norm(t) for t, _, _ in orig], iter(_norm(t) for t, _, _ in new)
-    return all(any(w == n for n in it) for w in want)
+    want, got = [_norm(t) for t, _, _ in orig], [_norm(t) for t, _, _ in new]
+    k, extra = 0, []
+    for g in got:
+        if k < len(want) and g == want[k]:
+            k += 1
+        else:
+            extra.append(g)
+    return k == len(want) and all(e in want for e in extra)
 
 
 def rehear_phrase(window, words):

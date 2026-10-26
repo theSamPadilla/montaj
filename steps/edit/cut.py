@@ -387,6 +387,10 @@ def _plan(d, title, units, trailing, labels, gone, at, of_source, language, max_
     def first_row(ui):
         return units[ui][1][0][1] if ui is not None and 0 <= ui < len(units) and units[ui][1] else None
 
+    rules = language.split("-")[0].lower() not in NON_SPACED      # the take rules run for this language
+    order = [row for _, urows, _ in units for _, row in urows]
+    following = {id(a): b for a, b in zip(order, order[1:])}
+
     for ui, (u, urows, attached) in enumerate(units):
         out += [_other_row(r) for r in attached]
         mine, named = labels.get(ui, []), set()
@@ -412,6 +416,18 @@ def _plan(d, title, units, trailing, labels, gone, at, of_source, language, max_
                     tags.append(whole_label + (f" {nxt.line} {t_of(nxt):.1f}" if nxt is not None else ""))
                 elif here:
                     tags.append(f'{label} "{" ".join(here)}"')
+            # PL89i: a restart right before the full line, which the take rules (3 words or more) leave unlabelled
+            # (only where the take rules run, on the words the plan keeps, never on a clip kept whole)
+            nxt = following.get(id(row))
+            keep = lambda r: [w for w in r.words if (_line_key(r.line)[0], w.idx) not in gone]
+            restart = None
+            if (rules and not u.fixed and nxt is not None
+                    and not any(tag.split()[0] in ("retake?", "repeat?", "false-start?") for tag in tags)):
+                restart = _restart(row, nxt, keep(row), keep(nxt))
+            if restart and restart[0] == "row":
+                tags.append(f"retake? {nxt.line} {t_of(nxt):.1f}")
+            elif restart:
+                tags.append('repeat? "' + " ".join(w.text for w in keep(row)[:restart[1]]) + '"')
             pos += n
             drop = {k for k, w in enumerate(row.words) if (letter, w.idx) in gone}
             if drop:
@@ -459,6 +475,21 @@ def _plan(d, title, units, trailing, labels, gone, at, of_source, language, max_
         out += ["", "## Unused", ""]
         out += [f"{i} {txt} [{why}]" if t is None else f"{i} {txt} [{t:.1f} {why}]" for i, t, txt, why in unused]
     return _seal("\n".join(out) + "\n"), kept, unused, counts
+
+
+def _restart(row, nxt, words=None, ahead=None):
+    """A row that starts the line over right away (PL89i: "But in In" before "but in all seriousness"; "And if you And"
+    before "you move or get scared"): ("row", None) when its first two words open the very next row of its clip,
+    ("words", k) when it ends by saying its own first word again (its first k words are the false start), else None."""
+    mine = row.words if words is None else words              # the words the plan keeps of each row
+    norms = [w.norm for w in mine if w.norm]
+    if nxt is not None and _line_key(nxt.line)[0] == _line_key(row.line)[0] and len(norms) >= 2:
+        next_norms = [w.norm for w in (nxt.words if ahead is None else ahead) if w.norm]
+        if len(next_norms) > 2 and next_norms[:2] == norms[:2]:
+            return ("row", None)
+    if len(norms) >= 3 and norms[-1] == norms[0]:
+        return ("words", len(mine) - 1)
+    return None
 
 
 def _earlier_at(of_source, src, spans, start, end):
