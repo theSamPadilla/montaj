@@ -205,7 +205,7 @@ def test_a_short_run_whose_echo_does_not_match_keeps_the_words_that_end_inside_i
 
 # ── hallucinations ──────────────────────────────────────────────────────────
 
-def test_thank_you_on_a_short_run_is_dropped_and_a_real_short_word_kept(tmp_path, fake):
+def test_a_voiced_short_run_keeps_its_words_even_a_stock_phrase(tmp_path, fake):
     # run 0 and run 1 are 0.3 s of sound; run 2 is 1.0 s
     # a short run's clip opens 1.5 s before it (run 0: at 0, so 0.5; run 1: 1.5); a long run's 0.2 s (run 2: 0.2)
     fake({0: [("Thank", 0.5, 0.7), ("you.", 0.7, 1.0)],
@@ -217,7 +217,7 @@ def test_thank_you_on_a_short_run_is_dropped_and_a_real_short_word_kept(tmp_path
     by_run = {}
     for w in data["transcription"]:
         by_run.setdefault(w["run"], []).append(w["text"].strip())
-    assert 0 not in by_run
+    assert by_run[0] == ["Thank", "you."]            # the source's first run: a real opening is never dropped
     assert by_run[1] == ["Compute."]
     assert by_run[2] == ["Thank", "you."]            # a long run keeps what it heard
     assert len(data["montaj"]["runs"]) == 3          # the run stays in the list: indexes do not shift
@@ -525,3 +525,81 @@ def test_a_run_starts_at_the_voice_not_at_a_bump_of_no_voice_before_it(tmp_path)
     runs = sr.voiced_runs(str(path))
     assert len(runs) == 1
     assert runs[0][0] == pytest.approx(1.0, abs=0.03)
+
+
+
+# ── review should-fixes (PL89 review 4, 5) ─────────────────────────────────
+
+def test_a_back_to_back_short_retake_keeps_its_only_word(tmp_path, fake):
+    """"It's called PhoneBot." then a 0.4 s "PhoneBot." said again: the short run's echo match would take its only
+    word, and cut would then remove its sound. Its words that lie inside the run by time stay."""
+    fake({0: [("It's", 0.3, 0.6), ("called", 0.6, 1.0), ("PhoneBot.", 1.0, 1.6)],
+          1: [("PhoneBot.", 1.55, 1.85)]})                 # clip from 1.1: source 2.65-2.95, inside the run
+    media = make_wav(tmp_path / "a.wav", [(0.5, 2.0), (2.6, 3.0)], 4.0)
+    sr.transcribe_runs(media, str(tmp_path / "out"), "model.bin", "en")
+    assert [w["text"].strip() for w in by_run(tmp_path)[1]] == ["PhoneBot."]
+
+
+def test_a_real_sign_off_on_the_last_run_is_kept(tmp_path, fake):
+    fake({0: [("Follow", 0.2, 0.6), ("me.", 0.6, 1.2)], 1: [("Bye!", 1.5, 1.8)]})
+    media = make_wav(tmp_path / "a.wav", [(0.5, 2.0), (2.6, 3.0)], 4.0)
+    sr.transcribe_runs(media, str(tmp_path / "out"), "model.bin", "en")
+    assert [w["text"].strip() for w in by_run(tmp_path)[1]] == ["Bye!"]
+
+
+def test_a_stock_phrase_goes_only_on_a_short_middle_run_with_little_voice():
+    words = [("Thank", 3.0, 3.2), ("you.", 3.2, 3.4)]
+    assert sr._hallucination(words, (3.0, 3.4), share=0.1)
+    assert not sr._hallucination(words, (3.0, 3.4), share=0.9)                 # a voice said it
+    assert not sr._hallucination(words, (3.0, 3.4), share=0.1, edge=True)      # first or last run
+    assert not sr._hallucination(words, (3.0, 3.4), share=None)                # no voice check: kept
+    assert not sr._hallucination(words, (3.0, 4.0), share=0.1)                 # a long run
+
+
+
+# ── review should-fix 6: the redo keeps the old file and says every skip ────────────────────────────────────
+
+def test_the_redo_keeps_the_old_transcript_as_full_json_and_writes_the_new_srt(tmp_path):
+    d, src, side = clip_dir(tmp_path, OLD)
+    old = side.read_bytes()
+    (d / "clip.srt").write_text("1\n00:00:00,000 --> 00:00:00,500\nold\n\n")
+    old_srt = (d / "clip.srt").read_bytes()
+
+    def transcribe(inp, out=None, model=None, language="en", **kw):
+        res = by_runs_transcript(out)
+        Path(out + ".srt").write_text("1\n00:00:00,500 --> 00:00:00,900\nnew\n\n")
+        return res
+
+    done, _, warnings = speech_units.transcribe_missing(
+        project_for(src), "t", str(d / "project.json"), str(d), "m", "auto", transcribe, redo_full_file=True)
+    assert done == ["c1"] and json.loads(side.read_text())["montaj"]["by"] == "runs"
+    assert (d / "clip.full.json").read_bytes() == old
+    assert (d / "clip.full.srt").read_bytes() == old_srt
+    assert "new" in (d / "clip.srt").read_text()
+
+
+def test_the_redo_never_overwrites_an_earlier_full_json(tmp_path):
+    d, src, side = clip_dir(tmp_path, OLD)
+    (d / "clip.full.json").write_text("kept")
+
+    def transcribe(inp, out=None, model=None, language="en", **kw):
+        return by_runs_transcript(out)
+
+    done, _, _ = speech_units.transcribe_missing(
+        project_for(src), "t", str(d / "project.json"), str(d), "m", "auto", transcribe, redo_full_file=True)
+    assert done == ["c1"] and (d / "clip.full.json").read_text() == "kept"
+    assert json.loads((d / "clip.full-2.json").read_text()) == OLD
+
+
+def test_a_redo_with_no_voiced_run_says_it_kept_the_older_transcript(tmp_path):
+    d, src, side = clip_dir(tmp_path, OLD)
+
+    def transcribe(inp, out=None, model=None, language="en", **kw):      # no voiced run: the full-file fallback
+        Path(out + ".json").write_text(json.dumps(OLD))
+        Path(out + ".srt").write_text("")
+        return {}
+
+    done, _, warnings = speech_units.transcribe_missing(
+        project_for(src), "t", str(d / "project.json"), str(d), "m", "auto", transcribe, redo_full_file=True)
+    assert done == [] and json.loads(side.read_text()) == OLD
+    assert any("kept the older transcript of clip.mp4" in w for w in warnings), warnings
