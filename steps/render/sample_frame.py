@@ -39,9 +39,11 @@ SHEET_SHORT_EDGE = 1080
 
 
 def sample_frames(project, times, frames_dir, raw=False, scene=None, sdr_curve=None, prefer_proxy=False,
-                  no_captions=False):
+                  no_captions=False, timeout=None):
     """Render every time in ONE node process into frames_dir (f_0000.png...); return the paths in order. Several times
-    (a sheet) composite at SHEET_SHORT_EDGE; one time keeps the project's size."""
+    (a sheet) composite at SHEET_SHORT_EDGE; one time keeps the project's size. The process gets `timeout` seconds,
+    else 120 a time."""
+    timeout = timeout if timeout is not None else 120 * len(times)
     cmd = ["node", SAMPLE_FRAME_JS, "--mode", "frame", "--project", project]
     for t in times:
         cmd += ["--at", str(t)]
@@ -60,9 +62,9 @@ def sample_frames(project, times, frames_dir, raw=False, scene=None, sdr_curve=N
     if len(times) > 1 and not raw:
         cmd += ["--max-short-edge", str(SHEET_SHORT_EDGE)]
     try:
-        proc = run_stopping(cmd, timeout=120 * len(times), env=node_child_env())
+        proc = run_stopping(cmd, timeout=timeout, env=node_child_env())
     except subprocess.TimeoutExpired:
-        fail("sample_failed", f"sample_frame over {len(times)} times exceeded {120 * len(times)}s")
+        fail("sample_failed", f"sample_frame over {len(times)} times exceeded {timeout:g}s")
     err = proc.stderr.decode("utf-8", errors="replace").strip()[-400:]
     if proc.returncode != 0:
         fail("sample_failed", f"sample_frame failed: {err}")

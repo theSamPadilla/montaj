@@ -9,7 +9,9 @@ measured under the caption, the ink written for it and the band's luminance) rec
 
 - `find_card` / `card_under`: the card under a caption's band at a time (`card_under` from the project data alone).
 - `band` / `luminance`: the caption's rows of the frame, and the mean relative luminance of a render over them.
-- `plan`: what each caption should say, from a render of the backdrop (the frame without the captions).
+- `plan`: what each caption should say, from a render of the backdrop (the frame without the captions). A caption whose
+  words lie over different cards (or over a card and footage) is split into one caption per run of words, each inked on
+  its own.
 - `needs_pass`: whether the step has anything to do (an overlay that may be a card, or ink of ours to clear).
 - `update`: plan + the guarded write of `captions` only.
 """
@@ -24,6 +26,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from lib import look_check as lc
+from lib.caption_translation import mint_ids
 from lib import project_revisions
 from lib.proc import detached_kwargs, kill_tree
 from lib.project_lock import update_project
@@ -41,6 +44,8 @@ LIGHT_L = 0.5
 COVER_ALPHA = 230
 COVER_SHARE = 0.9
 RENDER_WORKERS = 3
+# A caption is split at a card's edge only when every piece shows for at least this long.
+MIN_PIECE_S = 0.25
 RENDER_TIMEOUT_S = 90
 # The step's own wall clock for the frames: one not started by then counts as failed, so the caller's timeout (serve's
 # 300 s) never has to kill it.
@@ -201,15 +206,18 @@ def alpha_cover(png_path, box, frame=None):
     return sum(hist[COVER_ALPHA:]) / ((x1 - x0) * (y1 - y0))
 
 
-def _frame_of(item, t, fps):
-    return int(round((t - lc._num(item.get("start"))) * fps))
+def _mid_frame(item, fps):
+    """The frame an overlay is read at: the middle of its own span. An overlay whose coverage changes over its span (a
+    fade, a wipe) is accepted as it is there, for every caption over it."""
+    return int(round((lc._num(item.get("end")) - lc._num(item.get("start"))) / 2 * fps))
 
 
 def find_card(project, t, box, size, project_dir=None, measured=None, need=None, warn=None):
     """The card under `box` (the caption's band) at `t`, or None. Walks the items on screen from the top: footage whose
     box meets the band ends it (the caption is over footage); the first overlay that covers the band is the card (a copy
     of the item with `id` = its label). An overlay the data cannot judge is judged by `measured`, {(label, frame): a PNG
-    of the overlay alone, or None when it could not be rendered}; with no `measured` it covers nothing. A missing entry
+    of the overlay alone at the middle of its span, or None when it could not be rendered}; with no `measured` it covers
+    nothing. A missing entry
     is added to `need` ({(label, frame): item}) and covers nothing there, else raises Unmeasured, as does a failed one."""
     warn = warn or (lambda _msg: None)
     fps = lc._num((project.get("settings") or {}).get("fps"), 30) or 30
@@ -220,7 +228,7 @@ def find_card(project, t, box, size, project_dir=None, measured=None, need=None,
             continue
         covers = _data_cover(item, project_dir, warn)
         if covers is None and measured is not None and not str(item.get("src") or "").startswith("engine:"):
-            key = (label, _frame_of(item, t, fps))
+            key = (label, _mid_frame(item, fps))
             if key in measured:
                 if measured[key] is None:
                     raise Unmeasured(label)
@@ -276,6 +284,29 @@ def luminance(png_path, box, frame=None):
         x1, y1 = max(x0 + 1, min(x1, im.width)), max(y0 + 1, min(y1, im.height))
         hist = im.crop((x0, y0, x1, y1)).histogram()
     table, total = _linear_table(), (x1 - x0) * (y1 - y0)
+    return sum(w * sum(h * lin for h, lin in zip(hist[c * 256:(c + 1) * 256], table))
+               for c, w in enumerate(_LUM)) / total
+
+
+def overlay_luminance(png_path, box, frame, opaque=False):
+    """Mean relative luminance of `box` of an overlay rendered alone: over the pixels it covers (alpha >= COVER_ALPHA),
+    or, for an opaque overlay, over black (the picture below is hidden)."""
+    from PIL import Image
+    with Image.open(png_path) as im:
+        im = im.convert("RGBA")
+        sx, sy = im.width / frame[0], im.height / frame[1]
+        x0, x1 = sorted((int(round(box[0] * sx)), int(round(box[2] * sx))))
+        y0, y1 = sorted((int(round(box[1] * sy)), int(round(box[3] * sy))))
+        x0, y0 = max(0, min(x0, im.width - 1)), max(0, min(y0, im.height - 1))
+        x1, y1 = max(x0 + 1, min(x1, im.width)), max(y0 + 1, min(y1, im.height))
+        crop = im.crop((x0, y0, x1, y1))
+        if opaque:
+            rgb, mask = Image.alpha_composite(Image.new("RGBA", crop.size, (0, 0, 0, 255)), crop).convert("RGB"), None
+        else:
+            rgb, mask = crop.convert("RGB"), crop.getchannel("A").point(lambda a: 255 if a >= COVER_ALPHA else 0)
+        hist = rgb.histogram(mask)
+    table = _linear_table()
+    total = sum(hist[:256]) or 1
     return sum(w * sum(h * lin for h, lin in zip(hist[c * 256:(c + 1) * 256], table))
                for c, w in enumerate(_LUM)) / total
 
@@ -366,20 +397,84 @@ def _pooled(fn, jobs, deadline):
     return done, failed
 
 
+def _timed(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _word_text(w):
+    return w.get("word", w.get("text"))
+
+
+def _timed_words(seg):
+    """The words of a caption that can be split: at least two, each a string with a start and an end. Else None."""
+    words = seg.get("words")
+    if not isinstance(words, list) or len(words) < 2:
+        return None
+    for w in words:
+        if not (isinstance(w, dict) and isinstance(_word_text(w), str) and _timed(w.get("start")) and _timed(w.get("end"))):
+            return None
+    return words
+
+
+def split_pieces(seg, labels):
+    """The pieces `seg` is split into, one per run of consecutive words with the same label in `labels` (one per word),
+    or None when there is one run or a piece would be shorter than MIN_PIECE_S. A piece keeps every field of `seg` but
+    its ink, takes its run's words and text, starts at its first word (the first piece at the caption's start) and ends
+    at its last word (the last piece at the caption's end). The first piece keeps the id; the others have none."""
+    words = seg["words"]
+    runs = []   # [first word, one past the last]
+    for i, label in enumerate(labels):
+        if runs and labels[runs[-1][0]] == label:
+            runs[-1][1] = i + 1
+        else:
+            runs.append([i, i + 1])
+    if len(runs) < 2:
+        return None
+    pieces = []
+    for n, (first, past) in enumerate(runs):
+        part = copy.deepcopy(seg)
+        for f in ("ink", "inkAuto"):
+            part.pop(f, None)
+        part["words"] = copy.deepcopy(words[first:past])
+        part["start"] = seg["start"] if n == 0 else words[first]["start"]
+        part["end"] = seg["end"] if n == len(runs) - 1 else words[past - 1]["end"]
+        part["text"] = " ".join(_word_text(w) for w in part["words"])
+        if n:
+            part.pop("id", None)
+        if part["end"] - part["start"] < MIN_PIECE_S - 1e-9:
+            return None
+        pieces.append(part)
+    return pieces
+
+
+def _with_pieces(project, index, pieces):
+    """The project with the caption at raw index `index` replaced by `pieces`."""
+    caps = dict(project["captions"])
+    segs = list(caps["segments"])
+    segs[index:index + 1] = pieces
+    return {**project, "captions": {**caps, "segments": segs}}
+
+
 def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, project_dir=None):
-    """(changes, counts, warnings). changes: {segment key: {"ink", "inkAuto": {"card", "ink", "backdrop"}} or None to clear}, keyed
-    by `_key` over the raw segment list. render_fn(t) -> a PNG path of the backdrop at `t`; one render per distinct
-    caption middle, three at a time. overlay_fn(item, frame) -> a PNG path of one overlay rendered alone, for the
-    overlays whose pixels say whether they cover a caption's band (find_card); without it only the data decides.
+    """(changes, counts, warnings). changes: {segment key: {"ink", "inkAuto": {"card", "ink", "backdrop"}}, None to clear,
+    or {"split": [the segments that replace it]}}, keyed by `_key` over the raw segment list. A caption whose words lie
+    over different cards is split into one segment per run (see split_pieces; the new ids are minted against the
+    captions), each inked by its own middle. Where a backdrop is read: from the overlay-alone PNG for a JSX card
+    (overlay_fn(item, frame) -> a PNG path of one overlay rendered alone, once per overlay at the middle of its span;
+    also what says whether an overlay whose pixels decide covers a caption's band, see find_card), else from one frame
+    without the captions per card item (render_fn(t) -> a PNG path, three at a time), at the middle of the span of the
+    captions over it. Without overlay_fn only the data decides and every card is read from a frame.
     `project_dir` is where 3D scene files are read. A frame not started by `deadline` (time.monotonic) counts as
-    failed; a caption whose card could not be judged is left as it is."""
-    counts = {"dark": 0, "light": 0, "cleared": 0, "kept": 0}
-    changes, warnings, todo = {}, [], []   # todo: (key, mid, box, card id)
+    failed; a caption whose card or backdrop could not be had is left as it is."""
+    counts = {"dark": 0, "light": 0, "cleared": 0, "kept": 0, "split": 0}
+    changes, warnings = {}, []
     size = (width, height)
     warns = {}   # a message once, in the order it came
     warn = lambda msg: warns.setdefault(msg, None)  # noqa: E731
-    mine = []   # (key, seg, mid, box): captions to look under
-    for i, seg in enumerate(_raw_segments(project)):
+    raw = _raw_segments(project)
+    named = {sid for s in raw if isinstance(s, dict) and _is_translation(s) for sid in s["translationOf"]}
+    mine = []   # (key, seg, mid, box, raw index): captions to look under
+    for i, seg in enumerate(raw):
         if not isinstance(seg, dict) or not inkable(project, seg):
             continue
         if not ours(seg) and (seg.get("ink") or "inkAuto" in seg):
@@ -390,47 +485,140 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
         if box is None and any(it.get("type") == "overlay" for it, _ in _stack(project, mid)):
             warnings.append(f"no caption band at {lc.r2(mid)}s")
             continue
-        mine.append((_key(seg, i), seg, mid, box))
+        mine.append((_key(seg, i), seg, mid, box, i))
+
+    def classify(need):
+        """[{key, seg, pieces (or None), slots}]: each slot {seg, mid, card (an id or None)} is a caption, or a piece,
+        to ink. A caption whose card could not be judged is left out."""
+        def card_at(t, box):
+            return find_card(project, t, box, size, project_dir, measured, need if measured is not None else None, warn)
+        out = []
+        for key, seg, mid, box, i in mine:
+            try:
+                pieces = None
+                words = _timed_words(seg) if box is not None and seg.get("id") and seg["id"] not in named else None
+                if words:
+                    labels = []
+                    for w in words:
+                        c = card_at((w["start"] + w["end"]) / 2, box)
+                        labels.append(c["id"] if c else None)
+                    pieces = split_pieces(seg, labels)
+                if pieces:
+                    sub = _with_pieces(project, i, pieces)
+                    slots = []
+                    for part in pieces:
+                        pm, pb = _mid(part), band(sub, part, width, height)
+                        if pb is None and any(it.get("type") == "overlay" for it, _ in _stack(project, pm)):
+                            slots = None
+                            break
+                        c = card_at(pm, pb) if pb is not None else None
+                        slots.append({"seg": part, "mid": pm, "box": pb, "card": c["id"] if c else None, "item": c})
+                    if slots is None:
+                        pieces = None
+                if not pieces:
+                    c = card_at(mid, box) if box is not None else None
+                    slots = [{"seg": seg, "mid": mid, "box": box, "card": c["id"] if c else None, "item": c}]
+            except Unmeasured:
+                continue
+            out.append({"key": key, "seg": seg, "pieces": pieces, "slots": slots})
+        return out
+
     measured = None
-    if overlay_fn is not None:
-        need = {}
-        for _, _, mid, box in mine:
-            if box is not None:
-                find_card(project, mid, box, size, project_dir, measured={}, need=need, warn=warn)
-        samples, failed = _pooled(overlay_fn, [(k, (it, k[1])) for k, it in need.items()], deadline)
-        measured = samples
-        for k, why in failed.items():
+    if overlay_fn is None:
+        entries = classify(None)
+    else:
+        measured = {}
+        for _ in range(4):   # a piece's middle may meet an overlay no word's did: measure it and look again
+            need = {}
+            entries = classify(need)
+            if not need:
+                break
+            samples, failed = _pooled(overlay_fn, [(k, (it, k[1])) for k, it in need.items()], deadline)
+            measured.update(samples)
+            for k, why in failed.items():
+                warn(f"overlay {k[0]} at frame {k[1]} not rendered ({why or 'no image'}): its captions are unchanged")
+        else:
+            entries = classify(None)
+    slots = [sl for e in entries for sl in e["slots"] if sl["card"]]
+    fps = int(round(lc._num((project.get("settings") or {}).get("fps"), 30))) or 30
+    # A JSX card (a matte, an opaque overlay) is read from its own render: where it covers the band (alpha >= 0.9, which
+    # is what makes it a card) the composite IS the overlay's pixels, so its mean over those pixels is the backdrop's,
+    # with no frame composited. An opaque one hides everything below, so its transparent pixels are black.
+    jsx = [sl for sl in slots if overlay_fn is not None and not str(sl["item"].get("src") or "").startswith("engine:")]
+    if jsx:
+        again = {}
+        for sl in jsx:
+            k = (sl["card"], _mid_frame(sl["item"], fps))
+            if k not in measured:
+                again[k] = sl["item"]
+        samples, bad = _pooled(overlay_fn, [(k, (it, k[1])) for k, it in again.items()], deadline)
+        measured.update(samples)
+        for k, why in bad.items():
             warn(f"overlay {k[0]} at frame {k[1]} not rendered ({why or 'no image'}): its captions are unchanged")
-    for key, seg, mid, box in mine:
-        try:
-            card = find_card(project, mid, box, size, project_dir, measured, warn=warn) if box is not None else None
-        except Unmeasured:
-            continue
-        if card is None:
-            if ours(seg):
-                changes[key] = None
-                counts["cleared"] += 1
-            continue
-        todo.append((key, mid, box, card["id"]))
-    times = sorted({round(t[1], 3) for t in todo})
-    pngs, failed = _pooled(render_fn, [(t, (t,)) for t in times], deadline)
-    pngs = {t: p for t, p in pngs.items() if p}
     warnings += list(warns)
-    for t in times:
-        if t in failed:
-            warnings.append(f"frame at {t}s not rendered ({failed[t] or 'no image'}): its captions are unchanged")
-    for key, mid, box, card_id in todo:
-        png = pngs.get(round(mid, 3))
+    for sl in jsx:
+        png = measured.get((sl["card"], _mid_frame(sl["item"], fps)))
         if png is None:
             continue
         try:
-            lum = luminance(png, box, (width, height))
+            sl["lum"] = overlay_luminance(png, sl["box"], (width, height), sl["item"].get("opaque") is True)
         except Exception as e:  # noqa: BLE001
-            warnings.append(f"frame at {lc.r2(mid)}s unreadable ({str(e)[:60]})")
-            continue
-        ink = "dark" if lum >= LIGHT_L else "light"
-        changes[key] = {"ink": ink, "inkAuto": {"card": card_id, "ink": ink, "backdrop": round(lum, 3)}}
-        counts[ink] += 1
+            warnings.append(f"overlay {sl['card']} unreadable ({str(e)[:60]})")
+    # Any other card (a 3D item) is read from one frame without the captions per ITEM, at the middle of the span of the
+    # captions over it, and each caption uses its own band of it. A camera move within one item is read once. Each
+    # frame gets its own worker: 3D frames are the heavy ones.
+    groups = {}
+    for sl in slots:
+        if sl not in jsx:
+            groups.setdefault(sl["card"], []).append(sl)
+    for g in groups.values():
+        item = g[0]["item"]
+        t = (min(lc._num(sl["seg"].get("start")) for sl in g) + max(lc._num(sl["seg"].get("end")) for sl in g)) / 2
+        t = min(max(t, lc._num(item.get("start"))), lc._num(item.get("end")) - 0.001)
+        for sl in g:
+            sl["at"] = round(t, 3)
+    times = sorted({sl["at"] for g in groups.values() for sl in g})
+    pngs, failed = _pooled(render_fn, [(t, (t,)) for t in times], deadline) if times else ({}, {})
+    pngs = {t: p for t, p in pngs.items() if p}
+    for t in times:
+        if t in failed:
+            warnings.append(f"frame at {t}s not rendered ({failed[t] or 'no image'}): its captions are unchanged")
+    for g in groups.values():
+        for sl in g:
+            png = pngs.get(sl["at"])
+            if png is None:
+                continue
+            try:
+                sl["lum"] = luminance(png, sl["box"], (width, height))
+            except Exception as e:  # noqa: BLE001
+                warnings.append(f"frame at {sl['at']}s unreadable ({str(e)[:60]})")
+    for sl in slots:
+        if "lum" in sl:
+            ink = "dark" if sl["lum"] >= LIGHT_L else "light"
+            sl["change"] = {"ink": ink, "inkAuto": {"card": sl["card"], "ink": ink, "backdrop": round(sl["lum"], 3)}}
+    for e in entries:
+        if e["pieces"] is None:
+            sl = e["slots"][0]
+            if sl["card"] is None:
+                if ours(e["seg"]):
+                    changes[e["key"]] = None
+                    counts["cleared"] += 1
+            elif "change" in sl:
+                changes[e["key"]] = sl["change"]
+                counts[sl["change"]["ink"]] += 1
+        elif all("change" in sl for sl in e["slots"] if sl["card"]):
+            for sl in e["slots"]:
+                if sl["card"]:
+                    sl["seg"].update(sl["change"])
+                    counts[sl["change"]["ink"]] += 1
+                elif ours(e["seg"]):
+                    counts["cleared"] += 1
+            changes[e["key"]] = {"split": [sl["seg"] for sl in e["slots"]]}
+            counts["split"] += 1
+    minted = [p for ch in changes.values() if ch and "split" in ch for p in ch["split"] if "id" not in p]
+    taken = {s["id"] for s in raw if isinstance(s, dict) and isinstance(s.get("id"), str)}
+    for p, new in zip(minted, mint_ids(minted, taken)):
+        p["id"] = new["id"]
     return changes, counts, warnings
 
 
@@ -441,12 +629,31 @@ def _captions_of(project):
     return caps
 
 
+def _check_split(fresh, segments, seg, pieces, project_dir):
+    """Refuse (InkProjectChanged) a split the fresh project no longer allows: an id the pieces mint is taken now, or a
+    piece's card is not the one under it now (for a piece with no ink: a card the data shows)."""
+    ids = [p.get("id") for p in pieces]
+    others = {s.get("id") for s in segments if isinstance(s, dict) and s is not seg}
+    if ids[0] != seg.get("id") or len(set(ids)) != len(ids) or not all(ids) or others & set(ids[1:]):
+        raise InkProjectChanged(seg.get("id"))
+    sub = _with_pieces(fresh, next(i for i, s in enumerate(segments) if s is seg), pieces)
+    size = lc.design_size(fresh)
+    for part in pieces:
+        mid = _mid(part)
+        if isinstance(part.get("inkAuto"), dict):
+            if part["inkAuto"]["card"] not in on_screen(fresh, mid):
+                raise InkProjectChanged(part["id"])
+        elif find_card(fresh, mid, band(sub, part, *size) or (0, 0, *size), size, project_dir) is not None:
+            raise InkProjectChanged(part["id"])
+
+
 def apply_changes(fresh, changes, read, project_dir=None):
     """Write `changes` onto the fresh project's captions. `read` is {key: the whole segment as the plan read it}: a
     changed segment that is gone, is not the only one with its key, or differs from what was read in any field raises
     InkProjectChanged, and nothing is written; so does one whose card is no longer on screen at the caption's middle, or
     that is to be cleared and lies under a card the data shows now (opaque, or a 3D scene: a card found by its pixels
-    is not rendered again under the lock). Returns True when anything changed."""
+    is not rendered again under the lock). A split replaces the segment with its pieces, in place, and is refused the
+    same way for each piece, and when an id it mints is in use now. Returns True when anything changed."""
     segments = _captions_of(fresh)["segments"]
     found = {}
     for key, change in changes.items():
@@ -454,7 +661,9 @@ def apply_changes(fresh, changes, read, project_dir=None):
         if len(hits) != 1 or hits[0] != read[key]:
             raise InkProjectChanged(key)
         mid = _mid(hits[0])
-        if change is not None:
+        if change is not None and "split" in change:
+            _check_split(fresh, segments, hits[0], change["split"], project_dir)
+        elif change is not None:
             if change["inkAuto"]["card"] not in on_screen(fresh, mid):
                 raise InkProjectChanged(key)
         else:
@@ -469,6 +678,10 @@ def apply_changes(fresh, changes, read, project_dir=None):
         if change is None:
             for f in ("ink", "inkAuto"):
                 changed |= seg.pop(f, None) is not None
+        elif "split" in change:
+            at = next(i for i, s in enumerate(segments) if s is seg)
+            segments[at:at + 1] = copy.deepcopy(change["split"])
+            changed = True
         else:
             changed |= any(seg.get(f) != v for f, v in change.items())
             seg.update(change)
@@ -477,7 +690,7 @@ def apply_changes(fresh, changes, read, project_dir=None):
 
 def update(project_path, render_fn=None, timeout=LOCK_TIMEOUT, overlay_fn=None):
     """Read the project, plan, and write `captions` only (under the project lock, onto the fresh captions).
-    Returns the answer ({dark, light, cleared, kept, changed, warnings?}; `changed` is whether anything was written) or
+    Returns the answer ({dark, light, cleared, kept, split, changed, warnings?}; `changed` is whether anything was written) or
     None when there is nothing to do (see needs_pass). Raises InkProjectChanged; lock errors (ProjectLockTimeout,
     ProjectReadOnly, SyncConflict) pass through."""
     project_path = os.path.abspath(project_path)
