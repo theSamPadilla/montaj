@@ -277,6 +277,7 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
                                     "step). Run frame_broll again.")
         doc = normalize_tracks(fresh)
         for pl in todo:
+            drop_own_cards(doc, pl)
             it = place.find_item(doc, pl["id"])[2]
             keyframes = [k for k in (it.get("keyframes") or []) if not str(k.get("prop", "")).startswith("crop")]
             for k in ("sourceCrop", "scale", "offsetX", "offsetY"):
@@ -297,7 +298,7 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
                 card = {"id": place._new_id(doc), "type": "overlay", "src": preset_src, "start": start, "end": end,
                         "props": {"box": ",".join(str(v) for v in pl["box"]), "credit": credit,
                                   "subject": json.dumps(simplify_boxes(subject)) if subject else "",
-                                  "canvasW": str(pl["W"]), "canvasH": str(pl["H"]),
+                                  "canvasW": str(pl["W"]), "canvasH": str(pl["H"]), "for": pl["id"],
                                   **({"paper": matte["paper"]} if matte else {}),
                                   **({"brackets": "off"} if matte and not matte["brackets"] else {})}}
                 dest, refusal = place.choose_track(doc, start, end)
@@ -377,6 +378,22 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
     elif sheet_times:
         out["sheet_error"] = sheet_error
     return out
+
+
+def is_footage_card(item):
+    """An overlay made from the footage-card preset (place.COPIED_PRESETS' file, wherever it was copied)."""
+    src = str(item.get("src") or "")
+    return item.get("type") == "overlay" and os.path.basename(src).startswith(os.path.splitext(place.COPIED_PRESETS["footage_card"])[0])
+
+
+def drop_own_cards(doc, plan):
+    """Remove the cards an earlier run made for this item, so running again (another mode) changes it rather than
+    stacking a second card: those that name it (props.for), or, from before props.for, cover exactly its range."""
+    for t in doc["tracks"]:
+        t["items"] = [it for it in t.get("items", []) if not (
+            is_footage_card(it) and ((it.get("props") or {}).get("for") == plan["id"] or (
+                "for" not in (it.get("props") or {}) and abs(lc._num(it.get("start")) - plan["start"]) < 0.01
+                and abs(lc._num(it.get("end")) - plan["end"]) < 0.01)))]
 
 
 def simplify_boxes(subject, tol=0.01):

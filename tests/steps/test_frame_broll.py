@@ -368,3 +368,35 @@ def test_the_card_credit_is_centred_and_brackets_can_be_turned_off():
     credit = code[code.index("p.credit ?"):]
     assert "textAlign: 'center'" in credit[:600]
     assert "p.brackets !== 'off'" in code
+
+
+# PL89d: the agent ran frame_broll card, then track, then card again on the same four clips, and the first cards stayed
+# on the timeline: it removed them by hand (an edit_timeline). The answer says to change a clip with another mode, so a
+# run replaces the card it made before for that item, and track removes it.
+def cards_for(p):
+    doc = json.loads(Path(p).read_text())
+    return [it for t in doc["tracks"] for it in t["items"] if "footage" in str(it.get("src", ""))]
+
+
+def test_running_again_replaces_the_items_own_card_and_track_removes_it(tmp_path):
+    p = project(tmp_path)
+    first = fb.run(str(p), "br-1", mode="card", source="the lab", sampler=stub_sampler())
+    assert [c["id"] for c in cards_for(p)] == [first["card"]]
+    assert cards_for(p)[0]["props"]["for"] == "br-1"
+    second = fb.run(str(p), "br-1", mode="card", source="the lab", sampler=stub_sampler())
+    assert [c["id"] for c in cards_for(p)] == [second["card"]], "the first card is replaced, not kept"
+    fb.run(str(p), "br-1", mode="track", sampler=stub_sampler())
+    assert cards_for(p) == [], "track removes the item's card"
+
+
+def test_a_card_made_before_props_for_is_matched_by_its_clips_range(tmp_path):
+    p = project(tmp_path)
+    fb.run(str(p), "br-1", mode="card", sampler=stub_sampler())
+    doc = json.loads(Path(p).read_text())
+    for t in doc["tracks"]:
+        for it in t["items"]:
+            if "footage" in str(it.get("src", "")):
+                it["props"].pop("for", None)   # a card from an earlier engine
+    Path(p).write_text(json.dumps(doc, indent=2))
+    fb.run(str(p), "br-1", mode="track", sampler=stub_sampler())
+    assert cards_for(p) == []
