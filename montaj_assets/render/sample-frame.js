@@ -193,6 +193,11 @@ export const SESSION_MAX_PAGES = 4
 // PL89: the longest one frame of a session may take before it is sampled alone instead (sampleInSessions). A 3D frame
 // over overlays takes about 8 s; a capture that never returns otherwise waits out the 300 s protocolTimeout.
 export const SESSION_FRAME_TIMEOUT_MS = 60_000
+// PL89c: a sheet's frames run in up to this many lanes side by side, each its own session (its own browser, so its own
+// front page): 17 and 19 times over 12 overlays and a 3D took about 130 s each in one session.
+export const SHEET_LANES = 4
+/** The lanes for `count` frames: one per three frames, at least 1, at most SHEET_LANES. */
+export const lanesFor = (count) => Math.min(SHEET_LANES, Math.max(1, Math.floor(count / 3)))
 
 // ---------------------------------------------------------------------------
 // Input manifests
@@ -436,7 +441,7 @@ if (isMain) {
         const outPaths = atArgs.map((_, k) => join(dir, `f_${String(k).padStart(4, '0')}.png`))
         const got = sceneArg !== null
           ? await sampleScenes({ projectJson: resolve(projectArg), scene: sceneArg, times: atArgs, outPaths, sdrCurve: sdrCurveArg })
-          : await sampleInSessions({ count: atArgs.length, label: (k) => atArgs[k], sampleWith: (k, session) => sampleAt(atArgs[k], outPaths[k], session) })
+          : await sampleInSessions({ count: atArgs.length, label: (k) => atArgs[k], lanes: lanesFor(atArgs.length), sampleWith: (k, session) => sampleAt(atArgs[k], outPaths[k], session) })
         return { pngPath: got.map((r) => r.pngPath).join('\n') }
       })()
       : sampleAt(atArg, resolve(outArg))
@@ -551,40 +556,50 @@ export function createSampleSession({ maxPages = SESSION_MAX_PAGES } = {}) {
 
 /**
  * PL89: frames `order` (indices, default 0..count-1) through sampling sessions, so a sheet always comes back: in the
- * order given, a session shared until a frame fails or takes over `frameTimeoutMs`. That frame's session is aborted (a
+ * order given (split into `lanes` contiguous runs side by side, each with its own sessions), a session shared until a
+ * frame fails or takes over `frameTimeoutMs`. That frame's session is aborted (a
  * stuck page goes with its browser), the frame is sampled alone (`sampleWith(k, null)`), and the frames after it get a
  * new session. Only a frame that fails alone too fails the call, named by `label(k)` seconds. Results by index.
  */
-export async function sampleInSessions({ count, sampleWith, order = [...Array(count).keys()], label = (k) => k, newSession = () => createSampleSession(), frameTimeoutMs = SESSION_FRAME_TIMEOUT_MS }) {
+export async function sampleInSessions({ count, sampleWith, order = [...Array(count).keys()], label = (k) => k, newSession = () => createSampleSession(), frameTimeoutMs = SESSION_FRAME_TIMEOUT_MS, lanes = 1 }) {
   const out = new Array(count)
-  let session = newSession()
-  try {
-    for (const k of order) {
-      let timer
-      const inSession = Promise.resolve().then(() => sampleWith(k, session))
-      inSession.catch(() => {}) // past the timeout its failure is no one's
-      const slow = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`slower than ${frameTimeoutMs / 1000} s`)), frameTimeoutMs) })
-      try {
-        out[k] = await Promise.race([inSession, slow])
-        continue
-      } catch (err) {
-        log(`frame at ${label(k)}s in the shared session: ${err.message}; sampling it alone`)
-        await session.abort()
-        session = newSession()
-      } finally {
-        clearTimeout(timer)
-      }
-      try {
-        out[k] = await sampleWith(k, null)
-      } catch (err) {
-        err.message = `at ${label(k)}s: ${err.message}`
-        throw err
-      }
-    }
-  } finally {
-    await session.close()
-  }
+  // PL89c: contiguous runs of the order, one per lane, side by side; each lane is the sequence below with its own session.
+  const n = Math.max(1, Math.min(lanes, order.length))
+  const size = Math.ceil(order.length / n)
+  const runs = Array.from({ length: n }, (_, i) => order.slice(i * size, (i + 1) * size)).filter((r) => r.length)
+  if (runs.length > 1) log(`sampling ${order.length} frames in ${runs.length} lanes`)
+  await Promise.all(runs.map((run) => sampleLane(run)))
   return out
+
+  async function sampleLane(run) {
+    let session = newSession()
+    try {
+      for (const k of run) {
+        let timer
+        const inSession = Promise.resolve().then(() => sampleWith(k, session))
+        inSession.catch(() => {}) // past the timeout its failure is no one's
+        const slow = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`slower than ${frameTimeoutMs / 1000} s`)), frameTimeoutMs) })
+        try {
+          out[k] = await Promise.race([inSession, slow])
+          continue
+        } catch (err) {
+          log(`frame at ${label(k)}s in the shared session: ${err.message}; sampling it alone`)
+          await session.abort()
+          session = newSession()
+        } finally {
+          clearTimeout(timer)
+        }
+        try {
+          out[k] = await sampleWith(k, null)
+        } catch (err) {
+          err.message = `at ${label(k)}s: ${err.message}`
+          throw err
+        }
+      }
+    } finally {
+      await session.close()
+    }
+  }
 }
 
 /**
@@ -1748,6 +1763,7 @@ export async function sampleScenes({ projectJson, scene, times, outPaths, sdrCur
     sampleWith: (k, session) => sampleFrame({ projectJson: alone, projectDir: dirname(projectPath), atSeconds: frames[k] / fps, outPath: outPaths[k], sdrCurve, session }),
     ...(newSession ? { newSession } : {}),
     ...(frameTimeoutMs ? { frameTimeoutMs } : {}),
+    lanes: lanesFor(times.length),
   })
 }
 

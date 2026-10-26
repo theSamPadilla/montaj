@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { createSampleSession, sampleInSessions, scenesAlone } from '../sample-frame.js'
+import { createSampleSession, lanesFor, sampleInSessions, scenesAlone, SHEET_LANES } from '../sample-frame.js'
 
 const SCRIPT = new URL('../sample-frame.js', import.meta.url).pathname
 const tick = () => new Promise((r) => setTimeout(r, 5))
@@ -276,4 +276,55 @@ test('captures in a session never overlap, even of different pages; their pages 
   assert.deepEqual(order.sort(), ['a', 'b', 'c'])
   assert.equal(f.opened.length, 3)
   await s.close()
+})
+
+// PL89c: two contact sheets of 17 and 19 times over 12 overlays and a 3D scene took about 130 s each in one session
+// (captures take turns, each page in front), past the app's 110 s wait. A sheet's frames now run in up to SHEET_LANES
+// lanes, each its own session (its own browser, so its own front page): contiguous runs of the order, side by side.
+test('lanesFor: one lane for a few frames, up to SHEET_LANES for a sheet', () => {
+  assert.equal(SHEET_LANES, 4)
+  assert.equal(lanesFor(1), 1)
+  assert.equal(lanesFor(3), 1)
+  assert.equal(lanesFor(6), 2)
+  assert.equal(lanesFor(12), 4)
+  assert.equal(lanesFor(19), 4)
+})
+
+test('sampleInSessions: lanes run side by side, each its own session over a contiguous run of the order', async () => {
+  const made = []
+  const newSession = () => { const s = { id: made.length, closed: false, abort: async () => {}, close: async () => { s.closed = true } }; made.push(s); return s }
+  let busy = 0
+  let peak = 0
+  const seen = []
+  const sampleWith = async (k, session) => {
+    busy++
+    peak = Math.max(peak, busy)
+    await tick()
+    seen.push([k, session.id])
+    busy--
+    return `f${k}`
+  }
+  const order = [7, 6, 5, 4, 3, 2, 1, 0]
+  const out = await sampleInSessions({ count: 8, order, sampleWith, newSession, lanes: 4 })
+  assert.deepEqual(out, ['f0', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7'])
+  assert.equal(made.length, 4)
+  assert.ok(made.every((s) => s.closed))
+  assert.equal(peak, 4)
+  // each lane takes two neighbours of the order, in that order
+  const byLane = made.map((s) => seen.filter(([, id]) => id === s.id).map(([k]) => k))
+  assert.deepEqual(byLane, [[7, 6], [5, 4], [3, 2], [1, 0]])
+})
+
+test('a sheet over two overlays in four lanes matches each time sampled alone, pixel for pixel', { skip: !canSample && 'no browser' }, () => {
+  const go = (args) => spawnSync('node', [SCRIPT, '--mode', 'frame', '--project', two.file, ...args], { encoding: 'utf8', timeout: 90_000, env: { ...process.env, TMPDIR: mkdtempSync(join(tmpdir(), 'session-tmp-')) } })
+  const times = ['0.3', '0.8', '1.3', '1.8', '2.3', '2.8', '3.3', '3.8', '4.3']
+  const many = go([...times.flatMap((t) => ['--at', t]), '--frames-dir', join(two.dir, 'lanes')])
+  assert.equal(many.status, 0, many.stderr.slice(-300))
+  assert.match(many.stderr, /in 3 lanes/)
+  const paths = many.stdout.trim().split('\n')
+  times.forEach((t, k) => {
+    const one = go(['--at', t, '--out', join(two.dir, `lane-one-${t}.png`)])
+    assert.equal(one.status, 0, one.stderr)
+    assert.ok(readFileSync(paths[k]).equals(readFileSync(join(two.dir, `lane-one-${t}.png`))), `at ${t}s`)
+  })
 })
