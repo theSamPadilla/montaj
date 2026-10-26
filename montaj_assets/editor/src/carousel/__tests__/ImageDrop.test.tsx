@@ -150,7 +150,7 @@ function loadImage(img: HTMLImageElement, w: number, h: number) {
 }
 
 function inCrop(id = 'el-img'): boolean {
-  return findInteractiveWrapper(id).querySelector('img[alt="Crop source"]') !== null
+  return chromeOf(id).querySelector('img[alt="Crop source"]') !== null
 }
 
 /** Crop mode on the selected el-img by its panel button, its source loaded as a
@@ -158,7 +158,7 @@ function inCrop(id = 'el-img'): boolean {
  *  (a quarter of the 200 wide box), so the window is {0, 0, 0.75, 1}. */
 async function pickCrop(r: { getByTitle: (title: string) => HTMLElement }) {
   await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
-  const source = findInteractiveWrapper('el-img').querySelector<HTMLImageElement>('img[alt="Crop source"]')
+  const source = chromeOf('el-img').querySelector<HTMLImageElement>('img[alt="Crop source"]')
   if (!source) throw new Error('el-img is not in crop mode')
   await act(async () => { loadImage(source, 400, 200) })
   const handle = chromeOf('el-img').querySelector('[data-testid="crop-handle-e"]') as HTMLElement
@@ -334,7 +334,7 @@ describe('Images on the canvas: which drags it claims', () => {
     const r = await mount(adapter)
     await plainClick('el-img')
     await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
-    expect(findInteractiveWrapper('el-img').querySelector('img[alt="Crop source"]')).not.toBeNull()
+    expect(chromeOf('el-img').querySelector('img[alt="Crop source"]')).not.toBeNull()
     const { box, at } = pinCanvas()
     await startHostDrag()
 
@@ -352,7 +352,7 @@ describe('Images on the canvas: which drags it claims', () => {
     expect(adapter.uploadFile).not.toHaveBeenCalled()
     expect(adapter.saveProject).not.toHaveBeenCalled()
     // The crop is still open.
-    expect(findInteractiveWrapper('el-img').querySelector('img[alt="Crop source"]')).not.toBeNull()
+    expect(chromeOf('el-img').querySelector('img[alt="Crop source"]')).not.toBeNull()
   })
 
   it('a slide thumbnail takes no drops', async () => {

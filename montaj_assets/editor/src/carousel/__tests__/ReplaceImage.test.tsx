@@ -438,7 +438,7 @@ describe('Replace image: the panel buttons', () => {
       ],
     }))
     await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
-    expect(findInteractiveWrapper('el-img').querySelector('img[alt="Crop source"]')).not.toBeNull()
+    expect(chromeOf('el-img').querySelector('img[alt="Crop source"]')).not.toBeNull()
   })
 
   it('a rotated image keeps Crop off with its own title, and Replace on', async () => {

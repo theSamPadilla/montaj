@@ -11,8 +11,8 @@ import {
   type SnapGuide,
 } from '../gestures'
 import { OverlayPreview } from '../preview/OverlayPreview'
-import { CanvasCropOverlay, CanvasCropHandles } from '../crop/CanvasCropOverlay'
-import { croppedBox } from '../crop/crop-math'
+import { CanvasCropOverlay } from '../crop/CanvasCropOverlay'
+import { croppedBox, shownCrop } from '../crop/crop-math'
 import { InlineTextEditor } from '../text/InlineTextEditor'
 import { ensureGoogleFontsLoaded } from '../lib/google-fonts'
 import { groupDragMove, type GroupDragResult, type GroupMember } from './groupDrag'
@@ -98,12 +98,19 @@ function sameCrop(a: Crop, b: Crop): boolean {
 }
 
 /** A crop in progress (§556 M4): the image, the slide it is on, the file it was
- *  started on, and the window picked so far (source fractions). */
-type CropSession = { slideId: string; elementId: string; src: string; localCrop: Crop }
+ *  started on, and the window picked so far (source fractions); null until the
+ *  window is moved, while it is the part the box shows (M3b). */
+type CropSession = { slideId: string; elementId: string; src: string; localCrop: Crop | null }
 
-/** The window starts as the crop the image has: the whole source when none. */
+/** The window starts on the box: the part of the source the image shows. */
 function startCrop(slideId: string, el: ImageElement): CropSession {
-  return { slideId, elementId: el.id, src: el.src, localCrop: el.crop ?? FULL_FRAME }
+  return { slideId, elementId: el.id, src: el.src, localCrop: null }
+}
+
+/** The window of `open` on `el`: the part the box shows until it is moved (M3b). */
+function windowOf(open: CropSession, el: ImageElement, dims: { width: number; height: number } | undefined): Crop {
+  if (open.localCrop) return open.localCrop
+  return dims ? shownCrop(el, el.crop, dims) : el.crop ?? FULL_FRAME
 }
 
 /** How crop mode ends: `apply` writes the window picked, as one undo step, and
@@ -417,12 +424,13 @@ export default function SlideCanvas({
   // folds into one undo step with the box, then a commit. Every call is made
   // in this tick, so nothing the caller does next lands between them. Writes
   // nothing when the image is not on this slide, its size is not known yet,
-  // or the window is the crop the image already has.
+  // or the window is the crop the image already has or the part its box shows.
   function writeCrop(open: CropSession): Promise<void> {
     const el = open.slideId === sid ? slide.elements.find((e) => e.id === open.elementId) : undefined
     const dims = dimsOf(open)
-    if (el?.type !== 'image' || !dims) return Promise.resolve()
+    if (el?.type !== 'image' || !dims || !open.localCrop) return Promise.resolve()
     if (sameCrop(open.localCrop, el.crop ?? FULL_FRAME)) return Promise.resolve()
+    if (sameCrop(open.localCrop, shownCrop(el, el.crop, dims))) return Promise.resolve()
     const writes: Array<Promise<void> | undefined> = []
     // The box takes the kept region's place at the picture's current scale.
     const next = croppedBox(el, el.crop, open.localCrop, dims)
@@ -690,6 +698,9 @@ export default function SlideCanvas({
           // Editor-only visibility: omit hidden elements from this canvas.
           if (hiddenSet?.has(element.id)) return null
           const inCrop = cropSession?.elementId === element.id
+          // The crop overlay draws the picture once its size is known (M3b):
+          // the element's own is hidden under it, so it is not drawn twice.
+          const ownHidden = inCrop && dimsOf(cropSession) !== undefined
 
           const wrapperStyle: React.CSSProperties = {
             position: 'absolute',
@@ -737,10 +748,7 @@ export default function SlideCanvas({
 
           const innerContent =
             element.type === 'image' ? (
-              // While actively cropping this element, the CanvasCropOverlay draws
-              // the full source with a draggable window on top — so show the plain
-              // (uncropped) base beneath it. Otherwise honor the committed crop.
-              element.crop && !inCrop ? (
+              element.crop ? (
                 // Cropped display: render the crop sub-rect [cx,cx+cw]×[cy,cy+ch]
                 // (fractions of the source) scaled to cover the element box. This
                 // mirrors Montaj's renderer (render/templates/slide.jsx): an
@@ -751,7 +759,7 @@ export default function SlideCanvas({
                 // a share of the box's width. `maxWidth/maxHeight: 'none'`
                 // defeats Tailwind preflight's `img { max-width: 100% }`, which
                 // would otherwise clamp the oversized image.
-                <div style={{ width: '100%', height: '100%', overflow: 'hidden' }}>
+                <div style={{ width: '100%', height: '100%', overflow: 'hidden', visibility: ownHidden ? 'hidden' : undefined }}>
                   <img
                     src={resolveSrc(element)}
                     draggable={false}
@@ -776,7 +784,7 @@ export default function SlideCanvas({
                   // 'contain'). Logos/escudos placed in a fixed box must keep
                   // their aspect (letterboxed) in BOTH paths; `cover` here would
                   // crop them in the preview and diverge from the final PNG.
-                  style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
+                  style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', visibility: ownHidden ? 'hidden' : undefined }}
                   alt=""
                 />
               )
@@ -829,24 +837,6 @@ export default function SlideCanvas({
               onDoubleClick={interactive ? doubleClickOf(element) : undefined}
             >
               {innerContent}
-
-              {/* In-canvas crop overlay for the image being cropped. Its window's
-                  border and handles are drawn in the chrome layer. */}
-              {inCrop && element.type === 'image' && cropSession && (
-                <CanvasCropOverlay
-                  element={element}
-                  resolveImageSrc={resolveSrc}
-                  scale={scale}
-                  localCrop={cropSession.localCrop}
-                  onLocalCropChange={(next) => changeCropSession((open) => ({ ...open, localCrop: next }))}
-                  onSrcDimsLoaded={(dims) => setCropSrcDims({ src: element.src, ...dims })}
-                  srcDims={dimsOf(cropSession)}
-                  // The click the browser sends after a window drag changes
-                  // nothing, even when let go off the image.
-                  onDragEnd={() => { swallowClickRef.current = true }}
-                  handles={false}
-                />
-              )}
             </div>
           )
         })}
@@ -924,8 +914,8 @@ export default function SlideCanvas({
               // Outlined when selected at all; handles only for the one selected element.
               const isOutlined = selectedIds.includes(element.id)
               const isSelected = selectedElementId === element.id
-              if (!isOutlined && !isSelected) return null
               const inCrop = cropSession?.elementId === element.id
+              if (!isOutlined && !isSelected && !inCrop) return null
               const isRotated = (element.rotation ?? 0) !== 0
 
               return (
@@ -946,16 +936,22 @@ export default function SlideCanvas({
                     pointerEvents: 'none',
                   }}
                 >
-                  {/* The crop window's border and handles, whole at the image's edge. */}
+                  {/* The crop overlay for the image being cropped (M3b): the whole
+                      picture at its scale on the slide, past the box and the slide
+                      edge, its window on the box and its handles whole at the
+                      image's edge. */}
                   {inCrop && element.type === 'image' && cropSession && (
-                    <CanvasCropHandles
+                    <CanvasCropOverlay
                       element={element}
+                      resolveImageSrc={resolveSrc}
                       scale={scale}
-                      localCrop={cropSession.localCrop}
+                      fit="current"
+                      localCrop={windowOf(cropSession, element, dimsOf(cropSession))}
                       onLocalCropChange={(next) => changeCropSession((open) => ({ ...open, localCrop: next }))}
+                      onSrcDimsLoaded={(dims) => setCropSrcDims({ src: element.src, ...dims })}
                       srcDims={dimsOf(cropSession)}
-                      // The click the browser sends after a handle drag changes
-                      // nothing, even when let go off the image.
+                      // The click the browser sends after a window or handle drag
+                      // changes nothing, even when let go off the image.
                       onDragEnd={() => { swallowClickRef.current = true }}
                     />
                   )}

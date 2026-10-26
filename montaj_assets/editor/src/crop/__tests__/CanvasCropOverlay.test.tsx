@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, act } from '@testing-library/react'
 import type { ImageElement } from '../../types'
-import { CanvasCropOverlay } from '../CanvasCropOverlay'
+import { CanvasCropOverlay, CanvasCropHandles } from '../CanvasCropOverlay'
 
 // ── The crop window moves as a whole (§556 M4) ───────────────────────────────
 //
@@ -257,5 +257,98 @@ describe('CanvasCropOverlay: a drag whose release never arrives ends where it is
     expectCrop(lastCrop(onLocalCropChange), { x: 0.1, y: 0, w: 0.5, h: 1 })
     act(() => { pointer(move, 'pointerup', { clientX: 70, clientY: 100, pointerType: 'pen' }) })
     expect(onDragEnd).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ── Re-crop at the current scale (M3b) ───────────────────────────────────────
+//
+// With `fit="current"` the whole source is drawn where the picture is drawn on
+// the slide now, past the box, so the window on the crop sits on the box and
+// a drag measures in the picture's own pixels.
+
+describe('CanvasCropOverlay: fit "current" draws the picture at its scale on the slide (M3b)', () => {
+  // The middle half of the 400 x 200 source in a 200 x 200 box: drawn 400 x 200, 100 px left of the box.
+  const cropped: ImageElement = { ...element, crop: { x: 0.25, y: 0, w: 0.5, h: 1 } }
+
+  function mountCurrent(localCrop: Crop, scale = 1) {
+    const onLocalCropChange = vi.fn()
+    const r = render(
+      <CanvasCropOverlay
+        element={cropped}
+        resolveImageSrc={(e) => e.src}
+        scale={scale}
+        localCrop={localCrop}
+        onLocalCropChange={onLocalCropChange}
+        onSrcDimsLoaded={vi.fn()}
+        srcDims={SRC}
+        fit="current"
+      />,
+    )
+    return { r, onLocalCropChange }
+  }
+  const frame = (el: HTMLElement) => [el.style.left, el.style.top, el.style.width, el.style.height]
+
+  it('the image area is the whole picture as drawn, and the window on the crop is the box', () => {
+    const { r } = mountCurrent({ x: 0.25, y: 0, w: 0.5, h: 1 }, 0.5)
+    expect(frame(r.getByTestId('crop-image-area'))).toEqual(['-50px', '0px', '200px', '100px'])
+    expect(frame(r.getByTestId('crop-window'))).toEqual(['0px', '0px', '100px', '100px'])
+    expect(frame(r.getByTestId('crop-move'))).toEqual(['0px', '0px', '100px', '100px'])
+    const img = r.getByAltText('Crop source') as HTMLImageElement
+    expect([img.style.width, img.style.height]).toEqual(['100%', '100%'])
+    expect(img.style.visibility).toBe('')
+  })
+
+  it('a drag moves the window over the picture in its own pixels', () => {
+    const { r, onLocalCropChange } = mountCurrent({ x: 0.25, y: 0, w: 0.5, h: 1 })
+    const move = r.getByTestId('crop-move')
+    act(() => {
+      pointer(move, 'pointerdown', { clientX: 100, clientY: 100 })
+      pointer(move, 'pointermove', { clientX: 140, clientY: 100 })
+      pointer(move, 'pointerup', { clientX: 140, clientY: 100 })
+    })
+    // 40 px of a picture drawn 400 wide.
+    expectCrop(lastCrop(onLocalCropChange), { x: 0.35, y: 0, w: 0.5, h: 1 })
+    const e = r.getByTestId('crop-handle-e')
+    act(() => {
+      pointer(e, 'pointerdown', { clientX: 200, clientY: 100 })
+      pointer(e, 'pointermove', { clientX: 900, clientY: 100 })
+      pointer(e, 'pointerup', { clientX: 900, clientY: 100 })
+    })
+    // Out to the picture's right edge, 300 px right of the box's left.
+    expectCrop(lastCrop(onLocalCropChange), { x: 0.25, y: 0, w: 0.75, h: 1 })
+  })
+
+  it('the dim covers the picture, holed at the window', () => {
+    const { r } = mountCurrent({ x: 0.25, y: 0, w: 0.5, h: 1 })
+    const dim = r.getByTestId('crop-dim')
+    expect(dim.parentElement).toBe(r.getByTestId('crop-image-area'))
+    // The window, in pixels of the image area: 100 px in.
+    expect(dim.style.clipPath).toContain('100px 0px')
+    expect(dim.style.clipPath).toContain('300px 200px')
+  })
+
+  it('before the size is known the source loads unseen', () => {
+    const r = render(
+      <CanvasCropOverlay
+        element={cropped}
+        resolveImageSrc={(e) => e.src}
+        scale={1}
+        localCrop={{ x: 0.25, y: 0, w: 0.5, h: 1 }}
+        onLocalCropChange={vi.fn()}
+        onSrcDimsLoaded={vi.fn()}
+        fit="current"
+      />,
+    )
+    expect((r.getByAltText('Crop source') as HTMLImageElement).style.visibility).toBe('hidden')
+    expect(r.queryByTestId('crop-window')).toBeNull()
+  })
+
+  it('the handles drawn apart take the same fit', () => {
+    const r = render(
+      <div>
+        <CanvasCropHandles element={cropped} scale={1} localCrop={{ x: 0, y: 0, w: 1, h: 1 }} onLocalCropChange={vi.fn()} srcDims={SRC} fit="current" />
+      </div>,
+    )
+    expect(frame(r.getByTestId('crop-window'))).toEqual(['-100px', '0px', '400px', '200px'])
   })
 })

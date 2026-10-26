@@ -72,6 +72,8 @@ const MIN_FRACTION = 0.02 // never let the crop shrink below 2% of source on eit
 // move two edges, edges move one. Result is min-size enforced and clamped to
 // the rendered source bounds. The element box will be resized at commit time
 // to match the resulting crop's aspect — see commitAndExitCropMode.
+// `rendered` is where the source is drawn, when not contained in the wrapper
+// (M3b: at the picture's scale on the slide, past the box).
 export function applyCropHandleDrag(args: {
   handle: CropHandle
   initialCrop: CropFraction
@@ -80,9 +82,10 @@ export function applyCropHandleDrag(args: {
   wrapperH: number
   srcWidth: number
   srcHeight: number
+  rendered?: RenderedRect
 }): CropFraction {
   const { handle, initialCrop, deltaPx, wrapperW, wrapperH, srcWidth, srcHeight } = args
-  const rendered = renderedSourceRect({ wrapperW, wrapperH, srcWidth, srcHeight })
+  const rendered = args.rendered ?? renderedSourceRect({ wrapperW, wrapperH, srcWidth, srcHeight })
 
   const initialPx = fractionToWrapperPx({ crop: initialCrop, rendered })
 
@@ -126,7 +129,7 @@ export function applyCropHandleDrag(args: {
 
 // Move (pan) the crop window by a pixel delta, keeping its size and clamping so
 // it stays fully inside the rendered source rect. Used by the crop modal's
-// drag-to-reposition.
+// drag-to-reposition. `rendered` as for applyCropHandleDrag.
 export function translateCropPx(args: {
   crop: CropFraction
   deltaPx: { x: number; y: number }
@@ -134,9 +137,10 @@ export function translateCropPx(args: {
   wrapperH: number
   srcWidth: number
   srcHeight: number
+  rendered?: RenderedRect
 }): CropFraction {
   const { crop, deltaPx, wrapperW, wrapperH, srcWidth, srcHeight } = args
-  const rendered = renderedSourceRect({ wrapperW, wrapperH, srcWidth, srcHeight })
+  const rendered = args.rendered ?? renderedSourceRect({ wrapperW, wrapperH, srcWidth, srcHeight })
   const px = fractionToWrapperPx({ crop, rendered })
 
   const minLeft = rendered.offsetX
@@ -264,13 +268,41 @@ export function trimToAspect(args: { crop: CropFraction; aspect: number; srcWidt
 
 export type SlideBox = { x: number; y: number; w: number; h: number }
 
+// Where the whole source is drawn today, from the box's top-left and in its
+// units (M3b), as SlideCanvas draws it: an uncropped image is `contain`ed in
+// its box; a cropped one is an oversized cover image (box / crop size) moved
+// by -crop x its own size, which is not the crop's shape once a side resize
+// changed the box.
+export function drawnSourceRect(box: { w: number; h: number }, crop: CropFraction | undefined, src: { width: number; height: number }): RenderedRect {
+  if (!crop) return renderedSourceRect({ wrapperW: box.w, wrapperH: box.h, srcWidth: src.width, srcHeight: src.height })
+  const elW = box.w / crop.w
+  const elH = box.h / crop.h
+  const scale = Math.max(elW / src.width, elH / src.height)
+  const width = src.width * scale
+  const height = src.height * scale
+  return { offsetX: -crop.x * elW + (elW - width) / 2, offsetY: -crop.y * elH + (elH - height) / 2, width, height }
+}
+
+// The part of the source the box shows (M3b): its crop, or the full frame
+// when it has none. A box a side resize changed shows less of its crop: then
+// it is the box over the picture as drawn.
+export function shownCrop(box: { w: number; h: number }, crop: CropFraction | undefined, src: { width: number; height: number }): CropFraction {
+  if (!crop) return { x: 0, y: 0, w: 1, h: 1 }
+  const r = drawnSourceRect(box, crop, src)
+  const clamp = (v: number) => Math.min(1, Math.max(0, v))
+  const x = clamp(-r.offsetX / r.width)
+  const y = clamp(-r.offsetY / r.height)
+  const shown = { x, y, w: Math.min(1 - x, box.w / r.width), h: Math.min(1 - y, box.h / r.height) }
+  const EPS = 1e-6
+  const same = Math.abs(shown.x - crop.x) < EPS && Math.abs(shown.y - crop.y) < EPS &&
+    Math.abs(shown.w - crop.w) < EPS && Math.abs(shown.h - crop.h) < EPS
+  return same ? crop : shown
+}
+
 // The box that frames `newCrop` where the picture is drawn today (M3a), so
 // applying a crop keeps the picture's scale and the kept part stays put.
 // Everything is in slide units; crops are fractions of the source.
-// The picture is drawn as SlideCanvas draws it: an uncropped image is
-// `contain`ed in its box; a cropped one is an oversized cover image
-// (box / crop size) moved by -crop x its own size, which is not the crop's
-// shape once a side resize changed the box.
+// The picture is where drawnSourceRect says it is drawn.
 export function croppedBox(box: SlideBox, oldCrop: CropFraction | undefined, newCrop: CropFraction, src: { width: number; height: number }): SlideBox {
   const EPS = 1e-6
   const old = oldCrop ?? { x: 0, y: 0, w: 1, h: 1 }
@@ -278,29 +310,11 @@ export function croppedBox(box: SlideBox, oldCrop: CropFraction | undefined, new
     Math.abs(old.x - newCrop.x) < EPS && Math.abs(old.y - newCrop.y) < EPS &&
     Math.abs(old.w - newCrop.w) < EPS && Math.abs(old.h - newCrop.h) < EPS
   ) return box
-  let originX: number
-  let originY: number
-  let fullW: number
-  let fullH: number
-  if (!oldCrop) {
-    const r = renderedSourceRect({ wrapperW: box.w, wrapperH: box.h, srcWidth: src.width, srcHeight: src.height })
-    originX = box.x + r.offsetX
-    originY = box.y + r.offsetY
-    fullW = r.width
-    fullH = r.height
-  } else {
-    const elW = box.w / oldCrop.w
-    const elH = box.h / oldCrop.h
-    const scale = Math.max(elW / src.width, elH / src.height)
-    fullW = src.width * scale
-    fullH = src.height * scale
-    originX = box.x - oldCrop.x * elW + (elW - fullW) / 2
-    originY = box.y - oldCrop.y * elH + (elH - fullH) / 2
-  }
+  const r = drawnSourceRect(box, oldCrop, src)
   return {
-    x: originX + newCrop.x * fullW,
-    y: originY + newCrop.y * fullH,
-    w: newCrop.w * fullW,
-    h: newCrop.h * fullH,
+    x: box.x + r.offsetX + newCrop.x * r.width,
+    y: box.y + r.offsetY + newCrop.y * r.height,
+    w: newCrop.w * r.width,
+    h: newCrop.h * r.height,
   }
 }

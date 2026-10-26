@@ -1772,7 +1772,7 @@ describe('CarouselEditor: one keymap (§556)', () => {
     await waitFor(() => findInteractiveWrapper('el-img'))
     await plainClick('el-img')
     await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
-    const source = findInteractiveWrapper('el-img').querySelector<HTMLImageElement>('img[alt="Crop source"]')
+    const source = chromeOf('el-img').querySelector<HTMLImageElement>('img[alt="Crop source"]')
     expect(source).not.toBeNull()
     // A 2:1 source in the 200 x 200 box, its right quarter cropped off (§556 M4:
     // an untouched crop writes nothing).
@@ -1783,7 +1783,7 @@ describe('CarouselEditor: one keymap (§556)', () => {
     // The crop applied, and the box takes its 3:2 shape.
     await waitFor(() => expectCropApplied(elementsOf(lastSave(adapter))[0]))
     // Crop mode is over, and the image is still the one selected.
-    expect(findInteractiveWrapper('el-img').querySelector('img[alt="Crop source"]')).toBeNull()
+    expect(chromeOf('el-img').querySelector('img[alt="Crop source"]')).toBeNull()
     expect(handlesOn('el-img')).toBe(true)
     const calls = onSelectionChange.mock.calls
     expect(calls[calls.length - 1][0]?.id).toBe('el-img')
@@ -2776,7 +2776,7 @@ describe('CarouselEditor: Esc deselects (§556 M2)', () => {
     await waitFor(() => findInteractiveWrapper('el-img'))
     await plainClick('el-img')
     await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
-    const source = findInteractiveWrapper('el-img').querySelector<HTMLImageElement>('img[alt="Crop source"]')
+    const source = chromeOf('el-img').querySelector<HTMLImageElement>('img[alt="Crop source"]')
     await act(async () => { loadImage(source!, 400, 200) })
     await dragCropRightEdgeIn()
 
@@ -2875,7 +2875,7 @@ describe('CarouselEditor: where the element keys do not act (§556 M2)', () => {
     await plainClick('el-a')
     await key('c', CMD)
     await act(async () => { fireEvent.click(await r.findByTitle('Crop image')) })
-    expect(findInteractiveWrapper('el-a').querySelector('img[alt="Crop source"]')).not.toBeNull()
+    expect(chromeOf('el-a').querySelector('img[alt="Crop source"]')).not.toBeNull()
 
     for (const [k, init] of KEYS.filter(([k]) => k !== 'Escape')) {
       const e = await key(k, init)
@@ -2885,7 +2885,7 @@ describe('CarouselEditor: where the element keys do not act (§556 M2)', () => {
     expect(adapter.saveCalls).toHaveLength(0)
     expect(posOf(liveProject(onProjectChange))).toEqual([[100, 100], [500, 400], [700, 700]])
     // Still in crop mode, and still the one image selected.
-    expect(findInteractiveWrapper('el-a').querySelector('img[alt="Crop source"]')).not.toBeNull()
+    expect(chromeOf('el-a').querySelector('img[alt="Crop source"]')).not.toBeNull()
     expect(outlined('el-a')).toBe(true)
   })
 
@@ -3262,12 +3262,12 @@ function canvasRoot(): HTMLElement {
 }
 
 function inCrop(id = 'el-img'): boolean {
-  return findInteractiveWrapper(id).querySelector('img[alt="Crop source"]') !== null
+  return chromeOf(id).querySelector('img[alt="Crop source"]') !== null
 }
 
 /** The crop source of `id`, loaded as a 400 x 200 image. */
 async function loadCropSource(id = 'el-img') {
-  const source = findInteractiveWrapper(id).querySelector<HTMLImageElement>('img[alt="Crop source"]')
+  const source = chromeOf(id).querySelector<HTMLImageElement>('img[alt="Crop source"]')
   if (!source) throw new Error(`${id} is not in crop mode`)
   await act(async () => { loadImage(source, 400, 200) })
 }
