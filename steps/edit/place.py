@@ -31,7 +31,8 @@ from steps.render import look as look_step  # noqa: E402
 from steps.speech.transcribe import transcribe as transcribe_file  # noqa: E402
 
 PRESETS_DIR = os.path.join(MONTAJ_ROOT, "montaj_assets", "render", "templates", "presets")
-PRESETS = {"lower_third": "lower-third.jsx", "callout": "callout.jsx"}
+# PL89c: flow, ring and rule animate an idea (a signal travelling, a live subject, a limit drawn under it) in one call.
+PRESETS = {"lower_third": "lower-third.jsx", "callout": "callout.jsx", "flow": "flow.jsx", "ring": "ring.jsx", "rule": "rule.jsx"}
 # PL89: copied by frame_broll's card; not a place preset (place.json lists only the two above).
 COPIED_PRESETS = {**PRESETS, "footage_card": "footage-card.jsx"}
 DEFAULT_FOR_S = 3.0

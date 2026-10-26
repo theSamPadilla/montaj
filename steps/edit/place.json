@@ -1,7 +1,7 @@
 {
   "name": "place",
   "category": "edit",
-  "description": "Place overlays on the timeline: one, or several at once with items (each checked first, one sheet back). At seconds, or at a spoken phrase ({phrase, take}: clean, first or last; transcribes clips that have no transcript, beside the clip). The overlay is a JSX file in the project (write it with write_project_overlay) or a preset (lower_third, callout) with props; its Google Fonts are taken from its own font stacks. Adds it on a free overlay track; id names a new item, or moves or updates that existing item only. A human edit to the tracks since it read them is refused. Checks the placed overlay fits the frame and the safe areas.",
+  "description": "Place overlays on the timeline: one, or several at once with items (each checked first, one sheet back). At seconds, or at a spoken phrase ({phrase, take}: clean, first or last; transcribes clips that have no transcript, beside the clip). The overlay is a JSX file in the project (write it with write_project_overlay) or a preset (lower_third, callout; flow, ring, rule move) with props; its Google Fonts are taken from its own font stacks. Adds it on a free overlay track; id names a new item, or moves or updates that existing item only. A human edit to the tracks since it read them is refused. Checks the placed overlay fits the frame and the safe areas.",
   "input": {
     "type": "project",
     "description": "The project id, its folder, or the absolute path of its project.json"
@@ -47,10 +47,13 @@
       "type": "enum",
       "options": [
         "lower_third",
-        "callout"
+        "callout",
+        "flow",
+        "ring",
+        "rule"
       ],
       "required": false,
-      "description": "An engine preset instead of overlay. lower_third: props text, subtitle. callout: props text, anim (pop, slide, fade)."
+      "description": "An engine preset instead of overlay. lower_third: props text, subtitle. callout: props text, anim (pop, slide, fade). Moving, to show an idea before any text: flow (a signal travelling between labels): props points (\"phone > computer > motors\"), at?; ring (a pulse on a live subject): props x, y (shares of the frame), label?; rule (a line drawn under a subject with a word): props text, y, width?."
     },
     {
       "name": "props",
