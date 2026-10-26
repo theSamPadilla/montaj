@@ -881,3 +881,18 @@ def test_overlaps_and_the_label_on_part_check_read_the_glyphs(tmp_path, monkeypa
     out = _marked(tmp_path / "beside", ("sensors", 0, 470, 1080, 60))
     monkeypatch.setattr(sys.modules[__name__], "_fake_measure", real)
     assert not any("sits on the part" in i for i in out["issues"]), out["issues"]
+
+
+# Round 9 (52's notes): the mount was marked, but no overlay read its marks, so its labels were dropped. A mark file no
+# overlay imports is named.
+def test_a_mark_no_overlay_reads_is_named(tmp_path):
+    jsx = "import mark from './_marks/specs.json'\nexport default function O() { const m = Motion.motion(frame, fps, duration); return <div style={m.style}>x</div> }"
+    path, _ = _project(tmp_path, base=((0, 10),), overlays=[{"id": "ov-specs", "start": 1, "end": 4, "jsx": jsx}])
+    marks = path.parent / "overlays" / "_marks"
+    marks.mkdir()
+    for name in ("specs", "mount"):
+        (marks / f"{name}.json").write_text(json.dumps({"kind": "mark", "at": 0, "size": {"width": 1080, "height": 1920}, "parts": [], "casts": []}))
+    out = look.run(str(path), measure_fn=_fake_measure({}), detail=True)
+    named = [i for i in out["issues"] if "_marks/mount.json" in i]
+    assert len(named) == 1 and "scene_labels" in named[0], out["issues"]
+    assert not any("_marks/specs.json" in i for i in out["issues"]), "specs is read"

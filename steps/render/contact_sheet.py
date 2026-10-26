@@ -48,7 +48,7 @@ def _sample_frame(project, t, out, raw=False):
         fail("sample_failed", f"sample_frame at {t}s failed: {proc.stderr.strip()[-400:]}")
 
 
-def build(project, times, cols, tile_width, out, sampler=_sample_frame, frames_dir=None, raw=False):
+def build(project, times, cols, tile_width, out, sampler=_sample_frame, frames_dir=None, raw=False, look_fn=None):
     if frames_dir:
         os.makedirs(frames_dir, exist_ok=True)
     with (nullcontext(frames_dir) if frames_dir else tempfile.TemporaryDirectory()) as work:
@@ -65,7 +65,19 @@ def build(project, times, cols, tile_width, out, sampler=_sample_frame, frames_d
     result = {"path": os.path.abspath(out), "times": list(times), "cols": cols, "tile_width": tile_width}
     if frames_dir:
         result["frames"] = frames
+    # Round 9: the closing sheet answers look's issues too (look never ran in the run that ended on this step); a look
+    # that fails leaves the sheet as it is
+    if look_fn is not None:
+        try:
+            result["look"] = look_fn(project)
+        except (SystemExit, Exception):  # noqa: BLE001
+            pass
     return result
+
+
+def _look(project):
+    import look   # steps/render/look.py, beside this step
+    return look.run(project)
 
 
 def main():
@@ -92,7 +104,9 @@ def main():
     times = args.at or grid_times(project_duration(args.project), args.every)
     if len(times) > MAX_TILES:
         fail("invalid_args", f"{len(times)} samples > {MAX_TILES}; raise --every")
-    print(json.dumps(build(args.project, times, args.cols, args.tile_width, args.out, frames_dir=args.frames_dir, raw=args.raw)))
+    # a frame strip or a raw sheet is a look at footage, not the closing check
+    look_fn = None if args.raw or args.frames_dir else _look
+    print(json.dumps(build(args.project, times, args.cols, args.tile_width, args.out, frames_dir=args.frames_dir, raw=args.raw, look_fn=look_fn)))
 
 
 if __name__ == "__main__":

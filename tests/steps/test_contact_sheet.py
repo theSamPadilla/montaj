@@ -119,3 +119,18 @@ def test_frames_key_absent_without_frames_dir(tmp_path):
     res = contact_sheet.build(_project(tmp_path), [0, 1], cols=2, tile_width=100,
                               out=str(out), sampler=_stub_sampler)
     assert "frames" not in res
+
+
+# Round 9 (52's notes): look never ran (the run ended place, caption_ink, contact_sheet), so a line drawn over a card's
+# credit went unchecked. The closing contact sheet answers look's issues too: the same call, no new turn.
+def test_the_contact_sheet_answers_looks_issues_and_never_fails_for_them(tmp_path):
+    out = tmp_path / "sheet.png"
+    res = contact_sheet.build(_project(tmp_path), [0, 1], cols=2, tile_width=200, out=str(out), sampler=_stub_sampler,
+                              look_fn=lambda p: {"ok": False, "overlays": 3, "issues": ["2.0s ov-a: text runs off the frame"]})
+    assert res["look"] == {"ok": False, "overlays": 3, "issues": ["2.0s ov-a: text runs off the frame"]}
+    def broken(p):
+        raise SystemExit(1)
+    res = contact_sheet.build(_project(tmp_path), [0, 1], cols=2, tile_width=200, out=str(out), sampler=_stub_sampler, look_fn=broken)
+    assert "look" not in res and os.path.isfile(out), "the sheet stands without it"
+    res = contact_sheet.build(_project(tmp_path), [0, 1], cols=2, tile_width=200, out=str(out), sampler=_stub_sampler)
+    assert "look" not in res, "no look asked (a frame strip, a raw sheet)"

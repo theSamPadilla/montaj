@@ -267,6 +267,7 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=None, sheet
             notes.append(f"{label}: keyframed geometry read at its base values")
     issues += lc.text_overlaps(placed)
     issues += lc.top_slot_issues(placed, width, height)   # PL89d: keywords stacked in one top slot
+    issues += lc.unread_marks_issues(project, project_dir)   # round 9: a beat marked, never labelled
     # PL89b: every overlay's motion, from its code (no render): none, no exit, or linear only
     for ti, row in enumerate(lc.drawn_tracks(project)):
         if ti == 0:
