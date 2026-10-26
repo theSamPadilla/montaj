@@ -55,15 +55,15 @@ const probe = (stream) => ({ streams: [stream] })
 
 test('parseVideoGeometry: coded size, and a quarter-turn displaymatrix swaps it', () => {
   assert.deepEqual(parseVideoGeometry(probe({ width: 1920, height: 1080, pix_fmt: 'yuv420p' })),
-    { width: 1920, height: 1080, alpha: false })
+    { width: 1920, height: 1080, alpha: false, pixFmt: 'yuv420p' })
   for (const rotation of [90, -90, 270, -270]) {
     assert.deepEqual(
       parseVideoGeometry(probe({ width: 1920, height: 1080, pix_fmt: 'yuv420p', side_data_list: [{ rotation }] })),
-      { width: 1080, height: 1920, alpha: false }, `rotation ${rotation}`)
+      { width: 1080, height: 1920, alpha: false, pixFmt: 'yuv420p' }, `rotation ${rotation}`)
   }
   assert.deepEqual(
     parseVideoGeometry(probe({ width: 1920, height: 1080, pix_fmt: 'yuv420p', side_data_list: [{ rotation: 180 }] })),
-    { width: 1920, height: 1080, alpha: false })
+    { width: 1920, height: 1080, alpha: false, pixFmt: 'yuv420p' })
 })
 
 test('parseVideoGeometry: alpha comes from the pixel format', () => {
@@ -73,6 +73,11 @@ test('parseVideoGeometry: alpha comes from the pixel format', () => {
   for (const pix_fmt of ['yuv420p', 'yuv420p10le', 'yuvj420p', 'rgb24', 'rgb0', 'bgr0', 'gbrp', 'p010le']) {
     assert.equal(parseVideoGeometry(probe({ width: 64, height: 36, pix_fmt })).alpha, false, pix_fmt)
   }
+})
+
+test('parseVideoGeometry: the pixel format is kept (a keyed crop reads it), null when ffprobe gives none', () => {
+  assert.equal(parseVideoGeometry(probe({ width: 64, height: 36, pix_fmt: 'yuv420p10le' })).pixFmt, 'yuv420p10le')
+  assert.equal(parseVideoGeometry(probe({ width: 64, height: 36 })).pixFmt, null)
 })
 
 test('parseVideoGeometry: no usable size is null (the encoder then keeps its old string)', () => {
