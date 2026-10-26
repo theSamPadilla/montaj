@@ -22,7 +22,7 @@
       "type": "string",
       "required": false,
       "repeatable": true,
-      "description": "The b-roll clip's item id on an upper track (add the clip to an upper track first); a list frames them all in one call (at most 12): read in parallel, one write, one sheet. Left out, the answer names the b-roll on the timeline."
+      "description": "The b-roll clip's item id on an upper track (add the clip to an upper track first); a list frames them all in one call: read in parallel, one write, one sheet. Left out, the answer names the b-roll on the timeline."
     },
     {
       "name": "mode",
