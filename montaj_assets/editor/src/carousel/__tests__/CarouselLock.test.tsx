@@ -95,10 +95,10 @@ const elementsOf = (p: Project) => p.slides![0].elements
 const byId = (p: Project, id: string) => elementsOf(p).find((e) => e.id === id)!
 const last = (a: FakeAdapter) => a.saveCalls[a.saveCalls.length - 1].project
 
-async function mount(extra: Partial<React.ComponentProps<typeof CarouselEditor>> = {}) {
+async function mount(extra: Partial<React.ComponentProps<typeof CarouselEditor>> = {}, project: Project = lockProject()) {
   const adapter = makeFakeAdapter()
   const onProjectChange = vi.fn()
-  const r = render(<CarouselEditor project={lockProject()} adapter={adapter} onProjectChange={onProjectChange} {...extra} />)
+  const r = render(<CarouselEditor project={project} adapter={adapter} onProjectChange={onProjectChange} {...extra} />)
   await waitFor(() => wrapperOf('el-a'))
   return { adapter, onProjectChange, r }
 }
@@ -365,5 +365,81 @@ describe('CarouselEditor: the lock key in the controls list (§586 M5)', () => {
     document.body.innerHTML = ''
     await mount({ renderControls, lockKey: true })
     expect(seen[seen.length - 1]).toContain('Lock or unlock')
+  })
+})
+
+function loadImage(img: HTMLImageElement, w: number, h: number) {
+  Object.defineProperty(img, 'naturalWidth', { configurable: true, value: w })
+  Object.defineProperty(img, 'naturalHeight', { configurable: true, value: h })
+  fireEvent.load(img)
+}
+
+describe('CarouselEditor: lock key and crop, select all, distribute (§586 M5)', () => {
+  it('Opt+Shift+L in crop mode applies the crop as its own step, then locks', async () => {
+    const { adapter, r } = await mount({ lockKey: true })
+    await click('el-b')
+    await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
+    const source = wrapperOf('el-b').querySelector<HTMLImageElement>('img[alt="Crop source"]')!
+    await act(async () => { loadImage(source, 200, 300) })
+    const handle = chromeOf('el-b').querySelector('[data-testid="crop-handle-e"]') as HTMLElement
+    const root = document.querySelector('[data-interactive]') as HTMLElement
+    const d = 40 * (parseFloat(root.style.width) / 1080)
+    await act(async () => {
+      pointer(handle, 'pointerdown', { clientX: 0, clientY: 0 })
+      pointer(handle, 'pointermove', { clientX: -d, clientY: 0 })
+      pointer(handle, 'pointerup', { clientX: -d, clientY: 0 })
+      fireEvent.click(handle)
+    })
+
+    await key('Ø', LOCK_KEY)
+    await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThan(1))
+    // The crop is saved before the lock: the saves before the last hold it unlocked.
+    const els = adapter.saveCalls.map((c) => byId(c.project, 'el-b') as ImageElement)
+    const locked = els[els.length - 1]
+    expect(locked.locked).toBe(true)
+    expect(locked.crop).toBeTruthy()
+    for (const e of els.slice(0, -1)) {
+      expect(e.crop).toEqual(locked.crop)
+      expect(e.locked).toBeUndefined()
+    }
+    // The lock is its own undo step: one undo unlocks and keeps the crop.
+    const before = adapter.saveCalls.length
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThan(before))
+    const undone = byId(last(adapter), 'el-b') as ImageElement
+    expect(undone.locked).toBeUndefined()
+    expect(undone.crop).toEqual(locked.crop)
+  })
+
+  /** One slide of 100 px images at the given x, the first one locked. */
+  const rowProject = (xs: number[]): Project => {
+    const p = lockProject()
+    p.slides![0].elements = xs.map((x, i) => ({ id: `r${i}`, type: 'image', src: `r${i}.png`, x, y: 100, w: 100, h: 100, rotation: 0, ...(i === 0 ? { locked: true } : {}) })) as never
+    return p
+  }
+
+  it('Cmd+A then Delete removes the two free elements in one step and keeps the locked one selected', async () => {
+    const { adapter } = await mount({}, rowProject([0, 200, 400]))
+    await click('r1')
+    await key('a', CMD)
+    await key('Delete')
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(elementsOf(last(adapter)).map((e) => e.id)).toEqual(['r0'])
+    expect(outlined('r0')).toBe(true)
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(elementsOf(last(adapter)).map((e) => e.id)).toEqual(['r0', 'r1', 'r2'])
+  })
+
+  it('distribute with a locked element among the selected leaves the locked one where it is', async () => {
+    const { adapter, r } = await mount({}, rowProject([0, 100, 150, 700]))
+    await click('r0')
+    await key('a', CMD)
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Distribute horizontally' })) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const xs = elementsOf(last(adapter)).map((e) => e.x)
+    expect(xs[0]).toBe(0)
+    // r1..r3 spread evenly between the outermost free ones.
+    expect(xs.slice(1)).toEqual([100, 400, 700])
   })
 })

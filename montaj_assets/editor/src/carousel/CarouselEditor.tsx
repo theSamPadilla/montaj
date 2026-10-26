@@ -890,8 +890,13 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       description: 'Lock or unlock the selection',
       keyHint: ['⌥', '⇧', 'L'],
       matches: matchesLockKey,
-      guard: () => lockKey && hasSelection && canEdit,
-      action: () => toggleSelectionLock(),
+      // Also in crop mode, where the pending crop is applied first, as its own
+      // undo step, like every other way out of it.
+      guard: () => lockKey && canEdit && !!selectedSlide && !showPendingSurface && liveSelectedIds.length > 0,
+      action: () => {
+        if (cropElementId) flushSync(applyCrop)
+        toggleSelectionLock()
+      },
     },
     {
       id: 'carousel.layer-front',
