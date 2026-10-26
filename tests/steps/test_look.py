@@ -744,3 +744,18 @@ def test_same_kind_tracks_that_could_be_one_are_said():
     p2 = {"tracks": [p["tracks"][0], {"id": "g1", "items": [o("lab1", 7, 9)]}, {"id": "s1", "items": [o("specs", 7, 13, "engine:scene3d")]},
                      {"id": "g2", "items": [o("lab2", 10, 12)]}]}
     assert lc.merge_track_issues(p2) == []
+
+
+# 52's PL89f glyph box: the overlap, top-slot and label-on-part checks read the text's own glyphs too, so a full-width
+# centred label is not taken for one that covers a part or crosses another overlay.
+def test_overlaps_and_the_label_on_part_check_read_the_glyphs(tmp_path, monkeypatch):
+    wide = {"x": 0, "y": 470, "w": 1080, "h": 60}
+    a = ("ov-a", 0, 4, [{**wide, "glyphs": {"x": 100, "y": 470, "w": 200, "h": 60}}])
+    b = ("ov-b", 1, 5, [{**wide, "glyphs": {"x": 700, "y": 470, "w": 200, "h": 60}}])
+    assert lc.text_overlaps([a, b]) == [], "glyphs apart, boxes crossing: no overlap"
+    # a full-width label whose glyphs sit beside the marked part (400-600 x 450-550 on the 1080 canvas) is not on it
+    real = _fake_measure
+    monkeypatch.setattr(sys.modules[__name__], "_fake_measure", lambda boxes: (lambda *a: (_glyphed("sensors", (0, 470, 1080, 60), (780, 470, 160, 60)), None)))
+    out = _marked(tmp_path / "beside", ("sensors", 0, 470, 1080, 60))
+    monkeypatch.setattr(sys.modules[__name__], "_fake_measure", real)
+    assert not any("sits on the part" in i for i in out["issues"]), out["issues"]

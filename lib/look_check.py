@@ -631,7 +631,7 @@ def text_overlaps(placed):
             s, e = max(sa, sb), min(ea, eb)
             if e - s <= MERGE_S:
                 continue
-            if any(_cross(x, y) for x in ba for y in bb):
+            if any(_cross(glyphs_of(x), glyphs_of(y)) for x in ba for y in bb):   # the text's own extent
                 out.append({"t": r2(s), "id": la, "text": f"text overlaps {lb}"})
     return out
 
@@ -674,7 +674,8 @@ def mark_cover_issues(project, project_dir, item, measurement, frame_w, frame_h,
         size = mark.get("size") if isinstance(mark.get("size"), dict) else {}
         short = min(_num(size.get("width"), frame_w), _num(size.get("height"), frame_h)) or min(frame_w, frame_h)
         k = min(frame_w, frame_h) / short
-        for text, b, _, _ in text_boxes(measurement, item, frame_w, frame_h):
+        for text, box, _, _ in text_boxes(measurement, item, frame_w, frame_h):
+            b = glyphs_of(box)   # the text's own extent: a full-width centred label is where its letters are
             for p in row.get("parts") or []:
                 box = p.get("box") if isinstance(p, dict) else None
                 if isinstance(box, list) and len(box) == 4 and _box_cover(b, [v * k for v in box]) > COVER_SHARE:
@@ -695,7 +696,7 @@ def top_slot_issues(placed, frame_w, frame_h):
     """[{t, id: "top-slot", text}] when more than TOP_SLOT_MAX overlays put their text in the top slot, at the start of the
     first one past it. `placed`: [(label, start, end, boxes)], as text_overlaps takes."""
     top = frame_h * TOP_SLOT_SHARE
-    hits = sorted(((s, label) for label, s, e, boxes in placed if boxes and min(b["y"] for b in boxes) < top),
+    hits = sorted(((s, label) for label, s, e, boxes in placed if boxes and min(glyphs_of(b)["y"] for b in boxes) < top),
                   key=lambda x: x[0])
     if len(hits) <= TOP_SLOT_MAX:
         return []
