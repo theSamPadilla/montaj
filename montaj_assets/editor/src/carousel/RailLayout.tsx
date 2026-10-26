@@ -61,8 +61,14 @@ export default function RailLayout({
 
   function toggle(id: CarouselRailItemId) {
     onBeforeToggle()
-    if (id === 'notes') setNotesOpen((o) => !o)
-    else setSide((s) => (s === id ? null : id))
+    // Notes and the side panel are one "active rail item": opening either closes the other.
+    if (id === 'notes') {
+      setNotesOpen((o) => !o)
+      setSide(null)
+    } else {
+      setSide((s) => (s === id ? null : id))
+      setNotesOpen(false)
+    }
   }
   function closeNotes() {
     onBeforeToggle()
