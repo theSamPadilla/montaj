@@ -8,6 +8,8 @@ import {
   buildElementTransform,
   roundResizedBox,
   type ResizeHandle as ResizeHandleId,
+  type GapSegment,
+  type SnapBox,
   type SnapGuide,
 } from '../gestures'
 import { OverlayPreview } from '../preview/OverlayPreview'
@@ -25,6 +27,18 @@ import { groupDragMove, type GroupDragResult, type GroupMember } from './groupDr
 // `resolveImageSrc` (Montaj's adapter does).
 function resolveAssetDefault(src: string): string {
   return src
+}
+
+// A group drag that snapped nothing shows no guide or gap.
+const NO_SNAP: { guides: SnapGuide[]; gaps: GapSegment[] } = { guides: [], gaps: [] }
+
+// The snap guide's look, shared by the slide-long guides and the equal-gap segments.
+const GUIDE_STYLE: React.CSSProperties = {
+  position: 'absolute',
+  background: '#ff2d88',
+  boxShadow: '0 0 6px 1px rgba(255,45,136,0.9)',
+  pointerEvents: 'none',
+  zIndex: 999,
 }
 
 // ── Resize / Rotate handle geometry ────────────────────────────────────────────
@@ -365,6 +379,13 @@ export default function SlideCanvas({
   // no commit, no undo step.
   const elementById = (id: string) => slide.elements.find((e) => e.id === id)
 
+  // What a drag snaps to besides the slide (§586 M7): every element shown on
+  // this canvas that is not being dragged.
+  const snapTargets = (dragged: readonly string[]): SnapBox[] =>
+    slide.elements
+      .filter((e) => !dragged.includes(e.id) && !hiddenSet?.has(e.id))
+      .map((e) => ({ x: e.x, y: e.y, w: e.w, h: e.h, rotation: e.rotation }))
+
   const drag = useOverlayDrag({
     scale,
     slide: { w: width, h: height },
@@ -549,16 +570,28 @@ export default function SlideCanvas({
   const swallowClickRef = useRef(false)
 
   // ── Group drag (§156): every selected element moves by one delta, one undo step ──
-  const groupRef = useRef<{ start: { x: number; y: number }; members: GroupMember[]; latest: GroupDragResult | null } | null>(null)
-  const [groupGuides, setGroupGuides] = useState<SnapGuide[]>([])
-  const groupHandlers = useRef({ move: (_c: { x: number; y: number }) => {}, up: () => {} })
+  const groupRef = useRef<{
+    start: { x: number; y: number }
+    members: GroupMember[]
+    others: SnapBox[]
+    latest: GroupDragResult | null
+  } | null>(null)
+  const [groupSnap, setGroupSnap] = useState<{ guides: SnapGuide[]; gaps: GapSegment[] }>(NO_SNAP)
+  const groupHandlers = useRef({ move: (_c: { x: number; y: number }, _skipSnap: boolean) => {}, up: () => {} })
   groupHandlers.current = {
-    move: (cursor) => {
+    move: (cursor, skipSnap) => {
       const g = groupRef.current
       if (!g) return
-      const result = groupDragMove(g.members, { dx: cursor.x - g.start.x, dy: cursor.y - g.start.y }, scale, { w: width, h: height })
+      const result = groupDragMove(
+        g.members,
+        { dx: cursor.x - g.start.x, dy: cursor.y - g.start.y },
+        scale,
+        { w: width, h: height },
+        g.others,
+        { skip: skipSnap },
+      )
       g.latest = result
-      setGroupGuides(result.guides)
+      setGroupSnap(result.guides.length || result.gaps.length ? { guides: result.guides, gaps: result.gaps } : NO_SNAP)
       for (const p of result.positions) {
         const m = g.members.find((mm) => mm.id === p.id)
         applyPreviewTransform(p.id, p.x, p.y, m?.rotation ?? 0)
@@ -567,7 +600,7 @@ export default function SlideCanvas({
     up: () => {
       const g = groupRef.current
       groupRef.current = null
-      setGroupGuides([])
+      setGroupSnap(NO_SNAP)
       const result = g?.latest
       if (!g || !result || (result.dx === 0 && result.dy === 0)) return
       swallowClickRef.current = true
@@ -613,10 +646,12 @@ export default function SlideCanvas({
         return
       }
       const cursor = { x: e.clientX, y: e.clientY }
-      if (activeGesture.current === 'drag') drag.onPointerMove(cursor)
+      // Cmd (Ctrl on Windows) held during a drag snaps nothing while it is held.
+      const skipSnap = e.metaKey || e.ctrlKey
+      if (activeGesture.current === 'drag') drag.onPointerMove(cursor, { skipSnap })
       else if (activeGesture.current === 'resize') resize.onPointerMove(cursor, { shiftKey: e.shiftKey })
       else if (activeGesture.current === 'rotate') rotate.onPointerMove(cursor)
-      else if (activeGesture.current === 'group') groupHandlers.current.move(cursor)
+      else if (activeGesture.current === 'group') groupHandlers.current.move(cursor, skipSnap)
     }
     const onUp = () => end(true)
     const onCancel = () => end(false)
@@ -732,7 +767,12 @@ export default function SlideCanvas({
                 const m = slide.elements.find((el) => el.id === id)
                 if (m && !isLocked(m)) members.push({ id: m.id, x: m.x, y: m.y, w: m.w, h: m.h, rotation: m.rotation })
               }
-              groupRef.current = { start: { x: e.clientX, y: e.clientY }, members, latest: null }
+              groupRef.current = {
+                start: { x: e.clientX, y: e.clientY },
+                members,
+                others: snapTargets(selectedIds),
+                latest: null,
+              }
               activeGesture.current = 'group'
               return
             }
@@ -742,6 +782,7 @@ export default function SlideCanvas({
               element.id,
               { x: e.clientX, y: e.clientY },
               { x: element.x, y: element.y, w: element.w, h: element.h, rotation: element.rotation },
+              snapTargets([element.id]),
             )
           }
 
@@ -892,42 +933,35 @@ export default function SlideCanvas({
           onClick={(e) => { e.stopPropagation(); swallowClickRef.current = false }}
         >
           <div style={{ position: 'absolute', left: margin, top: margin, width: displayW, height: displayH }}>
-            {/* Snap guides — drawn at the drag hook's reported guide axes. */}
-            {(groupGuides.length > 0 ? groupGuides : drag.guides).map((g: SnapGuide, i) =>
+            {/* Snap guides — drawn at the drag hook's reported guide axes. A
+                drag and a group drag never run at once. */}
+            {(groupSnap !== NO_SNAP ? groupSnap : drag).guides.map((g: SnapGuide, i) =>
               g.axis === 'x' ? (
                 <div
                   key={`gx-${i}`}
                   data-testid="snap-guide-x"
-                  style={{
-                    position: 'absolute',
-                    left: g.at * scale - 1,
-                    top: 0,
-                    width: 2,
-                    height: displayH,
-                    background: '#ff2d88',
-                    boxShadow: '0 0 6px 1px rgba(255,45,136,0.9)',
-                    pointerEvents: 'none',
-                    zIndex: 999,
-                  }}
+                  style={{ ...GUIDE_STYLE, left: g.at * scale - 1, top: 0, width: 2, height: displayH }}
                 />
               ) : (
                 <div
                   key={`gy-${i}`}
                   data-testid="snap-guide-y"
-                  style={{
-                    position: 'absolute',
-                    left: 0,
-                    top: g.at * scale - 1,
-                    width: displayW,
-                    height: 2,
-                    background: '#ff2d88',
-                    boxShadow: '0 0 6px 1px rgba(255,45,136,0.9)',
-                    pointerEvents: 'none',
-                    zIndex: 999,
-                  }}
+                  style={{ ...GUIDE_STYLE, left: 0, top: g.at * scale - 1, width: displayW, height: 2 }}
                 />
               ),
             )}
+            {/* Equal gaps (§586 M7): each gap a short segment in the guide's look. */}
+            {(groupSnap !== NO_SNAP ? groupSnap : drag).gaps.map((g: GapSegment, i) => (
+              <div
+                key={`gap-${i}`}
+                data-testid="snap-gap"
+                style={
+                  g.axis === 'x'
+                    ? { ...GUIDE_STYLE, left: g.from * scale, top: g.at * scale - 1, width: (g.to - g.from) * scale, height: 2 }
+                    : { ...GUIDE_STYLE, left: g.at * scale - 1, top: g.from * scale, width: 2, height: (g.to - g.from) * scale }
+                }
+              />
+            ))}
 
             {slide.elements.map((element) => {
               if (hiddenSet?.has(element.id)) return null

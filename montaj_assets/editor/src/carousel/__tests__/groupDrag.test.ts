@@ -36,4 +36,19 @@ describe('groupDragMove', () => {
     expect(r.dy).toBe(-50)
     expect(r.positions[0]).toEqual({ id: 'a', x: 100, y: 50 })
   })
+
+  it('snaps the box the group covers to the other elements too (§586 M7), or not at all with skip', () => {
+    // The union is 100..500 across; dragged right 197 its right edge is at 697,
+    // 3 from the other element's left edge.
+    const other = { x: 700, y: 600, w: 100, h: 100 }
+    const r = groupDragMove([A, B], { dx: 197, dy: 0 }, 1, SLIDE, [other])
+    expect(r.dx).toBe(200)
+    expect(r.positions).toEqual([{ id: 'a', x: 300, y: 100 }, { id: 'b', x: 600, y: 300 }])
+    expect(r.guides).toEqual([{ axis: 'x', at: 700 }])
+    expect(r.gaps).toEqual([])
+
+    const free = groupDragMove([A, B], { dx: 197, dy: 0 }, 1, SLIDE, [other], { skip: true })
+    expect(free.dx).toBe(197)
+    expect(free.guides).toEqual([])
+  })
 })

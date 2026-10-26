@@ -1,6 +1,12 @@
 import { useCallback, useRef, useState } from 'react';
 import { startDrag, nextDragPosition, type DragState } from '../helpers/drag';
-import { snapToSlide, type SnapGuide } from '../helpers/snap';
+import {
+  snapToSlideAndElements,
+  type GapSegment,
+  type SmartSnapResult,
+  type SnapBox,
+  type SnapGuide,
+} from '../helpers/snap';
 
 // Cursor must travel this many screen pixels from pointer-down before snap
 // engages. Prevents the element from being trapped at a snap target that
@@ -13,6 +19,13 @@ const DEAD_ZONE_PX = 12;
 // using the current scale; floored at 1 logical unit so very-zoomed-out views
 // still snap meaningfully.
 const SNAP_PX = 6;
+
+const NO_SNAP: Pick<SmartSnapResult, 'guides' | 'gaps'> = { guides: [], gaps: [] };
+
+export type DragModifiers = {
+  // Cmd (or Ctrl) held on this move: snap nothing and show no guide.
+  skipSnap?: boolean;
+};
 
 export type UseOverlayDragArgs = {
   scale: number;
@@ -30,31 +43,39 @@ export type UseOverlayDragArgs = {
 
 export type UseOverlayDragReturn = {
   guides: SnapGuide[];
+  // The two gaps of an equal-gap snap, empty otherwise.
+  gaps: GapSegment[];
+  // `others` are the boxes the dragged one snaps to besides the slide: the
+  // visible elements not being dragged.
   onPointerDown: (
     elementId: string,
     cursor: { x: number; y: number },
     element: { x: number; y: number; w: number; h: number; rotation?: number },
+    others?: readonly SnapBox[],
   ) => void;
-  onPointerMove: (cursor: { x: number; y: number }) => void;
+  onPointerMove: (cursor: { x: number; y: number }, modifiers?: DragModifiers) => void;
   onPointerUp: () => void;
 };
 
 export function useOverlayDrag({ scale, slide, onPreview, onCommit }: UseOverlayDragArgs): UseOverlayDragReturn {
-  const [guides, setGuides] = useState<SnapGuide[]>([]);
+  const [shown, setShown] = useState(NO_SNAP);
   const stateRef = useRef<DragState | null>(null);
   const sizeRef = useRef<{ w: number; h: number } | null>(null);
   const latestRef = useRef<{ id: string; x: number; y: number } | null>(null);
   const rotationRef = useRef<number>(0);
+  const othersRef = useRef<readonly SnapBox[]>([]);
 
   const onPointerDown = useCallback(
     (
       elementId: string,
       cursor: { x: number; y: number },
       element: { x: number; y: number; w: number; h: number; rotation?: number },
+      others: readonly SnapBox[] = [],
     ) => {
       stateRef.current = startDrag(elementId, cursor, element);
       sizeRef.current = { w: element.w, h: element.h };
       rotationRef.current = element.rotation ?? 0;
+      othersRef.current = others;
       // Nothing to commit until the pointer moves.
       latestRef.current = null;
     },
@@ -62,7 +83,7 @@ export function useOverlayDrag({ scale, slide, onPreview, onCommit }: UseOverlay
   );
 
   const onPointerMove = useCallback(
-    (cursor: { x: number; y: number }) => {
+    (cursor: { x: number; y: number }, modifiers: DragModifiers = {}) => {
       const s = stateRef.current;
       const size = sizeRef.current;
       if (!s || !size) return;
@@ -76,15 +97,18 @@ export function useOverlayDrag({ scale, slide, onPreview, onCommit }: UseOverlay
       const cursorDistSq = cursorDx * cursorDx + cursorDy * cursorDy;
       const inDeadZone = cursorDistSq < DEAD_ZONE_PX * DEAD_ZONE_PX;
 
+      // The box snaps by what it covers when turned (§586 M7).
       const snap = inDeadZone
-        ? { position: raw, guides: [] as SnapGuide[] }
-        : snapToSlide(
-            { x: raw.x, y: raw.y, w: size.w, h: size.h },
+        ? { position: raw, ...NO_SNAP }
+        : snapToSlideAndElements(
+            { x: raw.x, y: raw.y, w: size.w, h: size.h, rotation: rotationRef.current },
             slide,
+            othersRef.current,
             Math.max(SNAP_PX / scale, 1),
+            { skip: modifiers.skipSnap },
           );
 
-      setGuides(snap.guides);
+      setShown(snap.guides.length || snap.gaps.length ? { guides: snap.guides, gaps: snap.gaps } : NO_SNAP);
       latestRef.current = { id: s.elementId, x: snap.position.x, y: snap.position.y };
       onPreview(s.elementId, snap.position.x, snap.position.y, rotationRef.current);
     },
@@ -101,11 +125,12 @@ export function useOverlayDrag({ scale, slide, onPreview, onCommit }: UseOverlay
     stateRef.current = null;
     sizeRef.current = null;
     latestRef.current = null;
+    othersRef.current = [];
     if (!final) return;
-    setGuides([]);
+    setShown(NO_SNAP);
     if (final.x === s.startElement.x && final.y === s.startElement.y) return;
     void onCommit?.(final.id, final.x, final.y);
   }, [onCommit]);
 
-  return { guides, onPointerDown, onPointerMove, onPointerUp };
+  return { guides: shown.guides, gaps: shown.gaps, onPointerDown, onPointerMove, onPointerUp };
 }
