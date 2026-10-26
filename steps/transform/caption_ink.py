@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """caption_ink: set each caption's ink from the backdrop under it (the rules are lib/caption_ink.py).
 
-Over a light full-screen card (an opaque 3D or JSX paper card) a caption draws dark, so it reads; elsewhere it draws
+Over a light card (graphics covering the caption's band: an opaque overlay, a 3D scene with a backdrop, or an overlay
+whose pixels cover the band, as frame_broll's matte does) a caption draws dark, so it reads; elsewhere it draws
 as its style does. The step renders the frame without captions at each caption's middle, measures the band the caption
 draws in, and writes `ink` ("dark" or "light") and `inkAuto` ({card, ink, backdrop}: what it wrote) on the caption. An `ink` is the
 step's only while `inkAuto` names the same ink; any other ink (none, edited, removed) is a person's and never changed.

@@ -19,6 +19,11 @@ def _video(i="v0", start=0, end=20, **kw):
     return {"id": i, "type": "video", "src": "/x/a.mp4", "start": start, "end": end, "inPoint": 0, "outPoint": end - start, **kw}
 
 
+def _image(i="im0", start=0, end=20, **kw):
+    """Footage drawn above an overlay: a track holding a video stacks below every other track, an image does not."""
+    return {"id": i, "type": "image", "src": "/x/a.png", "start": start, "end": end, **kw}
+
+
 def _card(i, start, end, **kw):
     return {"id": i, "type": "overlay", "src": "engine:scene3d", "start": start, "end": end, "opaque": True, **kw}
 
@@ -317,3 +322,186 @@ def test_a_frame_gets_what_is_left_until_the_deadline_and_none_after(tmp_path, m
     with pytest.raises(RuntimeError):
         ci.frame_renderer("/p/project.json", str(tmp_path), time.monotonic() - 1)(1.0)
     assert len(seen) == 1
+
+
+# -- a card is what covers the caption band ---------------------------------------------------------------------
+
+PAPER = (0xf5, 0xf3, 0xeb, 255)
+
+
+def _matte(i="matte", start=0, end=10, **kw):
+    """A frame_broll-style card: a full-canvas JSX overlay, not `opaque`, painting paper round a window."""
+    return {"id": i, "type": "overlay", "src": "./overlays/footage-card.jsx", "start": start, "end": end, **kw}
+
+
+def _alpha_png(tmp_path, name, window=None):
+    """The overlay rendered alone: paper (alpha 255) all over, transparent inside `window` (x0, y0, x1, y1 on the
+    design canvas), or nowhere painted at all when window is "all"."""
+    img = Image.new("RGBA", (W // 2, H // 2), (0, 0, 0, 0) if window == "all" else PAPER)
+    if window and window != "all":
+        x0, y0, x1, y1 = [v // 2 for v in window]
+        img.paste((0, 0, 0, 0), (x0, y0, x1, y1))
+    p = tmp_path / f"{name}.png"
+    img.save(p)
+    return str(p)
+
+
+def _plan2(project, tmp_path, alpha, project_dir=None, calls=None):
+    def frame(t):
+        return _png(tmp_path, f"g{t}", (0xef, 0xec, 0xe4))
+
+    def overlay(item, n):
+        if calls is not None:
+            calls.append((item["id"], n))
+        return alpha(item, n) if callable(alpha) else alpha
+    return ci.plan(project, frame, W, H, overlay_fn=overlay, project_dir=str(project_dir or tmp_path))
+
+
+def _band_y(project, seg):
+    return ci.band(project, seg, W, H)
+
+
+def test_a_paper_matte_with_a_window_above_the_band_is_the_card(tmp_path):
+    p = _project([_matte()], [_seg("a", 1, 2)])
+    top_window = _alpha_png(tmp_path, "m1", window=(60, 300, 1020, 900))   # window in the upper half; band is low
+    changes, counts, warnings = _plan2(p, tmp_path, top_window)
+    assert changes[("id", "a")]["ink"] == "dark" and changes[("id", "a")]["inkAuto"]["card"] == "matte"
+    assert counts["dark"] == 1 and warnings == []
+
+
+def test_a_matte_whose_window_is_over_the_band_is_no_card(tmp_path):
+    p = _project([_matte()], [_seg("a", 1, 2)])
+    _, y0, _, y1 = _band_y(p, p["captions"]["segments"][0])
+    changes, counts, _ = _plan2(p, tmp_path, _alpha_png(tmp_path, "m2", window=(0, y0 - 20, W, y1 + 20)))
+    assert changes == {} and counts["dark"] == counts["light"] == 0
+
+
+def test_a_full_canvas_overlay_transparent_over_the_band_is_no_card(tmp_path):
+    p = _project([_matte("lower-third")], [_seg("a", 1, 2)])
+    changes, _, _ = _plan2(p, tmp_path, _alpha_png(tmp_path, "m3", window="all"))
+    assert changes == {}
+
+
+def test_footage_above_the_matte_over_the_band_means_no_card(tmp_path):
+    p = _project([_matte()], [_seg("a", 1, 2)])
+    p["tracks"].append({"id": "top", "items": [_image("pip", 0, 10, scale=0.5)]})
+    changes, _, _ = _plan2(p, tmp_path, _alpha_png(tmp_path, "m4", window=(60, 300, 1020, 900)))
+    assert changes == {}, "a half-size clip centred on the frame covers the caption band"
+
+
+def test_footage_above_the_matte_clear_of_the_band_leaves_the_card(tmp_path):
+    p = _project([_matte()], [_seg("a", 1, 2)])
+    p["tracks"].append({"id": "top", "items": [_image("pip", 0, 10, scale=0.3, offsetY=-35)]})
+    changes, _, _ = _plan2(p, tmp_path, _alpha_png(tmp_path, "m5", window=(60, 300, 1020, 900)))
+    assert changes[("id", "a")]["inkAuto"]["card"] == "matte"
+
+
+def test_footage_below_the_matte_does_not_hide_it(tmp_path):
+    p = _project([_matte()], [_seg("a", 1, 2)])   # the base video is full-frame, on a track below
+    changes, _, _ = _plan2(p, tmp_path, _alpha_png(tmp_path, "m6", window=(60, 300, 1020, 900)))
+    assert ("id", "a") in changes
+
+
+def test_an_overlay_is_rendered_once_per_item_and_frame(tmp_path):
+    calls = []
+    p = _project([_matte()], [_seg("a", 1, 2), _seg("b", 1, 2)])
+    _plan2(p, tmp_path, _alpha_png(tmp_path, "m7", window=(60, 300, 1020, 900)), calls=calls)
+    assert calls == [("matte", 45)], "frame = round((t - start) * fps)"
+
+
+def test_a_scaled_or_moved_overlay_is_not_a_candidate_and_is_not_rendered(tmp_path):
+    calls = []
+    for kw in ({"scale": 0.8}, {"offsetX": 10}, {"rotation": 5}, {"opacity": 0.5},
+               {"keyframes": [{"prop": "scale", "points": [{"t": 0, "value": 1}, {"t": 1, "value": 2}]}]}):
+        p = _project([_matte(**kw)], [_seg("a", 1, 2)])
+        assert _plan2(p, tmp_path, _alpha_png(tmp_path, "m8", window="all"), calls=calls)[0] == {}, kw
+    assert calls == []
+
+
+def test_an_opacity_keyframe_alone_still_places_the_overlay_over_the_canvas(tmp_path):
+    kf = [{"prop": "opacity", "points": [{"t": 0, "value": 0}, {"t": 1, "value": 1}]}]
+    p = _project([_matte(keyframes=kf)], [_seg("a", 1, 2)])
+    assert ("id", "a") in _plan2(p, tmp_path, _alpha_png(tmp_path, "m9", window=(60, 300, 1020, 900)))[0]
+
+
+def test_a_failed_overlay_render_leaves_the_caption_and_warns(tmp_path):
+    def boom(item, n):
+        raise RuntimeError("no chromium")
+    p = _project([_matte()], [_seg("a", 1, 2)])
+    changes, _, warnings = _plan2(p, tmp_path, boom)
+    assert changes == {} and len(warnings) == 1 and "matte" in warnings[0] and "unchanged" in warnings[0]
+
+
+def test_a_failed_overlay_render_does_not_clear_ink_of_ours(tmp_path):
+    def boom(item, n):
+        raise RuntimeError("x")
+    p = _project([_matte()], [_seg("a", 1, 2, ink="dark", inkAuto=_auto("matte", "dark"))])
+    changes, _, _ = _plan2(p, tmp_path, boom)
+    assert changes == {}
+
+
+def test_a_matte_over_the_band_clears_ink_of_ours(tmp_path):
+    p = _project([_matte()], [_seg("a", 1, 2, ink="dark", inkAuto=_auto("matte", "dark"))])
+    _, y0, _, y1 = _band_y(p, p["captions"]["segments"][0])
+    changes, counts, _ = _plan2(p, tmp_path, _alpha_png(tmp_path, "m10", window=(0, y0 - 20, W, y1 + 20)))
+    assert changes == {("id", "a"): None} and counts["cleared"] == 1
+
+
+def test_the_first_covering_candidate_from_the_top_decides(tmp_path):
+    p = _project([_matte("low")], [_seg("a", 1, 2)])
+    p["tracks"].append({"id": "top", "items": [_card("high", 0, 10)]})
+    changes, _, _ = _plan2(p, tmp_path, _alpha_png(tmp_path, "m11", window=(60, 300, 1020, 900)))
+    assert changes[("id", "a")]["inkAuto"]["card"] == "high"
+
+
+# -- a 3D scene without `opaque` --------------------------------------------------------------------------------
+
+def _scene(project_dir, sid, backdrop, fallback=False):
+    base = Path(project_dir) / "models" / ("scenes/" + sid if sid else "")
+    base.mkdir(parents=True, exist_ok=True)
+    if fallback:
+        (base / "scene.json").write_text(__import__("json").dumps({"backdrop": backdrop} if backdrop else {}))
+    else:
+        scene = {"backdrop": backdrop} if backdrop else {}
+        (base / "active.json").write_text(__import__("json").dumps({"slug": "m", "scene": scene}))
+
+
+def _scene3d(i="scene-a", sid="specs", **kw):
+    props = {"scene": sid} if sid else {}
+    return {"id": i, "type": "overlay", "src": "engine:scene3d", "start": 0, "end": 10, "props": props, **kw}
+
+
+@pytest.mark.parametrize("backdrop", [{"style": "studio"}, {"style": "color", "wall": "#F5F3EB"}, None])
+def test_a_3d_scene_with_a_backdrop_is_a_card_without_opaque(tmp_path, backdrop):
+    _scene(tmp_path, "specs", backdrop)
+    p = _project([_scene3d()], [_seg("a", 1, 2)])
+    changes, _, warnings = _plan2(p, tmp_path, None)
+    assert changes[("id", "a")]["inkAuto"]["card"] == "scene-a" and warnings == []
+
+
+def test_a_3d_scene_with_a_transparent_backdrop_is_no_card(tmp_path):
+    _scene(tmp_path, "specs", {"style": "transparent"})
+    p = _project([_scene3d()], [_seg("a", 1, 2)])
+    assert _plan2(p, tmp_path, None)[0] == {}
+
+
+def test_a_3d_scene_whose_file_is_missing_is_no_card_and_warns(tmp_path):
+    p = _project([_scene3d()], [_seg("a", 1, 2)])
+    changes, _, warnings = _plan2(p, tmp_path, None)
+    assert changes == {} and len(warnings) == 1 and "scene-a" in warnings[0]
+
+
+def test_the_projects_own_scene_is_models_active_json_and_scene_json_is_a_fallback(tmp_path):
+    _scene(tmp_path, "", {"style": "studio"})
+    p = _project([_scene3d(sid="")], [_seg("a", 1, 2)])
+    assert ("id", "a") in _plan2(p, tmp_path, None)[0]
+    fb = tmp_path / "fb"
+    _scene(fb, "specs", {"style": "transparent"}, fallback=True)
+    assert _plan2(_project([_scene3d()], [_seg("a", 1, 2)]), tmp_path, None, project_dir=fb)[0] == {}
+
+
+def test_card_under_reads_a_scene_from_the_project_dir(tmp_path):
+    _scene(tmp_path, "specs", {"style": "studio"})
+    p = _project([_scene3d()])
+    assert ci.card_under(p, 3, project_dir=str(tmp_path))["id"] == "scene-a"
+    assert ci.card_under(p, 3) is None, "no folder, no scene file to read"
