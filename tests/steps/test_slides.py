@@ -476,3 +476,68 @@ def test_a_damaged_headline_is_skipped_by_the_check_not_a_traceback(tmp_path, da
     slides = proj(d)["slides"]
     damage(headline(slides[0]))
     sl._check(slides, {slides[0]["id"]}, str(d), fake_measure())
+
+
+# ── locked elements (§586): the step never moves or resizes one, and never refuses ────────────────────────────────
+
+def _lock_headline(d, locked=True, slide=0):
+    p = proj(d)
+    el = headline(p["slides"][slide])
+    el.update({"x": 33, "y": 44, "w": 555, "h": 222, "rotation": 7, "locked": locked})
+    (d / "project.json").write_text(json.dumps(p))
+    return el["id"]
+
+
+def _box5(el):
+    return tuple(el[k] for k in ("x", "y", "w", "h", "rotation"))
+
+
+def test_a_locked_headline_keeps_its_box_through_edit_and_headlines_but_takes_the_rest(tmp_path):
+    d = make_carousel(tmp_path)
+    run(d, headlines=json.dumps(HEADS))
+    lid = _lock_headline(d)
+    out = run(d, edit=json.dumps({"slide": 1, "headline": "New words", "color": "red", "position": "bottom", "style": "label"}))
+    el = headline(proj(d)["slides"][0])
+    assert _box5(el) == (33, 44, 555, 222, 7) and el["locked"] is True
+    assert el["overlay"]["props"]["text"] == "New words" and el["overlay"]["props"]["color"] == "red"
+    assert el["overlay"]["props"]["bgColor"] == "#ffffff"
+    assert out["locked"] == [lid] and out["changed"] == [1]
+    out = run(d, headlines=json.dumps(["Third text"]))
+    el = headline(proj(d)["slides"][0])
+    assert _box5(el) == (33, 44, 555, 222, 7) and el["overlay"]["props"]["text"] == "Third text"
+    assert out["locked"] == [lid]
+
+
+def test_a_style_alone_restyles_a_locked_headline_without_moving_it(tmp_path):
+    d = make_carousel(tmp_path)
+    run(d, headlines=json.dumps(HEADS))
+    lid = _lock_headline(d)
+    out = run(d, style="label")
+    el = headline(proj(d)["slides"][0])
+    assert _box5(el) == (33, 44, 555, 222, 7) and el["overlay"]["props"]["bgColor"] == "#ffffff"
+    assert out["locked"] == [lid]
+
+
+def test_an_unlocked_headline_moves_as_before_and_locked_false_is_unlocked(tmp_path):
+    d = make_carousel(tmp_path)
+    run(d, headlines=json.dumps(HEADS))
+    _lock_headline(d, locked=False)
+    out = run(d, edit=json.dumps({"slide": 1, "position": "bottom"}))
+    el = headline(proj(d)["slides"][0])
+    assert (el["x"], el["y"], el["w"], el["h"]) == (round(1080 * 0.08), round(1350 * 0.63), round(1080 * 0.84), round(1350 * 0.30))
+    assert "locked" not in out
+
+
+def test_a_position_edit_alone_on_a_locked_headline_changes_nothing_and_is_named(tmp_path):
+    d = make_carousel(tmp_path)
+    run(d, headlines=json.dumps(HEADS))
+    lid = _lock_headline(d)
+    before = proj(d)
+    out = run(d, edit=json.dumps({"slide": 1, "position": "bottom"}))
+    assert proj(d) == before and out["locked"] == [lid] and out["changed"] == []
+
+
+def test_a_project_without_locked_elements_has_no_locked_key(tmp_path):
+    d = make_carousel(tmp_path)
+    assert "locked" not in run(d, headlines=json.dumps(HEADS))
+    assert "locked" not in run(d, order=json.dumps([2, 1, 3, 4, 5]))

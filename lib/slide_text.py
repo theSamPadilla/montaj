@@ -332,6 +332,26 @@ def headline_element(text, *, style, position, width, height, runtime_dir, color
             "frame": 0, **_box(position, width, height), "rotation": 0}
 
 
+GEOMETRY = ("x", "y", "w", "h", "rotation")
+
+
+def _keep_locked(before, after):
+    """Put back the geometry of every locked element (`locked: true`, a person's lock in the editor) the call touched,
+    in `after` (the slide as written) from `before` (as read). The ids of those it touched or tried to move."""
+    kept = []
+    old = {el.get("id"): el for el in before.get("elements") or [] if isinstance(el, dict)}
+    for k, el in enumerate(after.get("elements") or []):
+        prev = old.get(el.get("id")) if isinstance(el, dict) else None
+        if prev is None or prev.get("locked") is not True or el == prev:
+            continue
+        after["elements"][k] = {**el, **{g: prev[g] for g in GEOMETRY if g in prev}}
+        for g in GEOMETRY:
+            if g not in prev:
+                after["elements"][k].pop(g, None)
+        kept.append(el["id"])
+    return kept
+
+
 def _box_of(el):
     return {k: float(el.get(k) or 0) for k in ("x", "y", "w", "h")}
 
@@ -517,6 +537,12 @@ def apply(slides, *, headlines=None, edit=None, order=None, style=None, width=10
             _edit(out[i], edit, width=width, height=height, runtime_dir=runtime_dir, project_dir=project_dir, n=i + 1)
             if out[i] != before and out[i].get("id") not in changed:
                 changed.append(out[i].get("id"))
+    locked = []
+    if not made:
+        for i, sl in enumerate(out):
+            locked += [k for k in _keep_locked(slides[i], sl) if k not in locked]
+        # a slide whose only change was a locked box put back is no change
+        changed = [c for c in changed if any(sl.get("id") == c and sl != slides[i] for i, sl in enumerate(out))]
     moved = False
     if isinstance(new_order, dict):
         pair = new_order.get("swap") if set(new_order) == {"swap"} else None
@@ -533,5 +559,6 @@ def apply(slides, *, headlines=None, edit=None, order=None, style=None, width=10
             raise SlideError("order lists every slide exactly once.")
         moved = idx != list(range(len(out)))
         out = [out[k] for k in idx]
-    report = {"changed": changed, "headlines": counts, "order": moved, "made": made, "kept": kept}
+    report = {"changed": changed, "headlines": counts, "order": moved, "made": made, "kept": kept,
+              "locked": locked}
     return out, report

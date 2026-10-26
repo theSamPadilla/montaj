@@ -125,6 +125,8 @@ def run(project_path, *, headlines=None, edit=None, order=None, style=None, deta
         out["headlines"] = {k: v for k, v in report["headlines"].items() if v}
     if report["order"]:
         out["order"] = True
+    if report["locked"]:
+        out["locked"] = report["locked"]
     if version:
         out["version"] = True
     if issues:
