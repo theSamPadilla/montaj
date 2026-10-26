@@ -258,9 +258,10 @@ describe('SlideCanvas: crop mode (§556 M4)', () => {
 
     const e = await esc()
     expect(e.defaultPrevented).toBe(true)
-    // 0.75 of 400 by 200 is 3:2, so the 200 wide box is 133 tall.
+    // M3a: the box takes the kept region's place on the slide. The 400 x 200
+    // source is drawn 200 x 100, 50 down; its left three quarters are 150 x 100.
     expect(fns.resizeElement).toHaveBeenCalledTimes(1)
-    expect(fns.resizeElement).toHaveBeenCalledWith('slide-0', 'el-img', { x: 100, y: 100, w: 200, h: 133 })
+    expect(fns.resizeElement).toHaveBeenCalledWith('slide-0', 'el-img', { x: 100, y: 150, w: 150, h: 100 })
     expect(fns.updateImageCrop).toHaveBeenCalledTimes(1)
     expect(fns.updateImageCrop.mock.calls[0].slice(0, 2)).toEqual(['slide-0', 'el-img'])
     expectCrop(fns.updateImageCrop.mock.calls[0][2], { x: 0, y: 0, w: 0.75, h: 1 })
@@ -298,7 +299,7 @@ describe('SlideCanvas: crop mode (§556 M4)', () => {
     expect(fns.onExitCrop).toHaveBeenCalledTimes(1)
   })
 
-  it('moving the window keeps its size, so the box keeps its shape: only the crop is written', async () => {
+  it('moving the window keeps its size, so the box keeps its shape: the box moves to where the kept part was drawn', async () => {
     const { fns } = mountCanvas(slideWith({ ...IMG, crop: { x: 0.25, y: 0, w: 0.5, h: 1 } }))
     await loadSource()
     const move = wrapperOf('el-img').querySelector('[data-testid="crop-move"]') as HTMLElement
@@ -308,7 +309,8 @@ describe('SlideCanvas: crop mode (§556 M4)', () => {
       pointer(move, 'pointerup', { clientX: 60, clientY: 100 })
     })
     await esc()
-    expect(fns.resizeElement).not.toHaveBeenCalled()
+    // The picture (400 wide) starts at x 0; the new window starts 0.05 of it in.
+    expect(fns.resizeElement).toHaveBeenCalledWith('slide-0', 'el-img', { x: 20, y: 100, w: 200, h: 200 })
     expectCrop(fns.updateImageCrop.mock.calls[0][2], { x: 0.05, y: 0, w: 0.5, h: 1 })
     expect(fns.commit).toHaveBeenCalledTimes(1)
   })
@@ -330,7 +332,7 @@ describe('SlideCanvas: crop mode (§556 M4)', () => {
     expect(boxOf(cropWindow())).toEqual(before)
 
     await esc()
-    expect(fns.resizeElement).toHaveBeenCalledWith('slide-0', 'el-img', { x: 300, y: 100, w: 200, h: 133 })
+    expect(fns.resizeElement).toHaveBeenCalledWith('slide-0', 'el-img', { x: 300, y: 150, w: 150, h: 100 })
     expectCrop(fns.updateImageCrop.mock.calls[0][2], { x: 0, y: 0, w: 0.75, h: 1 })
   })
 

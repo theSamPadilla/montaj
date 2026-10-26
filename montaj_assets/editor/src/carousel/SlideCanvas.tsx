@@ -12,6 +12,7 @@ import {
 } from '../gestures'
 import { OverlayPreview } from '../preview/OverlayPreview'
 import { CanvasCropOverlay } from '../crop/CanvasCropOverlay'
+import { croppedBox } from '../crop/crop-math'
 import { InlineTextEditor } from '../text/InlineTextEditor'
 import { ensureGoogleFontsLoaded } from '../lib/google-fonts'
 import { groupDragMove, type GroupDragResult, type GroupMember } from './groupDrag'
@@ -392,7 +393,7 @@ export default function SlideCanvas({
 
   // ── Crop mode (§556 M4) ──
   // Writes the window picked onto the image it was picked on: the box takes
-  // the window's shape at its width, then the crop, which `updateImageCrop`
+  // the kept region's place at the picture's scale, then the crop, which `updateImageCrop`
   // folds into one undo step with the box, then a commit. Every call is made
   // in this tick, so nothing the caller does next lands between them. Writes
   // nothing when the image is not on this slide, its size is not known yet,
@@ -403,11 +404,12 @@ export default function SlideCanvas({
     if (el?.type !== 'image' || !dims) return Promise.resolve()
     if (sameCrop(open.localCrop, el.crop ?? FULL_FRAME)) return Promise.resolve()
     const writes: Array<Promise<void> | undefined> = []
-    // The window's pixel aspect, as a box height for the box's width.
-    const aspect = (open.localCrop.w * dims.width) / (open.localCrop.h * dims.height)
-    if (Number.isFinite(aspect) && aspect > 0) {
-      const h = Math.round(el.w / aspect)
-      if (h !== el.h) writes.push(resizeElement?.(open.slideId, el.id, { x: el.x, y: el.y, w: el.w, h }))
+    // The box takes the kept region's place at the picture's current scale.
+    const next = croppedBox(el, el.crop, open.localCrop, dims)
+    const box = { x: Math.round(next.x), y: Math.round(next.y), w: Math.round(next.w), h: Math.round(next.h) }
+    const valid = [box.x, box.y, box.w, box.h].every(Number.isFinite) && box.w > 0 && box.h > 0
+    if (valid && (box.x !== el.x || box.y !== el.y || box.w !== el.w || box.h !== el.h)) {
+      writes.push(resizeElement?.(open.slideId, el.id, box))
     }
     writes.push(updateImageCrop?.(open.slideId, el.id, open.localCrop))
     writes.push(commit?.())
