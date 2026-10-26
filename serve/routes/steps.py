@@ -782,6 +782,8 @@ STEP_WRITES = {
     "cut": (("tracks", "captions", "audio", "markers", "notes", "cleanCut", "status"), ("speech-text.md", "cut-plan.md", "cut-plan.prev.md", "cut-plan.prev-")),
     # §558: place adds an overlay (and its preset file), captions styles the captions, slides edits the slides
     "place": (("tracks",), ("overlays/",)),
+    # PL89: push_in keys the talking-head clips' scale and offsetY
+    "push_in": (("tracks",), ()),
     # PL89: frame_broll frames one b-roll clip (its crop or its card overlay, and the card's preset file)
     "frame_broll": (("tracks",), ("overlays/",)),
     "captions": (("captions",), ()),

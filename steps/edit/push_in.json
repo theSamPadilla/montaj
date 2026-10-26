@@ -1,0 +1,20 @@
+{
+  "name": "push_in",
+  "category": "edit",
+  "description": "A slow push on the talking-head clips in one call: each main-track clip's scale keyed 1.00 to 1.07 across it (every other one from 1.04, so a cut changes the framing), the face kept in place. A clip a person framed is left alone. A human edit since the read is refused.",
+  "input": {
+    "type": "project",
+    "description": "The project id, its folder, or the absolute path of its project.json"
+  },
+  "output": {
+    "type": "json",
+    "description": "{pushed (clips), kept? (clips a person framed, left alone)}. detail adds the pushed ids."
+  },
+  "params": [
+    {"name": "project", "type": "path", "required": true, "description": "The project id, its folder, or the absolute path of its project.json"},
+    {"name": "items", "type": "string", "required": false, "description": "Only these clips: a JSON list of item ids. Default: every video on the main track."},
+    {"name": "zoom", "type": "float", "required": false, "default": 0.07, "min": 0.01, "max": 0.2, "description": "How much each clip grows across it (0.07 is 7%)."},
+    {"name": "anchor", "type": "float", "required": false, "default": 0.35, "min": 0, "max": 1, "description": "The share of the height that stays put (a face, 0.35)."},
+    {"name": "detail", "type": "bool", "required": false, "description": "Also answer the pushed ids."}
+  ]
+}

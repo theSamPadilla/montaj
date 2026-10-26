@@ -17,6 +17,7 @@ The pure half (the step, steps/render/look.py, runs the renderers):
 
 Times are timeline seconds. Keyframed geometry is read at its base values (said in the detail).
 """
+import json
 import os
 
 from lib.project_tracks import enabled_track_items
@@ -464,4 +465,110 @@ def answer(issues, *, extra=None, cap=300, line=None):
     out = {**base, "issues": kept}
     if len(lines) > len(kept):
         out["more"] = len(lines) - len(kept)
+    return out
+
+
+# ── PL89 (montaj-app-52): still holds ─────────────────────────────────────────────────────────────────────────────
+# A stretch over STILL_HOLD_S with no beat (an item starting or ending) and nothing moving. PL89b held still 3D for
+# 6 s twice; Claude alone cut or moved about every 3 s.
+
+STILL_HOLD_S = 4.0
+MOTION_PROPS = ("scale", "scaleX", "scaleY", "offsetX", "offsetY", "rotation", "cropX", "cropY", "cropW", "cropH")
+HOLD_MOVES = ("stand", "idle", "rest", "hold")   # a cast move by one of these names keeps the body still
+
+
+def _keys_move(item):
+    for tr in item.get("keyframes") or []:
+        pts = tr.get("points") or []
+        if tr.get("prop") in MOTION_PROPS and len({json.dumps(p.get("value")) for p in pts}) > 1:
+            return True
+    return False
+
+
+def _read_json(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _scene_motion(item, project_dir):
+    """[(start, end)] in timeline seconds where a 3D item's camera or cast moves: the whole item when its camera keys
+    differ or it is cut into shots; else each cast move that is not a hold, while it plays (its model's moves.json)."""
+    s, e = _num(item.get("start")), _num(item.get("end"))
+    props = item.get("props") or {}
+    sid, inpoint = props.get("scene"), _num(props.get("inPoint"))
+    models = os.path.join(project_dir, "models")
+    scene = _read_json(os.path.join(models, "scenes", sid, "scene.json") if sid else os.path.join(models, "scene.json"))
+    if not isinstance(scene, dict):
+        return [(s, e)]    # unread: not reported as still
+    cam = scene.get("camera") or {}
+    if cam.get("shots") or any(len({json.dumps(k[1]) for k in (cam.get(p) or []) if isinstance(k, list) and len(k) > 1}) > 1
+                               for p in ("location", "target")):
+        return [(s, e)]
+    spans = []
+    for member in scene.get("cast") or []:
+        moves = member.get("moves") or []
+        lib = (_read_json(os.path.join(models, str(member.get("model")), "moves.json")) or {}).get("moves") or {}
+        for m in moves:
+            name = str(m.get("move", ""))
+            if any(h in name.lower() for h in HOLD_MOVES):
+                continue
+            dur = _num((lib.get(name) or {}).get("duration"), 0)
+            a = s + _num(m.get("start")) - inpoint
+            b = a + dur if dur > 0 else e
+            if b > s and a < e:
+                spans.append((max(a, s), min(b, e)))
+    return spans
+
+
+def _moving_spans(project, project_dir):
+    """[(start, end)] where something on screen moves (see still_holds)."""
+    spans = []
+    for ti, row in enumerate(drawn_tracks(project)):
+        for it in row:
+            s, e = _num(it.get("start")), _num(it.get("end"))
+            kind = it.get("type")
+            if _keys_move(it):
+                spans.append((s, e))
+            elif kind == "video" and ti > 0:
+                spans.append((s, e))          # footage on an upper track: a cutaway with its own motion
+            elif kind == "overlay" and it.get("src") == "engine:scene3d":
+                spans += _scene_motion(it, project_dir)
+            elif kind == "overlay":
+                path = overlay_path(it, project_dir)
+                text = ""
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        text = f.read()
+                except (OSError, TypeError):
+                    pass
+                if "motion(" in text:        # the runtime's motion() helper keeps it alive while held
+                    spans.append((s, e))
+    return spans
+
+
+def still_holds(project, project_dir):
+    """[{t, id, text}] for each stretch over STILL_HOLD_S between beats with nothing moving."""
+    rows = drawn_tracks(project)
+    beats = sorted({_num(it.get(k)) for row in rows for it in row for k in ("start", "end")})
+    if len(beats) < 2:
+        return []
+    moving = sorted(_moving_spans(project, project_dir))
+    out = []
+    for a, b in zip(beats, beats[1:]):
+        t, still = a, []
+        for ms, me in moving:
+            if me <= t or ms >= b:
+                continue
+            if ms > t:
+                still.append((t, ms))
+            t = max(t, me)
+        if t < b:
+            still.append((t, b))
+        for x, y in still:
+            if y - x > STILL_HOLD_S + 1e-6:
+                out.append({"t": r2(x), "id": "still", "text": f"still for {y - x:.1f} s ({r2(x)}-{r2(y)}s): "
+                            "cut, push it (push_in) or add a beat"})
     return out
