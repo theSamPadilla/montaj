@@ -400,7 +400,8 @@ def carousel_run(project_path, project, *, at, image, detail, measure_fn, render
                 add(0, "no slide could be rendered")
         finally:
             shutil.rmtree(render_dir, ignore_errors=True)
-    answer = lc.answer(issues, extra=extra, line=lambda i: (f'slide {i["t"]}: ' if i["t"] else "") + i["text"])
+    answer = lc.answer(issues, extra=extra, cap=300,   # a carousel keeps its short answer (PL89g widened the video's)
+                       line=lambda i: (f'slide {i["t"]}: ' if i["t"] else "") + i["text"])
     if detail:
         answer.update({"issues": [(f'slide {i["t"]}: ' if i["t"] else "") + i["text"] for i in sorted(issues, key=lambda x: x["t"])],
                        "shown": numbers, "wallMs": int((clock() - t0) * 1000)})

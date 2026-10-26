@@ -134,11 +134,34 @@ def test_two_overlays_on_screen_at_once_whose_text_crosses_are_reported():
     assert [i["text"] for i in lc.text_overlaps([a, b, c])] == ["text overlaps ov-b", "text overlaps ov-c"]
 
 
-def test_the_answer_stays_within_300_characters_and_counts_the_rest():
-    issues = [{"t": k, "id": f"ov-{k}", "text": "text \"A long headline\" runs off the frame"} for k in range(30)]
+def test_the_answer_lists_every_issue_once_grouping_the_same_one_across_items():
+    # PL89g: a 300-character answer showed one issue and "more": 3, so the agent ran look again with detail to read the
+    # rest (two of its five passes). Every issue comes back; the same issue on several items is one line.
+    same = 'text "Footage: Phonebot" under the apps\' right-side buttons: move it up 162 px'
+    issues = [{"t": t, "id": i, "text": same} for t, i in ((26.04, "ov-b"), (4.92, "ov-a"), (29.44, "ov-c"))]
+    issues += [{"t": k, "id": f"ov-{k}", "text": f'text "Headline {k}" runs off the frame: move it left {k} px'} for k in range(1, 9)]
     out = lc.answer(issues, extra={"overlays": 12})
-    assert len(json.dumps(out)) <= 300 and out["ok"] is False and out["more"] == 30 - len(out["issues"])
+    assert "more" not in out and len(out["issues"]) == 9, out
+    assert out["issues"][0] == "1s ov-1: " + 'text "Headline 1" runs off the frame: move it left 1 px'
+    assert "4.92s ov-a, 26.04s ov-b, 29.44s ov-c: " + same in out["issues"]
     assert lc.answer([], extra={"overlays": 2}) == {"ok": True, "overlays": 2}
+
+
+def test_a_very_long_answer_still_stops_and_counts_the_rest():
+    issues = [{"t": k, "id": f"ov-{k}", "text": f'text "A long headline number {k}" runs off the frame'} for k in range(200)]
+    out = lc.answer(issues)
+    assert out["more"] == 200 - len(out["issues"]) and len(json.dumps(out)) <= lc.ANSWER_CAP
+
+
+@pytest.mark.parametrize("box,want", [
+    # PL89g: "move it right 4 px", then "up 1 px": nudges under ZONE_SLACK_PX (rounding, glyph slack) are not issues
+    (("Edge", 49, 600, 400, 80), []),
+    (("Edge", 45, 600, 400, 80), ['text "Edge" inside the 5% title-safe margin: move it right 9 px']),
+    (("Low", 100, 1495, 400, 80), []),                                   # 5 px over the controls' 1570
+    (("Tag", 795, 1000, 90, 80), []),                                    # 5 px under the buttons' 880
+])
+def test_a_safe_area_nudge_under_the_slack_is_not_an_issue(box, want):
+    assert [i["text"] for i in lc.measured_issues({}, _texts(box), 1080, 1920, 1, "ov")] == want
 
 
 # ── the step ──────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -258,7 +281,7 @@ def test_text_across_the_captions_while_a_caption_shows_is_reported(tmp_path):
     path, _ = _with_captions(tmp_path, overlays=[{"id": "ov-low", "start": 2, "end": 4}, {"id": "ov-late", "start": 5, "end": 7}])
     out = look.run(str(path), measure_fn=_fake_measure({"ov-low": [("Name", 100, 1380, 400, 60)], "ov-late": [("Name", 100, 1380, 400, 60)]}))
     assert out["issues"] == ['3.0s ov-low: text "Name" crosses the captions (1.0-3.0s): move it up 47 px'], out
-    assert "look again" in out["then"]
+    assert "once more" in out["then"]
 
 
 def test_a_bigger_or_moved_caption_moves_its_band(tmp_path):
@@ -378,7 +401,7 @@ def test_the_real_measurer_does_not_call_a_full_width_centred_title_inside_the_m
 def test_an_answer_with_move_hints_says_to_run_look_again():
     hinted = [{"t": 1.0, "id": "ov", "text": "text \"Tag\" crosses the captions (1-2s): move it down 82 px"}]
     plain = [{"t": 1.0, "id": "ov", "text": "text \"Tag\" spills out of its box"}]
-    assert "look again" in lc.answer(hinted)["then"]
+    assert lc.answer(hinted)["then"] == "Run look once more after these edits, not after each one."
     assert "then" not in lc.answer(plain)
 
 
