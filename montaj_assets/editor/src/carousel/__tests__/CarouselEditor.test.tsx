@@ -4,7 +4,7 @@ import { Keyboard, MousePointer2 } from 'lucide-react'
 import type { CarouselRenderModalContext, ControlsWindowContext, EditorAdapter, ImageElement, OverlayElement, Project, RenderEvent, SlideNotesApi, SlidePin } from '../../types'
 import type { SlideNote } from '../../schema'
 import CarouselEditor from '../CarouselEditor'
-import { CAROUSEL_CONTROLS } from '../../ControlsInfoModal'
+import { CAROUSEL_CONTROLS, LOCK_CONTROL } from '../../ControlsInfoModal'
 import { stubPlatform } from '../../ui/__tests__/platform'
 
 // jsdom never loads an image, so a real size read would wait out its 5 s
@@ -547,8 +547,9 @@ describe('CarouselEditor — editor-core integration', () => {
         ['Canvas', MousePointer2],
         ['Keyboard', Keyboard],
       ])
+      // The lock key is listed only with `lockKey` on (it is not bound otherwise).
       expect(ctx.sections.map((s) => s.entries.map((e) => e.label))).toEqual(
-        CAROUSEL_CONTROLS.map((s) => s.entries.map((e) => e.label)),
+        CAROUSEL_CONTROLS.map((s) => s.entries.filter((e) => e !== LOCK_CONTROL).map((e) => e.label)),
       )
       const keyboard = ctx.sections.find((s) => s.heading === 'Keyboard')!
       expect(keyboard.entries.map((e) => e.keys)).toEqual([

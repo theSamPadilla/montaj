@@ -1466,6 +1466,14 @@ export interface CarouselEditorProps<P extends Project = Project> {
    * 30 000 (`RENDER_SAVE_TIMEOUT_MS`).
    */
   renderSaveTimeoutMs?: number
+
+  /**
+   * Bind Opt+Shift+L (Alt+Shift+L on Windows) to lock or unlock the selected
+   * elements: unlocks them all when any is locked, else locks them all. Off by
+   * default: the key ships together with an on-canvas lock badge. Element lock
+   * itself (the `locked` field and what it blocks) works either way.
+   */
+  lockKey?: boolean
 }
 
 /**

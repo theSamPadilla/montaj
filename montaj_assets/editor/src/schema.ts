@@ -417,6 +417,13 @@ export interface ImageElement {
    * adapter (e.g. resolveImageSrc) is responsible for resolving the actual URL.
    */
   mediaId?: string
+  /**
+   * Optional: true while the element is locked. A locked element can be
+   * selected and styled, but not moved, resized, rotated, cropped, replaced,
+   * aligned or deleted. Saved with the project; the renderer ignores it.
+   * Absent = unlocked.
+   */
+  locked?: boolean
 }
 
 export interface OverlayElement {
@@ -436,6 +443,13 @@ export interface OverlayElement {
    * metrics as the renderer; absent = no custom fonts loaded.
    */
   googleFonts?: string[]
+  /**
+   * Optional: true while the element is locked. A locked element can be
+   * selected and styled, but not moved, resized, rotated, cropped, replaced,
+   * aligned or deleted. Saved with the project; the renderer ignores it.
+   * Absent = unlocked.
+   */
+  locked?: boolean
 }
 
 export type CarouselElement = ImageElement | OverlayElement

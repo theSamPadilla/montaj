@@ -10,9 +10,15 @@ export function cloneElement(el: CarouselElement): CarouselElement {
   return { ...structuredClone(el), id: crypto.randomUUID() }
 }
 
-/** `el` `by` px further down and right. */
+/** `el` without its lock: a copy of a locked element is free to move. */
+export function withoutLock(el: CarouselElement): CarouselElement {
+  const { locked: _locked, ...free } = el
+  return free as CarouselElement
+}
+
+/** `el`, unlocked, `by` px further down and right. */
 function stepped(el: CarouselElement, by: number): CarouselElement {
-  return { ...el, x: el.x + by, y: el.y + by }
+  return { ...withoutLock(el), x: el.x + by, y: el.y + by }
 }
 
 /** What Copy and Cut hold, until the next copy. */

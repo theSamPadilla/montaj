@@ -142,6 +142,8 @@ export type AlignControlsProps = {
   /** The slide's size, in the same units as the element's box. */
   width: number
   height: number
+  /** The align buttons are off (a locked element is not aligned). */
+  disabled?: boolean
 } & (
   | { element: Box; onChange: (patch: AlignPatch) => void }
   /** Several selected elements: each patch is one element's, by id. */
@@ -181,8 +183,9 @@ export function AlignControls(props: AlignControlsProps) {
             type="button"
             aria-label={label}
             title={label}
+            disabled={props.disabled}
             onClick={() => align(to)}
-            className="flex h-7 flex-1 items-center justify-center rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] transition-colors hover:border-[var(--editor-accent)] hover:text-[var(--editor-text)] focus:outline-none focus:ring-1 focus:ring-[var(--editor-accent)]"
+            className="flex h-7 flex-1 items-center justify-center rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] transition-colors hover:border-[var(--editor-accent)] hover:text-[var(--editor-text)] focus:outline-none focus:ring-1 focus:ring-[var(--editor-accent)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-[var(--editor-border)]"
           >
             <Icon className="h-4 w-4" aria-hidden="true" />
           </button>

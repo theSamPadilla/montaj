@@ -10,7 +10,7 @@ import SlideCanvas, { type CropExit, type SlideCanvasCropControl } from './Slide
 import SlidePropertyPanel from './SlidePropertyPanel'
 import AddElementMenu from './AddElementMenu'
 import CarouselRenderModal from './CarouselRenderModal'
-import ControlsInfoModal, { CAROUSEL_CONTROLS, platformSections } from '../ControlsInfoModal'
+import ControlsInfoModal, { CAROUSEL_CONTROLS, LOCK_CONTROL, platformSections } from '../ControlsInfoModal'
 import { DARK_TEXT, NoteArmLayer, NotePinLayer, badgeColor, hasPoint } from './NoteLayers'
 import { addSlideNote, setSlideNoteText, setSlideNoteDone, setSlideNotePoint, removeSlideNotes } from './notes'
 import { coverCrop, loadImageNaturalSize, type ImageSize } from './imageGeometry'
@@ -18,7 +18,8 @@ import { newImageElement } from './newImage'
 import { noteId } from '../video/timeline/notes'
 import { useKeymap, matchesDelete, matchesEscape, matchesPlainKey, matchesRedo, matchesUndo, type KeyBinding } from '../video/keymap'
 import type { ReorderDirection } from '../state/project-reducer'
-import { COPY_OFFSET, cloneElement, copyElements, duplicateCopies, insertCopies, pasteElements, type ElementClipboard } from './clipboard'
+import { COPY_OFFSET, cloneElement, copyElements, duplicateCopies, insertCopies, pasteElements, withoutLock, type ElementClipboard } from './clipboard'
+import { isLocked, toggleLock } from './lock'
 import { reorderSelection } from './layerOrder'
 import { Button } from '../ui'
 import { shortcutText } from '../ui/modifierKeys'
@@ -261,6 +262,11 @@ const matchesCmdKey = (key: string) => (e: KeyboardEvent) =>
 const matchesLayerKey = (code: 'BracketLeft' | 'BracketRight', alt: boolean) => (e: KeyboardEvent) =>
   (e.metaKey || e.ctrlKey) && !e.shiftKey && e.altKey === alt && e.code === code
 
+/** Option+Shift+L (Alt+Shift+L on Windows), no Cmd or Ctrl. Matched on `code`,
+ *  the physical key: Option changes what a Mac types for it. */
+const matchesLockKey = (e: KeyboardEvent) =>
+  e.code === 'KeyL' && e.altKey && e.shiftKey && !e.metaKey && !e.ctrlKey
+
 /** The arrows and the way each one nudges. */
 const ARROWS = new Map<string, [dx: number, dy: number]>([
   ['ArrowLeft', [-1, 0]],
@@ -306,6 +312,12 @@ function isBurstOf(burst: PendingNudge, slideId: string, selectedIds: string[]):
  *  windows are tracked by `modalOpen`; this holds the keys for the host's too. */
 function hostDialogOpen(): boolean {
   return document.querySelector('[aria-modal="true"]') !== null
+}
+
+/** `patch` without the keys that place an element (position, size, rotation). */
+function withoutPlacement(patch: Partial<CarouselElement>): Partial<CarouselElement> {
+  const { x: _x, y: _y, w: _w, h: _h, rotation: _r, ...rest } = patch
+  return rest
 }
 
 /** The host path in a drag from the host (`IMAGE_DND_MIME`), or null when the
@@ -357,7 +369,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 // ── CarouselEditor ────────────────────────────────────────────────────────────
 
-export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, onProvideRenderTrigger, onProvideCarouselApi, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default', onError, renderSaveTimeoutMs = RENDER_SAVE_TIMEOUT_MS }: Props<P>) {
+export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, onProvideRenderTrigger, onProvideCarouselApi, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default', onError, renderSaveTimeoutMs = RENDER_SAVE_TIMEOUT_MS, lockKey = false }: Props<P>) {
   const state = useProjectState(adapter, initialProject.id, initialProject)
   const project = state.project
   const slides = project.slides ?? []
@@ -441,6 +453,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
    *  crop of another image in progress is applied first, so moving on does not
    *  drop what was picked. */
   const enterCrop = useCallback((elementId: string) => {
+    // A locked image is not cropped.
+    if (isLocked(slidesRef.current.find(s => s.id === selectedSlideIdRef.current)?.elements.find(el => el.id === elementId))) return
     if (cropElementIdRef.current && cropElementIdRef.current !== elementId) applyCrop()
     setSelectedElementId(elementId)
     setCropElementId(elementId)
@@ -466,7 +480,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   const [showControls, setShowControls] = useState(false)
   // What a host's `renderControls` is handed: the modal's content, resolved
   // for the platform once (it does not change while the editor is up).
-  const controlSections = useMemo(() => platformSections(CAROUSEL_CONTROLS), [])
+  const carouselControls = useMemo(
+    () => (lockKey ? CAROUSEL_CONTROLS : CAROUSEL_CONTROLS.map((sec) => ({ ...sec, entries: sec.entries.filter((e) => e !== LOCK_CONTROL) }))),
+    [lockKey],
+  )
+  const controlSections = useMemo(() => platformSections(carouselControls), [carouselControls])
   const [refreshing, setRefreshing] = useState(false)
   const [refreshState, setRefreshState] = useState<'idle' | 'err'>('idle')
   const [rendering, setRendering] = useState(false)
@@ -614,16 +632,19 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
    *  brings them all back. */
   function removeSelection() {
     if (!selectedSlide) return
-    if (liveSelectedIds.length === 1) {
-      void state.removeElement(selectedSlide.id, liveSelectedIds[0])
+    // A locked element stays, and stays selected.
+    const removable = liveSelectedIds.filter(id => !isLocked(selectedSlide.elements.find(el => el.id === id)))
+    if (removable.length === 0) return
+    if (removable.length === 1) {
+      void state.removeElement(selectedSlide.id, removable[0])
     } else {
-      const gone = new Set(liveSelectedIds)
+      const gone = new Set(removable)
       void state.editElements(selectedSlide.id, (els) => {
-        const kept = els.filter(el => !gone.has(el.id))
+        const kept = els.filter(el => !gone.has(el.id) || isLocked(el))
         return kept.length === els.length ? els : kept
       })
     }
-    setSelectedElementId(null)
+    setSelectedElementIds(liveSelectedIds.filter(id => !removable.includes(id)))
   }
 
   /** Copy: the selection, in slide order, replaces the clipboard. */
@@ -652,6 +673,13 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     setSelectedElementIds(Array.from(copies.values(), (copy) => copy.id))
   }
 
+  /** Lock key: locks the selection, or unlocks it when any of it is locked; one slide write. */
+  function toggleSelectionLock() {
+    if (!selectedSlide) return
+    const ids = liveSelectedIds
+    void state.editElements(selectedSlide.id, (els) => toggleLock(els, ids))
+  }
+
   /** Select all: every element on the slide the host is not hiding. */
   function selectAll() {
     if (!selectedSlide) return
@@ -674,13 +702,17 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
    *  faster than a render still add up. */
   function nudgeSelection(dx: number, dy: number) {
     if (!selectedSlide) return
+    // A locked element stays where it is; with only locked ones selected there is nothing to move.
+    const movable = selectedElements.filter(el => !isLocked(el))
+    if (movable.length === 0) return
+    const movableIds = movable.map(el => el.id)
     let burst = nudgeRef.current
-    if (burst && !isBurstOf(burst, selectedSlide.id, liveSelectedIds)) {
+    if (burst && !isBurstOf(burst, selectedSlide.id, movableIds)) {
       flushNudge()
       burst = null
     }
     if (!burst) {
-      const start = new Map(selectedElements.map(el => [el.id, { x: el.x, y: el.y }] as const))
+      const start = new Map(movable.map(el => [el.id, { x: el.x, y: el.y }] as const))
       burst = { slideId: selectedSlide.id, start, dx: 0, dy: 0, timer: undefined }
     }
     clearTimeout(burst.timer)
@@ -851,6 +883,16 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     // Layer order. Cmd+[ and Cmd+] are history navigation in a browser, so
     // they are taken even when the order would not change. The Option ones
     // come first: they also pass the plain ones' Cmd test, but not !alt.
+    {
+      // Off unless the host asks for it (`lockKey`). On `code`, as the layer
+      // keys are: Option changes what a Mac types for L.
+      id: 'carousel.lock',
+      description: 'Lock or unlock the selection',
+      keyHint: ['⌥', '⇧', 'L'],
+      matches: matchesLockKey,
+      guard: () => lockKey && hasSelection && canEdit,
+      action: () => toggleSelectionLock(),
+    },
     {
       id: 'carousel.layer-front',
       description: 'Bring to front',
@@ -1069,6 +1111,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (onShow) setSelectedElementId(element.id)
   }
   function handleDeleteElement(slideId: string, elementId: string) {
+    if (isLocked(slidesRef.current.find(s => s.id === slideId)?.elements.find(el => el.id === elementId))) return
     void state.removeElement(slideId, elementId)
     setSelectedElementId(null)
     // A crop on it goes with it, unwritten.
@@ -1080,7 +1123,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     const slide = slidesRef.current.find(s => s.id === slideId)
     const src = slide?.elements.find(el => el.id === elementId)
     if (!src) return
-    const clone = { ...cloneElement(src), x: src.x + COPY_OFFSET, y: src.y + COPY_OFFSET }
+    const clone = { ...withoutLock(cloneElement(src)), x: src.x + COPY_OFFSET, y: src.y + COPY_OFFSET }
     void state.duplicateElement(slideId, elementId, clone)
     setSelectedElementId(clone.id)
   }
@@ -1100,7 +1143,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       return el?.type === 'image' ? el : undefined
     }
     const start = imageNow()
-    if (!start) return
+    if (!start || isLocked(start)) return
     let src: string
     try {
       src = await adapter.uploadFile(file, project.id, 'picker')
@@ -1121,7 +1164,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     // The upload and the load took time. Write only if the editor is still up
     // and the image still there, cropped for the box it has now.
     const live = imageNow()
-    if (!mountedRef.current || !live) return
+    if (!mountedRef.current || !live || isLocked(live)) return
     const crop = size ? coverCrop(live.w, live.h, size.width, size.height) : undefined
     // A save that fails is rolled back and shown by `state.lastError`.
     await state.replaceImage(slideId, elementId, { src, crop }).catch(() => {})
@@ -1256,6 +1299,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     const slide = slides.find(s => s.id === selectedSlideId)
     const el = slide?.elements.find(e => e.id === selectedElementId)
     if (!el) return
+    // A locked element's placement is not edited.
+    if (isLocked(el)) patch = withoutPlacement(patch)
     if ('x' in patch || 'y' in patch || 'w' in patch || 'h' in patch) {
       const box = {
         x: patch.x ?? el.x,
@@ -1292,7 +1337,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   function handlePanelElementPreview(patch: Partial<CarouselElement>) {
     if (!selectedSlideId || !selectedElementId) return
     const el = slides.find(s => s.id === selectedSlideId)?.elements.find(e => e.id === selectedElementId)
-    if (!el) return
+    if (!el || isLocked(el)) return
     let edit = panelEdit.current
     if (edit && (edit.slideId !== selectedSlideId || edit.elementId !== selectedElementId)) {
       // Another element's edit is still open: finish it before this one starts.
@@ -1366,7 +1411,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (!selectedSlide) return
     const moves = patches.flatMap(p => {
       const el = selectedSlide.elements.find(e => e.id === p.id)
-      if (!el) return []
+      if (!el || isLocked(el)) return []
       const x = 'x' in p ? p.x : el.x
       const y = 'y' in p ? p.y : el.y
       return x === el.x && y === el.y ? [] : [{ id: el.id, x, y }]
@@ -1635,7 +1680,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             project={project}
             slide={selectedSlide}
             element={selectedElement}
-            selection={selectedElements}
+            selection={selectedElements.filter(el => !isLocked(el))}
             onAlignSelection={handleAlignSelection}
             adapter={adapter}
             onSlideChange={handleSlideChange}
@@ -1687,7 +1732,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         : showControls && (
           <ControlsInfoModal
             title="Editor controls"
-            sections={CAROUSEL_CONTROLS}
+            sections={carouselControls}
             onClose={() => setShowControls(false)}
           />
         )}

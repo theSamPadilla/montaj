@@ -129,6 +129,7 @@ describe('ControlsInfoModal', () => {
       { keys: ['⌘', '['], label: 'Send backward' },
       { keys: ['⌘', '⌥', ']'], label: 'Bring to front' },
       { keys: ['⌘', '⌥', '['], label: 'Send to back' },
+      { keys: ['⌥', '⇧', 'L'], label: 'Lock or unlock' },
       { keys: ['Esc'], label: 'Deselect' },
     ])
   })

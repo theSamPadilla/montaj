@@ -127,7 +127,7 @@ function numInput(
   label: string,
   value: number,
   h: NumInputHandlers,
-  opts?: { min?: number; max?: number; step?: number }
+  opts?: { min?: number; max?: number; step?: number; disabled?: boolean }
 ) {
   const step = opts?.step ?? 1
   return (
@@ -144,6 +144,7 @@ function numInput(
         <NumberField
           name={label}
           value={value}
+          disabled={opts?.disabled}
           onPreview={h.onPreview ?? (() => {})}
           onCommit={h.onCommit}
           min={opts?.min}
@@ -288,6 +289,8 @@ export default function SlidePropertyPanel({
   }
 
   const overlayEl = element?.type === 'overlay' ? (element as OverlayElement) : null
+  // A locked element's placement, crop, image and existence are fixed (§586 M5).
+  const locked = element?.locked === true
 
   // X, Y, W, H and rotation: preview while typing, one write on Enter or blur.
   // Without the preview hooks (a host panel with only `onElementChange`) the
@@ -307,7 +310,7 @@ export default function SlidePropertyPanel({
         onCancel: onElementPreview ? onElementCancel : undefined,
         onStep: v => onElementChange({ [key]: v }),
       },
-      opts,
+      { ...opts, disabled: locked },
     )
   const overlaySchema = overlayEl ? overlaySchemas.get(overlayEl.overlay.template) : null
 
@@ -416,6 +419,7 @@ export default function SlidePropertyPanel({
             element={element}
             width={project.settings.resolution[0]}
             height={project.settings.resolution[1]}
+            disabled={locked}
             onChange={onElementChange}
           />
 
@@ -433,7 +437,7 @@ export default function SlidePropertyPanel({
                   size="sm"
                   variant="secondary"
                   className="flex flex-1 items-center gap-1.5"
-                  disabled={(element.rotation ?? 0) !== 0 || !onEnterCrop}
+                  disabled={locked || (element.rotation ?? 0) !== 0 || !onEnterCrop}
                   title={
                     (element.rotation ?? 0) !== 0
                       ? 'Reset rotation to 0 before cropping'
@@ -448,7 +452,7 @@ export default function SlidePropertyPanel({
                   size="sm"
                   variant="secondary"
                   className="flex flex-1 items-center gap-1.5"
-                  disabled={!onReplaceImage || replacing}
+                  disabled={locked || !onReplaceImage || replacing}
                   title="Replace image"
                   onClick={() => replaceInputRef.current?.click()}
                 >
@@ -545,6 +549,7 @@ export default function SlidePropertyPanel({
               size="sm"
               variant="danger"
               className="flex-1"
+              disabled={locked}
               onClick={() => onDeleteElement(slide.id, element.id)}
             >
               Delete

@@ -15,6 +15,7 @@ import { CanvasCropOverlay, CanvasCropHandles } from '../crop/CanvasCropOverlay'
 import { croppedBox } from '../crop/crop-math'
 import { InlineTextEditor } from '../text/InlineTextEditor'
 import { ensureGoogleFontsLoaded } from '../lib/google-fonts'
+import { isLocked } from './lock'
 import { groupDragMove, type GroupDragResult, type GroupMember } from './groupDrag'
 
 // Neutral fallback used only when no host `resolveImageSrc` is injected. The
@@ -529,7 +530,8 @@ export default function SlideCanvas({
       : onEnterCrop
         ? (e) => {
             e.stopPropagation()
-            if (cropSession?.elementId !== element.id && (element.rotation ?? 0) === 0) onEnterCrop(element.id)
+            // A locked image is not cropped (§586 M5).
+            if (!isLocked(element) && cropSession?.elementId !== element.id && (element.rotation ?? 0) === 0) onEnterCrop(element.id)
           }
         : undefined
 
@@ -703,7 +705,7 @@ export default function SlideCanvas({
             userSelect: 'none',
             // The selection outline is drawn in the chrome layer.
             outline: 'none',
-            cursor: interactive ? 'grab' : 'default',
+            cursor: interactive && !isLocked(element) ? 'grab' : 'default',
           }
 
           const handlePointerDownDrag = (e: React.PointerEvent) => {
@@ -715,12 +717,20 @@ export default function SlideCanvas({
               onToggleSelect(element.id)
               return
             }
-            // A press on a member of a multi-selection drags the whole group.
+            // A press on a locked element starts nothing (§586 M5): it is only
+            // selected, as a click does. HOOK: drag-select starts here, from a
+            // press-and-move on a locked element.
+            if (isLocked(element)) {
+              if (!(selectedIds.length > 1 && selectedIds.includes(element.id))) onSelect?.(element.id)
+              return
+            }
+            // A press on a member of a multi-selection drags the whole group;
+            // its locked members stay where they are.
             if (selectedIds.length > 1 && selectedIds.includes(element.id)) {
               const members: GroupMember[] = []
               for (const id of selectedIds) {
                 const m = slide.elements.find((el) => el.id === id)
-                if (m) members.push({ id: m.id, x: m.x, y: m.y, w: m.w, h: m.h, rotation: m.rotation })
+                if (m && !isLocked(m)) members.push({ id: m.id, x: m.x, y: m.y, w: m.w, h: m.h, rotation: m.rotation })
               }
               groupRef.current = { start: { x: e.clientX, y: e.clientY }, members, latest: null }
               activeGesture.current = 'group'
@@ -924,6 +934,7 @@ export default function SlideCanvas({
               // Outlined when selected at all; handles only for the one selected element.
               const isOutlined = selectedIds.includes(element.id)
               const isSelected = selectedElementId === element.id
+              const locked = isLocked(element)
               if (!isOutlined && !isSelected) return null
               const inCrop = cropSession?.elementId === element.id
               const isRotated = (element.rotation ?? 0) !== 0
@@ -963,7 +974,7 @@ export default function SlideCanvas({
                   {/* Selection handles (hidden while cropping or rotated-crop guard).
                       Placed in percentages of the box, so they follow the size a
                       resize preview writes straight to this box. */}
-                  {isSelected && !inCrop && editingId !== element.id && (
+                  {isSelected && !locked && !inCrop && editingId !== element.id && (
                     <>
                       {HANDLES.map((h) => (
                         <div

@@ -21,7 +21,7 @@ import {
 } from 'lucide-react'
 import { version } from '../package.json'
 import { isApplePlatform, modifierKeys, modifierLabel } from './ui/modifierKeys'
-import type { ControlSection, ControlsWindowSection } from './types'
+import type { ControlEntry, ControlSection, ControlsWindowSection } from './types'
 
 export type { ControlEntry, ControlSection } from './types'
 
@@ -327,6 +327,10 @@ export const VIDEO_CONTROLS: ControlSection[] = [
   },
 ]
 
+/** The lock key's row. The carousel editor lists it only with its `lockKey`
+ *  prop on, as the key is bound only then. */
+export const LOCK_CONTROL: ControlEntry = { keys: ['⌥', '⇧', 'L'], label: 'Lock or unlock' }
+
 /** Controls reference for the carousel editor. Sourced from CarouselEditor's key
  *  bindings (undo/redo, Delete, the N note key, the clipboard, nudge, layer and
  *  Esc keys) and the canvas gesture hints. */
@@ -360,6 +364,7 @@ export const CAROUSEL_CONTROLS: ControlSection[] = [
       { keys: ['⌘', '['], label: 'Send backward' },
       { keys: ['⌘', '⌥', ']'], label: 'Bring to front' },
       { keys: ['⌘', '⌥', '['], label: 'Send to back' },
+      LOCK_CONTROL,
       { keys: ['Esc'], label: 'Deselect' },
     ],
   },
