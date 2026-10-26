@@ -347,3 +347,42 @@ test('--max-short-edge caps the frames of a 4K project, and the cache keeps the 
   assert.equal(full.status, 0, full.stderr.slice(-300))
   assert.deepEqual(size(join(dir, 'full.png')), [2160, 3840], 'the same time, after a capped one, is full size')
 })
+
+// PL89f: a 22-time sheet wrote every frame, then its process never exited: a Chrome child kept node's event loop
+// open. A frame over the per-frame limit aborts its session, but its stuck capture runs on and can open a browser in
+// that session after the abort, which nothing closes. And a lane that failed let the call end before the other lanes
+// closed their sessions (orphan Chromes).
+test('an aborted or closed session opens no browser and takes no capture', async () => {
+  for (const end of ['abort', 'close']) {
+    const f = fakes()
+    const s = createSampleSession()
+    await s[end]()
+    assert.throws(() => s.browserFor('plain', () => f.launch('plain')), /session (is )?closed/)
+    await assert.rejects(s.sample('k', f.open('k'), async () => 'shot'), /session (is )?closed/)
+    assert.equal(f.launched.length, 0, end)
+    assert.equal(f.opened.length, 0, end)
+  }
+})
+
+test('close does not wait forever on a page or browser that will not close', async () => {
+  const f = fakes()
+  const s = createSampleSession({ closeCapMs: 20 })
+  await s.browserFor('plain', async () => ({ close: () => new Promise(() => {}), process: () => null }))
+  await s.sample('k', async () => ({ pageErrors: [], workDir: mkdtempSync(join(tmpdir(), 'cap-')), page: { close: () => new Promise(() => {}), bringToFront: async () => {} } }), async () => 'shot')
+  const t0 = Date.now()
+  await s.close()
+  assert.ok(Date.now() - t0 < 1000, `close took ${Date.now() - t0} ms`)
+})
+
+test('sampleInSessions: a lane that fails waits for the other lanes to close their sessions', async () => {
+  const made = []
+  const newSession = () => { const s = { id: made.length, closed: false, abort: async () => { s.closed = true }, close: async () => { await tick(); s.closed = true } }; made.push(s); return s }
+  const sampleWith = async (k, session) => {
+    await tick()
+    if (k === 0) throw new Error('broken frame')   // fails in its session and alone
+    await tick()
+    return k
+  }
+  await assert.rejects(sampleInSessions({ count: 6, sampleWith, newSession, lanes: 3 }), /at 0s: broken frame/)
+  assert.ok(made.every((s) => s.closed), made.map((s) => `${s.id}:${s.closed}`).join(' '))
+})
