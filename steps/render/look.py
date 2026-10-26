@@ -138,6 +138,7 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=measure, sh
     fps = _fps(project)
     times = lc.pick_times(project, at, cap=IMAGE_TIMES if image else lc.MAX_TIMES)
     issues = lc.data_issues(project, project_dir)
+    issues += lc.caption_ink_issues(project)   # captions over a card whose ink was not checked
     issues += lc.still_holds(project, project_dir)   # PL89: a stretch over 4 s with no beat and nothing moving
     to_measure, unmeasured = overlays_to_measure(project, project_dir, times)
     samples = os.path.join(project_dir, "render", "samples", "look")

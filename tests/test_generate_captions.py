@@ -521,3 +521,155 @@ def test_step_write_waits_for_the_project_lock(tmp_path, monkeypatch, capsys):
     holder["p"].wait()
     assert __import__("time").monotonic() - started[0] >= 0.3
     assert "captions" in out
+
+
+# ── caption ink: the pass after the write runs only for a project with a card, and never fails the run ─────────────
+
+def _ink_project_doc(with_card):
+    items = [{"id": "card", "type": "overlay", "src": "engine:scene3d", "start": 0, "end": 4, "opaque": True}] if with_card else []
+    return {"id": "p1", "name": "orig", "settings": {"resolution": [1080, 1920], "fps": 30},
+            "tracks": [{"id": "trk-0", "items": [{"id": "c", "type": "video", "src": "a.mp4", "start": 0, "end": 4,
+                                                  "inPoint": 0, "outPoint": 4}]}, {"id": "ovl", "items": items}]}
+
+
+def _run_step_with_ink(tmp_path, monkeypatch, capsys, with_card, renderer):
+    import sys as _sys
+    mod = _load_step_module()
+    proj_dir = tmp_path / "proj"
+    proj_dir.mkdir()
+    path = proj_dir / "project.json"
+    path.write_text(json.dumps(_ink_project_doc(with_card)))
+    track = {"style": "pop", "segments": [{"id": "cap-1", "text": "hello", "start": 1, "end": 2, "words": []}]}
+    monkeypatch.setattr(mod, "get_project_dir", lambda pid: proj_dir)
+    monkeypatch.setattr(mod, "require_whisper_model", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "build_audio_mix_spec", lambda p: {"segments": []})
+    monkeypatch.setattr(mod, "whisper_runaway_timeout_for", lambda p: 1)
+
+    def fake_run(cmd, **kw):
+        if "caption.py" in " ".join(cmd):
+            (proj_dir / "_caption_track.json").write_text(json.dumps(track))
+        if "transcribe.py" in " ".join(cmd):
+            (proj_dir / "_caption_words.json").write_text("{}")
+    monkeypatch.setattr(mod, "run", fake_run)
+    monkeypatch.setattr(mod.caption_ink, "frame_renderer", lambda project_path: renderer)
+    monkeypatch.setattr(_sys, "argv", ["generate_captions.py", "--project-id", "p1"])
+    mod.main()
+    return json.loads(path.read_text()), json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+
+def test_ink_pass_runs_for_a_project_with_a_card(tmp_path, monkeypatch, capsys):
+    from PIL import Image
+
+    def light(t):
+        p = tmp_path / "light.png"
+        Image.new("RGB", (540, 960), (0xef, 0xec, 0xe4)).save(p)
+        return str(p)
+    doc, printed = _run_step_with_ink(tmp_path, monkeypatch, capsys, True, light)
+    seg = doc["captions"]["segments"][0]
+    assert seg["ink"] == "dark" and seg["inkAuto"] == "card"
+    assert "warnings" not in printed
+
+
+def test_ink_pass_renders_nothing_for_a_project_without_a_card(tmp_path, monkeypatch, capsys):
+    calls = []
+    doc, printed = _run_step_with_ink(tmp_path, monkeypatch, capsys, False, lambda t: calls.append(t))
+    assert calls == [] and "ink" not in doc["captions"]["segments"][0] and "warnings" not in printed
+
+
+def test_ink_failure_is_a_warning_and_the_captions_stay_written(tmp_path, monkeypatch, capsys):
+    def boom(t):
+        raise RuntimeError("no browser")
+    doc, printed = _run_step_with_ink(tmp_path, monkeypatch, capsys, True, boom)
+    assert doc["captions"]["segments"][0]["text"] == "hello" and "ink" not in doc["captions"]["segments"][0]
+    assert printed["warnings"] and "1.5" in printed["warnings"][0]
+    assert printed["segments"][0]["id"] == "cap-1", "the caption track is still the answer"
+
+
+def test_ink_pass_exception_is_a_warning(tmp_path, monkeypatch, capsys):
+    mod = _load_step_module()
+    monkeypatch.setattr(mod.caption_ink, "update", lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
+    ws = mod.ink_pass("/nope/project.json")
+    assert len(ws) == 1 and "caption_ink" in ws[0]
+
+
+# ── caption ink in the serve route: after the write and broadcast, a subprocess, only with a card ──────────────────
+
+class _InkProc(_FakeCaptionProc):
+    def __init__(self, returncode=0, out=b"", err=b"", hang=False, on_run=None):
+        super().__init__(returncode)
+        self._out, self._err, self._hang, self._on_run = out, err, hang, on_run
+        self.killed = False
+
+    async def communicate(self):
+        if self._hang:
+            await asyncio.sleep(60)
+        if self._on_run:
+            self._on_run()
+        return self._out, self._err
+
+    def kill(self):
+        self.killed = True
+
+
+def _route_ink_run(tmp_path, monkeypatch, with_card, ink_proc):
+    from serve.routes.projects import _run_caption_pipeline
+
+    calls = []
+
+    async def exec_(*args, **kwargs):
+        calls.append([str(a) for a in args])
+        return ink_proc if any(str(a).endswith("caption_ink.py") for a in args) else _FakeCaptionProc()
+
+    monkeypatch.setattr(projects_mod.asyncio, "create_subprocess_exec", exec_)
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    (project_dir / "_caption_track.json").write_text(json.dumps({"style": "pop", "segments": [{"text": "hi", "start": 1, "end": 2}]}))
+    project = {"tracks": [{"id": "m", "items": [{"id": "v", "type": "video", "src": "/x/a.mov", "start": 0, "end": 4,
+                                                 "inPoint": 0, "outPoint": 4}]},
+                          {"id": "o", "items": [{"id": "card", "type": "overlay", "src": "engine:scene3d", "start": 0,
+                                                 "end": 4, "opaque": True}] if with_card else []}]}
+    broadcaster = _FakeBroadcaster()
+    track = asyncio.run(_run_caption_pipeline("proj-ink", project_dir, project, model="base.en", language="auto",
+                                              style="pop", broadcaster=broadcaster))
+    return track, broadcaster, calls, project_dir
+
+
+def test_route_runs_the_ink_step_when_a_card_exists_and_broadcasts_the_result(tmp_path, monkeypatch):
+    def ink_wrote():
+        p = tmp_path / "proj" / "project.json"
+        doc = json.loads(p.read_text())
+        doc["captions"]["segments"][0]["ink"] = "dark"
+        p.write_text(json.dumps(doc))
+    track, b, calls, d = _route_ink_run(tmp_path, monkeypatch, True,
+                                        _InkProc(out=b'{"dark": 1, "light": 0, "cleared": 0, "kept": 0}\n', on_run=ink_wrote))
+    ink = [c for c in calls if c[1].endswith("caption_ink.py")]
+    assert len(ink) == 1 and ink[0][2:] == ["--project", str(d / "project.json")]
+    assert len([f for f in b.frames if f.startswith("data:")]) == 2, "the write, then the ink"
+    assert '"ink": "dark"' in b.frames[-1]
+    assert track["segments"][0]["text"] == "hi"
+
+
+def test_route_skips_the_ink_step_without_a_card(tmp_path, monkeypatch):
+    _, b, calls, _ = _route_ink_run(tmp_path, monkeypatch, False, _InkProc())
+    assert not [c for c in calls if c[1].endswith("caption_ink.py")]
+    assert len([f for f in b.frames if f.startswith("data:")]) == 1
+
+
+@pytest.mark.parametrize("proc", [
+    _InkProc(returncode=1, err=b'{"error": "project_changed"}\n'),
+    _InkProc(out=b"not json"),
+])
+def test_route_ink_failure_is_only_a_log_event(tmp_path, monkeypatch, proc):
+    track, b, _, _ = _route_ink_run(tmp_path, monkeypatch, True, proc)
+    assert track["segments"][0]["text"] == "hi"
+    assert len([f for f in b.frames if f.startswith("data:")]) == 1
+    if proc.returncode:
+        assert any(f.startswith("event: log") and "caption ink not set" in f for f in b.frames)
+
+
+def test_route_ink_timeout_is_only_a_log_event(tmp_path, monkeypatch):
+    monkeypatch.setattr(projects_mod, "CAPTION_INK_TIMEOUT_S", 0.05)
+    proc = _InkProc(hang=True)
+    track, b, _, _ = _route_ink_run(tmp_path, monkeypatch, True, proc)
+    assert proc.killed and track["segments"][0]["text"] == "hi"
+    assert any("timed out" in f for f in b.frames)

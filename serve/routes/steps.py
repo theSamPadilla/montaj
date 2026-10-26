@@ -787,6 +787,7 @@ STEP_WRITES = {
     # PL89: frame_broll frames one b-roll clip (its crop or its card overlay, and the card's preset file)
     "frame_broll": (("tracks",), ("overlays/",)),
     "captions": (("captions",), ()),
+    "caption_ink": (("captions",), ()),
     "slides": (("slides",), ()),
     "generate_captions": (("captions",), ()),
     "kling_generate": (("tracks", "storyboard", "status"), ()),
