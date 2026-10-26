@@ -3829,6 +3829,28 @@ describe('CarouselEditor: typed panel numbers are one undo step', () => {
     expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ w: 640 })
   })
 
+  it('selecting another element mid-edit, with no blur, writes the typed value once and leaves the other alone', async () => {
+    const two = makeProject()
+    two.slides![0].elements.push({ id: 'el-b', type: 'image', src: 'b.png', x: 400, y: 400, w: 100, h: 100, rotation: 0 } as ImageElement)
+    const { adapter, r } = await mount(two)
+    const x = field(r, 'X')
+    await type(x, '555')
+    expect(adapter.saveCalls).toHaveLength(0)
+    await plainClick('el-b')
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const [a, b] = elementsOf(lastSave(adapter))
+    expect(a).toMatchObject({ id: 'el-img', x: 555 })
+    expect(b).toMatchObject({ id: 'el-b', x: 400, y: 400 })
+
+    // Nothing is left open: a later commit adds no second write, and one undo takes the edit back.
+    await key('z', { metaKey: true })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 100 })
+    await key('z', { metaKey: true })
+    await settle()
+    expect(adapter.saveCalls).toHaveLength(2)
+  })
+
   it('rotation is previewed and written once too', async () => {
     const { adapter, r } = await mount()
     const rot = field(r, 'Rotation')

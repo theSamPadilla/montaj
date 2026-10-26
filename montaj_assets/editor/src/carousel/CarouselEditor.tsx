@@ -1294,7 +1294,12 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     const el = slides.find(s => s.id === selectedSlideId)?.elements.find(e => e.id === selectedElementId)
     if (!el) return
     let edit = panelEdit.current
-    if (!edit || edit.slideId !== selectedSlideId || edit.elementId !== selectedElementId) {
+    if (edit && (edit.slideId !== selectedSlideId || edit.elementId !== selectedElementId)) {
+      // Another element's edit is still open: finish it before this one starts.
+      handlePanelElementCommit()
+      edit = null
+    }
+    if (!edit) {
       const start = { x: el.x, y: el.y, w: el.w, h: el.h, rotation: el.rotation ?? 0 }
       edit = { slideId: selectedSlideId, elementId: selectedElementId, start, now: start }
       panelEdit.current = edit
@@ -1319,6 +1324,14 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (same) state.discardTransient()
     else void state.commit()
   }
+
+  // The selection moving on (a click on another element, another slide) ends
+  // the open edit without a blur if the focused field unmounts: keep what was
+  // typed, or drop it when it is back at the start.
+  useEffect(() => {
+    const edit = panelEdit.current
+    if (edit && (edit.slideId !== selectedSlideId || edit.elementId !== selectedElementId)) handlePanelElementCommit()
+  }, [selectedSlideId, selectedElementId])
 
   function handlePanelElementCancel() {
     if (!panelEdit.current) return
