@@ -12,6 +12,7 @@
 //   Motion.progress(frame, fps, start, dur, 'out')       // 0..1 eased, for anything else
 //   Motion.pulse(frame, fps, {period})                   // 0..1, repeating: a ping ring's spread
 //   Motion.ease.out(t), .inOut(t), .back(t), ...          // the curves
+//   Motion.follow(mark, frame, fps, {from})              // direct_scene mark's track at this frame, on the 1080 canvas
 //
 // `frame`, `fps` and `duration` are the overlay's own globals, passed in (a module cannot read them). Seconds
 // everywhere else.
@@ -133,5 +134,58 @@ export function motion(frame, fps, duration, opts = {}) {
   return { opacity, scale, x, y, style: { opacity, transform: `translate(${x}px, ${y}px) scale(${scale})` } }
 }
 
+// ── follow: a label riding a moving 3D shot ──────────────────────────────────────────────────────────────────────
+
+/** a and b blended by k: numbers (and arrays and objects of them) mix, anything else is a's. */
+function blend(a, b, k) {
+  if (typeof a === 'number' && typeof b === 'number') return a + (b - a) * k
+  if (Array.isArray(a) && Array.isArray(b) && a.length === b.length) return a.map((v, i) => blend(v, b[i], k))
+  if (a && b && typeof a === 'object' && typeof b === 'object' && !Array.isArray(a)) {
+    const o = {}
+    for (const key of Object.keys(a)) o[key] = key in b ? blend(a[key], b[key], k) : a[key]
+    return o
+  }
+  return a
+}
+/** Pixel fields scaled by s: every number in the arrays and the x, top and bottom of a rule; metres and flags kept. */
+function scaled(v, s, key) {
+  if (key === 'metres' || key === 'cast') return v
+  if (typeof v === 'number') return v * s
+  if (Array.isArray(v)) return v.map((x) => scaled(x, s))
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, scaled(x, s, k)]))
+  return v
+}
+
+/**
+ * Where a label goes now, on a moving 3D shot: direct_scene's mark answer (its `track`, rows every half second, or its
+ * one time) read at this frame, each row's pixels blended between the two rows around it and scaled from the project's
+ * frame (mark's `size`) to the overlay's 1080 design canvas. `from`: the scene's seconds at the overlay's frame 0 (the
+ * scene item's inPoint, when the overlay starts with it). Answers {t, parts, casts}: `parts` by part name (and by
+ * "cast/part"), each {pixel, box, leader: {side, from, to, align}, inView}; `casts` in order, each {top, bottom, box,
+ * metres, rule: {side, x, top, bottom, label, align}}. Before the first row it is the first, after the last the last;
+ * null when there is nothing to follow.
+ */
+export function follow(mark, frame, fps, { from = 0 } = {}) {
+  if (!mark || typeof mark !== 'object') return null
+  const rows = Array.isArray(mark.track) && mark.track.length ? mark.track : [{ t: mark.at ?? 0, parts: mark.parts || [], casts: mark.casts || [] }]
+  const size = mark.size || {}, short = Math.min(size.width || 1080, size.height || 1920)
+  const s = short > 0 ? 1080 / short : 1
+  const t = from + frame / fps
+  let i = 0
+  while (i < rows.length - 1 && rows[i + 1].t <= t) i++
+  const a = rows[i], b = rows[Math.min(i + 1, rows.length - 1)]
+  const k = b === a || b.t <= a.t ? 0 : Math.min(1, Math.max(0, (t - a.t) / (b.t - a.t)))
+  const key = (p) => `${p.cast}/${p.part}`
+  const bParts = new Map((b.parts || []).map((p) => [key(p), p]))
+  const parts = {}
+  for (const p of a.parts || []) {
+    const q = scaled(blend(p, bParts.get(key(p)) || p, k), s)
+    parts[key(p)] = q
+    if (!(p.part in parts)) parts[p.part] = q
+  }
+  const casts = (a.casts || []).map((c, j) => scaled(blend(c, (b.casts || [])[j] || c, k), s))
+  return { t, parts, casts }
+}
+
 /** The overlay global: every helper above under one name. */
-export const Motion = Object.freeze({ motion, ease, progress, draw, stagger, pulse })
+export const Motion = Object.freeze({ motion, ease, progress, draw, stagger, pulse, follow })

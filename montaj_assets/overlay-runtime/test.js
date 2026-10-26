@@ -223,7 +223,7 @@ await import('./springs.test.js')
 // PL89b: the motion helpers, one namespaced global in both contexts.
 for (const ctx of [renderGlobals, previewGlobals]) {
   assert.equal(typeof ctx.Motion, 'object', 'Motion is an overlay global')
-  for (const name of ['motion', 'ease', 'progress', 'draw', 'stagger', 'pulse']) assert.ok(ctx.Motion[name], `Motion.${name}`)
+  for (const name of ['motion', 'ease', 'progress', 'draw', 'stagger', 'pulse', 'follow']) assert.ok(ctx.Motion[name], `Motion.${name}`)
 }
 for (const bare of ['motion', 'ease', 'progress', 'draw', 'stagger', 'pulse']) {
   assert.ok(!(bare in renderGlobals), `${bare} is not a bare global: it would collide with an overlay's own name in the preview`)
