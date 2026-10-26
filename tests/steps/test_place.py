@@ -437,8 +437,9 @@ def test_words_on_a_b_roll_clip_never_anchor_a_graphic(tmp_path, capsys):
     assert refused(capsys, run, d, at='{"phrase": "three times faster"}', preset="callout")["error"] == "phrase_not_found"
 
 
-def test_clean_picks_the_take_cut_keeps_and_says_nothing_more(tmp_path):
-    # three sayings: cut keeps the last of a clear retake (§558), the clean one too, so place adds no note
+def test_clean_picks_the_last_clean_take_and_says_nothing_more(tmp_path):
+    # three sayings: the last of a clear retake is the clean one; cut keeps every take until the agent picks (PL89),
+    # so place never says which take cut keeps
     d = make_project(tmp_path)
     out = run(d, at='{"phrase": "three times faster"}', preset="callout")
     assert out["take"] == "clean" and out["start"] > 10 and "note" not in out, out

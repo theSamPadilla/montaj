@@ -19,7 +19,8 @@ picked silently. Within that line, take:
 - "clean": a take with no filler and no restart, never a false start, an abandoned opening or a restarted or
   repeated clause (select's whys), and never the take said right after its own false start or abandoned opening in
   the same clip (a restart the transcript split in two: "Our new editor is... Our new editor is three times
-  faster."); among those, the take cut keeps, else the last. With none, the take cut keeps, else the last take, and
+  faster."); among those, the take the take rules keep (the one cut's retake? labels point to), else the last. With
+  none, that take, else the last take, and
   `fallback` says so (never when the line is said once).
 """
 import unicodedata
@@ -48,7 +49,6 @@ class Found:
     take: str                 # the rule that chose it: clean | first | last | kept | last-said
     said: int                 # how many times the phrase is said, every line
     fallback: str | None = None
-    note: str | None = None   # the take cut keeps, when it is another one
     also: list = field(default_factory=list)   # the start of each other line that says it
     text: str = ""
     warnings: list = field(default_factory=list)
@@ -207,11 +207,8 @@ def find(project, project_dir, phrase, take="clean", language="en", track_id=Non
     said = len(found)
 
     def done(pick, rule, fallback=None):
-        note = None
-        in_kept = [f for f in group if f[0] in kept]
-        if in_kept and pick[0] not in kept and rule in ("clean", "first", "last"):
-            note = f"cut keeps the take at {round(in_kept[-1][1], 2)}s"
-        return Found(pick[1], pick[2], rule, said, fallback=fallback, note=note, also=also, text=pick[3], warnings=warnings)
+        # PL89: cut keeps every take until the agent picks, so no note says which take it keeps
+        return Found(pick[1], pick[2], rule, said, fallback=fallback, also=also, text=pick[3], warnings=warnings)
 
     if take == "first":
         return done(group[0], "first")
@@ -228,5 +225,5 @@ def find(project, project_dir, phrase, take="clean", language="en", track_id=Non
     pick, rule = (in_kept[-1], "kept") if in_kept else (group[-1], "last-said")
     if len(group) == 1:
         return done(pick, rule)
-    which = "the take cut keeps" if rule == "kept" else "the last take"
+    which = "the take cut's labels point to" if rule == "kept" else "the last take"
     return done(pick, rule, f'no clean take of "{phrase}": used {which} at {round(pick[1], 2)}s')
