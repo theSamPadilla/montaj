@@ -12,7 +12,7 @@ step: true
 
 Right after `cut` plans, before the apply. This section is the whole job; the steps further down are for a project already cut.
 
-The cut's transcripts are made per voiced run and are trustworthy. Never transcribe a window, render one, or re-measure the audio, and never rebuild the cut with `waveform_trim`, `jump_cut`, `speech_text`, `speech_edit` or `mix_timeline`: each changes the project, and the apply is then refused as stale.
+The cut's transcripts are made per voiced run and are trustworthy. Never transcribe a window, render one, or re-measure the audio, and never rebuild the cut with `waveform_trim`, `jump_cut`, `speech_text`, `speech_edit` or `mix_timeline` before the apply: each changes the project, and the apply is then refused as stale.
 
 1. Read the plan: the cut's answer carries it as `text` (else `read_file` `cut-plan.md`). Silences and fillers are already gone. Every saying is a row of `## Cut`, in recording order, and nothing else is removed. A tag ending in `?` is a label, never a cut:
    - `retake?` / `false-start?`: an earlier take; it names the line and time of the take said after it.
@@ -23,7 +23,7 @@ The cut's transcripts are made per voiced run and are trustworthy. Never transcr
 3. In each kept take, delete the words a `repeat?` names, so only the last saying stays. Delete what a `noise?` names unless it is a real word.
 4. Order: put the kept rows in the order the prompt or script asks for; with neither, keep the recording order. The apply plays `## Cut` top to bottom. Read every join between sections: the same fact or beat said on both sides loses one.
 5. Edit only the plan: delete rows or words, move rows; never add or change a word. `write_file` it back, then run `cut` with `plan`. An untagged plan applies as it is.
-6. Check the result in the apply's answer, not with other steps: `seams` lists every join where words were skipped, as `<time> <3 words before> | <3 words after>`, ending `(cuts a word)` when a join falls inside a word; `notes` says what a kept tag does. To fix a bad seam, restore the version the answer's `undo` names (the project is cut now, so an edited plan applied on top is refused as stale), edit the plan, and run `cut` with `plan` again.
+6. Check the result in the apply's answer, not with other steps: `seams` lists every join where words were skipped, as `<time> <3 words before> | <3 words after>`, ending `(cuts a word)` when a join falls inside a word; `notes` says what a kept tag does. The project is cut now, so an edited plan is refused as stale. Fix a bad seam on the cut project: `speech_text`, edit it (move a line back from `## Unused`, or delete words), then `speech_edit` (see "On a project already cut"). To start over from before the cut, ask the person to restore the version from before the cut in Versions; never rebuild the project yourself.
 
 ## On a project already cut
 
