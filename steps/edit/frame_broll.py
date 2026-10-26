@@ -131,6 +131,15 @@ class ItemRefused(Exception):
         self.code, self.message = code, message
 
 
+def _clip_file(src, project_dir):
+    """The file an item's src names: a relative src is the project folder's (as the render reads it), and a name
+    typed with a plain space for a U+202F, or in another Unicode form, finds its twin (lib/path_match.py, PL89i)."""
+    if not isinstance(src, str) or not src:
+        return None
+    full = src if os.path.isabs(src) else os.path.join(project_dir, src)
+    return full if os.path.exists(full) else (spaced_twin(full) or full)
+
+
 def analyse(project, on_disk, project_path, item_id, mode, matte=None):
     """What framing `item_id` takes, computed from the project as read (nothing is written): a plan for write_plans,
     or {"id", "mode": "none", "why"} for a clip that needs nothing. Raises ItemRefused."""
@@ -143,14 +152,15 @@ def analyse(project, on_disk, project_path, item_id, mode, matte=None):
     if item.get("type") != "video" or ti == 0:
         raise ItemRefused("not_broll", f"{item_id} is not a video clip on an upper track (b-roll); the first track is the main footage.")
     sw, sh = lc._num(item.get("sourceWidth")), lc._num(item.get("sourceHeight"))
-    src = item.get("proxySrc") if item.get("proxySrc") and os.path.isfile(item["proxySrc"]) else item.get("src")
-    src = spaced_twin(src) or src  # PL89i: a src saved with a typed space for a U+202F (lib/path_match.py)
+    original = _clip_file(item.get("src"), os.path.dirname(project_path))
+    proxy = _clip_file(item.get("proxySrc"), os.path.dirname(project_path))
+    src = proxy if proxy and os.path.isfile(proxy) else original
     if not src or not os.path.isfile(src):
         raise ItemRefused("file_not_found", f"The clip's file is missing: {item.get('src')}")
     probed = None
     if not (sw > 0 and sh > 0):
         # the original's size (a proxy is smaller, with the same shape): a keyed video crop needs it on the item
-        dims = ffprobe_value(item["src"] if os.path.isfile(item.get("src") or "") else src, "stream=width,height", "v:0")
+        dims = ffprobe_value(original if original and os.path.isfile(original) else src, "stream=width,height", "v:0")
         try:
             sw, sh = (float(v) for v in dims.split(",")[:2])
         except ValueError:

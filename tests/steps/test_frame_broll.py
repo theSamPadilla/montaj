@@ -549,3 +549,21 @@ def test_a_profile_that_wants_no_credits_lets_an_empty_source_drop_it(tmp_path):
     p = with_profile(youtube_project(tmp_path), "## Titles & overlays\n- No source credits on screen.\n")
     out = fb.run(str(p), "br-1", mode="card", source="", sampler=stub_sampler())
     assert card_credit(p, out["card"]) == ""
+
+
+# PL89i (kung fu run 2): b-roll added with a RELATIVE src, typed with a plain space for a screen recording's U+202F.
+# frame_broll checked the src against its own working folder, so every item was "The clip's file is missing" until
+# the agent rewrote each src as the absolute U+202F path. A relative src is the project folder's, then its twin.
+def test_a_relative_src_with_a_typed_space_is_read_from_the_project_folder(tmp_path):
+    p = project(tmp_path)
+    d = Path(p).parent
+    real = d / "Screen Recording 2026-10-21 at 11.59.52 AM.mp4"
+    (d / "broll.mp4").rename(real)
+    doc = json.loads(Path(p).read_text())
+    doc["tracks"][0]["items"][0]["src"] = str(real)
+    doc["tracks"][1]["items"][0]["src"] = "Screen Recording 2026-10-21 at 11.59.52 AM.mp4"
+    Path(p).write_text(json.dumps(doc))
+    out = fb.run(str(p), "br-1", mode="card", source="Unitree", sampler=stub_sampler())
+    assert out["mode"] == "card", out
+    item, _ = item_of(p, "br-1")
+    assert item.get("scale"), "the card was framed"
