@@ -22,9 +22,10 @@ import io
 import os
 import struct
 import subprocess
+import threading
 from pathlib import Path
 
-from PIL import Image, ImageCms, ImageOps
+from PIL import Image, ImageOps
 
 HEIF_SUFFIXES = frozenset({".heic", ".heif"})
 TIFF_SUFFIXES = frozenset({".tif", ".tiff"})
@@ -34,6 +35,9 @@ JPEG_QUALITY = 92
 DECODE_TIMEOUT_S = 120
 # The most of a HEIC read to find its profile: the `meta` box comes first in an iPhone file and is a few KB.
 META_READ_MAX = 16 * 1024 * 1024
+# The most an ffmpeg frame may be: a PAM/PPM of Pillow's own pixel cap at 4 bytes a pixel, plus its header. A crafted
+# grid HEIC can declare far more than that, and the decoded frame is held in memory.
+MAX_FRAME_BYTES = Image.MAX_IMAGE_PIXELS * 4 + 65536
 
 
 class WebImageError(Exception):
@@ -130,20 +134,60 @@ def heif_icc(data: bytes):
 # ── decode ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 def _ffmpeg_frame(ffmpeg: str, src: Path, alpha: bool) -> Image.Image:
-    """The first frame of `src`, rotation applied, as ffmpeg decodes it: RGB, or RGBA with `alpha` (a PAM)."""
+    """The first frame of `src`, rotation applied, as ffmpeg decodes it: RGB, or RGBA with `alpha` (a PAM). Its output
+    is read in chunks up to MAX_FRAME_BYTES: past that ffmpeg is killed and the image is too_large."""
     codec, fmt = ("pam", "rgba") if alpha else ("ppm", "rgb24")
+    # Only local files; a HEIF is forced to the mov demuxer (it is ISO BMFF) so content probing cannot pick another.
+    force = ["-f", "mov"] if src.suffix.lower() in HEIF_SUFFIXES else []
+    cmd = [ffmpeg, "-v", "error", "-nostdin", "-protocol_whitelist", "file", *force, "-i", str(src),
+           "-frames:v", "1", "-pix_fmt", fmt, "-f", "image2pipe", "-c:v", codec, "-"]
     try:
-        r = subprocess.run(
-            [ffmpeg, "-v", "error", "-nostdin", "-i", str(src), "-frames:v", "1", "-pix_fmt", fmt, "-f", "image2pipe", "-c:v", codec, "-"],
-            capture_output=True, timeout=DECODE_TIMEOUT_S, check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as e:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+    except OSError as e:
         raise WebImageError("unreadable", f"ffmpeg could not read the image ({type(e).__name__})") from e
-    if r.returncode != 0 or not r.stdout:
+    timed_out = threading.Event()
+
+    def _deadline():
+        timed_out.set()
+        proc.kill()
+
+    timer = threading.Timer(DECODE_TIMEOUT_S, _deadline)
+    timer.start()
+    chunks, total, too_big = [], 0, False
+    try:
+        while True:
+            chunk = proc.stdout.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_FRAME_BYTES:
+                too_big = True
+                break
+            chunks.append(chunk)
+    except OSError:
+        pass
+    finally:
+        timer.cancel()
+        if too_big or proc.poll() is None and timed_out.is_set():
+            proc.kill()
+        proc.stdout.close()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+    if too_big:
+        raise WebImageError("too_large", "The image is too large to convert")
+    data = b"".join(chunks)
+    if timed_out.is_set():
+        raise WebImageError("unreadable", "ffmpeg could not read the image (TimeoutExpired)")
+    if proc.returncode != 0 or not data:
         raise WebImageError("unreadable", "ffmpeg could not read the image")
     try:
-        im = Image.open(io.BytesIO(r.stdout))
+        im = Image.open(io.BytesIO(data))
         im.load()
+    except MemoryError as e:
+        raise WebImageError("too_large", "The image is too large to convert") from e
     except Exception as e:  # noqa: BLE001 — Pillow raises many kinds for a bad image
         raise WebImageError("unreadable", "ffmpeg's frame could not be read") from e
     return im
@@ -158,11 +202,15 @@ def _decode(src: Path, ffmpeg: str):
     icc = None
     try:
         with Image.open(src) as im:
+            if im.size[0] * im.size[1] > Image.MAX_IMAGE_PIXELS:  # Pillow only warns between 1x and 2x its cap
+                raise WebImageError("too_large", "The image is too large to convert")
             icc = im.info.get("icc_profile")
             out = _pixels(ImageOps.exif_transpose(im))
             out.load()
             return out, icc
-    except Image.DecompressionBombError as e:
+    except WebImageError:
+        raise
+    except (Image.DecompressionBombError, MemoryError) as e:
         raise WebImageError("too_large", "The image is too large to convert") from e
     except Exception:  # noqa: BLE001 — a TIFF Pillow cannot decode (a compression it lacks): ffmpeg's turn
         return _ffmpeg_frame(ffmpeg, src, alpha=True), icc
@@ -195,7 +243,11 @@ def _fit(im: Image.Image, icc):
     global _SRGB
     space = bytes(icc[16:20]) if icc and len(icc) >= 20 else None
     if im.mode == "CMYK":
-        if space == b"CMYK":
+        try:  # here, not at import: serve loads this at start and a Pillow without littlecms must not stop it
+            from PIL import ImageCms
+        except ImportError:
+            ImageCms = None
+        if space == b"CMYK" and ImageCms is not None:
             try:
                 if _SRGB is None:
                     _SRGB = ImageCms.createProfile("sRGB")

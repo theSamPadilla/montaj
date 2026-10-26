@@ -272,3 +272,112 @@ def test_any_other_upload_is_stored_as_it_was(env, name, data):
     assert r.status_code == 200, r.text
     out = Path(r.json()["path"])
     assert out.name == name and out.read_bytes() == data
+
+
+# ── decompression bombs, input hardening, a Pillow without littlecms ─────────────────────────────────────────────
+
+def _tiff_declaring(w, h):
+    """A minimal valid-looking little-endian TIFF header whose first IFD declares w x h 8-bit gray, one tiny strip."""
+    import struct
+    entries = [(256, 4, 1, w), (257, 4, 1, h), (258, 3, 1, 8), (259, 3, 1, 1), (262, 3, 1, 1),
+               (273, 4, 1, 8 + 2 + 12 * 9 + 4), (277, 3, 1, 1), (278, 4, 1, h), (279, 4, 1, 1)]
+    ifd = struct.pack("<H", len(entries))
+    for tag, typ, cnt, val in entries:
+        ifd += struct.pack("<HHII", tag, typ, cnt, val) if typ == 4 else struct.pack("<HHIHH", tag, typ, cnt, val, 0)
+    return b"II*\x00" + struct.pack("<I", 8) + ifd + struct.pack("<I", 0) + b"\x00"
+
+
+def test_a_tiff_declaring_20000_by_20000_is_too_large_and_stores_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100_000_000)  # 2x the cap would otherwise raise by itself
+    src = tmp_path / "bomb.tif"
+    src.write_bytes(_tiff_declaring(20000, 20000))
+    with pytest.raises(web_image.WebImageError) as e:
+        web_image.to_web_image(src, ffmpeg_bin())
+    assert e.value.code == "too_large"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["bomb.tif"]
+
+
+def test_a_pillow_warning_band_size_is_too_large_too(tmp_path, monkeypatch):
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 300_000_000)  # 20000x20000 = 400M: 1x to 2x, Pillow only warns
+    src = tmp_path / "bomb.tif"
+    src.write_bytes(_tiff_declaring(20000, 20000))
+    with pytest.raises(web_image.WebImageError) as e:
+        web_image.to_web_image(src, ffmpeg_bin())
+    assert e.value.code == "too_large"
+
+
+def test_a_memory_error_is_too_large_and_never_an_ffmpeg_fallback(tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise MemoryError
+    monkeypatch.setattr(Image, "open", boom)
+    monkeypatch.setattr(web_image, "_ffmpeg_frame", lambda *a, **k: pytest.fail("fell back to ffmpeg"))
+    src = tmp_path / "x.tif"
+    src.write_bytes(b"II*\x00")
+    with pytest.raises(web_image.WebImageError) as e:
+        web_image.to_web_image(src, "ffmpeg")
+    assert e.value.code == "too_large"
+
+
+def test_ffmpeg_output_past_the_cap_is_too_large_and_ffmpeg_is_killed(tmp_path, monkeypatch):
+    import os
+    pidfile = tmp_path / "pid"
+    fake = tmp_path / "fake-ffmpeg"
+    fake.write_text(f"#!/bin/sh\necho $$ > {pidfile}\nexec yes\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(web_image, "MAX_FRAME_BYTES", 3 * 1024 * 1024)
+    src = tmp_path / "x.heic"
+    src.write_bytes(b"x")
+    with pytest.raises(web_image.WebImageError) as e:
+        web_image.to_web_image(src, str(fake))
+    assert e.value.code == "too_large"
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pidfile.read_text()), 0)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["fake-ffmpeg", "pid", "x.heic"]
+
+
+def test_the_ffmpeg_deadline_still_kills_a_hung_decode(tmp_path, monkeypatch):
+    fake = tmp_path / "fake-ffmpeg"
+    fake.write_text("#!/bin/sh\nexec sleep 30\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(web_image, "DECODE_TIMEOUT_S", 1)
+    src = tmp_path / "x.heic"
+    src.write_bytes(b"x")
+    with pytest.raises(web_image.WebImageError) as e:
+        web_image.to_web_image(src, str(fake))
+    assert e.value.code == "unreadable"
+
+
+def test_ffmpeg_is_given_only_the_file_protocol_and_a_heic_the_mov_demuxer(tmp_path, monkeypatch):
+    import subprocess
+    seen = []
+    real = subprocess.Popen
+
+    def spy(cmd, *a, **k):
+        seen.append(cmd)
+        return real(cmd, *a, **k)
+    monkeypatch.setattr(subprocess, "Popen", spy)
+    src = tmp_path / "x.heic"
+    src.write_bytes(b"nope")
+    with pytest.raises(web_image.WebImageError):
+        web_image.to_web_image(src, ffmpeg_bin())
+    cmd = seen[0]
+    assert cmd[cmd.index("-protocol_whitelist") + 1] == "file"
+    assert cmd[cmd.index("-f") + 1] == "mov" and cmd.index("-f") < cmd.index("-i")
+
+
+def test_serve_and_lib_import_without_imagecms():
+    import subprocess
+    import sys
+    code = "import sys; sys.modules['PIL.ImageCms'] = None; import lib.web_image, serve.server; print('ok')"
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=Path(__file__).parent.parent, timeout=120)
+    assert r.returncode == 0 and "ok" in r.stdout, r.stderr[-800:]
+
+
+def test_a_too_large_upload_is_a_422_and_stores_nothing(env, monkeypatch):
+    pid, pdir, _ = env
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100_000_000)
+    before = set(p.name for p in pdir.iterdir())
+    r = client.post(f"/api/projects/{pid}/upload-asset", files={"file": ("bomb.tif", _tiff_declaring(20000, 20000))})
+    assert r.status_code == 422, r.text
+    assert "too_large" in r.json()["detail"]["message"]
+    assert set(p.name for p in pdir.iterdir()) == before
