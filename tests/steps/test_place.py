@@ -310,6 +310,59 @@ def test_each_preset_renders_its_props_inside_the_frame_and_the_safe_areas(tmp_p
         assert word in shown, out
 
 
+# ── animation first (PL89c): ready moving patterns, placed in one call ─────────────────────────────────────────────
+# 52's PL89c comparison: sections 05, 07 and 09 got nouns or nothing where Claude alone animated the idea (a command
+# travelling phone -> computer -> motors, a call ring, "flat ground only" drawn under the robot), and the profile says
+# animation is always preferred to plain text. Three presets make that one place call with props, no JSX written.
+
+ANIMATED = {
+    "flow": {"points": "phone > small computer > motors"},
+    "ring": {"x": "0.5", "y": "0.4", "label": "LIVE"},
+    "rule": {"text": "flat ground only", "y": "0.5"},
+}
+
+
+def test_the_animated_presets_are_place_presets_and_listed_in_its_schema():
+    for name in ANIMATED:
+        assert name in place.PRESETS, name
+        assert (Path(place.PRESETS_DIR) / place.PRESETS[name]).is_file(), name
+    schema = json.loads((REPO_ROOT / "steps" / "edit" / "place.json").read_text())
+    preset = next(p for p in schema["params"] if p["name"] == "preset")
+    assert set(ANIMATED) <= set(preset["options"])
+    for name in ANIMATED:
+        assert name in preset["description"], name
+
+
+@pytest.mark.parametrize("name", sorted(ANIMATED))
+def test_an_animated_preset_moves_by_the_look_check_and_places_with_its_props(tmp_path, name):
+    d = make_project(tmp_path)
+    out = run(d, at="2", for_s=4, preset=name, props=json.dumps(ANIMATED[name]))
+    item = tracks(d)[1]["items"][0]
+    assert item["src"] == "./overlays/" + place.PRESETS[name]
+    assert {k: item["props"][k] for k in ANIMATED[name]} == ANIMATED[name]
+    assert lc.motion_issues(item, str(d), "x") == [], "eased in, alive while held, out before its end"
+    assert not out.get("issues"), out
+
+
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+@pytest.mark.parametrize("name,words", [
+    ("flow", ["phone", "small", "computer", "motors"]),
+    ("ring", ["LIVE"]),
+    ("rule", ["flat", "ground", "only"]),
+    ("flow", ["camera", "phone", "cloud", "operator", "robot"]),
+])
+def test_an_animated_preset_renders_every_word_inside_the_frame_and_the_safe_areas(tmp_path, name, words):
+    d = make_project(tmp_path)
+    props = dict(ANIMATED[name])
+    if words[0] == "camera":
+        props["points"] = " > ".join(words)
+    out = run(d, at="2", for_s=4, preset=name, props=json.dumps(props), measure_fn=look.measure, detail=True)
+    assert out["issues"] == [], out
+    shown = " ".join(out["text"])
+    for w in words:
+        assert w in shown, out
+
+
 # ── review 1 (write safety) ───────────────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("kw,err", [
