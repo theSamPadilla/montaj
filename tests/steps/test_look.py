@@ -452,3 +452,51 @@ def test_look_reports_motion_and_type_floors_with_the_rest(tmp_path):
     mine = [i for i in out["issues"] if "ov-still" in i]
     assert any("no motion" in i for i in mine) and any('"tiny" is 20 px' in i for i in mine), out["issues"]
     assert not any("ov-good" in i for i in out["issues"]), out["issues"]
+
+
+# ── caption ink: data only ────────────────────────────────────────────────────────────────────────────────────────
+
+def _ink_project(segs, card=True, style="pop"):
+    items = [{"id": "paper", "type": "overlay", "src": "engine:scene3d", "start": 0, "end": 4, "opaque": True}] if card else []
+    return {"id": "p", "settings": {"resolution": [1080, 1920], "fps": 30},
+            "tracks": [{"id": "main", "items": [{"id": "v", "type": "video", "src": "/x/a.mp4", "start": 0, "end": 8,
+                                                 "inPoint": 0, "outPoint": 8}]}, {"id": "ovl", "items": items}],
+            "captions": {"style": style, "segments": [{"id": f"cap-{i}", "text": "x", "words": [], **s}
+                                                      for i, s in enumerate(segs)]}}
+
+
+def test_a_caption_over_a_card_whose_ink_was_not_checked_is_reported():
+    issues = lc.caption_ink_issues(_ink_project([{"start": 1, "end": 2}]))
+    assert len(issues) == 1 and issues[0]["id"] == "captions" and issues[0]["t"] == 1.5
+    assert "paper" in issues[0]["text"] and "run caption_ink" in issues[0]["text"]
+
+
+def test_a_caption_whose_ink_was_checked_for_this_card_is_fine():
+    assert lc.caption_ink_issues(_ink_project([{"start": 1, "end": 2, "ink": "dark", "inkAuto": "paper"}])) == []
+
+
+def test_ink_set_for_a_card_that_is_gone_is_reported():
+    issues = lc.caption_ink_issues(_ink_project([{"start": 5, "end": 6, "ink": "dark", "inkAuto": "paper"}]))
+    assert len(issues) == 1 and "paper" in issues[0]["text"] and "now over footage" in issues[0]["text"]
+
+
+def test_a_persons_ink_is_never_flagged():
+    assert lc.caption_ink_issues(_ink_project([{"start": 1, "end": 2, "ink": "light"},
+                                                {"start": 5, "end": 6, "ink": "dark"}])) == []
+
+
+def test_translations_and_the_boxed_styles_are_not_flagged_for_ink():
+    segs = [{"start": 1, "end": 2, "ink": "dark", "inkAuto": "paper"},
+            {"start": 1, "end": 2, "lang": "es", "translationOf": ["cap-0"]}]
+    assert lc.caption_ink_issues(_ink_project(segs)) == []
+    for style in ("plate", "subtitle"):
+        assert lc.caption_ink_issues(_ink_project([{"start": 1, "end": 2}], style=style)) == []
+
+
+def test_look_reports_the_unchecked_caption_ink_in_its_answer(tmp_path):
+    path, p = _project(tmp_path, base=((0, 8),))
+    p["tracks"][1]["items"].append({"id": "paper", "type": "overlay", "src": "engine:scene3d", "start": 0, "end": 4, "opaque": True})
+    p["captions"] = {"style": "pop", "segments": [{"id": "cap-0", "text": "x", "start": 1, "end": 2, "words": []}]}
+    path.write_text(json.dumps(p))
+    out = look.run(str(path), detail=True)
+    assert any("run caption_ink" in i for i in out["issues"])

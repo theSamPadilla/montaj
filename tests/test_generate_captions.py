@@ -521,3 +521,72 @@ def test_step_write_waits_for_the_project_lock(tmp_path, monkeypatch, capsys):
     holder["p"].wait()
     assert __import__("time").monotonic() - started[0] >= 0.3
     assert "captions" in out
+
+
+# ── caption ink: the pass after the write runs only for a project with a card, and never fails the run ─────────────
+
+def _ink_project_doc(with_card):
+    items = [{"id": "card", "type": "overlay", "src": "engine:scene3d", "start": 0, "end": 4, "opaque": True}] if with_card else []
+    return {"id": "p1", "name": "orig", "settings": {"resolution": [1080, 1920], "fps": 30},
+            "tracks": [{"id": "trk-0", "items": [{"id": "c", "type": "video", "src": "a.mp4", "start": 0, "end": 4,
+                                                  "inPoint": 0, "outPoint": 4}]}, {"id": "ovl", "items": items}]}
+
+
+def _run_step_with_ink(tmp_path, monkeypatch, capsys, with_card, renderer):
+    import sys as _sys
+    mod = _load_step_module()
+    proj_dir = tmp_path / "proj"
+    proj_dir.mkdir()
+    path = proj_dir / "project.json"
+    path.write_text(json.dumps(_ink_project_doc(with_card)))
+    track = {"style": "pop", "segments": [{"id": "cap-1", "text": "hello", "start": 1, "end": 2, "words": []}]}
+    monkeypatch.setattr(mod, "get_project_dir", lambda pid: proj_dir)
+    monkeypatch.setattr(mod, "require_whisper_model", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "build_audio_mix_spec", lambda p: {"segments": []})
+    monkeypatch.setattr(mod, "whisper_runaway_timeout_for", lambda p: 1)
+
+    def fake_run(cmd, **kw):
+        if "caption.py" in " ".join(cmd):
+            (proj_dir / "_caption_track.json").write_text(json.dumps(track))
+        if "transcribe.py" in " ".join(cmd):
+            (proj_dir / "_caption_words.json").write_text("{}")
+    monkeypatch.setattr(mod, "run", fake_run)
+    monkeypatch.setattr(mod.caption_ink, "frame_renderer", lambda project_path: renderer)
+    monkeypatch.setattr(_sys, "argv", ["generate_captions.py", "--project-id", "p1"])
+    mod.main()
+    return json.loads(path.read_text()), json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+
+def test_ink_pass_runs_for_a_project_with_a_card(tmp_path, monkeypatch, capsys):
+    from PIL import Image
+
+    def light(t):
+        p = tmp_path / "light.png"
+        Image.new("RGB", (540, 960), (0xef, 0xec, 0xe4)).save(p)
+        return str(p)
+    doc, printed = _run_step_with_ink(tmp_path, monkeypatch, capsys, True, light)
+    seg = doc["captions"]["segments"][0]
+    assert seg["ink"] == "dark" and seg["inkAuto"] == "card"
+    assert "warnings" not in printed
+
+
+def test_ink_pass_renders_nothing_for_a_project_without_a_card(tmp_path, monkeypatch, capsys):
+    calls = []
+    doc, printed = _run_step_with_ink(tmp_path, monkeypatch, capsys, False, lambda t: calls.append(t))
+    assert calls == [] and "ink" not in doc["captions"]["segments"][0] and "warnings" not in printed
+
+
+def test_ink_failure_is_a_warning_and_the_captions_stay_written(tmp_path, monkeypatch, capsys):
+    def boom(t):
+        raise RuntimeError("no browser")
+    doc, printed = _run_step_with_ink(tmp_path, monkeypatch, capsys, True, boom)
+    assert doc["captions"]["segments"][0]["text"] == "hello" and "ink" not in doc["captions"]["segments"][0]
+    assert printed["warnings"] and "1.5" in printed["warnings"][0]
+    assert printed["segments"][0]["id"] == "cap-1", "the caption track is still the answer"
+
+
+def test_ink_pass_exception_is_a_warning(tmp_path, monkeypatch, capsys):
+    mod = _load_step_module()
+    monkeypatch.setattr(mod.caption_ink, "update", lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
+    ws = mod.ink_pass("/nope/project.json")
+    assert len(ws) == 1 and "caption_ink" in ws[0]

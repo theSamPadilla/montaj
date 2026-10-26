@@ -1,0 +1,21 @@
+{
+  "name": "caption_ink",
+  "category": "transform",
+  "description": "Make captions readable over light full-screen cards. Renders the frame without captions at each caption, measures the backdrop in the rows the caption draws in, and writes ink (\"dark\" over a light card, \"light\" over a dark one) and inkAuto (the card's id) on the caption, so the editor, sample_frame and the export draw the same. Footage is left to the style. An ink a person set is never changed; ink this step wrote is cleared when the card is gone. Does nothing for plate and subtitle. generate_captions runs it when the project has a card. Writes the captions only; a caption edit since it read them is refused.",
+  "input": {
+    "type": "project",
+    "description": "The project id, its folder, or the absolute path of its project.json"
+  },
+  "output": {
+    "type": "json",
+    "description": "{dark, light, cleared, kept, warnings?}: captions set dark, set light, cleared, and left as a person set them."
+  },
+  "params": [
+    {
+      "name": "project",
+      "type": "path",
+      "required": true,
+      "description": "The project id, its folder, or the absolute path of its project.json"
+    }
+  ]
+}
