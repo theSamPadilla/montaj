@@ -9,7 +9,7 @@
 - The write: tracks only, through lib/project_lock.update_project_or_fail (under the project lock, which also
   checks a Studio sync clash). The tracks as read are compared under the lock (project_revisions.revision_of): any
   change since, a human edit or another step's, refuses `project_changed` and writes nothing. A new item goes on
-  the given track, else the first overlay track free over its span, else a new track; `id` moves or updates that
+  the given track, else the highest graphics track free over its span with nothing drawn over it, else a new track; `id` moves or updates that
   item alone, on its own track unless `track` names another, with a version of the project first (it changes an
   overlay a person may have made; an add takes none).
 - Self-check: the placed overlay measured once (look's sample_overlay --measure) at the middle of its span, for
@@ -127,13 +127,23 @@ def choose_track(project, s, e, want=None, skip=None):
                     return None, f"overlaps {clash[0].get('id')} on track {want}"
                 return ti, None
         return None, f"no track {want}"
-    for ti, t in enumerate(tracks):
-        if ti == 0 or t.get("enabled") is False:   # a switched-off track draws nothing
+    # Sam (2026-10-26): graphics share one track unless they overlap, and a new one never lands under what draws over
+    # its span. Walk down from the top: pass a track that draws nothing then (video tracks draw under every overlay), take
+    # the first graphics track free there, and stop at anything drawing over the span (a new track on top).
+    for ti in range(len(tracks) - 1, 0, -1):
+        t = tracks[ti]
+        items = [it for it in t.get("items", []) if it is not skip]
+        if t.get("enabled") is False or any(it.get("type") == "video" for it in items):   # a switched-off track draws nothing
             continue
-        items = t.get("items", [])
-        if items and all(it.get("type") == "overlay" for it in items) and not _overlaps(items, s, e, skip):
+        if _overlaps(items, s, e, skip):
+            return None, None
+        if items and all(_is_graphic(it) for it in items):
             return ti, None
     return None, None
+
+
+def _is_graphic(it):
+    return it.get("type") == "overlay" and not str(it.get("src", "")).startswith("engine:")
 
 
 def preset_file(project_dir, preset, referenced, check=None):

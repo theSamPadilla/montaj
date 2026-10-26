@@ -65,7 +65,7 @@
       "name": "track",
       "type": "string",
       "required": false,
-      "description": "The overlay track id to place it on. Default: the first overlay track free at that time, else a new one."
+      "description": "The overlay track id to place it on. Default: the top graphics track free at that time, else a new one on top."
     },
     {
       "name": "id",

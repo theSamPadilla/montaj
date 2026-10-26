@@ -271,6 +271,57 @@ def data_issues(project, project_dir):
             out.append({"t": r2(s), "id": str(seg.get("id") or "caption"), "text": f"caption {where}"})
     out += _black(rows, end)
     out += _hidden(rows)
+    out += merge_track_issues(project)
+    return out
+
+
+_MERGE_KIND_NAMES = {"video": "b-roll", "3d": "3D beat", "graphics": "graphics"}
+
+
+def _merge_kind(it):
+    if it.get("type") == "video":
+        return "video"
+    if it.get("type") == "overlay":
+        return "3d" if str(it.get("src") or "").startswith("engine:scene3d") else "graphics"
+    return str(it.get("type") or "")
+
+
+def merge_track_issues(project):
+    """[{t, id, text}]: Sam (2026-10-26), a paid run left 13 tracks, four b-roll tracks of one clip each among them. Tracks
+    of one kind (b-roll, 3D beats, graphics) are folded from the bottom up into one group while nothing in them overlaps
+    in time and no other track of their layer (video, or the overlays above it) between them draws over their items, so
+    the merge changes nothing on screen; each track that would fold is one issue naming the group's track."""
+    tracks = [t for t in (project.get("tracks") or []) if isinstance(t, dict)]
+    spans = lambda items: [(_num(x.get("start")), _num(x.get("end"))) for x in items]
+    hit = lambda a, b: any(s1 < e2 - 1e-3 and s2 < e1 - 1e-3 for s1, e1 in a for s2, e2 in b)
+    groups = {}   # kind -> [(track indexes, spans)]
+    out = []
+    for ti in range(1, len(tracks)):
+        t = tracks[ti]
+        items = [x for x in t.get("items") or [] if isinstance(x, dict)]
+        kinds = {_merge_kind(x) for x in items}
+        if t.get("enabled") is False or len(kinds) != 1:
+            continue
+        kind = kinds.pop()
+        if kind not in _MERGE_KIND_NAMES:
+            continue
+        mine = spans(items)
+        folded = False
+        for members, held in groups.setdefault(kind, []):
+            between = [tracks[m] for m in range(members[0] + 1, ti) if m not in members]
+            layer = [x for b in between for x in (b.get("items") or []) if isinstance(x, dict)
+                     and (_merge_kind(x) == "video") == (kind == "video")]
+            if not hit(mine, held) and not hit(spans(layer), mine + held):
+                members.append(ti)
+                held.extend(mine)
+                gid = tracks[members[0]].get("id")
+                out.append({"t": r2(min(s for s, _ in mine)) if mine else 0, "id": str(t.get("id") or f"track {ti}"),
+                            "text": f'could share track {gid} (one {_MERGE_KIND_NAMES[kind]} track; nothing overlaps): '
+                                    f'edit_timeline update {{id, track: "{gid}"}} on its items'})
+                folded = True
+                break
+        if not folded:
+            groups[kind].append(([ti], list(mine)))
     return out
 
 

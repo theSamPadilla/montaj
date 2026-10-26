@@ -768,3 +768,29 @@ def test_fonts_an_item_already_names_are_kept(tmp_path):
     (d / "overlays" / "ov-a.jsx").write_text("export default function A() { return <div style={{ fontFamily: '\"Anton\", sans-serif' }}>a</div> }")
     run(d, item_id="ov-a", at="5")
     assert tracks(d)[1]["items"][0]["googleFonts"] == ["Syne:wght@800"]
+
+
+# Sam (2026-10-26, a paid run's 13 tracks): graphics share one track unless they overlap, and a new graphic never lands
+# under a 3D beat or another item drawing over its span. The choice walks down from the top: a track that draws nothing
+# over the span is passed, the first graphics track free there is taken, and anything drawing over the span stops the walk
+# (a new track on top, where the item draws over it).
+def _tracks_doc(*tracks):
+    return {"tracks": [{"id": "trk-0", "items": [{"id": "v0", "type": "video", "src": "/x/a.mp4", "start": 0, "end": 60}]}, *tracks]}
+
+
+def _ov(id_, s, e, src=None):
+    return {"id": id_, "type": "overlay", "src": src or f"./overlays/{id_}.jsx", "start": s, "end": e}
+
+
+def test_the_default_track_is_the_highest_free_graphics_track_with_nothing_drawn_over_the_span():
+    low = {"id": "g-low", "items": [_ov("a", 0, 2)]}
+    beat = {"id": "3d", "items": [_ov("specs", 8, 14, "engine:scene3d")]}
+    high = {"id": "g-high", "items": [_ov("b", 20, 22)]}
+    broll = {"id": "b", "items": [{"id": "br", "type": "video", "src": "/x/b.mp4", "start": 9, "end": 12}]}
+    doc = _tracks_doc(low, beat, high, broll)
+    assert place.choose_track(doc, 9, 12) == (3, None), "over the 3D beat, never under it; a video track draws under overlays"
+    assert place.choose_track(doc, 30, 32) == (3, None), "the top graphics track, not the first one"
+    assert place.choose_track(doc, 21, 23) == (None, None), "b draws over that span: a new track on top"
+    doc = _tracks_doc(low, beat)
+    assert place.choose_track(doc, 9, 12) == (None, None), "the beat draws over it: a new track, not g-low under it"
+    assert place.choose_track(doc, 3, 5) == (1, None), "the beat draws nothing then: g-low"

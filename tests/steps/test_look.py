@@ -720,3 +720,27 @@ def test_a_label_over_its_marked_part_is_an_issue_and_one_beside_it_is_not(tmp_p
     assert any("ov-labels" in i and 'label "sensors" sits on the part sensors' in i for i in out["issues"]), out["issues"]
     out = _marked(tmp_path / "beside", ("sensors", 780, 470, 160, 60))
     assert not any("sits on the part" in i for i in out["issues"]), out["issues"]
+
+
+# Sam (2026-10-26, a paid run's 13 tracks: 4 b-roll tracks of one clip each, 3 for 3D beats, 3 for labels): tracks of one
+# kind (video, 3D beats, graphics) that never overlap in time, with nothing between them drawing over the lower one's
+# items, are one issue each: they could be one track.
+def test_same_kind_tracks_that_could_be_one_are_said():
+    v = lambda i, s, e: {"id": i, "type": "video", "src": "/x/b.mp4", "start": s, "end": e}
+    o = lambda i, s, e, src=None: {"id": i, "type": "overlay", "src": src or f"./overlays/{i}.jsx", "start": s, "end": e}
+    p = {"tracks": [{"id": "trk-0", "items": [v("v0", 0, 50)]},
+                    {"id": "b1", "items": [v("br1", 4, 7)]}, {"id": "b2", "items": [v("br2", 24, 27)]},
+                    {"id": "s1", "items": [o("specs", 7, 13, "engine:scene3d")]}, {"id": "s2", "items": [o("mount", 13, 24, "engine:scene3d")]},
+                    {"id": "g1", "items": [o("lab1", 7, 13)]}, {"id": "g2", "items": [o("lab2", 13, 24)]},
+                    {"id": "g3", "items": [o("lab3", 8, 9)]}]}    # lab3 overlaps lab1: g3 stays its own track
+    out = [i for i in lc.merge_track_issues(p)]
+    texts = " | ".join(i["text"] for i in out)
+    assert len(out) == 3, texts
+    assert any(i["id"] == "b2" and "b1" in i["text"] for i in out), texts
+    assert any(i["id"] == "s2" and "s1" in i["text"] for i in out), texts
+    assert any(i["id"] == "g2" and "g1" in i["text"] for i in out), texts
+    assert "edit_timeline" in texts and "track" in texts
+    # a 3D beat between two graphics tracks, over both tracks' items: either merge would change what draws on top
+    p2 = {"tracks": [p["tracks"][0], {"id": "g1", "items": [o("lab1", 7, 9)]}, {"id": "s1", "items": [o("specs", 7, 13, "engine:scene3d")]},
+                     {"id": "g2", "items": [o("lab2", 10, 12)]}]}
+    assert lc.merge_track_issues(p2) == []
