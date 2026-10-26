@@ -167,8 +167,8 @@ def analyse(project, on_disk, project_path, item_id, mode):
             mode = "card"
             why = ("card: a crop that follows the subject puts the captions across it; the card keeps it above them"
                    if captions_now else
-                   f"card: {seen}, but captions would cross it in {round(crossed * 100)}% of the clip (no captions yet;"
-                   " for a video that will have none, run mode track)")
+                   f"card: {seen}, and the captions still to come would cross it in {round(crossed * 100)}% of the clip;"
+                   " the card keeps it above them")
         else:
             mode = "track"
             why = f"track: {seen} and the captions stay clear of it"

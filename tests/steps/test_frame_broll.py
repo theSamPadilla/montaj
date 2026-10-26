@@ -299,10 +299,11 @@ def test_every_answer_says_why_it_chose_and_that_the_clip_is_done(tmp_path):
     assert out["mode"] == "card" and out["why"].endswith(fb.DONE)
 
 
-def test_a_card_made_only_for_captions_not_there_yet_says_so_and_how_to_track_instead(tmp_path):
+def test_a_card_made_for_captions_still_to_come_says_so_and_does_not_invite_a_track(tmp_path):
+    # captions are a default step of every edit workflow (2b, 10-25): they are always coming, so the card holds
     out = fb.run(str(project(tmp_path, y=220)), "br-1", sampler=stub_sampler())
     assert out["mode"] == "card"
-    assert "no captions yet" in out["why"] and "mode track" in out["why"]
+    assert "captions still to come" in out["why"] and "mode track" not in out["why"]
 
 
 def test_the_cli_takes_item_more_than_once(tmp_path):
