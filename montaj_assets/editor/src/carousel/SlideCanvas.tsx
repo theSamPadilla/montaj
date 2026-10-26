@@ -1,5 +1,5 @@
 import { useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from 'react'
-import type { Slide, OverlayElement, ImageElement, OverlayFactory } from '../types'
+import type { Slide, CarouselElement, OverlayElement, ImageElement, OverlayFactory } from '../types'
 import OverlayErrorBoundary from './OverlayErrorBoundary'
 import {
   useOverlayDrag,
@@ -8,6 +8,7 @@ import {
   buildElementTransform,
   roundResizedBox,
   type ResizeHandle as ResizeHandleId,
+  type ResizeGesture,
   type GapSegment,
   type SnapBox,
   type SnapGuide,
@@ -21,6 +22,7 @@ import { isLocked } from './lock'
 import { bandRect, bandTouches, type BandRect } from './bandSelect'
 import { groupDragMove, type GroupDragResult, type GroupMember } from './groupDrag'
 import { elementsAt, isLayerPress, nextLayerDown, pointInElement } from './hitTest'
+import { scaleFontSize, scalesTextWithBox } from './textScale'
 
 // Neutral fallback used only when no host `resolveImageSrc` is injected. The
 // package must not synthesize a host-shaped URL (e.g. Montaj's `/api/files`):
@@ -188,7 +190,8 @@ interface Props {
   resizeElement?: (slideId: string, elementId: string, box: { x: number; y: number; w: number; h: number }) => Promise<void>
   rotateElement?: (slideId: string, elementId: string, rotation: number) => Promise<void>
   commit?: () => Promise<void>
-  updateOverlayProp?: (slideId: string, elementId: string, key: string, value: string) => Promise<void>
+  /** A number is written as a number: a text box's corner resize keeps a numeric font size numeric (§586 M8). */
+  updateOverlayProp?: (slideId: string, elementId: string, key: string, value: string | number) => Promise<void>
   updateImageCrop?: (slideId: string, elementId: string, crop: { x: number; y: number; w: number; h: number } | undefined) => Promise<void>
 
   // Crop mode is owned here; the host enters it (the panel's Crop button, or a
@@ -377,6 +380,13 @@ export default function SlideCanvas({
   const boxesOf = (id: string) =>
     [wrapperRefs.current.get(id), chromeRefs.current.get(id)].filter((el): el is HTMLDivElement => !!el)
 
+  // Each overlay's inner layer, drawn at native size and scaled to the canvas.
+  const innerRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  const setInnerRef = (id: string) => (el: HTMLDivElement | null) => {
+    if (el) innerRefs.current.set(id, el)
+    else innerRefs.current.delete(id)
+  }
+
   // ── Gesture preview helper: write transform/size directly to the wrapper ──
   // and to its chrome box in the same call, so the handles never lag the element.
   const applyPreviewTransform = (id: string, x: number, y: number, rotation: number) => {
@@ -392,6 +402,13 @@ export default function SlideCanvas({
       el.style.width = `${box.w * scale}px`
       el.style.height = `${box.h * scale}px`
     }
+  }
+  // A text box's corner resize (§586 M8) scales its content by `ratio` while
+  // the drag lasts, so the text does not jump when the real font size lands.
+  // 1 takes the preview off.
+  const applyPreviewTextScale = (id: string, ratio: number) => {
+    const inner = innerRefs.current.get(id)
+    if (inner) inner.style.transform = `scale(${scale * ratio})`
   }
 
   // ── Gesture hooks ──
@@ -424,10 +441,22 @@ export default function SlideCanvas({
     },
   })
 
+  // A corner resize that keeps the ratio scales a text box's font size by the
+  // height ratio (§586 M8); side handles, Shift and Fit to box change the box
+  // only.
+  const scalesText = (el: CarouselElement | undefined, gesture: ResizeGesture): el is OverlayElement =>
+    !!el && gesture.keptRatio && gesture.startBox.h > 0 && scalesTextWithBox(el)
+
   const resize = useOverlayResize({
     scale,
-    onPreview: applyPreviewBox,
+    onPreview: (id, box, rotation, gesture) => {
+      applyPreviewBox(id, box, rotation)
+      if (scalesText(elementById(id), gesture)) applyPreviewTextScale(id, box.h / gesture.startBox.h)
+      else applyPreviewTextScale(id, 1)
+    },
     onCommit: async (id, box, gesture) => {
+      // Off first, so an element gone mid-drag leaves no scaled layer.
+      applyPreviewTextScale(id, 1)
       const el = elementById(id)
       if (!el) return
       const rotation = gesture.startBox.rotation ?? 0
@@ -435,6 +464,15 @@ export default function SlideCanvas({
       const next = roundResizedBox(box, gesture.handle, rotation)
       applyPreviewBox(id, next, rotation)
       if (next.x === el.x && next.y === el.y && next.w === el.w && next.h === el.h) return
+      // A size that rounds back to the one it has is not written.
+      const source = scalesText(el, gesture) ? el.overlay.props.fontSize : undefined
+      const fontSize = scaleFontSize(source, next.h / gesture.startBox.h)
+      if (fontSize !== null && fontSize !== scaleFontSize(source, 1) && updateOverlayProp) {
+        // Both in this tick, so the box and the size draw together. The prop
+        // write folds the transient resize into its undo step and its save.
+        await Promise.all([resizeElement?.(sid, id, next), updateOverlayProp(sid, id, 'fontSize', fontSize)])
+        return
+      }
       await resizeElement?.(sid, id, next)
       await commit?.()
     },
@@ -1009,6 +1047,7 @@ export default function SlideCanvas({
               // native-size text overflows the shrunk box and overlaps (the box
               // sizing only auto-fits resolution-independent content like <img>).
               <div
+                ref={setInnerRef(element.id)}
                 style={{
                   width: element.w,
                   height: element.h,

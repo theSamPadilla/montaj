@@ -11,6 +11,6 @@ export type { SnapGuide, SnapResult, SnapBox, GapSegment, SmartSnapResult, Smart
 export { useOverlayDrag } from './hooks/useOverlayDrag';
 export type { UseOverlayDragArgs, UseOverlayDragReturn, DragModifiers } from './hooks/useOverlayDrag';
 export { useOverlayResize } from './hooks/useOverlayResize';
-export type { UseOverlayResizeArgs, UseOverlayResizeReturn, ResizeModifiers } from './hooks/useOverlayResize';
+export type { UseOverlayResizeArgs, UseOverlayResizeReturn, ResizeModifiers, ResizeGesture } from './hooks/useOverlayResize';
 export { useOverlayRotate } from './hooks/useOverlayRotate';
 export type { UseOverlayRotateArgs, UseOverlayRotateReturn } from './hooks/useOverlayRotate';
