@@ -5,7 +5,7 @@
 // these give an overlay that motion in one line. Run through `npm test` (test.js imports this file) or directly via
 // `node motion.test.js`.
 import assert from 'node:assert/strict'
-import { motion, ease, progress, draw, stagger, pulse } from './motion.js'
+import { motion, ease, progress, draw, stagger, pulse, Motion } from './motion.js'
 
 const fps = 30, near = (a, b, tol = 1e-6) => Math.abs(a - b) <= tol
 const at = (s) => s * fps
@@ -87,3 +87,30 @@ const D = at(4) // a 4 s overlay
   assert.ok(m >= Math.min(a, b) - 1e-9 && m <= Math.max(a, b) + 1e-9)
 }
 assert.throws(() => motion(0, fps, D, { enter: 'spin' }), /enter is one of/)
+
+// ── follow: a label riding direct_scene mark's track ─────────────────────────────────────────────────────────────
+{
+  const part = (x, y) => ({ cast: 0, part: 'screen', pixel: [x, y], box: [x - 40, y - 80, x + 40, y + 80], inView: true,
+    leader: { side: 'right', from: [x + 40, y], to: [x + 300, y], align: 'start' } })
+  const cast = (x) => ({ cast: 0, top: [x, 400], bottom: [x, 1600], box: [x - 200, 400, x + 200, 1600], metres: 0.48, inView: true,
+    rule: { side: 'right', x: x + 300, top: 400, bottom: 1600, label: [x + 340, 1000], align: 'start' } })
+  // a 2160 x 3840 project: mark's pixels are in its frame, the overlay draws on the 1080 canvas (half)
+  const mark = { kind: 'mark', at: 0, size: { width: 2160, height: 3840 },
+    track: [{ t: 0, parts: [part(1000, 1000)], casts: [cast(1000)] }, { t: 0.5, parts: [part(1200, 1100)], casts: [cast(1200)] }, { t: 1, parts: [part(1200, 1100)], casts: [cast(1200)] }] }
+  const f0 = Motion.follow(mark, 0, fps)
+  assert.deepEqual(f0.parts.screen.pixel, [500, 500], 'the first row, halved to the 1080 canvas')
+  const f = Motion.follow(mark, at(0.25), fps)
+  assert.deepEqual(f.parts.screen.pixel, [550, 525], 'between rows, linear')
+  assert.deepEqual(f.parts.screen.leader.from, [570, 525])
+  assert.deepEqual(f.parts.screen.leader.to, [700, 525])
+  assert.equal(f.parts.screen.leader.side, 'right')
+  assert.deepEqual(f.casts[0].rule.label, [720, 500])
+  assert.equal(f.casts[0].metres, 0.48)
+  assert.deepEqual(Motion.follow(mark, at(5), fps).parts.screen.pixel, [600, 550], 'held at the last row after it')
+  // from: the scene's seconds at the overlay's frame 0 (the scene item's inPoint, when they start together)
+  assert.deepEqual(Motion.follow(mark, 0, fps, { from: 0.25 }).parts.screen.pixel, [550, 525])
+  // a mark with no track (one time) is its own single row
+  assert.deepEqual(Motion.follow({ size: { width: 1080, height: 1920 }, parts: [part(300, 400)], casts: [] }, 99, fps).parts.screen.pixel, [300, 400])
+  assert.equal(Motion.follow(null, 0, fps), null, 'nothing to follow is null, never a throw')
+}
+console.log('overlay-runtime: motion OK')
