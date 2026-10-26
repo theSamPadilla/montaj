@@ -8,6 +8,7 @@
     { "id": "cut_plan",         "uses": "montaj/cut",            "needs": ["snapshot"], "note": "Makes a plan of what to remove; read it and adjust it if needed." },
     { "id": "select-takes",     "uses": "montaj/select-takes",   "needs": ["cut_plan"], "note": "With several clips: review the plan's takes across clips and edit cut-plan.md; never apply here." },
     { "id": "cut_apply",        "uses": "montaj/cut",            "needs": ["select-takes"], "params": { "plan": "cut-plan.md" }, "note": "Applies the plan." },
-    { "id": "overlays",         "uses": "montaj/overlay",        "needs": ["cut_apply"], "params": { "style": "auto" } }
+    { "id": "captions",         "uses": "montaj/generate_captions", "needs": ["cut_apply"], "note": "Captions in the person's caption style (the profile's captionStyle, else outline), before the overlays. Leave them out only when the prompt says no captions." },
+    { "id": "overlays",         "uses": "montaj/overlay",        "needs": ["captions"], "params": { "style": "auto" } }
   ]
 }
