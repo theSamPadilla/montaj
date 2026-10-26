@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail, get_duration, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES
 from ai_video import save_project_changes
-from lib import project_revisions, speech_apply, speech_energy, speech_source, speech_text, sync_clash, write_places
+from lib import project_revisions, speech_apply, speech_energy, speech_rehear, speech_source, speech_text, sync_clash, write_places
 from lib.project_lock import project_lock_or_fail
 from lib.project_tracks import normalize_tracks
 from lib.project_versions import commit_version, is_own_repo
@@ -87,6 +87,50 @@ def _load(project_path):
     with open(project_path, encoding="utf-8") as f:
         return json.load(f)
 
+
+
+def _rehear_slow(project, track_id, project_dir, model, language):
+    """lib/speech_rehear over every clip's transcript of the track, with this module's transcriber (looked up at call
+    time): a phrase whisper wrote once though it was said twice is heard again, bounded. [{clip, at, was, heard}]."""
+    import tempfile, shutil
+    files, seen = [], set()
+    for it in speech_units.media_items(_track(project, track_id)[1]):
+        r = speech_units.resolved_item(it, project_dir)
+        sc = sidecar_for(r)
+        if sc and sc not in seen:
+            seen.add(sc)
+            files.append((sc, r["src"]))
+    # the longest-held phrases first, across every clip, within one budget
+    budget, chosen = speech_rehear.Budget(), {}
+    for held, sc, src, i, j, secs in sorted(((h, sc, src, i, j, s) for sc, src in files
+                                             for h, i, j, s in speech_rehear.candidates(sc)), key=lambda c: -c[0]):
+        if budget.take(secs):
+            chosen.setdefault(sc, set()).add((i, j))
+    out = []
+    for sc, src in files:
+        if sc not in chosen:
+            continue
+
+        def window(start, end, src=src):
+            tmp = tempfile.mkdtemp(prefix="montaj-rehear-")
+            try:
+                spec = os.path.join(tmp, "window.json")
+                Path(spec).write_text(json.dumps({"input": src, "keeps": [[max(0.0, start), end]]}), encoding="utf-8")
+                prefix = os.path.join(tmp, "heard")
+                ok, _ = speech_units.quiet(transcribe_file, spec, prefix, model, language)
+                if not ok or not os.path.isfile(prefix + ".json"):
+                    return []
+                doc = json.loads(Path(prefix + ".json").read_text(encoding="utf-8"))
+                return [((e.get("text") or ""), e["offsets"]["from"] / 1000.0, e["offsets"]["to"] / 1000.0)
+                        for e in doc.get("transcription", []) if "from" in (e.get("offsets") or {})]
+            except (OSError, ValueError, KeyError):
+                return []
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+
+        out += speech_rehear.rehear_file(sc, src, window, speech_rehear.Budget(phrases=10 ** 6, seconds=float("inf")),
+                                         only=chosen[sc])
+    return out
 
 
 def _transcribe_missing(project, track_id, project_path, project_dir, model, language):
@@ -1092,6 +1136,8 @@ def _make_plan(args, project_path, project_dir):
         return
     disk_l, lift = speech_source.lift(disk, key, project_dir)
     language = _language(args.language, _track(disk_l, track_id)[1], project_dir)
+    # PL89i: a phrase whisper heard once though it was said twice, heard again before the plan is built on it
+    reheard = _rehear_slow(disk_l, track_id, project_dir, args.model, language)
     max_pause = args.max_pause if args.max_pause is not None else FEELS[DEFAULT_FEEL].max_pause
     breath = min(max(args.breath, BREATH_MIN_S), max_pause / 2)       # R2-Q3
     title = disk.get("name") or disk.get("id") or os.path.basename(project_dir)
@@ -1161,6 +1207,8 @@ def _make_plan(args, project_path, project_dir):
     if prev:
         answer["previous"] = prev
     answer["transcribed"] = transcribed
+    if reheard:
+        answer["reheard"] = reheard        # phrases heard again: their words now hold the repeat whisper had missed
     if notes:
         answer["notes"] = notes
     if warnings:
