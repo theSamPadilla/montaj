@@ -311,45 +311,17 @@ def test_a_timed_out_frame_kills_the_whole_process_tree(monkeypatch):
     assert len(killed) == 1
 
 
-def _fake_sample_frames(monkeypatch, seen, status=0):
-    """steps.render.sample_frame.sample_frames, faked: records (times, kwargs) and writes a half-size light PNG."""
-    import steps.render.sample_frame as sf
-
-    def fake(project, times, frames_dir, **kw):
-        seen.append((project, list(times), kw))
-        out = Path(frames_dir) / "f_0000.png"
-        Image.new("RGB", (W // 2, H // 2), (0xef, 0xec, 0xe4)).save(out)
-        return [str(out)]
-    monkeypatch.setattr(sf, "sample_frames", fake)
-
-
 def test_a_frame_gets_what_is_left_until_the_deadline_and_none_after(tmp_path, monkeypatch):
     seen = []
-    _fake_sample_frames(monkeypatch, seen)
+    monkeypatch.setattr(ci, "_run_group", lambda cmd, timeout: (seen.append(timeout), (0, "", ""))[1])
+    out = tmp_path / "ink-1.000s.png"
+    out.write_bytes(b"x")
     render = ci.frame_renderer("/p/project.json", str(tmp_path), time.monotonic() + 5)
     render(1.0)
-    assert 0 < seen[0][2]["timeout"] <= 5
+    assert 0 < seen[0] <= 5
     with pytest.raises(RuntimeError):
         ci.frame_renderer("/p/project.json", str(tmp_path), time.monotonic() - 1)(1.0)
     assert len(seen) == 1
-
-
-def test_a_3d_frame_is_requested_without_captions_at_the_design_canvas(tmp_path, monkeypatch):
-    import steps.render.sample_frame as sf
-    seen = []
-    _fake_sample_frames(monkeypatch, seen)
-    path = ci.frame_renderer("/p/project.json", str(tmp_path))(2.5)
-    project, times, kw = seen[0]
-    assert (project, times) == ("/p/project.json", [2.5])
-    assert kw["no_captions"] is True and kw["max_short_edge"] == sf.SHEET_SHORT_EDGE == 1080
-    assert Path(path).is_file()
-
-
-def test_a_failed_sample_is_a_failed_frame_not_an_exit(tmp_path, monkeypatch):
-    import steps.render.sample_frame as sf
-    monkeypatch.setattr(sf, "sample_frames", lambda *a, **k: sys.exit(1))
-    with pytest.raises(RuntimeError):
-        ci.frame_renderer("/p/project.json", str(tmp_path))(1.0)
 
 
 def test_the_band_is_scaled_to_the_frames_real_size(tmp_path):
@@ -892,3 +864,80 @@ def test_the_cache_keeps_at_most_its_cap_of_entries(tmp_path, monkeypatch):
     assert len(entries) == 3
     _cached(_cache_project(tmp_path, [_seg("a", 5, 6)]), tmp_path, calls)   # the newest is kept
     assert len(calls) == 5
+
+
+# -- the overlay-alone cache -------------------------------------------------------------------------------------
+
+def _ov_cached(project, tmp_path, calls, alpha=None):
+    alpha = alpha or _alpha_png(tmp_path, "ovc", window=(60, 300, 1020, 900))
+
+    def overlay(item, n):
+        calls.append((item["id"], n))
+        return alpha
+
+    def frame(t):
+        raise AssertionError("a JSX card renders no frame")
+    return ci.plan(project, frame, W, H, overlay_fn=overlay, project_dir=str(tmp_path),
+                   cache_path=str(tmp_path / "cache.json"))
+
+
+def _ov_project(tmp_path, **kw):
+    (tmp_path / "overlays").mkdir(exist_ok=True)
+    (tmp_path / "overlays" / "footage-card.jsx").write_text("export default () => null")
+    return _project([_matte(props={"label": "a"}, **kw)], [_seg("a", 1, 2), _seg("b", 5, 6)])
+
+
+@pytest.mark.parametrize("opaque", [False, True])
+def test_a_second_plan_renders_no_overlay_and_reads_the_same(tmp_path, opaque):
+    p = _ov_project(tmp_path, opaque=opaque)
+    calls = []
+    first = _ov_cached(p, tmp_path, calls)
+    second = _ov_cached(p, tmp_path, calls)
+    assert len(calls) == 1
+    assert second[0] == first[0] and second[1] == first[1]
+    plain = _plan2(p, tmp_path, _alpha_png(tmp_path, "ovc", window=(60, 300, 1020, 900)))
+    assert first[0] == plain[0], "cached rows give the numbers the PNG gives"
+
+
+def test_the_cached_read_is_the_pixels_the_overlay_covers(tmp_path):
+    p = _ov_project(tmp_path)
+    _, y0, _, y1 = _band_y(p, p["captions"]["segments"][0])
+    img = Image.new("RGBA", (W // 2, H // 2), PAPER)
+    img.paste((255, 0, 0, 0), (0, y0 // 2, W // 20, y1 // 2))
+    path = tmp_path / "part2.png"
+    img.save(path)
+    changes, _, _ = _ov_cached(p, tmp_path, [], str(path))
+    again, _, _ = _ov_cached(p, tmp_path, [], str(path))
+    assert again == changes
+    assert changes[("id", "a")]["inkAuto"]["backdrop"] == pytest.approx(_lum(PAPER[:3]), abs=0.002)
+
+
+def _edit_ov_file(p, d):
+    (d / "overlays" / "footage-card.jsx").write_text("export default () => 1")
+
+
+def _edit_ov_props(p, d):
+    p["tracks"][1]["items"][0]["props"]["label"] = "b"
+
+
+def _edit_ov_resolution(p, d):
+    p["settings"]["resolution"] = [1080, 1080]   # another design size
+
+
+@pytest.mark.parametrize("edit", [_edit_ov_file, _edit_ov_props, _edit_ov_resolution])
+def test_an_overlay_changing_is_a_miss(tmp_path, edit):
+    p = _ov_project(tmp_path)
+    calls = []
+    _ov_cached(p, tmp_path, calls)
+    edit(p, tmp_path)
+    _ov_cached(p, tmp_path, calls)
+    assert len(calls) == 2
+
+
+def test_a_caption_only_change_does_not_render_an_overlay(tmp_path):
+    p = _ov_project(tmp_path)
+    calls = []
+    _ov_cached(p, tmp_path, calls)
+    p["captions"]["segments"][0]["text"] = "another line"
+    _ov_cached(p, tmp_path, calls)
+    assert len(calls) == 1

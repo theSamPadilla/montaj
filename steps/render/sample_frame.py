@@ -39,11 +39,10 @@ SHEET_SHORT_EDGE = 1080
 
 
 def sample_frames(project, times, frames_dir, raw=False, scene=None, sdr_curve=None, prefer_proxy=False,
-                  no_captions=False, timeout=None, max_short_edge=None):
+                  no_captions=False, timeout=None):
     """Render every time in ONE node process into frames_dir (f_0000.png...); return the paths in order. Several times
-    (a sheet) composite at SHEET_SHORT_EDGE; one time keeps the project's size, unless `max_short_edge` (px on the short
-    edge) caps it, which it does for one time as for several. A raw frame is never capped. The process gets `timeout`
-    seconds, else 120 a time."""
+    (a sheet) composite at SHEET_SHORT_EDGE; one time keeps the project's size. The process gets `timeout` seconds,
+    else 120 a time."""
     timeout = timeout if timeout is not None else 120 * len(times)
     cmd = ["node", SAMPLE_FRAME_JS, "--mode", "frame", "--project", project]
     for t in times:
@@ -60,9 +59,8 @@ def sample_frames(project, times, frames_dir, raw=False, scene=None, sdr_curve=N
         cmd += ["--scene", scene]
     if sdr_curve is not None:
         cmd += ["--sdr-curve", sdr_curve]
-    cap = max_short_edge if max_short_edge is not None else (SHEET_SHORT_EDGE if len(times) > 1 else None)
-    if cap is not None and not raw:
-        cmd += ["--max-short-edge", str(cap)]
+    if len(times) > 1 and not raw:
+        cmd += ["--max-short-edge", str(SHEET_SHORT_EDGE)]
     try:
         proc = run_stopping(cmd, timeout=timeout, env=node_child_env())
     except subprocess.TimeoutExpired:

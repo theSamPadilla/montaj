@@ -39,15 +39,3 @@ def test_several_times_are_capped_at_the_design_canvas_and_one_time_is_not(monke
     assert "--max-short-edge" not in seen[-1], "a single sample stays full size"
     sf.sample_frames("/p/project.json", [1, 2], str(tmp_path), raw=True)
     assert "--max-short-edge" not in seen[-1], "a raw source frame is the source as stored"
-
-
-def test_an_explicit_cap_applies_to_one_time_too_and_none_keeps_the_rule(monkeypatch, tmp_path):
-    seen = capture(monkeypatch, tmp_path)
-    sf.sample_frames("/p/project.json", [1], str(tmp_path), max_short_edge=sf.SHEET_SHORT_EDGE)
-    assert seen[-1][seen[-1].index("--max-short-edge") + 1] == "1080"
-    sf.sample_frames("/p/project.json", [1, 2], str(tmp_path), max_short_edge=720)
-    assert seen[-1][seen[-1].index("--max-short-edge") + 1] == "720"
-    sf.sample_frames("/p/project.json", [1, 2], str(tmp_path), max_short_edge=None)
-    assert seen[-1][seen[-1].index("--max-short-edge") + 1] == "1080"
-    sf.sample_frames("/p/project.json", [1], str(tmp_path), max_short_edge=None)
-    assert "--max-short-edge" not in seen[-1]
