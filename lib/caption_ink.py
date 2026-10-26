@@ -14,8 +14,13 @@ measured under the caption, the ink written for it and the band's luminance) rec
   its own.
 - `needs_pass`: whether the step has anything to do (an overlay that may be a card, or ink of ours to clear).
 - `update`: plan + the guarded write of `captions` only.
+
+A 3D item's backdrop is read from one frame of the project without the captions, rendered at the 1080 design canvas
+(not a 4K project's own size), and kept as one mean per row in `render/samples/caption-ink-cache.json`, keyed by
+everything on screen at that time (`backdrop_key`): a re-run over an unchanged backdrop renders nothing.
 """
 import copy
+import hashlib
 import json
 import os
 import shutil
@@ -51,6 +56,11 @@ RENDER_TIMEOUT_S = 90
 # 300 s) never has to kill it.
 DEADLINE_S = 240
 LOCK_TIMEOUT = 30.0
+# The 3D backdrop cache: its file name (beside the frames, in <project>/render/samples), a version string that is part of
+# every key (bump it when what a key covers changes), and the most entries kept (the oldest go first).
+CACHE_FILE = "caption-ink-cache.json"
+CACHE_VERSION = "caption-ink-rows-1"
+CACHE_MAX_ENTRIES = 200
 _LUM = (0.2126, 0.7152, 0.0722)   # Rec.709
 
 
@@ -311,6 +321,135 @@ def overlay_luminance(png_path, box, frame, opaque=False):
                for c, w in enumerate(_LUM)) / total
 
 
+def row_luminances(png_path):
+    """[mean relative luminance of each pixel row of the image] (as `luminance` takes it), rounded to 6 places. The
+    band of a caption is full width, so its mean over any rows is the mean of those rows' means: one pass over the
+    frame serves every band."""
+    from PIL import Image
+    table = _linear_table()
+    with Image.open(png_path) as im:
+        im = im.convert("RGB")
+        w, h = im.size
+        rows = []
+        for y in range(h):
+            hist = im.crop((0, y, w, y + 1)).histogram()
+            rows.append(round(sum(k * sum(n * lin for n, lin in zip(hist[c * 256:(c + 1) * 256], table))
+                                  for c, k in enumerate(_LUM)) / w, 6))
+    return rows
+
+
+def band_luminance(rows, box, frame):
+    """The mean relative luminance of `box` (x0, y0, x1, y1, in `frame` = (w, h) px) from the per-row means of a frame of
+    any size: the rows are scaled and clamped as `luminance` does. The band is full width, so x is not read."""
+    sy = len(rows) / frame[1]
+    y0, y1 = sorted((int(round(box[1] * sy)), int(round(box[3] * sy))))
+    y0 = max(0, min(y0, len(rows) - 1))
+    y1 = max(y0 + 1, min(y1, len(rows)))
+    return sum(rows[y0:y1]) / (y1 - y0)
+
+
+def _file_digest(path):
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        return "missing"
+    return h.hexdigest()
+
+
+def _tree_digest(root, memo):
+    """sha256 over every file under `root` (relative path and content), "none" when it is not a folder. Once per `memo`."""
+    if root not in memo:
+        h = hashlib.sha256()
+        if os.path.isdir(root):
+            for base, dirs, files in os.walk(root):
+                dirs.sort()
+                for name in sorted(files):
+                    full = os.path.join(base, name)
+                    h.update(os.path.relpath(full, root).encode())
+                    h.update(_file_digest(full).encode())
+            memo[root] = h.hexdigest()
+        else:
+            memo[root] = "none"
+    return memo[root]
+
+
+def _file_stat(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return [path, None, None]
+    return [path, st.st_size, st.st_mtime_ns]
+
+
+def backdrop_key(project, project_dir, t, cap, memo=None):
+    """The cache key of the frame without captions at `t`: a sha256 of everything that could change a pixel under any
+    caption band there. That is: CACHE_VERSION; `t` (3 decimals); `cap` (the short edge the frame is rendered at); the
+    project's resolution, fps and colorSpace; and every item on screen at `t` on any drawn track, in track order (so the
+    z-order), as the whole item (type, start, end, inPoint, speed, scale/offset/rotation/opacity, crop, keyframes, props,
+    src, googleFonts: anything it holds, so a field added later is covered too), plus the content of what it draws: a
+    JSX overlay's file and the project's whole `overlays/` folder (what it may import: correct, a little less precise
+    than following the imports), a 3D scene's whole `models/` tree (its scene and every model it may reference), and a
+    video's or image's file (src, proxySrc, normalizedSrc: path, size and mtime). Captions are not in it: they are drawn
+    over the frame, never in it, so a change to their text, ink or style is a hit."""
+    memo = {} if memo is None else memo
+    settings = project.get("settings") or {}
+    parts = {"v": CACHE_VERSION, "t": round(float(t), 3), "cap": cap, "resolution": settings.get("resolution"),
+             "fps": settings.get("fps"), "colorSpace": settings.get("colorSpace"), "items": []}
+    for ti, row in enumerate(lc.drawn_tracks(project)):
+        for it in row:
+            if not (lc._num(it.get("start")) <= t < lc._num(it.get("end"))):
+                continue
+            entry = {"track": ti, "item": it, "files": []}
+            src = it.get("src")
+            if it.get("type") == "overlay":
+                if src == "engine:scene3d":
+                    entry["files"].append(_tree_digest(os.path.join(project_dir, "models"), memo))
+                elif not str(src or "").startswith("engine:"):
+                    path = lc.overlay_path(it, project_dir)
+                    entry["files"] += [_file_digest(path) if path else "none",
+                                       _tree_digest(os.path.join(project_dir, "overlays"), memo)]
+            elif it.get("type") in lc.VISUAL:
+                entry["files"] = [_file_stat(it[f]) for f in ("src", "proxySrc", "normalizedSrc")
+                                  if isinstance(it.get(f), str)]
+            parts["items"].append(entry)
+    return hashlib.sha256(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def load_cache(path):
+    """{key: {"rows": [...], "at": epoch seconds}} from the cache file; empty when it is missing, unreadable or not what
+    this module wrote."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            entries = json.load(f)["entries"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+    if not isinstance(entries, dict):
+        return {}
+    return {k: v for k, v in entries.items()
+            if isinstance(v, dict) and isinstance(v.get("rows"), list) and v["rows"] and _timed(v.get("at"))}
+
+
+def store_cache(path, new):
+    """Merge `new` ({key: rows}) into the cache file, keep the CACHE_MAX_ENTRIES newest, write it atomically (a rename,
+    so a reader never sees half a file). A file that cannot be written is no error: the next run just renders again."""
+    entries = load_cache(path)
+    now = time.time()
+    for k, rows in new.items():
+        entries[k] = {"rows": rows, "at": now}
+    keep = sorted(entries.items(), key=lambda kv: kv[1]["at"])[-CACHE_MAX_ENTRIES:]
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".caption-ink-cache-", dir=os.path.dirname(path))
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"entries": dict(keep)}, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def _run_group(cmd, timeout):
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **detached_kwargs())
     try:
@@ -324,21 +463,24 @@ def _run_group(cmd, timeout):
 
 def frame_renderer(project_path, out_dir, deadline=None):
     """render_fn(t) -> the path of the project's frame at `t` without the captions (sample_frame --no-captions), written
-    into `out_dir`. A frame is given RENDER_TIMEOUT_S, or what is left until `deadline` (time.monotonic) when sooner."""
+    into its own folder under `out_dir`, composited at the design canvas (a 4K project's frame is never rendered at 4K:
+    the band is read from a frame no bigger than 1080 on the short edge). A frame is given RENDER_TIMEOUT_S, or what is
+    left until `deadline` (time.monotonic) when sooner."""
     def render(t):
+        from steps.render.sample_frame import SHEET_SHORT_EDGE, sample_frames
         timeout = RENDER_TIMEOUT_S
         if deadline is not None:
             timeout = min(timeout, deadline - time.monotonic())
             if timeout <= 0:
                 raise RuntimeError("out of time")
-        out = os.path.join(out_dir, f"ink-{t:.3f}s.png")
-        r = _run_group([sys.executable, SAMPLE_FRAME_PY, "--project", project_path, "--at", f"{t:.3f}",
-                        "--no-captions", "--out", out], timeout)
-        if r is None:
-            raise RuntimeError("timed out")
-        if r[0] != 0 or not os.path.isfile(out):
-            raise RuntimeError("sample_frame failed")
-        return out
+        work = os.path.join(out_dir, f"ink-{t:.3f}s")
+        os.makedirs(work, exist_ok=True)
+        try:
+            paths = sample_frames(project_path, [t], work, no_captions=True, max_short_edge=SHEET_SHORT_EDGE,
+                                  timeout=timeout)
+        except SystemExit:   # the step's own fail(): a frame that could not be had, not an exit of this one
+            raise RuntimeError("sample_frame failed") from None
+        return paths[0]
     return render
 
 
@@ -395,6 +537,12 @@ def _pooled(fn, jobs, deadline):
                 done[key] = None
                 failed[key] = why
     return done, failed
+
+
+def _frame_cap():
+    """The short edge, in px, a 3D frame is rendered at (the design canvas)."""
+    from steps.render.sample_frame import SHEET_SHORT_EDGE
+    return SHEET_SHORT_EDGE
 
 
 def _timed(v):
@@ -455,7 +603,7 @@ def _with_pieces(project, index, pieces):
     return {**project, "captions": {**caps, "segments": segs}}
 
 
-def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, project_dir=None):
+def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, project_dir=None, cache_path=None):
     """(changes, counts, warnings). changes: {segment key: {"ink", "inkAuto": {"card", "ink", "backdrop"}}, None to clear,
     or {"split": [the segments that replace it]}}, keyed by `_key` over the raw segment list. A caption whose words lie
     over different cards is split into one segment per run (see split_pieces; the new ids are minted against the
@@ -464,7 +612,9 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
     also what says whether an overlay whose pixels decide covers a caption's band, see find_card), else from one frame
     without the captions per card item (render_fn(t) -> a PNG path, three at a time), at the middle of the span of the
     captions over it. Without overlay_fn only the data decides and every card is read from a frame.
-    `project_dir` is where 3D scene files are read. A frame not started by `deadline` (time.monotonic) counts as
+    `project_dir` is where 3D scene files are read. With `cache_path` (and `project_dir`) a 3D frame is read once per
+    `backdrop_key`: its per-row means are kept in that file and a later plan over the same backdrop renders nothing.
+    A frame not started by `deadline` (time.monotonic) counts as
     failed; a caption whose card or backdrop could not be had is left as it is."""
     counts = {"dark": 0, "light": 0, "cleared": 0, "kept": 0, "split": 0}
     changes, warnings = {}, []
@@ -578,20 +728,34 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
         for sl in g:
             sl["at"] = round(t, 3)
     times = sorted({sl["at"] for g in groups.values() for sl in g})
-    pngs, failed = _pooled(render_fn, [(t, (t,)) for t in times], deadline) if times else ({}, {})
+    use_cache = bool(cache_path and project_dir and times)
+    cached = load_cache(cache_path) if use_cache else {}
+    keys = {}
+    if use_cache:
+        memo, cap = {}, _frame_cap()
+        keys = {t: backdrop_key(project, project_dir, t, cap, memo) for t in times}
+    rows = {t: cached[k]["rows"] for t, k in keys.items() if k in cached}
+    todo = [t for t in times if t not in rows]
+    pngs, failed = _pooled(render_fn, [(t, (t,)) for t in todo], deadline) if todo else ({}, {})
     pngs = {t: p for t, p in pngs.items() if p}
-    for t in times:
+    for t in todo:
         if t in failed:
             warnings.append(f"frame at {t}s not rendered ({failed[t] or 'no image'}): its captions are unchanged")
+    fresh = {}
+    for t, png in pngs.items():
+        try:
+            rows[t] = row_luminances(png)
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"frame at {t}s unreadable ({str(e)[:60]})")
+            continue
+        if t in keys:
+            fresh[keys[t]] = rows[t]
+    if fresh:   # only with keys, so only with a cache_path
+        store_cache(cache_path, fresh)
     for g in groups.values():
         for sl in g:
-            png = pngs.get(sl["at"])
-            if png is None:
-                continue
-            try:
-                sl["lum"] = luminance(png, sl["box"], (width, height))
-            except Exception as e:  # noqa: BLE001
-                warnings.append(f"frame at {sl['at']}s unreadable ({str(e)[:60]})")
+            if sl["at"] in rows:
+                sl["lum"] = band_luminance(rows[sl["at"]], sl["box"], (width, height))
     for sl in slots:
         if "lum" in sl:
             ink = "dark" if sl["lum"] >= LIGHT_L else "light"
@@ -706,7 +870,9 @@ def update(project_path, render_fn=None, timeout=LOCK_TIMEOUT, overlay_fn=None):
     read = {_key(s, i): copy.deepcopy(s) for i, s in enumerate(caps["segments"]) if isinstance(s, dict)}
     samples = None
     deadline = None
+    cache_path = None
     if render_fn is None:
+        cache_path = os.path.join(project_dir, "render", "samples", CACHE_FILE)
         deadline = time.monotonic() + DEADLINE_S
         base = os.path.join(project_dir, "render", "samples")
         os.makedirs(base, exist_ok=True)
@@ -714,7 +880,8 @@ def update(project_path, render_fn=None, timeout=LOCK_TIMEOUT, overlay_fn=None):
         render_fn = frame_renderer(project_path, samples, deadline)
         overlay_fn = overlay_renderer(project, project_dir, samples, deadline)
     try:
-        changes, counts, warnings = plan(project, render_fn, width, height, deadline, overlay_fn, project_dir)
+        changes, counts, warnings = plan(project, render_fn, width, height, deadline, overlay_fn, project_dir,
+                                         cache_path)
     finally:
         if samples:
             shutil.rmtree(samples, ignore_errors=True)

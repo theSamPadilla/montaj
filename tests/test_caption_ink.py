@@ -311,17 +311,59 @@ def test_a_timed_out_frame_kills_the_whole_process_tree(monkeypatch):
     assert len(killed) == 1
 
 
+def _fake_sample_frames(monkeypatch, seen, status=0):
+    """steps.render.sample_frame.sample_frames, faked: records (times, kwargs) and writes a half-size light PNG."""
+    import steps.render.sample_frame as sf
+
+    def fake(project, times, frames_dir, **kw):
+        seen.append((project, list(times), kw))
+        out = Path(frames_dir) / "f_0000.png"
+        Image.new("RGB", (W // 2, H // 2), (0xef, 0xec, 0xe4)).save(out)
+        return [str(out)]
+    monkeypatch.setattr(sf, "sample_frames", fake)
+
+
 def test_a_frame_gets_what_is_left_until_the_deadline_and_none_after(tmp_path, monkeypatch):
     seen = []
-    monkeypatch.setattr(ci, "_run_group", lambda cmd, timeout: (seen.append(timeout), (0, "", ""))[1])
-    out = tmp_path / "ink-1.000s.png"
-    out.write_bytes(b"x")
+    _fake_sample_frames(monkeypatch, seen)
     render = ci.frame_renderer("/p/project.json", str(tmp_path), time.monotonic() + 5)
     render(1.0)
-    assert 0 < seen[0] <= 5
+    assert 0 < seen[0][2]["timeout"] <= 5
     with pytest.raises(RuntimeError):
         ci.frame_renderer("/p/project.json", str(tmp_path), time.monotonic() - 1)(1.0)
     assert len(seen) == 1
+
+
+def test_a_3d_frame_is_requested_without_captions_at_the_design_canvas(tmp_path, monkeypatch):
+    import steps.render.sample_frame as sf
+    seen = []
+    _fake_sample_frames(monkeypatch, seen)
+    path = ci.frame_renderer("/p/project.json", str(tmp_path))(2.5)
+    project, times, kw = seen[0]
+    assert (project, times) == ("/p/project.json", [2.5])
+    assert kw["no_captions"] is True and kw["max_short_edge"] == sf.SHEET_SHORT_EDGE == 1080
+    assert Path(path).is_file()
+
+
+def test_a_failed_sample_is_a_failed_frame_not_an_exit(tmp_path, monkeypatch):
+    import steps.render.sample_frame as sf
+    monkeypatch.setattr(sf, "sample_frames", lambda *a, **k: sys.exit(1))
+    with pytest.raises(RuntimeError):
+        ci.frame_renderer("/p/project.json", str(tmp_path))(1.0)
+
+
+def test_the_band_is_scaled_to_the_frames_real_size(tmp_path):
+    """A capped frame is smaller than the design canvas: a light band at the scaled rows over a dark rest reads light."""
+    p = _project([_card("s1", 0, 10)], [_seg("a", 1, 2)])
+    _, y0, _, y1 = ci.band(p, p["captions"]["segments"][0], W, H)
+    for scale in (2, 4):   # 540x960 and 270x480
+        img = Image.new("RGB", (W // scale, H // scale), (10, 10, 10))
+        img.paste((0xef, 0xec, 0xe4), (0, y0 // scale, W // scale, -(-y1 // scale)))
+        path = tmp_path / f"band{scale}.png"
+        img.save(path)
+        changes, _, _ = ci.plan(p, lambda t: str(path), W, H)
+        assert changes[("id", "a")]["ink"] == "dark"
+        assert changes[("id", "a")]["inkAuto"]["backdrop"] > 0.7
 
 
 # -- a card is what covers the caption band ---------------------------------------------------------------------
@@ -753,3 +795,100 @@ def test_splitting_is_idempotent(tmp_path):
     again, counts, warnings = _split_plan(fresh, tmp_path)
     assert counts["split"] == 0 and warnings == []
     assert ci.apply_changes(json_copy(fresh), again, _read_of(fresh)) is False
+
+
+# -- the 3D backdrop cache ---------------------------------------------------------------------------------------
+
+def _cached(project, tmp_path, calls, shade=(0xef, 0xec, 0xe4)):
+    def render(t):
+        calls.append(t)
+        return _png(tmp_path, f"c{len(calls)}", shade)
+    return ci.plan(project, render, W, H, project_dir=str(tmp_path), cache_path=str(tmp_path / "cache.json"))
+
+
+def _cache_project(tmp_path, segs=None):
+    _scene(tmp_path, "specs", {"style": "studio"})
+    (tmp_path / "overlays").mkdir(exist_ok=True)
+    (tmp_path / "overlays" / "tag.jsx").write_text("export default () => null")
+    tag = {"id": "tag", "type": "overlay", "src": "./overlays/tag.jsx", "start": 0, "end": 10, "scale": 0.3,
+           "offsetY": -500, "props": {"label": "a"}}
+    return _project([_scene3d("s1", "specs", opaque=False), tag], segs or [_seg("a", 1, 2)])
+
+
+def test_a_second_plan_over_the_same_project_renders_no_3d_frame(tmp_path):
+    p = _cache_project(tmp_path)
+    calls = []
+    first = _cached(p, tmp_path, calls)
+    second = _cached(p, tmp_path, calls)
+    assert len(calls) == 1
+    assert second[0] == first[0] and second[1] == first[1]
+    assert first[0][("id", "a")]["inkAuto"]["backdrop"] > 0.7
+
+
+def _edit_scene(p, d):
+    _scene(d, "specs", {"style": "color", "wall": "#000000"})
+
+
+def _edit_overlay(p, d):
+    (d / "overlays" / "tag.jsx").write_text("export default () => 1")
+
+
+def _edit_props(p, d):
+    p["tracks"][1]["items"][1]["props"]["label"] = "b"
+
+
+def _edit_geometry(p, d):
+    p["tracks"][1]["items"][1]["offsetY"] = -400
+
+
+def _edit_resolution(p, d):
+    p["settings"]["resolution"] = [W * 2, H * 2]
+
+
+def _edit_time(p, d):
+    p["captions"]["segments"][0].update(start=3, end=4)
+
+
+@pytest.mark.parametrize("edit", [_edit_scene, _edit_overlay, _edit_props, _edit_geometry, _edit_resolution, _edit_time])
+def test_what_is_on_screen_changing_is_a_miss(tmp_path, edit):
+    p = _cache_project(tmp_path)
+    calls = []
+    _cached(p, tmp_path, calls)
+    edit(p, tmp_path)
+    _cached(p, tmp_path, calls)
+    assert len(calls) == 2
+
+
+def test_a_caption_only_change_is_a_hit(tmp_path):
+    p = _cache_project(tmp_path)
+    calls = []
+    _cached(p, tmp_path, calls)
+    seg = p["captions"]["segments"][0]
+    seg["text"] = "another line"
+    p["captions"]["style"] = "outline"
+    changes, _, _ = _cached(p, tmp_path, calls)
+    assert len(calls) == 1 and changes[("id", "a")]["ink"] == "dark"
+
+
+def test_a_corrupt_cache_is_a_miss_not_an_error(tmp_path):
+    p = _cache_project(tmp_path)
+    calls = []
+    _cached(p, tmp_path, calls)
+    (tmp_path / "cache.json").write_text("{not json")
+    _cached(p, tmp_path, calls)
+    assert len(calls) == 2
+    _cached(p, tmp_path, calls)   # and the write after it healed the file
+    assert len(calls) == 2
+
+
+def test_the_cache_keeps_at_most_its_cap_of_entries(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr(ci, "CACHE_MAX_ENTRIES", 3)
+    calls = []
+    for i in range(5):
+        _cached(_cache_project(tmp_path, [_seg("a", 1 + i, 2 + i)]), tmp_path, calls)
+    assert len(calls) == 5
+    entries = json.loads((tmp_path / "cache.json").read_text())["entries"]
+    assert len(entries) == 3
+    _cached(_cache_project(tmp_path, [_seg("a", 5, 6)]), tmp_path, calls)   # the newest is kept
+    assert len(calls) == 5
