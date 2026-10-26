@@ -527,6 +527,8 @@ function loadRenderProject(projectPath, { out = null, requireFinal = true, overr
   // pass (7b). Taken before anything below mutates projectJson: the repoint
   // right after this, collectAllItems' cache swaps and every src the HDR pass
   // rewrites all act on projectJson, never on this copy.
+  // PL89d: before the pristine copy too, so the per-layer SDR pass seeks the same frames (anchorFullSourceCaches).
+  anchorFullSourceCaches(projectJson)
   const pristineProject = structuredClone(projectJson)
   // Before collectAllItems swaps in any cache: an SDR master an older montaj
   // built from an untagged source is sent back to its source, so the normalize
@@ -2320,6 +2322,31 @@ function originalOfSdrMaster(path) {
  * marker only by untagged sources; an iPhone (HLG) or tagged source costs one
  * transfer probe and is left alone.
  */
+/**
+ * PL89d: a video item whose `normalizedSrc` is its source's recorded cache (project.sources: a source describes a whole
+ * file, so its normalizedSrc is a full-source conversion) and that has no `normalizedInPoint` gets origin 0, in the
+ * in-memory project only. Without an origin, sourceWindow reads a normalizedSrc as a legacy window cache starting at
+ * the item's inPoint and seeks from 0 of the full file: an item the agent added with the source's normalizedSrc pasted
+ * in rendered the source's start instead of its inPoint. A cache the sources do not record keeps the legacy reading.
+ */
+export function anchorFullSourceCaches(projectJson) {
+  const full = new Map()
+  for (const s of projectJson.sources ?? []) {
+    if (s && typeof s.src === 'string' && typeof s.normalizedSrc === 'string') full.set(resolve(s.src), resolve(s.normalizedSrc))
+  }
+  if (full.size === 0) return
+  for (const items of (projectJson.tracks ?? []).map((t) => (Array.isArray(t) ? t : t?.items))) {
+    for (const item of items ?? []) {
+      if (item?.type !== 'video' || typeof item.src !== 'string' || typeof item.normalizedSrc !== 'string') continue
+      if (item.normalizedInPoint != null) continue
+      if (full.get(resolve(item.src)) === resolve(item.normalizedSrc)) {
+        log(`${item.id ?? 'a clip'}: ${basename(item.normalizedSrc)} is its source's full-length cache; seeking it from 0`)
+        item.normalizedInPoint = 0
+      }
+    }
+  }
+}
+
 function repointStaleUntaggedMasters(projectJson) {
   const colorSpace = projectJson.settings?.colorSpace
   if (colorSpace != null && colorSpace !== 'sdr_bt709') return
