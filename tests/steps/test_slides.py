@@ -505,7 +505,7 @@ def test_a_locked_headline_keeps_its_box_through_edit_and_headlines_but_takes_th
     out = run(d, headlines=json.dumps(["Third text"]))
     el = headline(proj(d)["slides"][0])
     assert _box5(el) == (33, 44, 555, 222, 7) and el["overlay"]["props"]["text"] == "Third text"
-    assert out["locked"] == [lid]
+    assert "locked" not in out, "a text-only change never tried to move it"
 
 
 def test_a_style_alone_restyles_a_locked_headline_without_moving_it(tmp_path):
@@ -515,7 +515,7 @@ def test_a_style_alone_restyles_a_locked_headline_without_moving_it(tmp_path):
     out = run(d, style="label")
     el = headline(proj(d)["slides"][0])
     assert _box5(el) == (33, 44, 555, 222, 7) and el["overlay"]["props"]["bgColor"] == "#ffffff"
-    assert out["locked"] == [lid]
+    assert "locked" not in out, "a restyle never tried to move it"
 
 
 def test_an_unlocked_headline_moves_as_before_and_locked_false_is_unlocked(tmp_path):

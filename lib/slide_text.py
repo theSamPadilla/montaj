@@ -337,12 +337,12 @@ GEOMETRY = ("x", "y", "w", "h", "rotation")
 
 def _keep_locked(before, after):
     """Put back the geometry of every locked element (`locked: true`, a person's lock in the editor) the call touched,
-    in `after` (the slide as written) from `before` (as read). The ids of those it touched or tried to move."""
+    in `after` (the slide as written) from `before` (as read). The ids of those whose box it put back."""
     kept = []
     old = {el.get("id"): el for el in before.get("elements") or [] if isinstance(el, dict)}
     for k, el in enumerate(after.get("elements") or []):
         prev = old.get(el.get("id")) if isinstance(el, dict) else None
-        if prev is None or prev.get("locked") is not True or el == prev:
+        if prev is None or prev.get("locked") is not True or all(el.get(g) == prev.get(g) for g in GEOMETRY):
             continue
         after["elements"][k] = {**el, **{g: prev[g] for g in GEOMETRY if g in prev}}
         for g in GEOMETRY:
