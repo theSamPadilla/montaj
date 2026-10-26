@@ -1,0 +1,18 @@
+{
+  "name": "shots",
+  "description": "Label a long source's shots once: a sheet a shot, then labels; add b-roll by shot. One call finds where the picture changes (shots with start, end and a motion score) and answers ONE sheet, a tile per shot, numbered; a call with labels saves a few words per shot by number. Kept beside the file, read back by later calls and by get_project; edit_timeline adds b-roll by shot (source, shot) with its real in and out.",
+  "input": {
+    "type": "project",
+    "description": "The project id, its folder, or the absolute path of its project.json"
+  },
+  "output": {
+    "type": "json",
+    "description": "{clip, src, shots: [{n, start, end, motion, label?}], sheet?}: the sheet only without labels."
+  },
+  "params": [
+    {"name": "project", "type": "path", "required": true, "description": "The project id, its folder, or the absolute path of its project.json"},
+    {"name": "clip", "type": "string", "required": true, "description": "The source's clip id (clip-9), or a timeline item id."},
+    {"name": "labels", "type": "string", "description": "Labels by shot number, a JSON object: {\"7\": \"mannequin pulled out\"}. A few words each, what happens in the shot; \"\" removes one."},
+    {"name": "redetect", "type": "bool", "default": false, "description": "Find the shots again; the labels of shots still there are kept."}
+  ]
+}
