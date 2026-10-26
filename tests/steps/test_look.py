@@ -220,6 +220,28 @@ def test_look_image_adds_one_sheet_of_the_times_and_detail_adds_the_facts(tmp_pa
     assert out["sheet"].endswith("look-x.png") and out["items"] == ["ov-a"] and isinstance(out["wallMs"], int)
 
 
+def test_a_pass_measures_every_overlay_in_one_call(tmp_path, monkeypatch):
+    # PL89g: one sample_overlay process (and its own Chromium) per overlay made a pass 10-16 s; the pass now hands every
+    # overlay to one call (measure_many: sample_overlay --jobs, one browser per lane).
+    path, _ = _project(tmp_path, overlays=[{"id": f"ov-{k}", "start": k, "end": k + 1} for k in (1, 3, 5)])
+    calls = []
+
+    def many(entries):
+        calls.append([e["item"]["id"] for e in entries])
+        return [(_texts(("Fits", 200, 600, 500, 90)), None) for _ in entries]
+    monkeypatch.setattr(look, "measure_many", many)
+    out = look.run(str(path), detail=True)
+    assert calls == [["ov-1", "ov-3", "ov-5"]] and out["overlays"] == 3, (calls, out)
+
+
+def test_a_failed_batch_falls_back_to_one_measure_each(tmp_path, monkeypatch):
+    path, _ = _project(tmp_path, overlays=[{"id": "ov-a", "start": 1, "end": 2}, {"id": "ov-b", "start": 3, "end": 4}])
+    monkeypatch.setattr(look, "measure_many", lambda entries: None)
+    one = _fake_measure({"ov-a": [("Fits", 200, 600, 500, 90)], "ov-b": [("Fits", 200, 600, 500, 90)]})
+    monkeypatch.setattr(look, "measure", one)
+    assert look.run(str(path), detail=True)["overlays"] == 2
+
+
 def test_look_at_given_times(tmp_path):
     path, _ = _project(tmp_path, overlays=[{"id": "ov-a", "start": 1, "end": 3}])
     out = look.run(str(path), at=[2.0, 7.5], detail=True, measure_fn=_fake_measure({}))
@@ -246,6 +268,20 @@ def test_look_through_the_real_measurer_finds_the_text_off_the_frame(tmp_path):
     wide_issues = [i for i in out["issues"] if "ov-wide" in i]
     assert any("runs off the frame" in i for i in wide_issues), out
     assert not any("ov-fits" in i for i in out["issues"]), out
+
+
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+def test_the_real_pass_runs_one_measure_process_for_all_its_overlays(tmp_path, monkeypatch):
+    jsx = lambda word, top: ("export default function O() { return <div style={{position: 'absolute', left: 200, top: " + str(top) +  # noqa: E731
+                             ", fontSize: 60, color: 'white'}}>" + word + "</div> }")
+    path, _ = _project(tmp_path, overlays=[{"id": f"ov-{k}", "start": 1 + 2 * k, "end": 2 + 2 * k, "jsx": jsx(w, 300 + 200 * k)}
+                                           for k, w in enumerate(("One", "Two", "Three"))])
+    spawned = []
+    real = look._run_group
+    monkeypatch.setattr(look, "_run_group", lambda cmd, timeout: (spawned.append(cmd), real(cmd, timeout))[1])
+    out = look.run(str(path), detail=True)
+    assert out["overlays"] == 3, out
+    assert len(spawned) == 1 and "--jobs" in spawned[0], spawned
 
 
 # ── review 1: a measure that times out ends its whole process group ──────────────────────────────────────────────

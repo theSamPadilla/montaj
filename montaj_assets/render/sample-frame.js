@@ -194,6 +194,9 @@ const SAMPLE_CACHE_VERSION = 20
 
 // PL89: the most overlay pages a sampling session keeps open (createSampleSession).
 export const SESSION_MAX_PAGES = 4
+// PL89g: the longest one overlay's measure may take in measureOverlays before its browser is dropped and the rest go on
+// in a new one.
+export const MEASURE_JOB_TIMEOUT_MS = 60_000
 // PL89: the longest one frame of a session may take before it is sampled alone instead (sampleInSessions). A 3D frame
 // over overlays takes about 8 s; a capture that never returns otherwise waits out the 300 s protocolTimeout.
 export const SESSION_FRAME_TIMEOUT_MS = 60_000
@@ -324,7 +327,8 @@ if (isMain) {
       '  sample-frame.js --mode frame --project <path> --scene <id> --at <seconds into it>\n' +
       '    --out <path>   one 3D alone; --scene \'\' is the project\'s own\n' +
       '  sample-frame.js --mode frame --project <path> --at <seconds> --no-captions --out <path>\n' +
-      '  sample-frame.js --mode frame --project <path> --at <s> --at <s> ... --frames-dir <dir>\n'
+      '  sample-frame.js --mode frame --project <path> --at <s> --at <s> ... --frames-dir <dir>\n' +
+      '  sample-frame.js --mode measure --jobs <file.json> [--lanes N]\n'
     )
     process.exit(1)
   }
@@ -354,6 +358,8 @@ if (isMain) {
   let sceneArg      = null
   // shared
   let outArg        = null
+  let jobsArg       = null
+  let lanesArg      = null
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -378,12 +384,14 @@ if (isMain) {
     if (a === '--raw')          { rawArg = true; continue }
     if (a === '--scene')        { sceneArg      = argv[++i] ?? null; if (sceneArg === null) fail('missing_argument', '--scene needs a 3D id, or \'\' for the project\'s own'); continue }
     if (a === '--out')          { outArg        = argv[++i]; continue }
+    if (a === '--jobs')         { jobsArg       = argv[++i]; continue }
+    if (a === '--lanes')        { lanesArg      = parseInt(argv[++i], 10); continue }
   }
 
-  if (!mode) fail('missing_argument', '--mode overlay|frame is required')
+  if (!mode) fail('missing_argument', '--mode overlay|frame|measure is required')
   const manyTimes = mode === 'frame' && atArgs.length > 1
   if (manyTimes && !framesDirArg) fail('missing_argument', '--frames-dir <dir> is required with several --at')
-  if (!outArg && !manyTimes) fail('missing_argument', '--out <path> is required')
+  if (!outArg && !manyTimes && mode !== 'measure') fail('missing_argument', '--out <path> is required')
 
   // Validate against the manifest here rather than letting look.js throw deep
   // inside the extract: a typo'd curve id should be a clean CLI error, not a
@@ -463,8 +471,24 @@ if (isMain) {
       process.stderr.write(JSON.stringify({ error, message: err.message }) + '\n')
       process.exit(1)
     })
+  } else if (mode === 'measure') {
+    // PL89g: look's pass, every overlay in one call. --jobs: a JSON file of [{component, props, frame, fps, width, height,
+    // googleFonts, duration, out}]; stdout: {results, browsers}.
+    if (!jobsArg) fail('missing_argument', '--jobs <file> is required for --mode measure')
+    let jobs
+    try { jobs = JSON.parse(readFileSync(resolve(jobsArg), 'utf8')) } catch { fail('invalid_jobs', '--jobs is not a readable JSON list') }
+    if (!Array.isArray(jobs)) fail('invalid_jobs', '--jobs is a JSON list of overlays to measure')
+    measureOverlays(jobs.map((j) => ({
+      componentPath: resolve(j.component), props: j.props || {}, frame: j.frame || 0, fps: j.fps || 30, width: j.width || 1080,
+      height: j.height || 1920, googleFonts: j.googleFonts || [], durationFrames: j.duration ?? null, outPath: resolve(j.out),
+    })), { lanes: lanesArg || 3 }).then((out) => {
+      process.stdout.write(JSON.stringify(out) + '\n')
+    }).catch((err) => {
+      process.stderr.write(JSON.stringify({ error: 'sample_failed', message: err.message }) + '\n')
+      process.exit(1)
+    })
   } else {
-    fail('invalid_mode', `--mode must be 'overlay' or 'frame', got '${mode}'`)
+    fail('invalid_mode', `--mode must be 'overlay', 'frame' or 'measure', got '${mode}'`)
   }
 }
 
@@ -496,6 +520,10 @@ export function createSampleSession({ maxPages = SESSION_MAX_PAGES } = {}) {
     } catch { /* a bundle folder already gone */ }
   }, () => {})
   return {
+    /** How many browsers this session started (PL89g: measureOverlays reports it). */
+    launched() {
+      return browsers.size
+    },
     /** The browser for `key` (a kind of launch), started with `launch` the first time. */
     browserFor(key, launch) {
       if (!browsers.has(key)) browsers.set(key, launch())
@@ -935,6 +963,50 @@ async function captureOverlay({ page, guard, pageErrors, fontFailures, component
 }
 
 /**
+ * PL89g: measure several overlays in one call (look's pass): `jobs` are sampleOverlay's arguments, each measured on its
+ * own page, the jobs split into `lanes` contiguous runs side by side, each run in one browser (a sampling session).
+ * look measured each overlay in its own process with its own Chromium: 9 overlays were 9 launches, 3 at a time. One
+ * that fails or takes over `jobTimeoutMs` answers {error, message} alone (a stuck one's browser is dropped and the run
+ * goes on in a new one); the rest are measured. Answers {results: [{measurements, warnings?} | {error, message}],
+ * browsers: how many were started}.
+ */
+export async function measureOverlays(jobs, { lanes = 3, jobTimeoutMs = MEASURE_JOB_TIMEOUT_MS, newSession = () => createSampleSession() } = {}) {
+  const results = new Array(jobs.length)
+  const n = Math.max(1, Math.min(lanes, jobs.length))
+  const size = Math.ceil(jobs.length / n)
+  let browsers = 0
+  const lane = async (from, to) => {
+    let session = newSession()
+    try {
+      for (let k = from; k < to; k++) {
+        let timer
+        const stuck = new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error(`measure took over ${jobTimeoutMs / 1000} s`), { sampleError: 'timeout' })), jobTimeoutMs) })
+        try {
+          const r = await Promise.race([sampleOverlay({ ...jobs[k], measure: true, session }), stuck])
+          results[k] = { measurements: r.measurements || {}, ...(r.warnings?.length ? { warnings: r.warnings } : {}) }
+        } catch (err) {
+          results[k] = { error: err.sampleError || 'sample_failed', message: String(err.message || err).slice(0, 300) }
+          if (err.sampleError === 'timeout') {
+            browsers += session.launched()
+            await session.abort()
+            session = newSession()
+          }
+        } finally {
+          clearTimeout(timer)
+        }
+      }
+    } finally {
+      browsers += session.launched()
+      await session.close()
+    }
+  }
+  const runs = []
+  for (let from = 0; from < jobs.length; from += size) runs.push(lane(from, Math.min(jobs.length, from + size)))
+  await Promise.all(runs)
+  return { results, browsers }
+}
+
+/**
  * Render one overlay JSX at one frame position to a PNG.
  *
  * @param {object} opts
@@ -1010,7 +1082,9 @@ export async function sampleOverlay({
   // PL89: in a session (several times in one call), an overlay's page is bundled and loaded once and kept open; each
   // later time only sets its frame and captures. A measure never shares a page.
   const sessionKey = session && !measure ? JSON.stringify([componentPath, props, fps, effectiveDuration, width, height, googleFonts, projectDir]) : null
-  const open = () => openOverlayPage({ componentPath, props, fps, effectiveDuration, width, height, googleFonts, projectDir, session: sessionKey ? session : null })
+  // PL89g: a measure in a session (measureOverlays) gets its own page but the session's browser, which stays open.
+  const shareBrowser = Boolean(session && measure)
+  const open = () => openOverlayPage({ componentPath, props, fps, effectiveDuration, width, height, googleFonts, projectDir, session: sessionKey || shareBrowser ? session : null })
   const capture = (ctx) => captureOverlay({ ...ctx, componentPath, frame, measure, width, height, outPath })
   let recordedInputs
   let shot
@@ -1026,7 +1100,8 @@ export async function sampleOverlay({
         shot = await capture(ctx)
         await ctx.page.close()
       } finally {
-        await ctx.browser.close()
+        if (shareBrowser) await ctx.page.close().catch(() => {})
+        else await ctx.browser.close()
         cleanupBundle(ctx.workDir)
       }
     }
