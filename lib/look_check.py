@@ -489,6 +489,9 @@ def glyphs_of(box):
 
 # The hints' own words, so an answer can tell that it carries one (answer: then run look again).
 HINTS = (": move it ", ": make it at most ")
+# PL89g: a safe-area overlap this small (rounding, a glyph's slack) is not an issue: "move it right 4 px" and then "up 1 px"
+# each cost the agent a rewrite and another look. The captions and the frame's edge keep no slack.
+ZONE_SLACK_PX = 8
 CENTRED = 0.02    # a block whose middle is this share of the width from the frame's middle is centred: narrow it, never slide
 
 
@@ -606,15 +609,16 @@ def measured_issues(item, measurement, frame_w, frame_h, t, label, bands=()):
             add("spill", f"text{quote} spills out of its box")
         elif clipped:
             add("clip", f"text{quote} is cut off by its box")
-        if gx0 < mx or gy0 < my or gx1 > frame_w - mx or gy1 > frame_h - my:
+        k = ZONE_SLACK_PX
+        if gx0 < mx - k or gy0 < my - k or gx1 > frame_w - mx + k or gy1 > frame_h - my + k:
             zone("margin", "inside the 5% title-safe margin")
         for top, bottom, s, e in bands:
             if gy0 < bottom and top < gy1:
                 zone("captions", f"crosses the captions ({r2(s)}-{r2(e)}s)")
                 break
-        if tall and gy1 > frame_h - BOTTOM_UI_PX:
+        if tall and gy1 > frame_h - BOTTOM_UI_PX + k:
             zone("bottom", "over the apps' bottom controls")
-        if tall and gx1 > frame_w - RIGHT_UI_PX and gy0 < frame_h * RIGHT_UI_Y[1] and gy1 > frame_h * RIGHT_UI_Y[0]:
+        if tall and gx1 > frame_w - RIGHT_UI_PX + k and gy0 < frame_h * RIGHT_UI_Y[1] and gy1 > frame_h * RIGHT_UI_Y[0]:
             zone("right", "under the apps' right-side buttons")
     return out
 
@@ -706,25 +710,37 @@ def top_slot_issues(placed, frame_w, frame_h):
                      "keywords go mid-frame (over the subject or just above the captions), a diagram beside what it explains"}]
 
 
-def answer(issues, *, extra=None, cap=300, line=None):
-    """The short JSON answer: ok and the extra counts, or the issues in time order while it stays within `cap`."""
+# PL89g: the answer holds every issue, so one pass is enough to fix them all and a second only confirms. A 300-character
+# answer showed one issue and "more": 3, and the agent ran look again with detail to read the rest.
+ANSWER_CAP = 4000
+
+
+def answer(issues, *, extra=None, cap=ANSWER_CAP, line=None):
+    """The JSON answer: ok and the extra counts, or every issue in time order (the same issue on several items one line,
+    "4.92s ov-a, 26.04s ov-b: ...") while it stays within `cap`, then the count of the rest."""
     import json
     base = {"ok": not issues, **(extra or {})}
     if not issues:
         return base
     if any(h in i["text"] for i in issues for h in HINTS):   # PL89e: the agent applied the hints and stopped
-        base["then"] = "Run look again after these edits: each change is measured from the layout as it is now."
-    line = line or (lambda i: f'{i["t"]}s {i["id"]}: {i["text"]}')
-    lines = [line(i) for i in sorted(issues, key=lambda x: (x["t"], x["id"]))]
+        base["then"] = "Run look once more after these edits, not after each one."
+    ordered = sorted(issues, key=lambda x: (x["t"], x["id"]))
+    if line:
+        lines = [line(i) for i in ordered]
+    else:
+        groups = {}
+        for i in ordered:
+            groups.setdefault(i["text"], []).append(f'{i["t"]}s {i["id"]}')
+        lines = [f'{", ".join(where)}: {text}' for text, where in groups.items()]
     kept = []
-    for k, line in enumerate(lines):
-        trial = {**base, "issues": kept + [line]}
+    for k, ln in enumerate(lines):
+        trial = {**base, "issues": kept + [ln]}
         rest = len(lines) - k - 1
         if rest:
             trial["more"] = rest
         if len(json.dumps(trial)) > cap and kept:
             break
-        kept.append(line)
+        kept.append(ln)
     out = {**base, "issues": kept}
     if len(lines) > len(kept):
         out["more"] = len(lines) - len(kept)

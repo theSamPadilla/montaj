@@ -33,7 +33,7 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 
-import { sampleOverlay, sampleFrame, clampAtToEnd, buildFrameCacheKey, buildOverlayCacheKey, SAMPLE_CACHE_VERSION } from '../sample-frame.js'
+import { sampleOverlay, sampleFrame, clampAtToEnd, buildFrameCacheKey, buildOverlayCacheKey, SAMPLE_CACHE_VERSION, measureOverlays } from '../sample-frame.js'
 import { buildOverlayFilterParts } from '../encode-segment.js'
 import { FFMPEG } from '../ffmpeg-bin.js'
 import { MASTER_LOOK } from '../look.js'
@@ -1832,6 +1832,31 @@ test('(pl89f) sampleOverlay --measure: a full-width centred title reports its gl
     assert.ok(t.glyphs && t.glyphs.w > 100 && t.glyphs.w < 400, `the glyphs are the four letters: ${JSON.stringify(t.glyphs)}`)
     assert.ok(Math.abs(t.glyphs.x + t.glyphs.w / 2 - 540) < 4, `centred: ${JSON.stringify(t.glyphs)}`)
     assert.ok(t.glyphs.y >= t.bbox.y - 1 && t.glyphs.h > 40, `on its line: ${JSON.stringify(t.glyphs)}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// PL89g: look measured each overlay in its own process, with its own Chromium (9 overlays: 9 launches, 3 at a time).
+// measureOverlays measures them all in one call over `lanes` browsers, each overlay on its own page; one that fails
+// is answered on its own and the rest are measured.
+// ---------------------------------------------------------------------------
+test('(pl89g) measureOverlays: several overlays in one call share one browser, a broken one answers alone', { timeout: 120_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-batch-'))
+  try {
+    const jsx = (text, top) => "export default function T() { return <div style={{ position: 'absolute', left: 100, top: " + top +
+      ", fontSize: 60, color: 'white' }}>" + text + "</div> }\n"
+    writeFileSync(join(dir, 'a.jsx'), jsx('Alpha', 200))
+    writeFileSync(join(dir, 'b.jsx'), 'export default function T() { return <div>{undefinedThing.x}</div> }\n')
+    writeFileSync(join(dir, 'c.jsx'), jsx('Gamma', 900))
+    const job = (name) => ({ componentPath: join(dir, `${name}.jsx`), frame: 0, fps: 30, width: 1080, height: 1920, outPath: join(dir, `${name}.png`) })
+    const { results, browsers } = await measureOverlays([job('a'), job('b'), job('c')], { lanes: 1 })
+    assert.equal(results.length, 3)
+    assert.ok(results[0].measurements.texts.some((t) => t.text === 'Alpha'), JSON.stringify(results[0]))
+    assert.ok(results[1].error, `the broken one says why: ${JSON.stringify(results[1])}`)
+    assert.ok(results[2].measurements.texts.some((t) => t.text === 'Gamma' && Math.round(t.bbox.y) === 900), JSON.stringify(results[2]))
+    assert.equal(browsers, 1, 'one browser for the three')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

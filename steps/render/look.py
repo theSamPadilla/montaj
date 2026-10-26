@@ -84,6 +84,42 @@ def measure(item, path, frame, duration, fps, width, height, out):
         return None, "measure answered no JSON"
 
 
+MEASURE_LANES = 3        # PL89g: browsers side by side in one measure_many call
+
+
+def measure_many(entries):
+    """PL89g: every overlay of a pass in one sample_overlay --jobs call (one process, MEASURE_LANES browsers, a page each)
+    instead of a process and a Chromium per overlay. `entries`: [{item, path, frame, duration, fps, width, height,
+    out}]. [(measurements, None) | (None, why)] in order, or None when the call itself failed (look then measures them
+    one by one)."""
+    if not entries:
+        return []
+    jobs = [{"component": e["path"], "props": e["item"].get("props") or {}, "frame": e["frame"], "fps": e["fps"],
+             "width": e["width"], "height": e["height"], "duration": e["duration"], "out": e["out"],
+             "googleFonts": [f for f in e["item"].get("googleFonts") or [] if isinstance(f, str) and f]} for e in entries]
+    jobs_path = os.path.join(os.path.dirname(entries[0]["out"]), "look-jobs.json")
+    with open(jobs_path, "w", encoding="utf-8") as f:
+        json.dump(jobs, f)
+    rounds = -(-len(jobs) // MEASURE_LANES)
+    r = _run_group([sys.executable, SAMPLE_OVERLAY_PY, "--jobs", jobs_path, "--lanes", str(MEASURE_LANES)],
+                   MEASURE_TIMEOUT_S * rounds)
+    if r is None or r[0] != 0:
+        return None
+    try:
+        results = json.loads(r[1].strip().splitlines()[-1])["results"]
+    except (ValueError, IndexError, KeyError, TypeError):
+        return None
+    if not isinstance(results, list) or len(results) != len(entries):
+        return None
+    out = []
+    for res in results:
+        if isinstance(res, dict) and "measurements" in res:
+            out.append((res["measurements"] or {}, None))
+        else:
+            out.append((None, str((res or {}).get("message") or (res or {}).get("error") or "measure failed")[:120]))
+    return out
+
+
 def overlays_to_measure(project, project_dir, times):
     """[(track index, item, path)] of overlays to measure: those on screen at a looked-at time first, then the rest,
     in time order; at most MAX_MEASURES. The count of the rest is returned too."""
@@ -121,7 +157,7 @@ def sheet(project_path, project_dir, times):
     return out, None
 
 
-def run(project_path, at=None, image=False, detail=False, measure_fn=measure, sheet_fn=sheet, clock=time.monotonic,
+def run(project_path, at=None, image=False, detail=False, measure_fn=None, sheet_fn=sheet, clock=time.monotonic,
         render_fn=None):
     t0 = clock()
     project_dir = os.path.dirname(project_path)
@@ -132,7 +168,7 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=measure, sh
     except (OSError, ValueError):
         fail("not_found", f"Project not readable: {project_path}")
     if isinstance(raw, dict) and raw.get("projectType") == "carousel":
-        return carousel_run(project_path, raw, at=at, image=image, detail=detail, measure_fn=measure_fn,
+        return carousel_run(project_path, raw, at=at, image=image, detail=detail, measure_fn=measure_fn or measure,
                             render_fn=render_fn or render_slides, clock=clock)
     width, height = lc.design_size(project)
     fps = _fps(project)
@@ -144,18 +180,28 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=measure, sh
     samples = os.path.join(project_dir, "render", "samples", "look")
     os.makedirs(samples, exist_ok=True)
 
-    def one(entry):
+    def prep(entry):
         ti, it, path = entry
         s, e = lc._num(it.get("start")), lc._num(it.get("end"))
         mid = (s + e) / 2
         frame, duration = int(round((mid - s) * fps)), max(1, int(round((e - s) * fps)))
         label = lc._label(it, ti)
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in label)[:40]
-        m, why = measure_fn(it, path, frame, duration, fps, width, height, os.path.join(samples, f"{safe}-f{frame}.png"))
-        return ti, it, label, s, e, mid, m, why
+        return {"ti": ti, "item": it, "path": path, "label": label, "s": s, "e": e, "mid": mid, "frame": frame,
+                "duration": duration, "fps": fps, "width": width, "height": height,
+                "out": os.path.join(samples, f"{safe}-f{frame}.png")}
 
-    with ThreadPoolExecutor(max_workers=MEASURE_WORKERS) as pool:
-        results = list(pool.map(one, to_measure))
+    entries = [prep(x) for x in to_measure]
+    # PL89g: the whole pass in one call; a caller's own measure_fn (tests, or a failed call) measures one at a time
+    got = measure_many(entries) if measure_fn is None else None
+    if got is None:
+        one_fn = measure_fn or measure
+
+        def one(x):
+            return one_fn(x["item"], x["path"], x["frame"], x["duration"], fps, width, height, x["out"])
+        with ThreadPoolExecutor(max_workers=MEASURE_WORKERS) as pool:
+            got = list(pool.map(one, entries))
+    results = [(x["ti"], x["item"], x["label"], x["s"], x["e"], x["mid"], m, why) for x, (m, why) in zip(entries, got)]
     placed, checked, notes = [], [], []
     for ti, it, label, s, e, mid, m, why in results:
         if m is None:
@@ -400,7 +446,8 @@ def carousel_run(project_path, project, *, at, image, detail, measure_fn, render
                 add(0, "no slide could be rendered")
         finally:
             shutil.rmtree(render_dir, ignore_errors=True)
-    answer = lc.answer(issues, extra=extra, line=lambda i: (f'slide {i["t"]}: ' if i["t"] else "") + i["text"])
+    answer = lc.answer(issues, extra=extra, cap=300,   # a carousel keeps its short answer (PL89g widened the video's)
+                       line=lambda i: (f'slide {i["t"]}: ' if i["t"] else "") + i["text"])
     if detail:
         answer.update({"issues": [(f'slide {i["t"]}: ' if i["t"] else "") + i["text"] for i in sorted(issues, key=lambda x: x["t"])],
                        "shown": numbers, "wallMs": int((clock() - t0) * 1000)})

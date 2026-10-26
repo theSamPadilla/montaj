@@ -22,7 +22,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Render one frame of an overlay JSX to PNG via Puppeteer"
     )
-    parser.add_argument("--overlay",      required=True,  help="Absolute path to the JSX overlay file")
+    parser.add_argument("--overlay",      default=None,   help="Absolute path to the JSX overlay file")
     parser.add_argument("--frame",        type=int, default=0,    help="Frame number to render (default: 0)")
     parser.add_argument("--duration",     type=int, default=None,
                         help="Overlay length in frames for the `duration` global. "
@@ -38,8 +38,16 @@ def main():
                         help="Google Fonts to load: a family or spec (e.g. 'Syne:wght@800'), a comma list, or a JSON array. Repeat the flag for more. A family that does not load is a warning; the sample still renders.")
     parser.add_argument("--measure",      action="store_true",
                         help="Return bounding-box / overflow measurements as JSON instead of a bare PNG path")
-    parser.add_argument("--out",          required=True,  help="Output PNG path")
+    parser.add_argument("--out",          default=None,   help="Output PNG path")
+    parser.add_argument("--jobs",         default=None,
+                        help="PL89g: measure several overlays in one call instead: a JSON file of [{component, props, frame, "
+                             "fps, width, height, googleFonts, duration, out}]. Prints {results, browsers}.")
+    parser.add_argument("--lanes",        type=int, default=3, help="With --jobs: browsers side by side (default 3)")
     args = parser.parse_args()
+    if args.jobs:
+        _run_node(["node", SAMPLE_FRAME_JS, "--mode", "measure", "--jobs", args.jobs, "--lanes", str(args.lanes)])
+    if not args.overlay or not args.out:
+        parser.error("--overlay and --out are required (or --jobs)")
 
     cmd = [
         "node", SAMPLE_FRAME_JS,
@@ -60,9 +68,12 @@ def main():
     if args.measure:
         cmd.append("--measure")
 
-    env = node_child_env()
+    _run_node(cmd)
 
-    result = subprocess.run(cmd, check=False, capture_output=True, env=env)
+
+def _run_node(cmd):
+    """Run the node sampler, pass its output through, and exit with its code."""
+    result = subprocess.run(cmd, check=False, capture_output=True, env=node_child_env())
     sys.stdout.write(result.stdout.decode("utf-8", errors="replace"))
     sys.stdout.flush()
     sys.stderr.write(result.stderr.decode("utf-8", errors="replace"))
