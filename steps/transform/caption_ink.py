@@ -3,7 +3,7 @@
 
 Over a light card (graphics covering the caption's band: an opaque overlay, a 3D scene with a backdrop, or an overlay
 whose pixels cover the band, as frame_broll's matte does) a caption draws dark, so it reads; elsewhere it draws
-as its style does. The step reads the backdrop from the card's own render (a JSX card) or from one frame without captions per 3D item,, measures the band the caption
+as its style does. The step reads the backdrop from the card's own render (a JSX card) or from one frame without captions per 3D item, measures the band the caption
 draws in, and writes `ink` ("dark" or "light") and `inkAuto` ({card, ink, backdrop}: what it wrote) on the caption. An `ink` is the
 step's only while `inkAuto` names the same ink; any other ink (none, edited, removed) is a person's and never changed.
 Ink the step wrote is cleared when the card is gone. A caption whose words lie over different cards, or over a card and
