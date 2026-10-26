@@ -180,6 +180,9 @@ const SHORT_EDGE_TARGET = 1080
  *    child or a zero-width wrapper is not its text), and it widens the box
  *    up or down only past that same 30% slack, so a tight heading at top 0 is
  *    not off the frame. 18's entries call it off by the glyph's rise.
+ * 20: a full-canvas overlay measured fully opaque hides the footage below it,
+ *    flagged `opaque` or not. A frame cached before took the footage through
+ *    the composite's yuv420 round trip, a few levels off the culled frame.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -187,7 +190,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 19
+const SAMPLE_CACHE_VERSION = 20
 
 // PL89: the most overlay pages a sampling session keeps open (createSampleSession).
 export const SESSION_MAX_PAGES = 4
@@ -1314,9 +1317,8 @@ export async function sampleFrame({
   // A full-canvas overlay at full opacity whose rendered PNG is opaque in every
   // pixel hides what is below it just as an `opaque` one does, flagged or not
   // (a 3D scene's backdrop, a full-screen card). The alpha is measured on the
-  // PNG, so the frame is the one the composite below would have drawn. The
-  // output is identical, so the frame cache key needs no change.
-  // MONTAJ_SAMPLE_NO_COVER_SKIP=1 turns this off: a seam for the identity test
+  // PNG. The frame is the one an `opaque` overlay gives (SAMPLE_CACHE_VERSION 20).
+  // MONTAJ_SAMPLE_NO_COVER_SKIP=1 turns this off: a seam for the comparison test
   // only; the `opaque` cull above stays.
   if (process.env.MONTAJ_SAMPLE_NO_COVER_SKIP !== '1') {
     for (let k = stack.length - 1; k > coverAt; k--) {

@@ -82,7 +82,19 @@ const projectOf = (...tracks) => ({
   tracks, audio: { tracks: [] },
 })
 
-test('cover skip: the frame matches with the skip on and off (within yuv rounding)', { skip: !hasFfmpeg, timeout: 200_000 }, () => {
+test('cover skip: an unflagged cover gives exactly the frame an `opaque` one gives', { skip: !hasFfmpeg, timeout: 200_000 }, () => {
+  const { dir, clip, full } = setup()
+  try {
+    const flagged = sample(dir, projectOf([clipItem(clip)], [ovItem(full, { opaque: true })]), 1, { tag: 'flagged' })
+    const measured = sample(dir, projectOf([clipItem(clip)], [ovItem(full)]), 1, { tag: 'measured' })
+    assert.equal(flagged.status, 0, flagged.stderr)
+    assert.equal(measured.status, 0, measured.stderr)
+    assert.match(measured.stderr, /measured/i)
+    assert.ok(Buffer.compare(rgba(measured.png), rgba(flagged.png)) === 0, 'decoded RGBA differs')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('cover skip: against no skip the frame differs only by yuv rounding', { skip: !hasFfmpeg, timeout: 200_000 }, () => {
   const { dir, clip, full } = setup()
   try {
     const p = projectOf([clipItem(clip)], [ovItem(full)])
@@ -90,9 +102,10 @@ test('cover skip: the frame matches with the skip on and off (within yuv roundin
     const off = sample(dir, p, 1, { tag: 'off', skipOff: true })
     assert.equal(on.status, 0, on.stderr)
     assert.equal(off.status, 0, off.stderr)
-    // Not bit-identical: with footage under it the compositor round-trips the whole
-    // canvas through yuv420 (flat #2244cc comes out 32,68,203); the skipped frame
-    // never takes that step and is the exact 34,68,204. Same frame to the eye.
+    // Not bit-identical: the footage composite takes the whole canvas through
+    // yuv420 (flat #2244cc comes out 32,68,203), and the culled frame never does,
+    // as the `opaque` path already does not. Text edges differ most, so the
+    // check is the mean and a flat region.
     const a = rgba(on.png), c = rgba(off.png)
     assert.equal(a.length, c.length)
     let sum = 0
@@ -100,8 +113,6 @@ test('cover skip: the frame matches with the skip on and off (within yuv roundin
     assert.ok(sum / a.length < 2, `mean abs channel difference ${sum / a.length}`)
     const [r0, g0, b0] = px(off.png, 5, 240), [r1, g1, b1] = px(on.png, 5, 240)
     assert.ok(Math.max(Math.abs(r0 - r1), Math.abs(g0 - g1), Math.abs(b0 - b1)) <= 3, 'flat region')
-    const [r, g, b] = px(on.png, 5, 240)
-    assert.ok(Math.abs(r - 0x22) < 6 && Math.abs(g - 0x44) < 6 && Math.abs(b - 0xcc) < 6, `overlay colour, got ${r},${g},${b}`)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
