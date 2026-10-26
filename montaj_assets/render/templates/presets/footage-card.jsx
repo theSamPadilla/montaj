@@ -2,7 +2,7 @@
  * footage-card.jsx: a landscape clip in a vertical frame, inset as a card (PL89, frame_broll's `card`). The
  * clip itself is the video item under this overlay, scaled into `box`; this draws everything around it: paper over
  * the rest of the frame, thin corner brackets on the subject (or the footage's corners when none was tracked), and
- * a credit line under the footage. The paper cuts in and out with the clip (it frames the video item exactly, so it
+ * a small credit line centred under the footage. The paper cuts in and out with the clip (it frames the video item exactly, so it
  * never moves); the brackets pop in on the subject and the credit rises in after them, and both fade out before the
  * end (Motion.motion, PL89b: look says an overlay that vanishes with the cut or moves linearly).
  *
@@ -12,6 +12,7 @@
  *   paper       the card's colour (default '#efeee8')
  *   ink         the credit's colour (default '#1c1c1e')
  *   accent      the brackets' colour (default '#1c1c1e')
+ *   brackets    'off' for none (a profile that asks for no decorative borders); on by default
  *   subject     the tracked subject: a JSON list of [t, x, y, w, h] (t seconds into the item; x..h shares of the
  *               footage), followed between keys; '' for brackets on the footage's corners
  *   fontFamily  the credit's font (default 'JetBrains Mono, ui-monospace, monospace')
@@ -61,14 +62,18 @@ export default function FootageCard() {
     <div style={{ position: 'absolute', inset: 0 }}>
       {/* paper over everything but the footage: one box whose shadow is the card */}
       <div style={{ position: 'absolute', left: L, top: T, width: BW, height: BH, boxShadow: `0 0 0 ${W + H}px ${paper}` }} />
-      {corner(sx, sy, 1, 1, 0)}
-      {corner(sx + sw, sy, -1, 1, 1)}
-      {corner(sx + sw, sy + sh, -1, -1, 2)}
-      {corner(sx, sy + sh, 1, -1, 3)}
+      {p.brackets !== 'off' ? (
+        <>
+          {corner(sx, sy, 1, 1, 0)}
+          {corner(sx + sw, sy, -1, 1, 1)}
+          {corner(sx + sw, sy + sh, -1, -1, 2)}
+          {corner(sx, sy + sh, 1, -1, 3)}
+        </>
+      ) : null}
       {p.credit ? (
         <div style={{ position: 'absolute', left: L, top: T + BH + Math.round(H * 0.012), width: BW,
           fontFamily: p.fontFamily || 'JetBrains Mono, ui-monospace, monospace', fontSize: Math.max(36, Math.round(W * 0.034)),
-          color: ink, opacity: 0.6 * credit.opacity, transform: credit.style.transform, letterSpacing: '0.02em' }}>{String(p.credit)}</div>
+          color: ink, opacity: 0.6 * credit.opacity, transform: credit.style.transform, letterSpacing: '0.02em', textAlign: 'center' }}>{String(p.credit)}</div>
       ) : null}
     </div>
   )

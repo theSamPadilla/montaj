@@ -313,3 +313,58 @@ def test_the_cli_takes_item_more_than_once(tmp_path):
     assert item.get("repeatable") is True
     parser = fb.build_parser()
     assert parser.parse_args(["--project", str(p), "--item", "br-1", "--item", "br-2"]).item == ["br-1", "br-2"]
+
+
+# PL89c: the person's profile asked for wide footage in a cream matte with a small centred credit, and the run put all
+# b-roll full-frame. frame_broll reads the profile's "Titles & overlays" notes (profileSnapshot.styleProfilePath): a
+# line about mattes makes auto card wide footage on that matte, with its colour; track only when asked.
+STYLE = """# Style
+
+## Titles & overlays
+- Keep source credits small and centered.
+- Use functional mattes only where needed to frame wide evidence footage. Fill empty space with warm cream (for example #F5F3EB), with no decorative borders or sidebars.
+
+## Format
+- 9:16.
+"""
+
+
+def with_profile(p, text=STYLE):
+    doc = json.loads(Path(p).read_text())
+    style = Path(p).parent / "style_profile.md"
+    style.write_text(text)
+    doc["profileSnapshot"] = {"name": "fixture", "styleProfilePath": str(style)}
+    Path(p).write_text(json.dumps(doc, indent=2))
+    return p
+
+
+def test_profile_matte_is_read_from_the_titles_and_overlays_notes(tmp_path):
+    style = tmp_path / "s.md"
+    style.write_text(STYLE)
+    assert fb.profile_matte({"profileSnapshot": {"styleProfilePath": str(style)}}) == {"paper": "#F5F3EB", "brackets": False}
+    style.write_text("## Titles & overlays\n- Mattes for wide footage, in #ffffff with corner marks.\n")
+    assert fb.profile_matte({"profileSnapshot": {"styleProfilePath": str(style)}}) == {"paper": "#ffffff", "brackets": True}
+    style.write_text("## Titles & overlays\n- Centred text.\n## Format\n- Use mattes in #000000.\n")
+    assert fb.profile_matte({"profileSnapshot": {"styleProfilePath": str(style)}}) is None, "only the Titles & overlays notes"
+    assert fb.profile_matte({}) is None and fb.profile_matte({"profileSnapshot": {"styleProfilePath": "/nope.md"}}) is None
+
+
+def test_a_profile_that_asks_for_mattes_makes_auto_card_a_trackable_clip_on_its_matte(tmp_path):
+    p = with_profile(project(tmp_path))   # a moving subject auto would otherwise track
+    out = fb.run(str(p), "br-1", source="the lab", sampler=stub_sampler())
+    assert out["mode"] == "card" and "profile" in out["why"] and "#F5F3EB" in out["why"]
+    doc = json.loads(Path(p).read_text())
+    card = next(it for t in doc["tracks"] for it in t["items"] if it.get("id") == out["card"])
+    assert card["props"]["paper"] == "#F5F3EB" and card["props"]["brackets"] == "off"
+
+
+def test_track_still_tracks_when_asked_with_a_matte_profile(tmp_path):
+    p = with_profile(project(tmp_path))
+    assert fb.run(str(p), "br-1", mode="track", sampler=stub_sampler())["mode"] == "track"
+
+
+def test_the_card_credit_is_centred_and_brackets_can_be_turned_off():
+    code = (REPO_ROOT / "montaj_assets" / "render" / "templates" / "presets" / "footage-card.jsx").read_text()
+    credit = code[code.index("p.credit ?"):]
+    assert "textAlign: 'center'" in credit[:600]
+    assert "p.brackets !== 'off'" in code

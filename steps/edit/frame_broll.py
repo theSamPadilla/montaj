@@ -13,7 +13,7 @@
   tracks changed since the step read them; a version of the project first, as place's update takes one.
 - The answer: one short JSON, with `path`, a sheet of the item's range on the timeline as it now looks.
 """
-import argparse, contextlib, copy, io, json, os, subprocess, sys
+import argparse, contextlib, copy, io, json, os, re, subprocess, sys
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
@@ -36,6 +36,7 @@ UNDER_CAPTIONS = 0.5      # the share of the frames with the subject that put it
 DEFAULT_CAPTION_BAND = (0.56, 0.76)   # where montaj's captions draw on a tall frame, every style (look_check.CAPTION_BAND)
 VERSION_MESSAGE = "version: before frame_broll"
 STEP_LOCK_TIMEOUT = 30.0
+DEFAULT_MATTE = "#F5F3EB"   # a warm cream, when a profile asks for mattes but names no colour
 MAX_ITEMS = 12          # items in one call
 MAX_PARALLEL = 4        # clips read and tracked at once
 MAX_SHEET_TIMES = 12    # times on the sheet of a list
@@ -60,6 +61,36 @@ def gray_frames(src, start, end, fps):
     h = len(subprocess.run(probe, capture_output=True, check=True).stdout) // ANALYSIS_W
     n = len(raw) // (ANALYSIS_W * h)
     return np.frombuffer(raw[: n * ANALYSIS_W * h], dtype=np.uint8).reshape(n, h, ANALYSIS_W)
+
+
+def profile_matte(project):
+    """The person's matte for wide footage, from their profile's "Titles & overlays" notes (profileSnapshot's
+    styleProfilePath): {"paper": its colour (the line's first #hex, else DEFAULT_MATTE), "brackets": False when the line
+    says no borders} for the first line there about mattes; None when the notes say nothing about mattes (or there are
+    no notes)."""
+    path = ((project or {}).get("profileSnapshot") or {}).get("styleProfilePath")
+    if not isinstance(path, str) or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read(200_000)
+    except OSError:
+        return None
+    section, inside = [], False
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            if inside:
+                break
+            inside = bool(re.search(r"titles?\b.*overlays?", line, re.I))
+            continue
+        if inside:
+            section.append(line)
+    line = next((l for l in section if re.search(r"\bmattes?\b", l, re.I)), None)
+    if line is None:
+        return None
+    hexes = re.findall(r"#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b", line)
+    return {"paper": hexes[0] if hexes else DEFAULT_MATTE,
+            "brackets": not re.search(r"\bno (?:decorative )?(?:borders?|frames?|framing)\b|\bwithout (?:decorative )?borders?\b", line, re.I)}
 
 
 def caption_band(project, start, end, width, height):
@@ -109,7 +140,7 @@ class ItemRefused(Exception):
         self.code, self.message = code, message
 
 
-def analyse(project, on_disk, project_path, item_id, mode):
+def analyse(project, on_disk, project_path, item_id, mode, matte=None):
     """What framing `item_id` takes, computed from the project as read (nothing is written): a plan for write_plans,
     or {"id", "mode": "none", "why"} for a clip that needs nothing. Raises ItemRefused."""
     hit = place.find_item(project, item_id)
@@ -157,7 +188,9 @@ def analyse(project, on_disk, project_path, item_id, mode):
     crossed = under_captions(boxes_found, band, 0.05)
     seen = f"the subject is in {path['found']}/{n} frames"
     if mode == "auto":
-        if path["cluttered"] > 0.3 * n:
+        if matte:
+            mode, why = "card", f"card: the profile asks for mattes for wide footage ({matte['paper']})"
+        elif path["cluttered"] > 0.3 * n:
             mode, why = "card", "card: the camera moves, so there is no one subject to follow"
         elif path["found"] < 0.6 * n:
             mode, why = "card", "card: no moving subject was found in most of the clip"
@@ -204,9 +237,11 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
     on_disk, read_rev = read_tracks(project_path)
     project = normalize_tracks(copy.deepcopy(on_disk))
 
+    matte = profile_matte(on_disk)
+
     def one(i):
         try:
-            return analyse(project, on_disk, project_path, i, mode)
+            return analyse(project, on_disk, project_path, i, mode, matte)
         except ItemRefused as e:
             return {"id": i, "error": e.code, "message": e.message}
     if len(ids) == 1:
@@ -262,7 +297,9 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
                 card = {"id": place._new_id(doc), "type": "overlay", "src": preset_src, "start": start, "end": end,
                         "props": {"box": ",".join(str(v) for v in pl["box"]), "credit": credit,
                                   "subject": json.dumps(simplify_boxes(subject)) if subject else "",
-                                  "canvasW": str(pl["W"]), "canvasH": str(pl["H"])}}
+                                  "canvasW": str(pl["W"]), "canvasH": str(pl["H"]),
+                                  **({"paper": matte["paper"]} if matte else {}),
+                                  **({"brackets": "off"} if matte and not matte["brackets"] else {})}}
                 dest, refusal = place.choose_track(doc, start, end)
                 if refusal:
                     fail("track_busy", f"No overlay track is free for the card of {pl['id']}: {refusal}.")
