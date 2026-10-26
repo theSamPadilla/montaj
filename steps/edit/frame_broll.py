@@ -193,7 +193,8 @@ def analyse(project, on_disk, project_path, item_id, mode, matte=None):
     seen = f"the subject is in {path['found']}/{n} frames"
     if mode == "auto":
         if matte:
-            mode, why = "card", f"card: the profile asks for mattes for wide footage ({matte['paper']})"
+            mode, why = "card", (f"card: the profile asks for mattes for wide footage ({matte['paper']}), a default: "
+                                 'mode "track" keeps an action or the hook full screen')
         elif path["cluttered"] > 0.3 * n:
             mode, why = "card", "card: the camera moves, so there is no one subject to follow"
         elif path["found"] < 0.6 * n:

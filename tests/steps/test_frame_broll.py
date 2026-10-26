@@ -353,6 +353,8 @@ def test_a_profile_that_asks_for_mattes_makes_auto_card_a_trackable_clip_on_its_
     p = with_profile(project(tmp_path))   # a moving subject auto would otherwise track
     out = fb.run(str(p), "br-1", source="the lab", sampler=stub_sampler())
     assert out["mode"] == "card" and "profile" in out["why"] and "#F5F3EB" in out["why"]
+    # the profile's mattes are a default: the answer says how to keep an action clip full screen (kung fu pl89j)
+    assert 'mode "track"' in out["why"] and "action" in out["why"]
     doc = json.loads(Path(p).read_text())
     card = next(it for t in doc["tracks"] for it in t["items"] if it.get("id") == out["card"])
     assert card["props"]["paper"] == "#F5F3EB" and card["props"]["brackets"] == "off"
