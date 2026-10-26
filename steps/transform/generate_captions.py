@@ -37,6 +37,7 @@ from serve.common import get_project_dir  # noqa: E402
 from serve.caption_job import build_audio_mix_spec, caption_input_change, caption_input_fingerprint  # noqa: E402
 from lib.project_revisions import engine_guard_enabled  # noqa: E402
 from lib import caption_ink  # noqa: E402
+from lib.caption_script import script_of, spell_from_script  # noqa: E402
 from lib.caption_profile_look import resolve_style_and_look  # noqa: E402
 from serve.caption_theme import seed_prev  # noqa: E402
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, update_project  # noqa: E402
@@ -83,6 +84,9 @@ def main():
     parser.add_argument("--language", default="auto",
                         help="Language code (e.g. en, es), or 'auto' to detect")
     parser.add_argument("--style", default=None, help="Caption animation style")
+    parser.add_argument("--script", default=None,
+                        help="The script the speaker read (default: the project's editingPrompt; \"\" for none): caption "
+                             "words take its spelling on the transcript's timings")
     args = parser.parse_args()
 
     # Resolve the project dir. The step is a CLI subprocess, not an HTTP
@@ -149,6 +153,10 @@ def main():
              "--out", words_prefix, "--fit-pauses"],
             timeout=whisper_runaway_timeout_for(mix_wav_path) + 300)
 
+        # 3b. Spell the words from the script, when one is given (lib/caption_script.py): timings stay the transcript's.
+        script = args.script if args.script is not None else script_of(project)
+        corrected = spell_from_script(words_json_path, script) if script and script.strip() else None
+
         # 4. Group words into a styled caption track.
         run([sys.executable, caption_py,
              "--input", words_json_path, "--style", style, "--out", track_path])
@@ -187,7 +195,12 @@ def main():
         track = written["track"]
         warnings = ink_pass(project_path)
 
-        print(json.dumps({**track, "warnings": warnings} if warnings else track))
+        answer = dict(track)
+        if corrected is not None:
+            answer["corrected"] = corrected
+        if warnings:
+            answer["warnings"] = warnings
+        print(json.dumps(answer))
     finally:
         for tmp in (mix_spec_path, mix_wav_path, words_json_path,
                     words_srt_path, track_path):
