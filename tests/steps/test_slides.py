@@ -567,6 +567,21 @@ def test_a_position_edit_alone_on_a_locked_headline_changes_nothing_and_is_named
     assert proj(d) == before and out["locked"] == [lid] and out["changed"] == []
 
 
+def test_a_retyped_headline_that_is_locked_is_named_and_not_sent_to_edit(tmp_path):
+    d = make_carousel(tmp_path)
+    run(d, headlines=json.dumps(HEADS))
+    p = proj(d)
+    headline(p["slides"][0])["overlay"]["props"]["text"] = "My own words"
+    (d / "project.json").write_text(json.dumps(p))
+    lid = _lock_headline(d)
+    before = proj(d)
+    out = run(d, headlines=json.dumps(["New one", "Second new"]))
+    assert headline(proj(d)["slides"][0]) == headline(before["slides"][0])
+    assert out["locked"] == [lid] and out["changed"] == [2]
+    assert out["issues"][0] == "slide 1: headline is locked; it stays as it is"
+    assert not any("edit" in issue for issue in out["issues"])
+
+
 def test_a_project_without_locked_elements_has_no_locked_key(tmp_path):
     d = make_carousel(tmp_path)
     assert "locked" not in run(d, headlines=json.dumps(HEADS))
