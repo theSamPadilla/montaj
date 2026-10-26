@@ -636,7 +636,7 @@ def _already_cut(project):
 # ── the run ──────────────────────────────────────────────────────────────────
 
 def _build(project_path, project_dir, disk, track_id, language, warnings, max_pause=None, breath=speech_energy.BREATH_S,
-           threshold=SILENCE_THRESHOLD_DB, model=None):
+           threshold=SILENCE_THRESHOLD_DB):
     """The base: the disk project with the mechanical pass on its speech track, in memory, and everything the
     plan and its apply need. Deterministic for the same project, transcripts, max-pause and breath, so an apply
     rebuilds the base the plan was made from. b["held"]: the silences kept whole for the overlays (D2)."""
@@ -693,8 +693,7 @@ FAINT_SHARE = 1 / 3         # a take this share of whose words are offered or in
 def _faint(ref, d, units):
     """P3-2: a unit whose words the energy pass offers (under the speech floor) or finds inaudible, FAINT_SHARE of
     them or more, is faint: lib/take_select never keeps it over a take of the same words that is heard."""
-    low = {(d.letters[src], i) for src, idx in ref.quiet_words.items() if src in d.letters for i in idx
-           if i not in getattr(ref, "chained", {}).get(src, ())} | d.inaudible   # §577: drift, not faintness
+    low = {(d.letters[src], i) for src, idx in ref.quiet_words.items() if src in d.letters for i in idx} | d.inaudible
     for u, rows, _ in units:
         keys = [(_line_key(r.line)[0], w.idx) for _, r in rows for w in r.words if norm(w.text)]
         u.faint = bool(keys) and sum(1 for k in keys if k in low) >= FAINT_SHARE * len(keys)
@@ -1076,8 +1075,7 @@ def _make_plan(args, project_path, project_dir):
     breath = min(max(args.breath, BREATH_MIN_S), max_pause / 2)       # R2-Q3
     title = disk.get("name") or disk.get("id") or os.path.basename(project_dir)
     threshold = args.silence_threshold if args.silence_threshold is not None else SILENCE_THRESHOLD_DB
-    b = _build(project_path, project_dir, disk_l, track_id, language, warnings, max_pause, breath, threshold,
-               args.model)
+    b = _build(project_path, project_dir, disk_l, track_id, language, warnings, max_pause, breath, threshold)
     if args.silence_threshold is not None and b["d"] is not None:
         warnings.insert(0, THRESHOLD_SPEECH_WARNING)       # §577: it never reaches a clip with a transcript
     answer = {"project": disk.get("id"), "mode": "plan", "speech": key}
@@ -1195,8 +1193,7 @@ def _apply_plan(args, project_path, project_dir):
         fail("stale_plan", f"This plan was made at silence-threshold {threshold:g}. Run cut again at "
                            f"{args.silence_threshold:g}, or apply it without silence-threshold (your edited plan is kept).")
     warnings = []
-    b = _build(project_path, project_dir, disk_l, track_id, language, warnings, max_pause, breath, threshold,
-               args.model)
+    b = _build(project_path, project_dir, disk_l, track_id, language, warnings, max_pause, breath, threshold)
     stale = ("This plan was made before cut was updated, or the timeline changed. Run cut again (your edited plan "
              "is kept).")
     if not _has_clips(disk_l, track_id):
