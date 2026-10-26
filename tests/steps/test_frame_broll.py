@@ -567,3 +567,24 @@ def test_a_relative_src_with_a_typed_space_is_read_from_the_project_folder(tmp_p
     assert out["mode"] == "card", out
     item, _ = item_of(p, "br-1")
     assert item.get("scale"), "the card was framed"
+
+
+def test_seventeen_items_are_framed_in_one_call_and_the_sheet_spans_them_all(tmp_path, monkeypatch):
+    # kung fu pl89j: 17 cutaways were refused ("At most 12 items in one call") and the agent split them by hand
+    p = project(tmp_path)
+    doc = json.loads(Path(p).read_text())
+    base = doc["tracks"][1]["items"][0]
+    doc["tracks"][1]["items"] = [dict(base, id=f"br-{k}", start=2 * k, end=2 * k + 1.5, inPoint=0, outPoint=1.5)
+                                 for k in range(17)]
+    doc["tracks"][0]["items"][0].update(end=40, outPoint=4)
+    Path(p).write_text(json.dumps(doc, indent=2))
+    versions = []
+    real = fb.commit_version
+    monkeypatch.setattr(fb, "commit_version", lambda d, m: versions.append(m) or real(d, m))
+    s = stub_sampler()
+    out = fb.run(str(p), [f"br-{k}" for k in range(17)], mode="track", sampler=s)
+    assert [x["id"] for x in out["items"]] == [f"br-{k}" for k in range(17)]
+    assert all(x.get("mode") == "track" for x in out["items"]), out["items"]
+    assert len(versions) == 1 and len(s.calls) == 1
+    times = s.calls[0]
+    assert len(times) <= fb.MAX_SHEET_TIMES and min(times) < 2 and max(times) > 30, times

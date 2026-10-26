@@ -43,7 +43,7 @@ CARD_ZOOM_MIN = 0.45      # a card zooms to at most this share of the frame (the
 CARD_ZOOM_MAX = 0.85      # and only when it keeps under this share: a subject that roams the frame is not zoomed
 CARD_ZOOM_MARGIN = 0.06   # room round everywhere the subject goes, a share of the frame
 DEFAULT_MATTE = "#F5F3EB"   # a warm cream, when a profile asks for mattes but names no colour
-MAX_ITEMS = 12          # items in one call
+MAX_ITEMS = 48          # items in one call: a sanity bound (they are read MAX_PARALLEL at a time, then one write)
 MAX_PARALLEL = 4        # clips read and tracked at once
 MAX_SHEET_TIMES = 12    # times on the sheet of a list
 DONE = ". Done: this clip is framed; run frame_broll with another mode to change it, not an edit by hand."
@@ -360,12 +360,16 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
                     pass
             raise
 
-    # One sheet: SHEET_TIMES over one clip, else two times in each framed clip (at most MAX_SHEET_TIMES).
+    # One sheet: SHEET_TIMES over one clip, else two times in each framed clip, spread over all of them when that is
+    # more than MAX_SHEET_TIMES (so the last clips are on the sheet too).
     if single:
         span = todo[0]["end"] - todo[0]["start"]
         sheet_times = [round(todo[0]["start"] + span * (k + 0.5) / SHEET_TIMES, 2) for k in range(SHEET_TIMES)]
     else:
-        sheet_times = sorted({round(pl["start"] + (pl["end"] - pl["start"]) * f, 2) for pl in todo for f in (0.3, 0.7)})[:MAX_SHEET_TIMES]
+        every = sorted({round(pl["start"] + (pl["end"] - pl["start"]) * f, 2) for pl in todo for f in (0.3, 0.7)})
+        n = len(every)
+        sheet_times = every if n <= MAX_SHEET_TIMES else [every[round(k * (n - 1) / (MAX_SHEET_TIMES - 1))]
+                                                          for k in range(MAX_SHEET_TIMES)]
     samples = os.path.join(project_dir, "render", "samples")
     sheet, sheet_error = None, None
     if sheet_times:
