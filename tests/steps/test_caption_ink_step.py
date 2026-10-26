@@ -209,8 +209,8 @@ def test_each_run_renders_into_its_own_folder_and_removes_it(tmp_path, monkeypat
     def fake_renderer(project_path, out_dir, deadline=None):
         dirs.append(out_dir)
         assert Path(out_dir).parent == p.parent / "render" / "samples"
-        return lambda times: {t: _light(tmp_path)(t) for t in times}
-    monkeypatch.setattr(ci, "frames_renderer", fake_renderer)
+        return _light(tmp_path)
+    monkeypatch.setattr(ci, "frame_renderer", fake_renderer)
     step.run(str(p))
     step.run(str(p))
     assert len(dirs) == 2 and dirs[0] != dirs[1] and not any(Path(d).exists() for d in dirs)

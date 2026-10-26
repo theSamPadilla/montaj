@@ -288,6 +288,29 @@ def luminance(png_path, box, frame=None):
                for c, w in enumerate(_LUM)) / total
 
 
+def overlay_luminance(png_path, box, frame, opaque=False):
+    """Mean relative luminance of `box` of an overlay rendered alone: over the pixels it covers (alpha >= COVER_ALPHA),
+    or, for an opaque overlay, over black (the picture below is hidden)."""
+    from PIL import Image
+    with Image.open(png_path) as im:
+        im = im.convert("RGBA")
+        sx, sy = im.width / frame[0], im.height / frame[1]
+        x0, x1 = sorted((int(round(box[0] * sx)), int(round(box[2] * sx))))
+        y0, y1 = sorted((int(round(box[1] * sy)), int(round(box[3] * sy))))
+        x0, y0 = max(0, min(x0, im.width - 1)), max(0, min(y0, im.height - 1))
+        x1, y1 = max(x0 + 1, min(x1, im.width)), max(y0 + 1, min(y1, im.height))
+        crop = im.crop((x0, y0, x1, y1))
+        if opaque:
+            rgb, mask = Image.alpha_composite(Image.new("RGBA", crop.size, (0, 0, 0, 255)), crop).convert("RGB"), None
+        else:
+            rgb, mask = crop.convert("RGB"), crop.getchannel("A").point(lambda a: 255 if a >= COVER_ALPHA else 0)
+        hist = rgb.histogram(mask)
+    table = _linear_table()
+    total = sum(hist[:256]) or 1
+    return sum(w * sum(h * lin for h, lin in zip(hist[c * 256:(c + 1) * 256], table))
+               for c, w in enumerate(_LUM)) / total
+
+
 def _run_group(cmd, timeout):
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **detached_kwargs())
     try:
@@ -316,25 +339,6 @@ def frame_renderer(project_path, out_dir, deadline=None):
         if r[0] != 0 or not os.path.isfile(out):
             raise RuntimeError("sample_frame failed")
         return out
-    return render
-
-
-def frames_renderer(project_path, out_dir, deadline=None):
-    """frames_fn(times) -> {time: the path of the project's frame without the captions}, every time in ONE
-    sample_frame call (one node process, up to four lanes), written into `out_dir`. The call gets what is left until
-    `deadline` (time.monotonic), at most RENDER_TIMEOUT_S a time; it raises when it fails or runs out of time."""
-    def render(times):
-        from steps.render.sample_frame import sample_frames
-        timeout = RENDER_TIMEOUT_S * len(times)
-        if deadline is not None:
-            timeout = min(timeout, deadline - time.monotonic())
-            if timeout <= 0:
-                raise RuntimeError("out of time")
-        try:
-            paths = sample_frames(project_path, list(times), out_dir, no_captions=True, timeout=timeout)
-        except SystemExit:   # lib.common.fail: its one JSON line is on stderr
-            raise RuntimeError("sample_frame failed") from None
-        return dict(zip(times, paths))
     return render
 
 
@@ -451,17 +455,17 @@ def _with_pieces(project, index, pieces):
     return {**project, "captions": {**caps, "segments": segs}}
 
 
-def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, project_dir=None, frames_fn=None):
+def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, project_dir=None):
     """(changes, counts, warnings). changes: {segment key: {"ink", "inkAuto": {"card", "ink", "backdrop"}}, None to clear,
     or {"split": [the segments that replace it]}}, keyed by `_key` over the raw segment list. A caption whose words lie
     over different cards is split into one segment per run (see split_pieces; the new ids are minted against the
-    captions), each inked by its own middle. Backdrops: frames_fn(times) -> {time: a PNG path of the backdrop}, called
-    once with every time, or else render_fn(t) -> a PNG path, one render per distinct caption middle, three at a time.
-    overlay_fn(item, frame) -> a PNG path of one overlay rendered alone, once per overlay at the middle of its span, for
-    the overlays whose pixels say whether they cover a caption's band (find_card); without it only the data decides.
+    captions), each inked by its own middle. Where a backdrop is read: from the overlay-alone PNG for a JSX card
+    (overlay_fn(item, frame) -> a PNG path of one overlay rendered alone, once per overlay at the middle of its span;
+    also what says whether an overlay whose pixels decide covers a caption's band, see find_card), else from one frame
+    without the captions per card item (render_fn(t) -> a PNG path, three at a time), at the middle of the span of the
+    captions over it. Without overlay_fn only the data decides and every card is read from a frame.
     `project_dir` is where 3D scene files are read. A frame not started by `deadline` (time.monotonic) counts as
-    failed, as does the whole of a failed frames_fn call; a caption whose card or frame could not be had is left as it
-    is."""
+    failed; a caption whose card or backdrop could not be had is left as it is."""
     counts = {"dark": 0, "light": 0, "cleared": 0, "kept": 0, "split": 0}
     changes, warnings = {}, []
     size = (width, height)
@@ -508,12 +512,12 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
                             slots = None
                             break
                         c = card_at(pm, pb) if pb is not None else None
-                        slots.append({"seg": part, "mid": pm, "box": pb, "card": c["id"] if c else None})
+                        slots.append({"seg": part, "mid": pm, "box": pb, "card": c["id"] if c else None, "item": c})
                     if slots is None:
                         pieces = None
                 if not pieces:
                     c = card_at(mid, box) if box is not None else None
-                    slots = [{"seg": seg, "mid": mid, "box": box, "card": c["id"] if c else None}]
+                    slots = [{"seg": seg, "mid": mid, "box": box, "card": c["id"] if c else None, "item": c}]
             except Unmeasured:
                 continue
             out.append({"key": key, "seg": seg, "pieces": pieces, "slots": slots})
@@ -536,34 +540,62 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
         else:
             entries = classify(None)
     slots = [sl for e in entries for sl in e["slots"] if sl["card"]]
-    times = sorted({round(sl["mid"], 3) for sl in slots})
-    pngs, failed = {}, {}
-    if times and frames_fn is not None:
-        try:
-            pngs = {t: p for t, p in frames_fn(times).items() if p}
-        except Exception as e:  # noqa: BLE001 — a failed call leaves every caption that needed a frame
-            failed = {None: str(e)[:80]}
-    elif times:
-        pngs, failed = _pooled(render_fn, [(t, (t,)) for t in times], deadline)
-        pngs = {t: p for t, p in pngs.items() if p}
+    fps = int(round(lc._num((project.get("settings") or {}).get("fps"), 30))) or 30
+    # A JSX card (a matte, an opaque overlay) is read from its own render: where it covers the band (alpha >= 0.9, which
+    # is what makes it a card) the composite IS the overlay's pixels, so its mean over those pixels is the backdrop's,
+    # with no frame composited. An opaque one hides everything below, so its transparent pixels are black.
+    jsx = [sl for sl in slots if overlay_fn is not None and not str(sl["item"].get("src") or "").startswith("engine:")]
+    if jsx:
+        again = {}
+        for sl in jsx:
+            k = (sl["card"], _mid_frame(sl["item"], fps))
+            if k not in measured:
+                again[k] = sl["item"]
+        samples, bad = _pooled(overlay_fn, [(k, (it, k[1])) for k, it in again.items()], deadline)
+        measured.update(samples)
+        for k, why in bad.items():
+            warn(f"overlay {k[0]} at frame {k[1]} not rendered ({why or 'no image'}): its captions are unchanged")
     warnings += list(warns)
-    if None in failed:
-        warnings.append(f"frames at {', '.join(str(t) for t in times)}s not rendered ({failed[None] or 'no image'}): "
-                        "their captions are unchanged")
-    for t in times:
-        if t in failed:
-            warnings.append(f"frame at {t}s not rendered ({failed[t] or 'no image'}): its captions are unchanged")
-    for sl in slots:
-        png = pngs.get(round(sl["mid"], 3))
+    for sl in jsx:
+        png = measured.get((sl["card"], _mid_frame(sl["item"], fps)))
         if png is None:
             continue
         try:
-            lum = luminance(png, sl["box"], (width, height))
+            sl["lum"] = overlay_luminance(png, sl["box"], (width, height), sl["item"].get("opaque") is True)
         except Exception as e:  # noqa: BLE001
-            warnings.append(f"frame at {lc.r2(sl['mid'])}s unreadable ({str(e)[:60]})")
-            continue
-        ink = "dark" if lum >= LIGHT_L else "light"
-        sl["change"] = {"ink": ink, "inkAuto": {"card": sl["card"], "ink": ink, "backdrop": round(lum, 3)}}
+            warnings.append(f"overlay {sl['card']} unreadable ({str(e)[:60]})")
+    # Any other card (a 3D item) is read from one frame without the captions per ITEM, at the middle of the span of the
+    # captions over it, and each caption uses its own band of it. A camera move within one item is read once. Each
+    # frame gets its own worker: 3D frames are the heavy ones.
+    groups = {}
+    for sl in slots:
+        if sl not in jsx:
+            groups.setdefault(sl["card"], []).append(sl)
+    for g in groups.values():
+        item = g[0]["item"]
+        t = (min(lc._num(sl["seg"].get("start")) for sl in g) + max(lc._num(sl["seg"].get("end")) for sl in g)) / 2
+        t = min(max(t, lc._num(item.get("start"))), lc._num(item.get("end")) - 0.001)
+        for sl in g:
+            sl["at"] = round(t, 3)
+    times = sorted({sl["at"] for g in groups.values() for sl in g})
+    pngs, failed = _pooled(render_fn, [(t, (t,)) for t in times], deadline) if times else ({}, {})
+    pngs = {t: p for t, p in pngs.items() if p}
+    for t in times:
+        if t in failed:
+            warnings.append(f"frame at {t}s not rendered ({failed[t] or 'no image'}): its captions are unchanged")
+    for g in groups.values():
+        for sl in g:
+            png = pngs.get(sl["at"])
+            if png is None:
+                continue
+            try:
+                sl["lum"] = luminance(png, sl["box"], (width, height))
+            except Exception as e:  # noqa: BLE001
+                warnings.append(f"frame at {sl['at']}s unreadable ({str(e)[:60]})")
+    for sl in slots:
+        if "lum" in sl:
+            ink = "dark" if sl["lum"] >= LIGHT_L else "light"
+            sl["change"] = {"ink": ink, "inkAuto": {"card": sl["card"], "ink": ink, "backdrop": round(sl["lum"], 3)}}
     for e in entries:
         if e["pieces"] is None:
             sl = e["slots"][0]
@@ -674,16 +706,15 @@ def update(project_path, render_fn=None, timeout=LOCK_TIMEOUT, overlay_fn=None):
     read = {_key(s, i): copy.deepcopy(s) for i, s in enumerate(caps["segments"]) if isinstance(s, dict)}
     samples = None
     deadline = None
-    frames_fn = None
     if render_fn is None:
         deadline = time.monotonic() + DEADLINE_S
         base = os.path.join(project_dir, "render", "samples")
         os.makedirs(base, exist_ok=True)
         samples = tempfile.mkdtemp(prefix="caption-ink-", dir=base)   # this run's frames; another pass shares none
-        frames_fn = frames_renderer(project_path, samples, deadline)
+        render_fn = frame_renderer(project_path, samples, deadline)
         overlay_fn = overlay_renderer(project, project_dir, samples, deadline)
     try:
-        changes, counts, warnings = plan(project, render_fn, width, height, deadline, overlay_fn, project_dir, frames_fn)
+        changes, counts, warnings = plan(project, render_fn, width, height, deadline, overlay_fn, project_dir)
     finally:
         if samples:
             shutil.rmtree(samples, ignore_errors=True)

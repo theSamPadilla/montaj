@@ -179,16 +179,16 @@ def test_plan_renders_once_per_distinct_time(tmp_path):
 
 
 def test_a_failed_render_leaves_the_segment_and_warns_with_the_time(tmp_path):
-    p = _project([_card("c-light", 0, 4)], [_seg("a", 1, 2), _seg("b", 2, 4)])
-    changes, counts, warnings = _plan(p, tmp_path, fail_at=(1.5,))
+    p = _project([_card("c-light", 0, 2), _card("c-light2", 2, 4)], [_seg("a", 1, 2), _seg("b", 2, 4)])
+    changes, counts, warnings = _plan(p, tmp_path, light=("c-light", "c-light2"), fail_at=(1.5,))
     assert list(changes) == [("id", "b")]
     assert len(warnings) == 1 and "1.5" in warnings[0]
 
 
 def test_frames_not_started_by_the_deadline_count_as_failed(tmp_path):
     calls = []
-    p = _project([_card("c-light", 0, 4)], [_seg("a", 1, 2), _seg("b", 2, 4)])
-    changes, _, warnings = _plan(p, tmp_path, calls=calls, deadline=time.monotonic() - 1)
+    p = _project([_card("c-light", 0, 2), _card("c-light2", 2, 4)], [_seg("a", 1, 2), _seg("b", 2, 4)])
+    changes, _, warnings = _plan(p, tmp_path, light=("c-light", "c-light2"), calls=calls, deadline=time.monotonic() - 1)
     assert changes == {} and calls == [] and len(warnings) == 2 and "1.5" in warnings[0]
 
 
@@ -508,37 +508,67 @@ def test_card_under_reads_a_scene_from_the_project_dir(tmp_path):
     assert ci.card_under(p, 3) is None, "no folder, no scene file to read"
 
 
-# -- every backdrop frame in one call ------------------------------------------------------------------------------
+# -- where the backdrop is read from -------------------------------------------------------------------------------
 
-def _frames(tmp_path, calls, fail=None):
-    def frames(times):
-        calls.append(list(times))
-        if fail:
-            raise RuntimeError(fail)
-        return {t: _png(tmp_path, f"h{t}", (0xef, 0xec, 0xe4)) for t in times}
-    return frames
+def _lum(rgb):
+    p = _png(Path(__import__("tempfile").mkdtemp()), "ref", rgb)
+    return ci.luminance(p, (0, 0, W, H), (W, H))
 
 
-def test_all_the_backdrop_frames_are_asked_for_in_one_call(tmp_path):
-    p = _project([_card("c", 0, 8)], [_seg("a", 1, 2), _seg("b", 3, 4), _seg("c", 3, 4), _seg("d", 9, 10)])
+def _plan3(project, tmp_path, alpha, frames):
+    def frame(t):
+        frames.append(t)
+        return _png(tmp_path, f"k{t}", (20, 20, 20))   # dark: a read from this frame would say "light"
+
+    def overlay(item, n):
+        return alpha
+    return ci.plan(project, frame, W, H, overlay_fn=overlay, project_dir=str(tmp_path))
+
+
+def test_a_matte_card_is_read_from_its_own_pixels_and_renders_no_frame(tmp_path):
+    p = _project([_matte()], [_seg("a", 1, 2), _seg("b", 5, 6)])
+    frames = []
+    changes, counts, _ = _plan3(p, tmp_path, _alpha_png(tmp_path, "mm", window=(60, 300, 1020, 900)), frames)
+    assert frames == [] and counts["dark"] == 2
+    assert changes[("id", "a")]["inkAuto"]["backdrop"] == pytest.approx(_lum(PAPER[:3]), abs=0.002)
+
+
+def test_only_the_pixels_the_overlay_covers_count(tmp_path):
+    p = _project([_matte()], [_seg("a", 1, 2)])
+    _, y0, _, y1 = _band_y(p, p["captions"]["segments"][0])
+    img = Image.new("RGBA", (W // 2, H // 2), PAPER)
+    img.paste((255, 0, 0, 0), (0, y0 // 2, W // 20, y1 // 2))   # 10% of the band is transparent (red, alpha 0)
+    path = tmp_path / "part.png"
+    img.save(path)
+    changes, _, _ = _plan3(p, tmp_path, str(path), [])
+    assert changes[("id", "a")]["inkAuto"]["backdrop"] == pytest.approx(_lum(PAPER[:3]), abs=0.002)
+
+
+def test_an_opaque_jsx_card_is_its_pixels_over_black(tmp_path):
+    p = _project([_matte(opaque=True)], [_seg("a", 1, 2)])
+    _, y0, _, y1 = _band_y(p, p["captions"]["segments"][0])
+    img = Image.new("RGBA", (W // 2, H // 2), (0, 0, 0, 0))
+    img.paste(PAPER, (0, 0, W // 2, ((y0 + y1) // 2) // 2))   # paper over the top half of the band, nothing below
+    path = tmp_path / "half.png"
+    img.save(path)
+    frames = []
+    changes, counts, _ = _plan3(p, tmp_path, str(path), frames)
+    assert frames == []
+    assert changes[("id", "a")]["inkAuto"]["backdrop"] == pytest.approx(_lum(PAPER[:3]) / 2, abs=0.03)
+
+
+def test_a_3d_item_is_rendered_once_for_all_its_captions_at_the_middle_of_their_span(tmp_path):
     calls = []
-    changes, counts, warnings = ci.plan(p, None, W, H, frames_fn=_frames(tmp_path, calls))
-    assert calls == [[1.5, 3.5]], "once, sorted, each time once, none for the caption over footage"
-    assert set(changes) == {("id", "a"), ("id", "b"), ("id", "c")} and counts["dark"] == 3 and warnings == []
+    p = _project([_card("s1", 0, 4), _card("s2", 4, 10)], [_seg("a", 1, 2), _seg("b", 2, 3), _seg("c", 5, 6), _seg("d", 7, 9)])
+    changes, counts, _ = _plan(p, tmp_path, calls=calls)
+    assert sorted(calls) == [2.0, 7.0], "s1: 1..3, s2: 5..9; one frame each"
+    assert counts["dark"] + counts["light"] == 4 and len(changes) == 4
 
 
-def test_a_failed_frames_call_leaves_every_caption_that_needed_one_with_one_warning(tmp_path):
-    p = _project([_card("c", 0, 8)], [_seg("a", 1, 2), _seg("b", 3, 4)])
-    calls = []
-    changes, counts, warnings = ci.plan(p, None, W, H, frames_fn=_frames(tmp_path, calls, fail="out of time"))
-    assert changes == {} and len(calls) == 1 and counts["dark"] == 0
-    assert len(warnings) == 1 and "unchanged" in warnings[0] and "out of time" in warnings[0]
-
-
-def test_a_failed_frames_call_still_clears_ink_that_needs_no_frame(tmp_path):
-    p = _project([], [_seg("a", 1, 2, ink="dark", inkAuto=_auto("gone", "dark")), _seg("b", 3, 4)])
-    changes, counts, _ = ci.plan(p, None, W, H, frames_fn=_frames(tmp_path, [], fail="x"))
-    assert changes == {("id", "a"): None} and counts["cleared"] == 1
+def test_a_failed_3d_frame_leaves_every_caption_over_that_item(tmp_path):
+    p = _project([_card("s1", 0, 4), _card("s2", 4, 10)], [_seg("a", 1, 2), _seg("b", 2, 3), _seg("c", 5, 6)])
+    changes, _, warnings = _plan(p, tmp_path, fail_at=(2.0,))
+    assert list(changes) == [("id", "c")] and len(warnings) == 1 and "2.0" in warnings[0]
 
 
 # -- a caption that straddles a card's edge is split --------------------------------------------------------------
