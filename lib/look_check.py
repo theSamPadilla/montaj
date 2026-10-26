@@ -268,22 +268,26 @@ def data_issues(project, project_dir):
     return out
 
 
-def caption_ink_issues(project):
+def caption_ink_issues(project, project_dir=None):
     """[{t, id, text}] for captions whose ink (lib/caption_ink.py) is out of date: over a card the step has not
-    measured, or set for a card that is gone. Only ink the step wrote (inkAuto naming the same ink) is judged; a
-    person's ink is never flagged."""
+    measured, or set for a card that is no longer on screen. Only ink the step wrote (inkAuto naming the same ink) is
+    judged; a person's ink is never flagged. No render here: a card is found by the project data (an opaque overlay, a
+    3D scene with a backdrop, read from `project_dir`), so a card that only measuring can find (a paper matte round a
+    window) is not flagged before the step has run."""
     from lib import caption_ink
     out = []
+    width, height = design_size(project)
     for seg in caption_segments(project):
         ours = caption_ink.ours(seg)
         if not caption_ink.inkable(project, seg) or (not ours and (seg.get("ink") or "inkAuto" in seg)):
             continue
         mid = (_num(seg.get("start")) + _num(seg.get("end"))) / 2
-        card = caption_ink.card_under(project, mid)
+        box = caption_ink.band(project, seg, width, height)
+        card = caption_ink.card_under(project, mid, box, project_dir) if box else None
         if card is not None and (not ours or seg["inkAuto"].get("card") != card["id"]):
             out.append({"t": r2(mid), "id": "captions",
                         "text": f"caption over {card['id']} has not had its ink checked: run caption_ink"})
-        elif card is None and ours:
+        elif card is None and ours and seg["inkAuto"].get("card") not in caption_ink.on_screen(project, mid):
             out.append({"t": r2(mid), "id": "captions",
                         "text": f"caption ink was set for {seg['inkAuto'].get('card')}, now over footage: run caption_ink"})
     return out
