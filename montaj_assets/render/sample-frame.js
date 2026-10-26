@@ -190,6 +190,9 @@ const SAMPLE_CACHE_VERSION = 19
 
 // PL89: the most overlay pages a sampling session keeps open (createSampleSession).
 export const SESSION_MAX_PAGES = 4
+// PL89: the longest one frame of a session may take before it is sampled alone instead (sampleInSessions). A 3D frame
+// over overlays takes about 8 s; a capture that never returns otherwise waits out the 300 s protocolTimeout.
+export const SESSION_FRAME_TIMEOUT_MS = 60_000
 
 // ---------------------------------------------------------------------------
 // Input manifests
@@ -431,25 +434,10 @@ if (isMain) {
         const dir = resolve(framesDirArg)
         mkdirSync(dir, { recursive: true })
         const outPaths = atArgs.map((_, k) => join(dir, `f_${String(k).padStart(4, '0')}.png`))
-        const session = createSampleSession()
-        try {
-          if (sceneArg !== null) {
-            const got = await sampleScenes({ projectJson: resolve(projectArg), scene: sceneArg, times: atArgs, outPaths, sdrCurve: sdrCurveArg, session })
-            return { pngPath: got.map((r) => r.pngPath).join('\n') }
-          }
-          const paths = []
-          for (let k = 0; k < atArgs.length; k++) {
-            try {
-              paths.push((await sampleAt(atArgs[k], outPaths[k], session)).pngPath)
-            } catch (err) {
-              err.message = `at ${atArgs[k]}s: ${err.message}`
-              throw err
-            }
-          }
-          return { pngPath: paths.join('\n') }
-        } finally {
-          await session.close()
-        }
+        const got = sceneArg !== null
+          ? await sampleScenes({ projectJson: resolve(projectArg), scene: sceneArg, times: atArgs, outPaths, sdrCurve: sdrCurveArg })
+          : await sampleInSessions({ count: atArgs.length, label: (k) => atArgs[k], sampleWith: (k, session) => sampleAt(atArgs[k], outPaths[k], session) })
+        return { pngPath: got.map((r) => r.pngPath).join('\n') }
       })()
       : sampleAt(atArg, resolve(outArg))
     sampled.then(result => {
@@ -472,7 +460,8 @@ if (isMain) {
 /**
  * PL89: one sampling session for several frames in one call (--frames-dir). One browser per kind of launch, and
  * each overlay page (one component with one set of props) bundled and loaded once, kept open, then only set to each
- * frame and captured. Uses of one page run one at a time. A page that fails is closed and the next use opens a new one.
+ * frame and captured. Pages open at once, but captures run one at a time, each with its page brought to the front
+ * first (a page behind another tab gets no animation frames). A page that fails is closed and the next use opens a new one.
  * At most `maxPages` stay open (each 3D page holds a WebGL context, and Chromium drops the oldest past about 16, which
  * blanks later frames): opening one more closes the least recently used once its uses finish.
  * close() closes every page and browser and removes the bundles.
@@ -482,6 +471,8 @@ export function createSampleSession({ maxPages = SESSION_MAX_PAGES } = {}) {
   // In use order, least recently used first.
   const pages = new Map()
   const evicting = []
+  // The captures in flight, one at a time (sample).
+  let captures = Promise.resolve()
   // Closing never throws: it runs on a failure, whose own error is the one to report.
   const drop = (held) => held.ready.then(async (ctx) => {
     await ctx.page.close().catch(() => {})
@@ -510,8 +501,15 @@ export function createSampleSession({ maxPages = SESSION_MAX_PAGES } = {}) {
       pages.set(key, held)
       const run = held.tail.then(async () => {
         const ctx = await held.ready
-        ctx.pageErrors.length = 0
-        return { ctx, shot: await capture(ctx) }
+        // A page behind another tab gets no animation frames, so its capture never returns. One frame's overlays are
+        // sampled several at once, and only one page of a browser is in front: captures take turns, each in front.
+        const turn = captures.then(async () => {
+          await ctx.page.bringToFront()
+          ctx.pageErrors.length = 0
+          return { ctx, shot: await capture(ctx) }
+        })
+        captures = turn.catch(() => {})
+        return turn
       })
       held.tail = run.catch(() => {})
       try {
@@ -532,7 +530,61 @@ export function createSampleSession({ maxPages = SESSION_MAX_PAGES } = {}) {
       for (const b of browsers.values()) await b.then((x) => x.close()).catch(() => {})
       browsers.clear()
     },
+    /** For a session with a capture stuck in it: the browsers go first, which fails what is stuck; then the bundles. */
+    async abort() {
+      const open = [...pages.values()]
+      pages.clear()
+      evicting.length = 0
+      for (const b of browsers.values()) {
+        await b.then(async (x) => {
+          let timer
+          await Promise.race([x.close(), new Promise((r) => { timer = setTimeout(r, 10_000) })]).catch(() => {})
+          clearTimeout(timer)
+          x.process?.()?.kill('SIGKILL')
+        }).catch(() => {})
+      }
+      browsers.clear()
+      for (const held of open) held.ready.then((ctx) => { try { cleanupBundle(ctx.workDir) } catch { /* already gone */ } }, () => {})
+    },
   }
+}
+
+/**
+ * PL89: frames `order` (indices, default 0..count-1) through sampling sessions, so a sheet always comes back: in the
+ * order given, a session shared until a frame fails or takes over `frameTimeoutMs`. That frame's session is aborted (a
+ * stuck page goes with its browser), the frame is sampled alone (`sampleWith(k, null)`), and the frames after it get a
+ * new session. Only a frame that fails alone too fails the call, named by `label(k)` seconds. Results by index.
+ */
+export async function sampleInSessions({ count, sampleWith, order = [...Array(count).keys()], label = (k) => k, newSession = () => createSampleSession(), frameTimeoutMs = SESSION_FRAME_TIMEOUT_MS }) {
+  const out = new Array(count)
+  let session = newSession()
+  try {
+    for (const k of order) {
+      let timer
+      const inSession = Promise.resolve().then(() => sampleWith(k, session))
+      inSession.catch(() => {}) // past the timeout its failure is no one's
+      const slow = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`slower than ${frameTimeoutMs / 1000} s`)), frameTimeoutMs) })
+      try {
+        out[k] = await Promise.race([inSession, slow])
+        continue
+      } catch (err) {
+        log(`frame at ${label(k)}s in the shared session: ${err.message}; sampling it alone`)
+        await session.abort()
+        session = newSession()
+      } finally {
+        clearTimeout(timer)
+      }
+      try {
+        out[k] = await sampleWith(k, null)
+      } catch (err) {
+        err.message = `at ${label(k)}s: ${err.message}`
+        throw err
+      }
+    }
+  } finally {
+    await session.close()
+  }
+  return out
 }
 
 /**
@@ -1679,7 +1731,7 @@ export function scenesAlone({ settings = {}, scene, times }) {
  * at 0 and runs to the last time, so every time shares one page and is a frame of it: a time lands on the project's
  * frame grid (within half a frame), as an export shows it. One time is sampleScene's, exact.
  */
-export async function sampleScenes({ projectJson, scene, times, outPaths, sdrCurve = null, session }) {
+export async function sampleScenes({ projectJson, scene, times, outPaths, sdrCurve = null, newSession, frameTimeoutMs }) {
   if (typeof projectJson !== 'string') throw new Error('a 3D is sampled from its project.json path')
   if (typeof scene !== 'string') throw new Error('scene must be a 3D id, or an empty string for the project\'s own')
   for (const t of times) {
@@ -1689,16 +1741,14 @@ export async function sampleScenes({ projectJson, scene, times, outPaths, sdrCur
   if (!existsSync(projectPath)) throw new Error(`project.json not found: ${projectPath}`)
   const { settings = {} } = JSON.parse(readFileSync(projectPath, 'utf8'))
   const { alone, frames, fps, order } = scenesAlone({ settings, scene, times })
-  const out = new Array(times.length)
-  for (const k of order) {
-    try {
-      out[k] = await sampleFrame({ projectJson: alone, projectDir: dirname(projectPath), atSeconds: frames[k] / fps, outPath: outPaths[k], sdrCurve, session })
-    } catch (err) {
-      err.message = `at ${times[k]}s: ${err.message}`
-      throw err
-    }
-  }
-  return out
+  return sampleInSessions({
+    count: times.length,
+    order,
+    label: (k) => times[k],
+    sampleWith: (k, session) => sampleFrame({ projectJson: alone, projectDir: dirname(projectPath), atSeconds: frames[k] / fps, outPath: outPaths[k], sdrCurve, session }),
+    ...(newSession ? { newSession } : {}),
+    ...(frameTimeoutMs ? { frameTimeoutMs } : {}),
+  })
 }
 
 // ---------------------------------------------------------------------------

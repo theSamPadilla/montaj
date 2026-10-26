@@ -248,7 +248,8 @@ def data_issues(project, project_dir):
                 out.append({"t": r2(s), "id": lab, "text": "starts before 0"})
             if ti > 0 and footage > 0 and e > footage + 0.05:
                 out.append({"t": r2(e), "id": lab, "text": f"runs past the footage ({r2(footage)}s)"})
-            if it.get("type") == "overlay":
+            # An engine-drawn item (a 3D scene, src "engine:scene3d") has no file of its own.
+            if it.get("type") == "overlay" and not str(it.get("src") or "").startswith("engine:"):
                 p = overlay_path(it, project_dir)
                 if not p or not os.path.isfile(p):
                     out.append({"t": r2(s), "id": lab, "text": "overlay file missing"})
