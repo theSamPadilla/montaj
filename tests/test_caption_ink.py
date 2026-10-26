@@ -402,11 +402,12 @@ def test_footage_below_the_matte_does_not_hide_it(tmp_path):
     assert ("id", "a") in changes
 
 
-def test_an_overlay_is_rendered_once_per_item_and_frame(tmp_path):
+def test_an_overlay_is_rendered_once_at_the_middle_of_its_own_span(tmp_path):
     calls = []
-    p = _project([_matte()], [_seg("a", 1, 2), _seg("b", 1, 2)])
-    _plan2(p, tmp_path, _alpha_png(tmp_path, "m7", window=(60, 300, 1020, 900)), calls=calls)
-    assert calls == [("matte", 45)], "frame = round((t - start) * fps)"
+    p = _project([_matte()], [_seg("a", 1, 2), _seg("b", 5, 6), _seg("c", 8, 9)])
+    changes, _, _ = _plan2(p, tmp_path, _alpha_png(tmp_path, "m7", window=(60, 300, 1020, 900)), calls=calls)
+    assert calls == [("matte", 150)], "frame = round((middle of the span - start) * fps), one render for every caption"
+    assert set(changes) == {("id", "a"), ("id", "b"), ("id", "c")}
 
 
 def test_a_scaled_or_moved_overlay_is_not_a_candidate_and_is_not_rendered(tmp_path):
@@ -505,3 +506,220 @@ def test_card_under_reads_a_scene_from_the_project_dir(tmp_path):
     p = _project([_scene3d()])
     assert ci.card_under(p, 3, project_dir=str(tmp_path))["id"] == "scene-a"
     assert ci.card_under(p, 3) is None, "no folder, no scene file to read"
+
+
+# -- every backdrop frame in one call ------------------------------------------------------------------------------
+
+def _frames(tmp_path, calls, fail=None):
+    def frames(times):
+        calls.append(list(times))
+        if fail:
+            raise RuntimeError(fail)
+        return {t: _png(tmp_path, f"h{t}", (0xef, 0xec, 0xe4)) for t in times}
+    return frames
+
+
+def test_all_the_backdrop_frames_are_asked_for_in_one_call(tmp_path):
+    p = _project([_card("c", 0, 8)], [_seg("a", 1, 2), _seg("b", 3, 4), _seg("c", 3, 4), _seg("d", 9, 10)])
+    calls = []
+    changes, counts, warnings = ci.plan(p, None, W, H, frames_fn=_frames(tmp_path, calls))
+    assert calls == [[1.5, 3.5]], "once, sorted, each time once, none for the caption over footage"
+    assert set(changes) == {("id", "a"), ("id", "b"), ("id", "c")} and counts["dark"] == 3 and warnings == []
+
+
+def test_a_failed_frames_call_leaves_every_caption_that_needed_one_with_one_warning(tmp_path):
+    p = _project([_card("c", 0, 8)], [_seg("a", 1, 2), _seg("b", 3, 4)])
+    calls = []
+    changes, counts, warnings = ci.plan(p, None, W, H, frames_fn=_frames(tmp_path, calls, fail="out of time"))
+    assert changes == {} and len(calls) == 1 and counts["dark"] == 0
+    assert len(warnings) == 1 and "unchanged" in warnings[0] and "out of time" in warnings[0]
+
+
+def test_a_failed_frames_call_still_clears_ink_that_needs_no_frame(tmp_path):
+    p = _project([], [_seg("a", 1, 2, ink="dark", inkAuto=_auto("gone", "dark")), _seg("b", 3, 4)])
+    changes, counts, _ = ci.plan(p, None, W, H, frames_fn=_frames(tmp_path, [], fail="x"))
+    assert changes == {("id", "a"): None} and counts["cleared"] == 1
+
+
+# -- a caption that straddles a card's edge is split --------------------------------------------------------------
+
+def _words(*spec):
+    """[(text, start, end)] as caption words."""
+    return [{"word": w, "start": s, "end": e} for w, s, e in spec]
+
+
+def _run(first, texts, step=0.5):
+    out, t = [], first
+    for w in texts:
+        out.append((w, round(t, 3), round(t + step, 3)))
+        t += step
+    return out
+
+
+def _straddler(i="a", spec=None, **kw):
+    spec = spec or _run(1.0, ["one", "two", "three", "four", "five", "six"])
+    return {"id": i, "text": " ".join(w for w, _, _ in spec), "start": spec[0][1], "end": spec[-1][2],
+            "words": _words(*spec), **kw}
+
+
+def _split_plan(project, tmp_path):
+    changes, counts, warnings = _plan(project, tmp_path, light=("card",), dark=())
+    return changes, counts, warnings
+
+
+def test_a_caption_over_footage_then_a_card_splits_at_the_word_nearest_the_edge(tmp_path):
+    seg = _straddler(lineHint="kept", style="pop", offsetY=-3, scale=1.1)
+    p = _project([_card("card", 2.6, 10)], [seg])
+    changes, counts, warnings = _split_plan(p, tmp_path)
+    pieces = changes[("id", "a")]["split"]
+    assert [x["id"] for x in pieces] == ["a", "cap-0"]
+    assert [x["text"] for x in pieces] == ["one two three", "four five six"]
+    assert [(x["start"], x["end"]) for x in pieces] == [(1.0, 2.5), (2.5, 4.0)]
+    assert [w["word"] for w in pieces[1]["words"]] == ["four", "five", "six"]
+    assert "ink" not in pieces[0] and "inkAuto" not in pieces[0]
+    assert pieces[1]["ink"] == "dark" and pieces[1]["inkAuto"]["card"] == "card"
+    for x in pieces:
+        assert (x["lineHint"], x["style"], x["offsetY"], x["scale"]) == ("kept", "pop", -3, 1.1)
+    assert (counts["split"], counts["dark"], counts["light"]) == (1, 1, 0) and warnings == []
+
+
+def test_a_caption_over_a_card_then_footage_splits_at_the_cards_end(tmp_path):
+    p = _project([_card("card", 0, 2.6)], [_straddler()])
+    pieces = _split_plan(p, tmp_path)[0][("id", "a")]["split"]
+    assert [x["text"] for x in pieces] == ["one two three", "four five six"]
+    assert pieces[0]["ink"] == "dark" and "ink" not in pieces[1]
+
+
+def test_footage_card_footage_is_three_pieces_with_fresh_ids(tmp_path):
+    p = _project([_card("card", 2.0, 3.0)], [_straddler(), _seg("cap-0", 20, 21)])
+    pieces = _split_plan(p, tmp_path)[0][("id", "a")]["split"]
+    assert [x["text"] for x in pieces] == ["one two", "three four", "five six"]
+    assert [x["id"] for x in pieces] == ["a", "cap-1", "cap-2"], "minted against every id in the captions"
+    assert [(x["start"], x["end"]) for x in pieces] == [(1.0, 2.0), (2.0, 3.0), (3.0, 4.0)]
+    assert ["ink" in x for x in pieces] == [False, True, False]
+
+
+def test_a_caption_wholly_over_one_card_or_over_footage_is_not_split(tmp_path):
+    for items in ([_card("card", 0, 10)], []):
+        changes, counts, _ = _split_plan(_project(items, [_straddler()]), tmp_path)
+        assert counts["split"] == 0 and all("split" not in (c or {}) for c in changes.values())
+
+
+def test_two_different_cards_split_too(tmp_path):
+    p = _project([_card("one", 0, 2.6), _card("two", 2.6, 10)], [_straddler()])
+    changes, _, _ = _plan(p, tmp_path, light=("one",), dark=("two",))
+    pieces = changes[("id", "a")]["split"]
+    assert [(x["inkAuto"]["card"], x["ink"]) for x in pieces] == [("one", "dark"), ("two", "light")]
+
+
+@pytest.mark.parametrize("seg", [
+    {"ink": "light"},                                   # a person's ink
+    {"ink": "dark", "inkAuto": _auto("card", "light")},  # a person changed what the step wrote
+    {"inkAuto": _auto("card", "dark")},                  # a person removed it
+])
+def test_a_persons_caption_is_never_split(tmp_path, seg):
+    p = _project([_card("card", 2.6, 10)], [_straddler(**seg)])
+    changes, counts, _ = _split_plan(p, tmp_path)
+    assert changes == {} and counts["split"] == 0 and counts["kept"] == 1
+
+
+def test_a_translation_and_a_caption_with_one_are_never_split(tmp_path):
+    src = _straddler()
+    tr = _straddler("t", lang="es", translationOf=["a"])
+    p = _project([_card("card", 2.0, 10)], [src, tr])   # the middle, 2.5 s, is over the card
+    changes, counts, _ = _split_plan(p, tmp_path)
+    assert counts["split"] == 0 and list(changes) == [("id", "a")] and "split" not in changes[("id", "a")]
+
+
+def test_one_word_and_no_word_times_are_not_split(tmp_path):
+    one = _straddler(spec=[("solo", 2.0, 4.0)])
+    untimed = {"id": "u", "text": "no times here", "start": 1.0, "end": 4.0,
+               "words": [{"word": "no"}, {"word": "times"}, {"word": "here"}]}
+    nowords = _seg("n", 1.0, 4.0)
+    p = _project([_card("card", 2.6, 10)], [one, untimed, nowords])
+    changes, counts, _ = _split_plan(p, tmp_path)
+    assert counts["split"] == 0 and all("split" not in (c or {}) for c in changes.values())
+
+
+def test_a_piece_shorter_than_a_quarter_second_keeps_the_ink_of_the_whole_captions_middle(tmp_path):
+    short = _straddler("s", _run(1.0, ["a", "b", "c", "d", "e"]) + [("f", 3.5, 3.6)])
+    p = _project([_card("card", 3.52, 10)], [short])
+    changes, counts, _ = _split_plan(p, tmp_path)   # the middle, 2.3 s, is over footage
+    assert changes == {} and counts["split"] == 0
+
+
+def test_a_caption_with_no_id_is_not_split(tmp_path):
+    seg = _straddler()
+    del seg["id"]
+    changes, counts, _ = _split_plan(_project([_card("card", 2.6, 10)], [seg]), tmp_path)
+    assert counts["split"] == 0 and all("split" not in (c or {}) for c in changes.values())
+
+
+def test_a_failed_backdrop_frame_leaves_a_split_caption_whole(tmp_path):
+    p = _project([_card("card", 2.6, 10)], [_straddler()])
+    changes, counts, warnings = _plan(p, tmp_path, light=("card",), fail_at=(3.25,))
+    assert changes == {} and counts["split"] == 0 and len(warnings) == 1 and "3.25" in warnings[0]
+
+
+def _read_of(project):
+    return {ci._key(s, i): dict(s) for i, s in enumerate(project["captions"]["segments"]) if isinstance(s, dict)}
+
+
+def _split_change(tmp_path, project=None):
+    p = project or _project([_card("card", 2.6, 10)], [_straddler(), _seg("z", 20, 21)])
+    changes, _, _ = _split_plan(p, tmp_path)
+    return p, changes
+
+
+def test_apply_replaces_the_caption_with_its_pieces_in_place(tmp_path):
+    p, changes = _split_change(tmp_path)
+    read = _read_of(p)
+    fresh = json_copy(p)
+    assert ci.apply_changes(fresh, changes, read) is True
+    segs = fresh["captions"]["segments"]
+    assert [s["id"] for s in segs] == ["a", "cap-0", "z"]
+    assert "ink" not in segs[0] and segs[1]["ink"] == "dark"
+
+
+def json_copy(p):
+    import json
+    return json.loads(json.dumps(p))
+
+
+@pytest.mark.parametrize("edit", [{"text": "edited"}, {"start": 1.1}, {"style": "clean"}, {"ink": "light"}])
+def test_a_split_refuses_when_the_whole_segment_differs_from_what_was_read(tmp_path, edit):
+    p, changes = _split_change(tmp_path)
+    read = _read_of(p)
+    fresh = json_copy(p)
+    fresh["captions"]["segments"][0].update(edit)
+    with pytest.raises(ci.InkProjectChanged):
+        ci.apply_changes(fresh, changes, read)
+    assert [s["id"] for s in fresh["captions"]["segments"]] == ["a", "z"]
+
+
+def test_a_split_refuses_when_a_minted_id_is_taken_now(tmp_path):
+    p, changes = _split_change(tmp_path)
+    read = _read_of(p)
+    fresh = json_copy(p)
+    fresh["captions"]["segments"].append(_seg("cap-0", 30, 31))
+    with pytest.raises(ci.InkProjectChanged):
+        ci.apply_changes(fresh, changes, read)
+    assert len(fresh["captions"]["segments"]) == 3
+
+
+def test_a_split_refuses_when_the_card_under_a_piece_is_gone(tmp_path):
+    p, changes = _split_change(tmp_path)
+    read = _read_of(p)
+    fresh = json_copy(p)
+    fresh["tracks"][1]["items"] = []
+    with pytest.raises(ci.InkProjectChanged):
+        ci.apply_changes(fresh, changes, read)
+
+
+def test_splitting_is_idempotent(tmp_path):
+    p, changes = _split_change(tmp_path)
+    fresh = json_copy(p)
+    ci.apply_changes(fresh, changes, _read_of(p))
+    again, counts, warnings = _split_plan(fresh, tmp_path)
+    assert counts["split"] == 0 and warnings == []
+    assert ci.apply_changes(json_copy(fresh), again, _read_of(fresh)) is False

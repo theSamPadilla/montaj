@@ -46,7 +46,7 @@ def _read(p):
 def test_the_step_writes_ink_on_the_captions_over_the_card_and_nothing_else(tmp_path):
     p = _project(tmp_path)
     out = step.run(str(p), render_fn=_light(tmp_path))
-    assert out == {"dark": 1, "light": 0, "cleared": 0, "kept": 0, "changed": True}
+    assert out == {"dark": 1, "light": 0, "cleared": 0, "kept": 0, "split": 0, "changed": True}
     doc = _read(p)
     segs = doc["captions"]["segments"]
     assert segs[0]["ink"] == "dark" and segs[0]["inkAuto"]["card"] == "card" and segs[0]["inkAuto"]["ink"] == "dark"
@@ -82,14 +82,14 @@ def test_a_caption_edited_meanwhile_refuses_and_writes_nothing(tmp_path):
 def test_nothing_to_do_writes_nothing(tmp_path):
     for p in (_project(tmp_path, with_card=False), ):
         before = p.read_text()
-        assert step.run(str(p), render_fn=_light(tmp_path)) == {"dark": 0, "light": 0, "cleared": 0, "kept": 0, "changed": False}
+        assert step.run(str(p), render_fn=_light(tmp_path)) == {"dark": 0, "light": 0, "cleared": 0, "kept": 0, "split": 0, "changed": False}
         assert p.read_text() == before
     q = tmp_path / "q"
     q.mkdir()
     doc = {"id": "p", "settings": {}, "tracks": [{"id": "m", "items": []}]}
     (q / "project.json").write_text(json.dumps(doc))
     before = (q / "project.json").read_text()
-    assert step.run(str(q / "project.json"), render_fn=_light(tmp_path)) == {"dark": 0, "light": 0, "cleared": 0, "kept": 0, "changed": False}
+    assert step.run(str(q / "project.json"), render_fn=_light(tmp_path)) == {"dark": 0, "light": 0, "cleared": 0, "kept": 0, "split": 0, "changed": False}
     assert (q / "project.json").read_text() == before
 
 
@@ -209,9 +209,24 @@ def test_each_run_renders_into_its_own_folder_and_removes_it(tmp_path, monkeypat
     def fake_renderer(project_path, out_dir, deadline=None):
         dirs.append(out_dir)
         assert Path(out_dir).parent == p.parent / "render" / "samples"
-        return _light(tmp_path)
-    monkeypatch.setattr(ci, "frame_renderer", fake_renderer)
+        return lambda times: {t: _light(tmp_path)(t) for t in times}
+    monkeypatch.setattr(ci, "frames_renderer", fake_renderer)
     step.run(str(p))
     step.run(str(p))
     assert len(dirs) == 2 and dirs[0] != dirs[1] and not any(Path(d).exists() for d in dirs)
     assert (p.parent / "render" / "samples").is_dir()
+
+
+def test_the_step_splits_a_caption_over_a_cards_edge_once(tmp_path):
+    words = [{"word": w, "start": 1.0 + i * 0.5, "end": 1.5 + i * 0.5} for i, w in enumerate("one two three four five six".split())]
+    p = _project(tmp_path, segs=[{"id": "cap-1", "text": "one two three four five six", "start": 1.0, "end": 4.0,
+                                  "words": words}])
+    doc = _read(p)
+    doc["tracks"][1]["items"][0].update(start=2.6, end=8)
+    p.write_text(json.dumps(doc))
+    out = step.run(str(p), render_fn=_light(tmp_path))
+    assert out["split"] == 1 and out["dark"] == 1 and out["changed"] is True
+    segs = _segs(_read(p))
+    assert [s["id"] for s in segs] == ["cap-1", "cap-0"] and "ink" not in segs[0] and segs[1]["ink"] == "dark"
+    again = step.run(str(p), render_fn=_light(tmp_path))
+    assert again["split"] == 0 and again["changed"] is False and len(_segs(_read(p))) == 2

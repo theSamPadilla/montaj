@@ -551,7 +551,8 @@ def _run_step_with_ink(tmp_path, monkeypatch, capsys, with_card, renderer):
         if "transcribe.py" in " ".join(cmd):
             (proj_dir / "_caption_words.json").write_text("{}")
     monkeypatch.setattr(mod, "run", fake_run)
-    monkeypatch.setattr(mod.caption_ink, "frame_renderer", lambda project_path, out_dir, deadline=None: renderer)
+    monkeypatch.setattr(mod.caption_ink, "frames_renderer",
+                        lambda project_path, out_dir, deadline=None: lambda times: {t: renderer(t) for t in times})
     monkeypatch.setattr(_sys, "argv", ["generate_captions.py", "--project-id", "p1"])
     mod.main()
     return json.loads(path.read_text()), json.loads(capsys.readouterr().out.strip().splitlines()[-1])
