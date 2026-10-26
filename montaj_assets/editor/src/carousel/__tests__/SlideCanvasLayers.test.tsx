@@ -135,6 +135,30 @@ describe('SlideCanvas: Cmd-press reaches a lower layer (§586 M1)', () => {
     expect(fns.onSelect.mock.calls.map((c) => c[0])).toEqual(['el-3'])
   })
 
+  it('a Cmd-press on the picture being cropped reaches the layer under it, and applies the crop', async () => {
+    mac(true)
+    const fns = mount(['el-1'], stack(), { cropElementId: 'el-1' })
+    const root = document.querySelector('[data-testid="crop-image-area"]')!.parentElement as HTMLElement
+    await act(async () => {
+      pointer(root, 'pointerdown', { ...ALL, metaKey: true })
+      pointer(window, 'pointerup', ALL)
+    })
+    expect(fns.onExitCrop).toHaveBeenCalledTimes(1)
+    expect(fns.onSelect.mock.calls.map((c) => c[0])).toEqual(['el-3'])
+  })
+
+  it('a plain press on the picture being cropped does neither', async () => {
+    mac(true)
+    const fns = mount(['el-1'], stack(), { cropElementId: 'el-1' })
+    const root = document.querySelector('[data-testid="crop-image-area"]')!.parentElement as HTMLElement
+    await act(async () => {
+      pointer(root, 'pointerdown', ALL)
+      pointer(window, 'pointerup', ALL)
+    })
+    expect(fns.onExitCrop).not.toHaveBeenCalled()
+    expect(fns.onSelect).not.toHaveBeenCalled()
+  })
+
   it('on a Mac, Ctrl-click (a right-click) does not cycle', async () => {
     mac(true)
     const fns = mount(['el-1'])
@@ -169,6 +193,27 @@ describe('SlideCanvas: a press inside the selected box drags the selected (§586
     expect(fns.moveElement).not.toHaveBeenCalled()
     expect(fns.commit).not.toHaveBeenCalled()
     expect(fns.onSelect.mock.calls.map((c) => c[0])).toEqual(['el-3'])
+  })
+
+  it('a press that only jitters (under 3 px) is a click: nothing moves, the top is selected', async () => {
+    const fns = mount(['el-1'])
+    await act(async () => {
+      pointer(wrapperOf('el-3'), 'pointerdown', ALL)
+      pointer(window, 'pointermove', { clientX: ALL.clientX + 0.5, clientY: ALL.clientY })
+      pointer(window, 'pointermove', { clientX: ALL.clientX + 2, clientY: ALL.clientY })
+      pointer(window, 'pointerup', ALL)
+      fireEvent.click(wrapperOf('el-3'), ALL)
+    })
+    expect(fns.moveElement).not.toHaveBeenCalled()
+    expect(fns.commit).not.toHaveBeenCalled()
+    expect(fns.onSelect.mock.calls.map((c) => c[0])).toEqual(['el-3'])
+  })
+
+  it('a 10 px move still drags the selected lower element', async () => {
+    const fns = mount(['el-1'])
+    await dragOn('el-3', ALL, 10, 0)
+    expect(fns.moveElement).toHaveBeenCalled()
+    expect(fns.commit).toHaveBeenCalledTimes(1)
   })
 
   it('a double-click on the overlap crops the selected lower image', async () => {

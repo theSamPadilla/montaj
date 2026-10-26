@@ -1,5 +1,6 @@
 import * as React from 'react'
 import type { ImageElement } from '../types'
+import { isLayerPress } from '../carousel/hitTest'
 import {
   renderedSourceRect,
   drawnSourceRect,
@@ -64,6 +65,12 @@ export type CanvasCropOverlayProps = {
    * room.
    */
   fit?: 'contain' | 'current'
+  /**
+   * Called with a layer-reaching press (Cmd on a Mac, Ctrl elsewhere) on the
+   * picture outside the window and handles, so the host can reach the layer
+   * under it. Absent: such a press is swallowed like any other.
+   */
+  onLayerPress?: (e: React.PointerEvent<HTMLDivElement>) => void
 }
 
 /** What the window's border and handles need: the overlay's props bar the image's. */
@@ -208,6 +215,7 @@ export function CanvasCropOverlay({
   onDragEnd,
   handles = true,
   fit = 'contain',
+  onLayerPress,
 }: CanvasCropOverlayProps) {
   const srcUrl = resolveImageSrc(element)
   const windowProps = { element, scale, localCrop, onLocalCropChange, srcDims, onDragEnd, fit }
@@ -227,6 +235,10 @@ export function CanvasCropOverlay({
       style={{ position: 'absolute', inset: 0, pointerEvents: 'auto' }}
       onPointerDown={(e) => {
         e.stopPropagation()
+        if (onLayerPress && e.target === e.currentTarget && isLayerPress(e)) {
+          e.preventDefault()
+          onLayerPress(e)
+        }
       }}
     >
       <div data-testid="crop-image-area" style={{ position: 'absolute', ...areaStyle, overflow: 'hidden', pointerEvents: 'none' }}>

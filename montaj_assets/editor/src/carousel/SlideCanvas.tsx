@@ -612,6 +612,16 @@ export default function SlideCanvas({
     return { x: ((e.clientX - rect.left) * zoom) / scale, y: ((e.clientY - rect.top) * zoom) / scale }
   }
 
+  // Cmd-press (Ctrl off a Mac): the next element down under the pointer is
+  // selected and nothing starts; a crop in progress is applied. Its click,
+  // which would select the top one, changes nothing.
+  const startLayerPress = (e: { clientX: number; clientY: number }) => {
+    swallowClickRef.current = true
+    const next = nextLayerDown(elementsAt(slidePoint(e), slide.elements, hiddenSet), selectedIds)
+    if (cropRef.current) leaveCrop('apply').catch(() => {})
+    if (next) onSelect?.(next)
+  }
+
   // The selected element a press at `e` is inside (frontmost first), when it is
   // not in crop: pressing inside it acts on it, whatever lies on top (§586 M1).
   const selectedUnder = (e: { clientX: number; clientY: number }) => {
@@ -732,20 +742,32 @@ export default function SlideCanvas({
   // is a click and draws nothing.
   const bandRef = useRef<{
     start: { x: number; y: number }
-    origin: { left: number; top: number }
+    /** The press in slide units, so the band follows zoom and scroll as the hit test does. */
+    startSlide: { x: number; y: number }
     add: boolean
     /** A shift-press on a locked element: toggled on release when the pointer never moved. */
     toggleId?: string
     rect: BandRect | null
   } | null>(null)
-  const [band, setBand] = useState<BandRect | null>(null)
+  // The band's rect changes on every move: it is written straight to the div's
+  // style, and only whether it shows is state, so a move re-renders nothing.
+  const [bandShown, setBandShown] = useState(false)
+  const bandElRef = useRef<HTMLDivElement | null>(null)
+  const writeBand = (rect: BandRect) => {
+    const el = bandElRef.current
+    if (!el) return
+    el.style.left = `${rect.x * scale}px`
+    el.style.top = `${rect.y * scale}px`
+    el.style.width = `${rect.w * scale}px`
+    el.style.height = `${rect.h * scale}px`
+  }
   const BAND_THRESHOLD = 3
+  const CLICK_SLOP = 3
   const startBand = (e: React.PointerEvent, toggleId?: string) => {
     if (!interactive || !onSelectMany || e.button !== 0) return
-    const box = rootRef.current?.getBoundingClientRect()
     bandRef.current = {
       start: { x: e.clientX, y: e.clientY },
-      origin: { left: box?.left ?? 0, top: box?.top ?? 0 },
+      startSlide: slidePoint(e),
       add: e.shiftKey,
       toggleId,
       rect: null,
@@ -759,18 +781,16 @@ export default function SlideCanvas({
       if (!b) return
       if (!b.rect && Math.hypot(cursor.x - b.start.x, cursor.y - b.start.y) < BAND_THRESHOLD) return
       // A crop in progress is applied as the band starts, as any other press away does.
-      if (!b.rect && cropRef.current) void leaveCropRef.current('apply')
-      const toSlide = (p: { x: number; y: number }) => ({
-        x: (p.x - b.origin.left) / scale,
-        y: (p.y - b.origin.top) / scale,
-      })
-      b.rect = bandRect(toSlide(b.start), toSlide(cursor))
-      setBand(b.rect)
+      if (!b.rect && cropRef.current) leaveCropRef.current('apply').catch(() => {})
+      const first = !b.rect
+      b.rect = bandRect(b.startSlide, slidePoint({ clientX: cursor.x, clientY: cursor.y }))
+      if (first) setBandShown(true)
+      else writeBand(b.rect)
     },
     up: (commitBand) => {
       const b = bandRef.current
       bandRef.current = null
-      setBand(null)
+      setBandShown(false)
       if (b && !b.rect && commitBand && b.toggleId) onToggleSelect?.(b.toggleId)
       if (!b?.rect || !commitBand) return
       swallowClickRef.current = true
@@ -811,9 +831,13 @@ export default function SlideCanvas({
       }
       const cursor = { x: e.clientX, y: e.clientY }
       const held = heldPressRef.current
-      if (held && (cursor.x !== held.x || cursor.y !== held.y)) held.moved = true
+      // A press over a selected lower element is a click until it travels
+      // CLICK_SLOP; a jitter moves nothing and the click selects the top one.
+      if (held && !held.moved && Math.hypot(cursor.x - held.x, cursor.y - held.y) >= CLICK_SLOP) held.moved = true
+      const pending = !!held && !held.moved
       // Cmd (Ctrl on Windows) held during a drag snaps nothing while it is held.
       const skipSnap = e.metaKey || e.ctrlKey
+      if (pending && (activeGesture.current === 'drag' || activeGesture.current === 'group')) return
       if (activeGesture.current === 'drag') drag.onPointerMove(cursor, { skipSnap })
       else if (activeGesture.current === 'resize') resize.onPointerMove(cursor, { shiftKey: e.shiftKey })
       else if (activeGesture.current === 'rotate') rotate.onPointerMove(cursor)
@@ -928,7 +952,7 @@ export default function SlideCanvas({
               const m = slide.elements.find((el) => el.id === id)
               if (m && !isLocked(m)) members.push({ id: m.id, x: m.x, y: m.y, w: m.w, h: m.h, rotation: m.rotation })
             }
-            groupRef.current = { start: { x: e.clientX, y: e.clientY }, members, others: snapTargets(selectedIds), latest: null }
+            groupRef.current = { start: { x: e.clientX, y: e.clientY }, members, others: snapTargets(members.map((m) => m.id)), latest: null }
             activeGesture.current = 'group'
           }
           const startDrag = (e: React.PointerEvent, el: Slide['elements'][number]) => {
@@ -951,10 +975,7 @@ export default function SlideCanvas({
             // the pointer and starts nothing; a crop in progress is applied.
             // Its click, which would select the top one, changes nothing.
             if (layerPress) {
-              swallowClickRef.current = true
-              const next = nextLayerDown(elementsAt(slidePoint(e), slide.elements, hiddenSet), selectedIds)
-              if (cropRef.current) leaveCrop('apply').catch(() => {})
-              if (next) onSelect?.(next)
+              startLayerPress(e)
               return
             }
             // Shift toggles membership and drags nothing. Crop mode ignores shift.
@@ -973,8 +994,10 @@ export default function SlideCanvas({
               // and the selection stays until the click picks the top element.
               const allLocked = selectedIds.every((id) => isLocked(slide.elements.find((el) => el.id === id)))
               if (allLocked) startBand(e)
-              else if (selectedIds.length > 1) startGroupDrag(e)
-              else if (!isLocked(held)) {
+              else if (selectedIds.length > 1) {
+                heldPressRef.current = { x: e.clientX, y: e.clientY, moved: false }
+                startGroupDrag(e)
+              } else if (!isLocked(held)) {
                 heldPressRef.current = { x: e.clientX, y: e.clientY, moved: false }
                 startDrag(e, held)
               }
@@ -1154,15 +1177,16 @@ export default function SlideCanvas({
               ),
             )}
             {/* The drag-select band (§586 M6), in the guides' thin look. */}
-            {band && (
+            {bandShown && (
               <div
+                ref={bandElRef}
                 data-testid="selection-band"
                 style={{
                   position: 'absolute',
-                  left: band.x * scale,
-                  top: band.y * scale,
-                  width: band.w * scale,
-                  height: band.h * scale,
+                  left: (bandRef.current?.rect?.x ?? 0) * scale,
+                  top: (bandRef.current?.rect?.y ?? 0) * scale,
+                  width: (bandRef.current?.rect?.w ?? 0) * scale,
+                  height: (bandRef.current?.rect?.h ?? 0) * scale,
                   border: '1px solid var(--editor-selection)',
                   background: 'color-mix(in srgb, var(--editor-selection) 12%, transparent)',
                   pointerEvents: 'none',
@@ -1228,6 +1252,8 @@ export default function SlideCanvas({
                       // The click the browser sends after a window or handle drag
                       // changes nothing, even when let go off the image.
                       onDragEnd={() => { swallowClickRef.current = true }}
+                      // Cmd-press on the picture reaches the layer under it.
+                      onLayerPress={startLayerPress}
                     />
                   )}
 

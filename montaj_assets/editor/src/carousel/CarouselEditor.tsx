@@ -1394,7 +1394,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // Property-panel transform/frame edits → committed mutators.
   function handlePanelElementChange(patch: Partial<CarouselElement>) {
     if (!selectedSlideId || !selectedElementId) return
-    const slide = slides.find(s => s.id === selectedSlideId)
+    // A typed edit ends a crop in progress first, as its own undo step.
+    if (cropElementIdRef.current) flushSync(applyCrop)
+    const slide = slidesRef.current.find(s => s.id === selectedSlideId)
     const el = slide?.elements.find(e => e.id === selectedElementId)
     if (!el) return
     // A locked element's placement is not edited.
@@ -1434,7 +1436,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
 
   function handlePanelElementPreview(patch: Partial<CarouselElement>) {
     if (!selectedSlideId || !selectedElementId) return
-    const el = slides.find(s => s.id === selectedSlideId)?.elements.find(e => e.id === selectedElementId)
+    if (cropElementIdRef.current) flushSync(applyCrop)
+    const el = slidesRef.current.find(s => s.id === selectedSlideId)?.elements.find(e => e.id === selectedElementId)
     if (!el || isLocked(el)) return
     let edit = panelEdit.current
     if (edit && (edit.slideId !== selectedSlideId || edit.elementId !== selectedElementId)) {
@@ -1787,7 +1790,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             project={project}
             slide={selectedSlide}
             element={selectedElement}
-            selection={selectedElements.filter(el => !isLocked(el))}
+            selection={selectedElements}
             onAlignSelection={handleAlignSelection}
             adapter={adapter}
             onSlideChange={handleSlideChange}

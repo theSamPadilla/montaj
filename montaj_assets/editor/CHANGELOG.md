@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+- Changed: `FontSizePicker` (public export) writes once, on Enter or blur, not on every keystroke.
 - Added: smart-guide snapping (§586). `snapToSlideAndElements` (from `gestures`, with the `SnapBox`, `GapSegment`, `SmartSnapResult`, `SmartSnapOptions` and `DragModifiers` types) snaps a moving box to the slide and to other elements' edges and centres and shows equal gaps; holding Cmd/Ctrl during a drag skips snapping.
 - Added: `SlideCanvas` takes `margin` (px of canvas drawn around the page, so handles, guides and crop handles show past the slide edge). `CanvasCropHandles` and `CanvasCropHandlesProps` are exported, and `CanvasCropOverlay` takes `fit` (`'contain'`, the default, or `'current'` to show the picture at its current scale). Applying a crop keeps the picture's scale: the box resizes to the kept part.
 - Added: element lock (§586). `locked` on an element (schema) blocks move, resize, rotate, delete and text edits through the editor but still selects it; a selected locked element shows a lock badge that unlocks on click. `CarouselEditorProps.lockKey` (default off) binds Opt+Shift+L (Alt+Shift+L on Windows) to lock or unlock the selection, and lists it in the Controls.

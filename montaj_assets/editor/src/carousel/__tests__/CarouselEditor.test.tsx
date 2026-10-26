@@ -3724,26 +3724,25 @@ describe('CarouselEditor: a crop that keeps what you picked (§556 M4)', () => {
     expect(r.getByLabelText('Undo')).toBeDisabled()
   })
 
-  it('an edit from the panel during crop keeps the window picked, and Esc then applies it', async () => {
+  it('an edit from the panel during crop applies the window picked first: the crop, then the move, as two undo steps', async () => {
     const { adapter, r } = await mount()
     await pickCrop(r)
-    const windowBox = () => {
-      const w = chromeOf('el-img').querySelector('[data-testid="crop-window"]') as HTMLElement | null
-      return w && [w.style.left, w.style.top, w.style.width, w.style.height]
-    }
-    const before = windowBox()
-    expect(before).not.toBeNull()
 
     await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Align left' })) })
-    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
-    expect(inCrop()).toBe(true)
-    expect(windowBox()).toEqual(before)
+    await waitFor(() => expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 0, w: 150, h: 100 }))
+    await settle()
+    expect(inCrop()).toBe(false)
+    expectCropApplied(elementsOf(lastSave(adapter))[0], { x: 0, y: 100 })
 
-    await key('Escape')
-    await waitFor(() => expectCropApplied(elementsOf(lastSave(adapter))[0], { x: 0, y: 100 }))
-    // Two steps: the crop, then the move.
+    // Two steps: the move, then the crop.
+    let saves = adapter.saveCalls.length
     await key('z', { metaKey: true })
-    expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 0, w: 200, h: 200 })
+    await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThan(saves))
+    expectCropApplied(elementsOf(lastSave(adapter))[0])
+    saves = adapter.saveCalls.length
+    await key('z', { metaKey: true })
+    await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThan(saves))
+    expectUncropped(elementsOf(lastSave(adapter))[0])
   })
 
   it('another writer changing the slide during crop keeps the window picked', async () => {
@@ -3921,6 +3920,33 @@ describe('CarouselEditor: typed panel numbers are one undo step', () => {
     // Nothing else was on the stack.
     await key('z', { metaKey: true })
     expect(adapter.saveCalls).toHaveLength(2)
+  })
+
+  it('typing X during a crop applies the crop first: two undo steps, and crop mode ends', async () => {
+    const adapter = makeFakeAdapter()
+    const r = render(<CarouselEditor project={cropProject()} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await plainClick('el-img')
+    await pickCrop(r)
+    expect(inCrop()).toBe(true)
+    const x = field(r, 'X')
+    await type(x, '555')
+    await enter(x)
+    await waitFor(() => expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 555, w: 150 }))
+    await settle()
+    expect(inCrop()).toBe(false)
+
+    // The crop and the typed X are separate undo steps.
+    let saves = adapter.saveCalls.length
+    await key('z', { metaKey: true })
+    await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThan(saves))
+    expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 100, w: 150 })
+    expect((elementsOf(lastSave(adapter))[0] as ImageElement).crop).toBeDefined()
+    saves = adapter.saveCalls.length
+    await key('z', { metaKey: true })
+    await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThan(saves))
+    expectUncropped(elementsOf(lastSave(adapter))[0])
+    expect(r.getByLabelText('Undo')).toBeDisabled()
   })
 
   it('blur commits the typed value the same way', async () => {

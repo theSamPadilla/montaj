@@ -225,7 +225,7 @@ describe('CarouselEditor: element lock (§586 M5)', () => {
     expect(adapter.saveCalls).toHaveLength(0)
   })
 
-  it('align leaves a locked element out: single align is disabled, a selection aligns only the free ones', async () => {
+  it('align leaves a locked element out: single align is disabled, a selection aligns only the free ones, to the box the whole selection covers', async () => {
     const { adapter, r } = await mount()
     await click('el-a')
     expect((r.getByRole('button', { name: 'Align left' }) as HTMLButtonElement).disabled).toBe(true)
@@ -235,9 +235,21 @@ describe('CarouselEditor: element lock (§586 M5)', () => {
     await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Align left' })) })
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
     expect(byId(last(adapter), 'el-a')).toMatchObject({ x: 100, y: 100 })
-    // b and c align to the box they cover (500..800), the locked one is not part of it.
-    expect(byId(last(adapter), 'el-b')).toMatchObject({ x: 500 })
-    expect(byId(last(adapter), 'el-c')).toMatchObject({ x: 500 })
+    // b and c align to the box all three cover, so to the locked one's edge.
+    expect(byId(last(adapter), 'el-b')).toMatchObject({ x: 100 })
+    expect(byId(last(adapter), 'el-c')).toMatchObject({ x: 100 })
+  })
+
+  it('two selected, one locked: the align controls show, and align moves only the free one to the locked one', async () => {
+    const { adapter, r } = await mount()
+    await click('el-a')
+    await shiftClick('el-b')
+    const left = r.getByRole('button', { name: 'Align left' }) as HTMLButtonElement
+    expect(left.disabled).toBe(false)
+    await act(async () => { fireEvent.click(left) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(byId(last(adapter), 'el-a')).toMatchObject({ x: 100, y: 100 })
+    expect(byId(last(adapter), 'el-b')).toMatchObject({ x: 100 })
   })
 
   it('Cut copies a locked element but does not remove it; Paste brings an unlocked copy', async () => {
@@ -447,8 +459,8 @@ describe('CarouselEditor: lock key and crop, select all, distribute (§586 M5)',
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
     const xs = elementsOf(last(adapter)).map((e) => e.x)
     expect(xs[0]).toBe(0)
-    // r1..r3 spread evenly between the outermost free ones.
-    expect(xs.slice(1)).toEqual([100, 400, 700])
+    // The locked one stays and counts as an end of the spread: the rest even out after it.
+    expect(xs.slice(1)).toEqual([233, 467, 700])
   })
 })
 

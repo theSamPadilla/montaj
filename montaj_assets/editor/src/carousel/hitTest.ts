@@ -1,4 +1,5 @@
 import type { CarouselElement } from '../types'
+import { isApplePlatform } from '../ui/modifierKeys'
 
 type Point = { x: number; y: number }
 
@@ -31,8 +32,7 @@ export function elementsAt(point: Point, elements: CarouselElement[], hidden?: R
 
 /** Whether the press is the layer-reaching one: Cmd on a Mac (where Ctrl-click is a right-click), Ctrl elsewhere. */
 export function isLayerPress(e: { metaKey: boolean; ctrlKey: boolean }): boolean {
-  const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
-  return mac ? e.metaKey : e.ctrlKey
+  return isApplePlatform() ? e.metaKey : e.ctrlKey
 }
 
 /**

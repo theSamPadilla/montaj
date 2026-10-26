@@ -747,9 +747,10 @@ export default function AudioPolishModal<P extends Project = Project>({
                 <NumberField
                   name="Custom LUFS"
                   value={customLufs}
-                  // Local modal state with no separate save step, exactly like
-                  // FontSizePicker — every valid edit writes straight through,
-                  // so both callbacks point at the same setter. LUFS values are
+                  // Local modal state with no separate save step, unlike
+                  // FontSizePicker (which writes once, on Enter or blur) —
+                  // every valid edit writes straight through, so both
+                  // callbacks point at the same setter. LUFS values are
                   // negative (e.g. -14): no `min` is passed, deliberately, so a
                   // typed `-` and negative numbers pass through untouched (see
                   // NumberField's contract — a typed value is never clamped).

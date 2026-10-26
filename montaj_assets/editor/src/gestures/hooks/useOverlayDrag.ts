@@ -57,6 +57,20 @@ export type UseOverlayDragReturn = {
   onPointerUp: () => void;
 };
 
+function sameItems<T extends object>(a: readonly T[], b: readonly T[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((item, i) => {
+    const o = b[i] as Record<string, unknown>;
+    const keys = Object.keys(item);
+    return keys.length === Object.keys(o).length && keys.every((k) => (item as Record<string, unknown>)[k] === o[k]);
+  });
+}
+
+function sameSnap(a: typeof NO_SNAP, b: typeof NO_SNAP): boolean {
+  return sameItems(a.guides, b.guides) && sameItems(a.gaps, b.gaps);
+}
+
 export function useOverlayDrag({ scale, slide, onPreview, onCommit }: UseOverlayDragArgs): UseOverlayDragReturn {
   const [shown, setShown] = useState(NO_SNAP);
   const stateRef = useRef<DragState | null>(null);
@@ -108,7 +122,9 @@ export function useOverlayDrag({ scale, slide, onPreview, onCommit }: UseOverlay
             { skip: modifiers.skipSnap },
           );
 
-      setShown(snap.guides.length || snap.gaps.length ? { guides: snap.guides, gaps: snap.gaps } : NO_SNAP);
+      const next = snap.guides.length || snap.gaps.length ? { guides: snap.guides, gaps: snap.gaps } : NO_SNAP;
+      // Re-render only when what is drawn changes, not on every move.
+      setShown((prev) => (sameSnap(prev, next) ? prev : next));
       latestRef.current = { id: s.elementId, x: snap.position.x, y: snap.position.y };
       onPreview(s.elementId, snap.position.x, snap.position.y, rotationRef.current);
     },
