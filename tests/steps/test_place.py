@@ -392,6 +392,68 @@ def test_a_bare_face_renders_with_its_generic_family(tmp_path):
     assert not out.get("issues"), out
 
 
+# ── configured, not written (PL89 round 9: cost) ──────────────────────────────────────────────────────────────────
+# Round 6 wrote 15K characters of overlay JSX in 12 calls, most of it labels following a 3D shot (Motion.follow over a
+# direct_scene mark) and stat numerals. scene_labels and stat make those one place item with props.
+
+def _marks(d, scene="specs"):
+    part = lambda x: {"cast": 0, "part": "screen", "pixel": [x, 700], "box": [x - 60, 600, x + 60, 800], "inView": True,
+                      "leader": {"side": "right", "from": [x + 60, 700], "to": [x + 260, 700], "align": "start"}}
+    cast = {"cast": 0, "top": [540, 500], "bottom": [540, 1000], "box": [400, 500, 680, 1000], "metres": 0.48, "inView": True,
+            "rule": {"side": "left", "x": 330, "top": 500, "bottom": 1000, "label": [300, 750], "align": "end"}}
+    mark = {"kind": "mark", "at": 0, "size": {"width": 1080, "height": 1920}, "parts": [part(540)], "casts": [cast],
+            "track": [{"t": 0, "parts": [part(540)], "casts": [cast]}, {"t": 2, "parts": [part(520)], "casts": [cast]}]}
+    (d / "overlays" / "_marks").mkdir(parents=True, exist_ok=True)
+    (d / "overlays" / "_marks" / f"{scene}.json").write_text(json.dumps(mark))
+
+
+LABELS = {"marks": "specs", "labels": [{"part": "screen", "text": "camera", "at": 0.5}], "rule": {"text": "19 in", "at": 1}}
+
+
+def test_scene_labels_is_one_place_item_reading_the_scenes_marks(tmp_path):
+    d = make_project(tmp_path)
+    _marks(d)
+    out = run(d, at="2", for_s=4, preset="scene_labels", props=json.dumps(LABELS))
+    item = tracks(d)[1]["items"][0]
+    assert item["src"] == "./overlays/scene-labels-specs.jsx"
+    code = (d / "overlays" / "scene-labels-specs.jsx").read_text()
+    assert "import mark from './_marks/specs.json'" in code and "__SCENE__" not in code
+    assert lc.motion_issues(item, str(d), "x") == []
+    assert not out.get("issues"), out
+    # a second scene gets its own file; the same scene reuses its own
+    _marks(d, "mount")
+    run(d, at="8", preset="scene_labels", props=json.dumps({**LABELS, "marks": "mount"}))
+    assert tracks(d)[1]["items"][1]["src"] == "./overlays/scene-labels-mount.jsx"
+
+
+@pytest.mark.parametrize("props,word", [({"labels": []}, "marks"), ({"marks": "nope"}, "direct_scene"), ({"marks": "../x"}, "marks")])
+def test_scene_labels_needs_a_scene_with_marks(tmp_path, capsys, props, word):
+    d = make_project(tmp_path)
+    err = refused(capsys, run, d, at="2", preset="scene_labels", props=json.dumps(props))
+    assert err["error"] == "invalid_params" and word in err["message"], err
+
+
+def test_stat_is_a_place_preset(tmp_path):
+    d = make_project(tmp_path)
+    run(d, at="2", for_s=5, preset="stat", props=json.dumps({"stats": [{"value": "4", "unit": "lb", "at": 0.3}, {"value": "$400", "sub": "the robot", "at": 2}]}))
+    item = tracks(d)[1]["items"][0]
+    assert item["src"] == "./overlays/stat.jsx" and lc.motion_issues(item, str(d), "x") == []
+
+
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+def test_scene_labels_and_stat_render_inside_the_frame(tmp_path, monkeypatch):
+    # an overlay reads a project file (the marks) only inside the workspace, where a real project is
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(tmp_path))
+    d = make_project(tmp_path)
+    _marks(d)
+    out = run(d, at="2", for_s=4, preset="scene_labels", props=json.dumps(LABELS), measure_fn=look.measure, detail=True)
+    assert not out.get("issues"), out
+    assert "camera" in " ".join(out["text"]) and "19" in " ".join(out["text"]), out
+    out = run(d, at="8", for_s=4, preset="stat", props=json.dumps({"stats": [{"value": "4", "unit": "lb", "at": 0.2}]}), measure_fn=look.measure, detail=True)
+    assert not out.get("issues"), out
+    assert "4" in " ".join(out["text"]), out
+
+
 # ── review 1 (write safety) ───────────────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("kw,err", [
