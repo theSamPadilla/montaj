@@ -394,12 +394,41 @@ def text_boxes(measurement, item, frame_w, frame_h):
     return out
 
 
+def move_to_fit(box, x_lo, x_hi, y_lo, y_hi, sx=1.0, sy=1.0):
+    """PL89c: how far to move a text box (on the frame) so it lies inside [x_lo, x_hi] x [y_lo, y_hi] (None leaves
+    that side open), in the overlay's own px (the item's scale `sx`, `sy` undone, rounded up): "move it right 34 px
+    and up 12 px", or "make it at most 972 px wide" when it can't fit that way. The agent fixes in one rewrite, not
+    by guessing."""
+    import math
+    x0, y0, x1, y1 = box["x"], box["y"], box["x"] + box["w"], box["y"] + box["h"]
+    px = lambda d, s: math.ceil(round(d / (s or 1), 6))  # noqa: E731
+    parts = []
+    for lo, hi, a, b, s, near, far, size in ((x_lo, x_hi, x0, x1, sx, "right", "left", "wide"),
+                                             (y_lo, y_hi, y0, y1, sy, "down", "up", "tall")):
+        if lo is not None and hi is not None and b - a > hi - lo:
+            parts.append(f"make it at most {math.floor(round((hi - lo) / (s or 1), 6))} px {size}")
+        elif lo is not None and a < lo:
+            parts.append(f"move it {near} {px(lo - a, s)} px")
+        elif hi is not None and b > hi:
+            parts.append(f"move it {far} {px(b - hi, s)} px")
+    if len(parts) == 2 and all(p.startswith("move it ") for p in parts):
+        parts[1] = parts[1][len("move it "):]
+    return " and ".join(parts)
+
+
 def measured_issues(item, measurement, frame_w, frame_h, t, label, bands=()):
     """[{t, id, text}] from one overlay's measurements: at most one issue of each kind per item. `bands`:
-    caption_bands for the item's span."""
+    caption_bands for the item's span. Each safe-area issue (off the frame, the title-safe margin, the apps' bottom
+    controls or right-side buttons) ends with how far to move the text (move_to_fit)."""
     out, seen = [], set()
     tall = frame_h >= frame_w * TALL
     mx, my = frame_w * SAFE_MARGIN, frame_h * SAFE_MARGIN
+    sx = _num(item.get("scaleX", item.get("scale", 1)), 1)
+    sy = _num(item.get("scaleY", item.get("scale", 1)), 1)
+
+    def fix(b, *bounds):
+        how = move_to_fit(b, *bounds, sx=sx, sy=sy)
+        return f": {how}" if how else ""
 
     def add(kind, text):
         if kind not in seen:
@@ -410,22 +439,22 @@ def measured_issues(item, measurement, frame_w, frame_h, t, label, bands=()):
         quote = f' "{text}"' if text else ""
         x0, y0, x1, y1 = b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"]
         if x0 < -OVERFLOW_PX or y0 < -OVERFLOW_PX or x1 > frame_w + OVERFLOW_PX or y1 > frame_h + OVERFLOW_PX:
-            add("off", f"text{quote} runs off the frame")
+            add("off", f"text{quote} runs off the frame{fix(b, mx, frame_w - mx, my, frame_h - my)}")
             continue   # off the frame says it all
         if spills:
             add("spill", f"text{quote} spills out of its box")
         elif clipped:
             add("clip", f"text{quote} is cut off by its box")
         if x0 < mx or y0 < my or x1 > frame_w - mx or y1 > frame_h - my:
-            add("margin", f"text{quote} inside the 5% title-safe margin")
+            add("margin", f"text{quote} inside the 5% title-safe margin{fix(b, mx, frame_w - mx, my, frame_h - my)}")
         for top, bottom, s, e in bands:
             if y0 < bottom and top < y1:
                 add("captions", f"text{quote} crosses the captions ({r2(s)}-{r2(e)}s)")
                 break
         if tall and y1 > frame_h - BOTTOM_UI_PX:
-            add("bottom", f"text{quote} over the apps' bottom controls")
+            add("bottom", f"text{quote} over the apps' bottom controls{fix(b, None, None, None, frame_h - BOTTOM_UI_PX)}")
         if tall and x1 > frame_w - RIGHT_UI_PX and y0 < frame_h * RIGHT_UI_Y[1] and y1 > frame_h * RIGHT_UI_Y[0]:
-            add("right", f"text{quote} under the apps' right-side buttons")
+            add("right", f"text{quote} under the apps' right-side buttons{fix(b, None, frame_w - RIGHT_UI_PX, None, None)}")
     return out
 
 
