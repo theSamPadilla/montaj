@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
-import { RefreshCw, AlertCircle, Download, Info, Undo2, Redo2 } from 'lucide-react'
+import { RefreshCw, AlertCircle, Download, Info, Undo2, Redo2, Plus } from 'lucide-react'
 import type { Project, Slide, CarouselElement, ImageElement, CarouselEditorProps, OverlayFactory, SlideNotesApi, CarouselApi, ImageDropPayload, GlobalOverlay } from '../types'
 import { IMAGE_DND_MIME } from '../types'
 import type { SlideNote } from '../schema'
@@ -10,6 +10,9 @@ import SlideCanvas, { type CropExit, type SlideCanvasCropControl } from './Slide
 import SlidePropertyPanel from './SlidePropertyPanel'
 import AddElementMenu from './AddElementMenu'
 import RailLayout from './RailLayout'
+import StackedSlides, { SlideHeader } from './StackedSlides'
+import SlideGridView from './SlideGridView'
+import { useSlideReorderDrag } from './slideReorderDrag'
 import CarouselRenderModal from './CarouselRenderModal'
 import ControlsInfoModal, { CAROUSEL_CONTROLS, LOCK_CONTROL, platformSections } from '../ControlsInfoModal'
 import { DARK_TEXT, NoteArmLayer, NotePinLayer, badgeColor, hasPoint } from './NoteLayers'
@@ -133,30 +136,7 @@ function SlideGrid({
   const scale = THUMB_W / w
   const thumbH = Math.round(h * scale)
 
-  const dragIdx = useRef<number | null>(null)
-  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null)
-
-  function handleDragStart(idx: number) {
-    dragIdx.current = idx
-  }
-  function handleDragOver(e: React.DragEvent, idx: number) {
-    // Only a slide being reordered is the rail's to take. A Media card or a file
-    // crossing it is left alone, and lights nothing up: no dragend would clear it.
-    if (dragIdx.current === null) return
-    e.preventDefault()
-    setDragOverIdx(idx)
-  }
-  function handleDrop(toIdx: number) {
-    if (dragIdx.current !== null && dragIdx.current !== toIdx) {
-      onReorder(dragIdx.current, toIdx)
-    }
-    dragIdx.current = null
-    setDragOverIdx(null)
-  }
-  function handleDragEnd() {
-    dragIdx.current = null
-    setDragOverIdx(null)
-  }
+  const { dragOverIdx, handleDragStart, handleDragOver, handleDrop, handleDragEnd } = useSlideReorderDrag(onReorder)
 
   return (
     <div className="w-56 flex-shrink-0 flex flex-col border-r border-[var(--editor-border)] bg-[var(--editor-bg)] overflow-y-auto min-h-0 h-full">
@@ -459,9 +439,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   /** Crop mode for an image: its panel button, or a double-click on it. The
    *  crop of another image in progress is applied first, so moving on does not
    *  drop what was picked. */
-  const enterCrop = useCallback((elementId: string) => {
+  const enterCrop = useCallback((elementId: string, slideId: string | null = selectedSlideIdRef.current) => {
     // A locked image is not cropped.
-    if (isLocked(slidesRef.current.find(s => s.id === selectedSlideIdRef.current)?.elements.find(el => el.id === elementId))) return
+    if (isLocked(slidesRef.current.find(s => s.id === slideId)?.elements.find(el => el.id === elementId))) return
     if (cropElementIdRef.current && cropElementIdRef.current !== elementId) applyCrop()
     setSelectedElementId(elementId)
     setCropElementId(elementId)
@@ -530,6 +510,19 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     return () => { mountedRef.current = false }
   }, [])
 
+  // ── Stacked slides (§587 M2, `layout="rail"`) ──
+  // The active slide is the selected one: the last clicked, else the one most
+  // in view while scrolling. `scrollTarget` asks the stack to scroll to a slide
+  // (a pick from the slide list or the grid, a new slide); a new `seq` asks again.
+  const railLayout = layout === 'rail'
+  const railRef = useRef(railLayout)
+  railRef.current = railLayout
+  const [scrollTarget, setScrollTarget] = useState<{ id: string; seq: number } | null>(null)
+  const requestScroll = useCallback((id: string) => {
+    setScrollTarget((t) => ({ id, seq: (t?.seq ?? 0) + 1 }))
+  }, [])
+  const [gridOpen, setGridOpen] = useState(false)
+
   /** Adds an empty note on `slideId` (at `point`, or about the whole slide)
    *  and returns it as stored: the core of the N flow and `api.add`. */
   const addNoteOn = useCallback((slideId: string, point?: { x: number; y: number }): SlideNote => {
@@ -553,6 +546,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     applyCrop()
     setSelectedSlideId(slideId)
     setSelectedElementId(null)
+    // The stacked slides (§587 M2) scroll to it.
+    if (railRef.current) requestScroll(slideId)
   }, [])
 
   // Host notes api: handed up once (it is stable) and withdrawn with null on
@@ -594,8 +589,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   const notesEnabled = !!notes?.enabled
   useEffect(() => {
     if (armedSlideId === null) return
-    if (!notesEnabled || cropElementId || armedSlideId !== selectedSlideId || project.status === 'pending') setArmed(null)
-  }, [armedSlideId, notesEnabled, cropElementId, selectedSlideId, project.status, setArmed])
+    if (!notesEnabled || cropElementId || armedSlideId !== selectedSlideId || project.status === 'pending' || (railLayout && gridOpen)) setArmed(null)
+  }, [armedSlideId, notesEnabled, cropElementId, selectedSlideId, project.status, setArmed, railLayout, gridOpen])
 
   // A press anywhere but the armed slide disarms without adding. Capture
   // phase, so a handler that stops propagation cannot keep a stale arm.
@@ -637,7 +632,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     clipboardRef.current = null
     textStyleRef.current = null
   }, [project.id])
-  const slideLive = !!selectedSlide && !showPendingSurface && !cropElementId
+  // The grid view (§587 M2) hides the canvas: the keys that act on what is
+  // selected, or select, are off while it shows.
+  const slideLive = !!selectedSlide && !showPendingSurface && !cropElementId && !(railLayout && gridOpen)
   const hasSelection = slideLive && liveSelectedIds.length > 0
   const canEdit = state.isEditingAllowed
 
@@ -1165,11 +1162,16 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // A crop in progress is applied first (§556 M4): its own undo step, before
   // the one these add.
   function handleAddSlide() {
+    addSlideAfter(selectedSlideId)
+  }
+  /** A new empty slide after `afterId` (at the end when null or gone), selected. */
+  function addSlideAfter(afterId: string | null) {
     applyCrop()
     const slide = makeSlide()
-    void state.addSlide(slide, selectedSlideId ?? undefined)
+    void state.addSlide(slide, afterId ?? undefined)
     setSelectedSlideId(slide.id)
     setSelectedElementId(null)
+    if (railLayout) requestScroll(slide.id)
   }
   function handleDuplicateSlide(id: string) {
     // The crop lands before the copy is made, so the copy has it too.
@@ -1180,6 +1182,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     void state.duplicateSlide(id, clone)
     setSelectedSlideId(clone.id)
     setSelectedElementId(null)
+    if (railLayout) requestScroll(clone.id)
   }
   function handleDeleteSlide(id: string) {
     void state.removeSlide(id)
@@ -1355,22 +1358,30 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     return (pageDragOn() && list.includes(IMAGE_DND_MIME)) || (list.includes('Files') && typeof adapter.uploadFile === 'function')
   }
 
+  /** Whether `slideId`'s canvas takes images now. The selected slide's is
+   *  `canAddImages`; another slide's in the stacked layout (§587 M2) takes them
+   *  in crop mode too, the drop applying the crop as it makes that slide active. */
+  function canDropOn(slideId: string | null): boolean {
+    if (slideId === selectedSlideId) return canAddImages
+    return !!slideId && slides.some((s) => s.id === slideId) && canEdit && !showPendingSurface
+  }
+
   /** dragenter and dragover: an image drag the canvas can take now gets a copy
    *  cursor, and the browser a drop; any other drag is left alone. */
-  function handleCanvasDragOver(e: React.DragEvent<HTMLDivElement>) {
-    if (!canAddImages || !isImageDrag(e.dataTransfer?.types)) return
+  function handleCanvasDragOver(e: React.DragEvent<HTMLDivElement>, slideId: string | null = selectedSlideId) {
+    if (!canDropOn(slideId) || !isImageDrag(e.dataTransfer?.types)) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
   }
 
   /** A drop on the canvas: the host's image (`IMAGE_DND_MIME`) if it carries
    *  one, else the image files in it, centred on where it fell. */
-  function handleCanvasDrop(e: React.DragEvent<HTMLDivElement>) {
+  function handleCanvasDrop(e: React.DragEvent<HTMLDivElement>, slideId: string | null = selectedSlideId) {
     const data = e.dataTransfer
     if (!data || !isImageDrag(data.types)) return
     // Whatever happens next, the browser must not also open what was dropped.
     e.preventDefault()
-    if (!selectedSlide || !canAddImages) return
+    if (!slideId || !canDropOn(slideId)) return
     // A DataTransfer can only be read during its event. A payload from a drag
     // that did not begin in this page is not believed.
     const src = pageDragOn() ? hostImageSrc(data) : null
@@ -1379,12 +1390,14 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       : Array.from(data.files ?? []).filter(isImageFile).map((file) => () => adapter.uploadFile(file, project.id, 'drop'))
     if (sources.length === 0) return
 
-    // Where it fell, in slide units: the canvas draws the slide at `canvasScale`.
+    // Where it fell, in slide units: the canvas draws the slide at `slideScale`.
     const rect = e.currentTarget.getBoundingClientRect()
-    const at = canvasScale > 0
-      ? { x: (e.clientX - rect.left) / canvasScale, y: (e.clientY - rect.top) / canvasScale }
+    const at = slideScale > 0
+      ? { x: (e.clientX - rect.left) / slideScale, y: (e.clientY - rect.top) / slideScale }
       : undefined
-    void addImages(selectedSlide.id, sources, at)
+    // A drop on another stacked slide makes it the active one first.
+    if (slideId !== selectedSlideId) activateSlide(slideId)
+    void addImages(slideId, sources, at)
   }
 
   // A locked element's props and crop are not written, whoever asks (the canvas'
@@ -1538,17 +1551,19 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   }
 
   const [w, h] = project.settings.resolution
-  const canvasContainerRef = useRef<HTMLDivElement>(null)
+  // A callback ref: the rail layout's container remounts as its view changes
+  // (stacked slides, grid, empty), and each one is measured.
+  const [canvasContainer, setCanvasContainer] = useState<HTMLDivElement | null>(null)
   const [canvasContainerSize, setCanvasContainerSize] = useState<{ w: number; h: number }>({ w: 600, h: 700 })
   useEffect(() => {
-    const el = canvasContainerRef.current
+    const el = canvasContainer
     if (!el) return
     const obs = new ResizeObserver(([entry]) => {
       setCanvasContainerSize({ w: entry.contentRect.width, h: entry.contentRect.height })
     })
     obs.observe(el)
     return () => obs.disconnect()
-  }, [])
+  }, [canvasContainer])
   // The margin kept on every side of the slide (§586 M4): room for the handles
   // of an element at its edge, and the rotate handle's 34 px reach above it.
   // A press in it is a press on the empty canvas. Below the slide the column's
@@ -1560,12 +1575,12 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   const availW = Math.max(0, canvasContainerSize.w - 2 * CANVAS_MARGIN)
   const availH = Math.max(0, canvasContainerSize.h - 2 * CANVAS_MARGIN - HINT_RESERVE)
   const canvasScale = Math.min(availW / w, availH / h, 1)
+  // Stacked (§587 M2): each slide fits the view, its header in its top margin.
+  const railScale = Math.min(availW / w, Math.max(0, canvasContainerSize.h - 2 * CANVAS_MARGIN) / h, 1)
+  const slideScale = railLayout ? railScale : canvasScale
 
-  const railLayout = layout === 'rail'
-  // The slide viewport's content, shared by both layouts.
-  const canvasInner = (
-    <>
-        {showPendingSurface ? (
+  // The pending view and the error banner, shared by both layouts.
+  const pendingView = (
           <div className="flex flex-col items-center gap-6 text-center max-w-lg w-full">
             {slots?.pendingStatus ?? (
               <div className="flex flex-col items-center gap-2">
@@ -1620,6 +1635,20 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             )}
             <p className="text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] text-xs font-mono">project id: {project.id}</p>
           </div>
+  )
+  const errorBanner = state.lastError ? (
+          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-3 py-2 rounded-md border border-red-500/40 bg-red-950/80 text-red-200 text-xs">
+            <AlertCircle size={14} />
+            <span>{state.lastError}</span>
+            <button onClick={state.clearError} className="ml-2 underline">dismiss</button>
+          </div>
+  ) : null
+
+  // The classic layout's slide viewport.
+  const canvasInner = (
+    <>
+        {showPendingSurface ? (
+          pendingView
         ) : selectedSlide ? (
           <>
             {/* Edge definition for the slide canvas, which sits on `--editor-bg`.
@@ -1666,7 +1695,6 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 {armedSlideId === selectedSlide.id && <NoteArmLayer layerRef={armLayerRef} onPlace={placeArmedNote} />}
               </SlideCanvas>
             </div>
-            {!railLayout && (
             <div className="flex-shrink-0 flex items-center justify-center gap-1.5 text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] max-w-md">
               <span className="text-center">
                 Drag to reposition, resize/rotate via handles, double-click text to edit or an image to crop. {shortcutText(['⌘', 'Z'])} to undo.
@@ -1681,20 +1709,176 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 <Info size={13} />
               </button>
             </div>
-            )}
           </>
         ) : (
           <div className="text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] text-sm">No slides yet. Add one in the left panel.</div>
         )}
 
-        {state.lastError && (
-          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-3 py-2 rounded-md border border-red-500/40 bg-red-950/80 text-red-200 text-xs">
-            <AlertCircle size={14} />
-            <span>{state.lastError}</span>
-            <button onClick={state.clearError} className="ml-2 underline">dismiss</button>
-          </div>
-        )}
+        {errorBanner}
     </>
+  )
+
+  // ── The rail layout's canvas (§587 M2): every slide stacked ──
+
+  /** Makes `slideId` the active slide: a crop in progress is applied, and the
+   *  selection (it is per slide) cleared. The active slide again changes nothing. */
+  function activateSlide(slideId: string) {
+    if (slideId === selectedSlideIdRef.current) return
+    applyCrop()
+    setSelectedSlideId(slideId)
+    setSelectedElementId(null)
+  }
+
+  /** A slide picked from the slide list or the grid: the stack shows it, active. */
+  function pickSlide(slideId: string) {
+    setGridOpen(false)
+    activateSlide(slideId)
+    requestScroll(slideId)
+  }
+
+  function toggleGrid() {
+    if (gridOpen) {
+      if (selectedSlideId) requestScroll(selectedSlideId)
+    } else {
+      // The canvas goes: so does the selection on it.
+      setSelectedElementId(null)
+    }
+    setGridOpen((o) => !o)
+  }
+
+  // Each slide's pins with a point, drawn on its canvas.
+  const pinsBySlide = useMemo(() => {
+    const bySlide = new Map<string, typeof canvasPins>()
+    for (const p of pins ?? []) {
+      if (!hasPoint(p)) continue
+      const list = bySlide.get(p.slideId)
+      if (list) list.push(p)
+      else bySlide.set(p.slideId, [p])
+    }
+    return bySlide
+  }, [pins])
+
+  function renderRailHeader(slide: Slide, i: number) {
+    const id = slide.id
+    return (
+      <SlideHeader
+        index={i}
+        count={slides.length}
+        title={slide.title}
+        active={id === selectedSlideId}
+        canEdit={canEdit}
+        // A press on the header is a way away from a crop, and picks its slide.
+        onActivate={() => { applyCrop(); activateSlide(id) }}
+        onTitleCommit={(title) => { void state.updateSlide(id, { title: title || undefined }) }}
+        onMoveUp={() => { applyCrop(); handleReorderSlides(i, i - 1); requestScroll(id) }}
+        onMoveDown={() => { applyCrop(); handleReorderSlides(i, i + 1); requestScroll(id) }}
+        onDuplicate={() => handleDuplicateSlide(id)}
+        onDelete={() => {
+          const active = id === selectedSlideIdRef.current
+          // A crop on another slide is applied; one on this slide goes with it.
+          if (!active) applyCrop()
+          const next = slides[i + 1]?.id ?? slides[i - 1]?.id
+          handleDeleteSlide(id)
+          // The active slide's neighbour takes over, where the person is looking.
+          if (active && next) setSelectedSlideId(next)
+        }}
+        onAddAfter={() => addSlideAfter(id)}
+      />
+    )
+  }
+
+  function renderRailSlide(slide: Slide, _i: number, live: boolean) {
+    const id = slide.id
+    const active = id === selectedSlideId
+    const slidePins = pinsBySlide.get(id)
+    return (
+      <div
+        className="ring-1 ring-[color-mix(in_srgb,var(--editor-text)_10%,transparent)]"
+        // A slide drawn as its thumbnail is picked by a click.
+        onClick={live ? undefined : () => activateSlide(id)}
+      >
+        <SlideCanvas
+          slide={slide}
+          slideId={id}
+          width={w}
+          height={h}
+          interactive={live}
+          selectedElementId={active ? selectedElementId : null}
+          selectedElementIds={active ? liveSelectedIds : []}
+          onSelect={active
+            ? (elId) => { if (cropElementId && elId !== cropElementId) applyCrop(); setSelectedElementId(elId) }
+            : (elId) => { activateSlide(id); if (elId) setSelectedElementId(elId) }}
+          onToggleSelect={active ? toggleSelect : (elId) => { activateSlide(id); toggleSelect(elId) }}
+          onSelectMany={active ? selectBand : (ids) => { activateSlide(id); selectBand(ids) }}
+          scale={railScale}
+          resolveImageSrc={adapter.resolveImageSrc}
+          compileOverlay={(t) => adapter.compileOverlay(t)}
+          watchFile={adapter.watchFile}
+          moveElement={state.moveElement}
+          resizeElement={state.resizeElement}
+          rotateElement={state.rotateElement}
+          commit={state.commit}
+          updateOverlayProp={updateOverlayProp}
+          updateImageCrop={updateImageCrop}
+          // Crop mode is the active slide's alone.
+          cropElementId={active ? cropElementId : null}
+          onExitCrop={active ? () => setCropElementId(null) : undefined}
+          onEnterCrop={active ? enterCrop : (elId) => { activateSlide(id); enterCrop(elId, id) }}
+          onUnlock={unlockElement}
+          cropControlRef={active ? cropControlRef : undefined}
+          hiddenElementIds={hiddenElementIds}
+          onDragEnter={(e) => handleCanvasDragOver(e, id)}
+          onDragOver={(e) => handleCanvasDragOver(e, id)}
+          onDrop={(e) => handleCanvasDrop(e, id)}
+          margin={CANVAS_MARGIN}
+        >
+          {slidePins && <NotePinLayer pins={slidePins} pinDisplay={pinDisplay} onPinClick={onPinClick} />}
+          {armedSlideId === id && <NoteArmLayer layerRef={armLayerRef} onPlace={placeArmedNote} />}
+        </SlideCanvas>
+      </div>
+    )
+  }
+
+  const railCanvas = (
+    <div className="relative flex-1 min-h-0 flex flex-col">
+      {showPendingSurface ? (
+        <div ref={setCanvasContainer} className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center justify-center p-4">
+          {pendingView}
+        </div>
+      ) : gridOpen ? (
+        <SlideGridView
+          slides={slides}
+          width={w}
+          height={h}
+          activeSlideId={selectedSlideId}
+          onPick={pickSlide}
+          onAdd={() => addSlideAfter(slides[slides.length - 1]?.id ?? null)}
+          onReorder={handleReorderSlides}
+          canEdit={canEdit}
+          resolveImageSrc={adapter.resolveImageSrc}
+          compileOverlay={(t) => adapter.compileOverlay(t)}
+        />
+      ) : slides.length === 0 ? (
+        <div ref={setCanvasContainer} className="flex-1 min-h-0 flex items-center justify-center p-4">
+          <Button onClick={() => addSlideAfter(null)} disabled={!canEdit}>
+            <Plus size={16} aria-hidden="true" className="mr-1.5" />
+            Add slide
+          </Button>
+        </div>
+      ) : (
+        <StackedSlides
+          slides={slides}
+          activeSlideId={selectedSlideId}
+          onScrollActivate={activateSlide}
+          scrollTarget={scrollTarget}
+          containerRef={setCanvasContainer}
+          margin={CANVAS_MARGIN}
+          renderHeader={renderRailHeader}
+          renderSlide={renderRailSlide}
+        />
+      )}
+      {errorBanner}
+    </div>
   )
 
   const railShell = (
@@ -1706,11 +1890,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       onRedo={redo}
       canUndo={state.canUndo || !!cropElementId}
       canRedo={state.canRedo && !cropElementId}
-      canvas={
-        <div ref={canvasContainerRef} className="relative flex-1 flex flex-col items-center justify-center gap-4 overflow-y-auto min-h-0 p-4">
-          {canvasInner}
-        </div>
-      }
+      canvas={railCanvas}
       panels={{
         media: slots?.carouselMediaPanel,
         brand: slots?.carouselBrandPanel,
@@ -1720,8 +1900,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       onBeforeToggle={applyCrop}
       slideIds={slides.map((sl) => sl.id)}
       selectedSlideId={selectedSlideId}
-      onSelectSlide={(id) => { applyCrop(); setSelectedSlideId(id); setSelectedElementId(null) }}
+      onSelectSlide={pickSlide}
       onOpenControls={() => setShowControls(true)}
+      gridOpen={gridOpen}
+      onToggleGrid={toggleGrid}
     />
   )
 
@@ -1811,7 +1993,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
 
         {/* SCROLL AREA: the slide viewport. ResizeObserver lives here so
             canvasScale measures the slide-rendering area, not the toolbar. */}
-        <div ref={canvasContainerRef} className="relative flex-1 flex flex-col items-center justify-center gap-4 overflow-y-auto min-h-0 p-4">
+        <div ref={setCanvasContainer} className="relative flex-1 flex flex-col items-center justify-center gap-4 overflow-y-auto min-h-0 p-4">
         {canvasInner}
         </div>
       </div>
