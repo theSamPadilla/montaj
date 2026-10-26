@@ -50,8 +50,8 @@ Inventory (2026-10-21): the params a native step WRITES to (or deletes in), chec
   out, file, never overwritten: generate_model, animate_model, rig_model (+ `<out>.tripo.json`, temps);
       fetch (yt-dlp keeps an existing file).
   out, folder: creator_diagnostic (stills/, diagnostic.json), glass_plate (its own NNNN.jpg frames).
-  out, export folder (`"outKind": "export"`): export_editor, export_overlay_pages, export_carousel_pages; each
-      makes a new folder inside it and changes nothing already there.
+  out, export folder (`"outKind": "export"`): export_editor (a new folder inside it), export_overlay_pages,
+      export_carousel_pages (a new zip inside it); each changes nothing already there.
   out-dir, folder, files overwritten: waveform_image, capture_site, filmstrip, shot_sheet.
   frames-dir (contact_sheet, frames kept) and inbox (creator_diagnostic DELETES each measured video directly
       in it): `"outKind": "write"`.
@@ -72,8 +72,8 @@ step scripts directly, so this guard does not see them):
   filmstrip out-dir      `.cache/filmstrips/<project>/<key>` (relative: workspace)
   generate_image, sample_frame out  `/api/projects/{id}/reserve-path` (the project's folder: workspace)
   fetch out              `<workspace>/.imports/<job>` (the app's MCP import)
-  export_overlay_pages, export_carousel_pages out  `<picked folder>/overlays|slides` (a user-picked folder,
-                         default `<Movies>/Montaj/<project>`): the export branch
+  export_overlay_pages, export_carousel_pages out  `<picked folder>` (a user-picked folder, default
+                         `<Movies>/Montaj/<project>`; the step writes `overlays.zip` / `slides.zip` in it): the export branch
   run_step (MCP)         whatever the agent passes; the app's mcp.md tells it to leave `out` off and pass
                          `project`, which lands in the project's assets folder (or the `projectDir` the step's `out` declares)
 """

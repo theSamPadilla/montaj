@@ -126,3 +126,18 @@ test('an exported page draws the overlay frame by frame and plays by itself (hea
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// PL89: the carousel export cut a file URL at its first space. The overlay export reads each prop value whole, so a
+// macOS screenshot's name (spaces, a U+202F) and the app's served-file form are copied.
+test('relocateProps: a path with spaces and U+202F, and its served-file form, are copied', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-xpages-'))
+  try {
+    const shot = join(dir, 'Screenshot 2026-10-24 at 2.32 PM.png')
+    writeFileSync(shot, 'x')
+    const warnings = []
+    const out = relocateProps({ a: shot, b: `/api/files?path=${encodeURIComponent(shot)}` }, join(dir, 'out', 'assets'), new Map(), warnings)
+    assert.deepEqual(warnings, [])
+    assert.equal(out.a, 'assets/01-Screenshot 2026-10-24 at 2.32 PM.png')
+    assert.equal(out.b, out.a)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

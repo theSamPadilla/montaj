@@ -2,6 +2,7 @@
 """Shared helpers for video-toolkit scripts. All scripts import from here."""
 import contextlib, json, math, os, re, shutil, subprocess, sys, tempfile
 from decimal import Decimal
+from pathlib import Path
 
 try:
     from lib import disk_space as _disk_space
@@ -64,22 +65,47 @@ def check_output(path: str):
         fail("empty_output", f"Output file is empty: {path}")
 
 
-def new_folder_in(parent: str, name: str) -> str:
-    """Make a folder that did not exist inside `parent` (which is made if missing): `name`, then `name 2`,
-    `name 3`, ... Nothing already in `parent` is changed. Returns its absolute path. An export step writes only
-    into the folder this returns."""
+def new_file_in(parent: str, name: str, ext: str) -> str:
+    """Make an empty file that did not exist inside `parent` (which is made if missing): `name<ext>`, then
+    `name 2<ext>`, `name 3<ext>`, ... Nothing already in `parent` is changed, and a link at a name counts as taken.
+    Returns its absolute path. An export step writes only the file this returns."""
     parent = os.path.abspath(parent)
     if os.path.exists(parent) and not os.path.isdir(parent):
         fail("out_exists", "out is a file; pick a folder")
     os.makedirs(parent, exist_ok=True)
     for n in range(1, 10000):
-        path = os.path.join(parent, name if n == 1 else f"{name} {n}")
+        path = os.path.join(parent, f"{name}{ext}" if n == 1 else f"{name} {n}{ext}")
         try:
-            os.mkdir(path)
+            os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
             return path
         except FileExistsError:
             continue
-    fail("out_exists", f"out already holds too many {name} folders; pick another folder")
+    fail("out_exists", f"out already holds too many {name} files; pick another folder")
+
+
+_STORED = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".mp4", ".mov", ".webm", ".mp3", ".m4a", ".woff2", ".zip"}
+
+
+def zip_folder(src: str, dest: str, top: str, skip=()) -> None:
+    """Write every file under `src` into the zip at `dest`, as `<top>/<path relative to src>`, leaving out the
+    names in `skip`. Already-compressed media is stored, the rest deflated."""
+    import zipfile
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+        for root, dirs, names in os.walk(src):
+            dirs.sort()
+            for n in sorted(names):
+                if n in skip:
+                    continue
+                path = os.path.join(root, n)
+                arc = f"{top}/{Path(os.path.relpath(path, src)).as_posix()}"
+                stored = os.path.splitext(n)[1].lower() in _STORED
+                z.write(path, arc, compress_type=zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED)
+
+
+def folder_files(src: str, skip=()) -> list:
+    """Every file under `src` as a sorted list of `/`-separated paths relative to it, leaving out `skip`."""
+    return sorted(Path(os.path.relpath(os.path.join(r, n), src)).as_posix()
+                  for r, _d, names in os.walk(src) for n in names if n not in skip)
 
 
 _FFMPEG_BANNER = re.compile(
