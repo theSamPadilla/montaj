@@ -557,6 +557,7 @@ describe('CarouselEditor — editor-core integration', () => {
         ['Ctrl', 'Shift', 'Z'],
         ['Delete'],
         ['N'],
+        ['T'],
         ['Ctrl', 'C'],
         ['Ctrl', 'X'],
         ['Ctrl', 'V'],
@@ -568,6 +569,8 @@ describe('CarouselEditor — editor-core integration', () => {
         ['Ctrl', '['],
         ['Ctrl', 'Alt', ']'],
         ['Ctrl', 'Alt', '['],
+        ['Ctrl', 'Alt', 'C'],
+        ['Ctrl', 'Alt', 'V'],
         ['Esc'],
       ])
 
@@ -3945,5 +3948,102 @@ describe('CarouselEditor: typed panel numbers are one undo step', () => {
     await enter(size)
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
     expect((elementsOf(lastSave(adapter))[0] as OverlayElement).overlay.props.fontSize).toBe('120px')
+  })
+})
+
+describe('CarouselEditor: add text and text style keys (§586 M10)', () => {
+  const OPT_CMD = { metaKey: true, altKey: true }
+  const TPL = { name: 'static-text', description: '', jsxPath: 'static-text.jsx', props: [{ name: 'text', type: 'string' as const, default: 'Hello' }, { name: 'color', type: 'color' as const, default: '#000' }] }
+
+  function textEl(id: string, props: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+    return { id, type: 'overlay' as const, overlay: { template: 'static-text.jsx', props }, frame: 0, x: 100, y: 100, w: 300, h: 100, rotation: 0, ...extra }
+  }
+  function textProject(): Project {
+    return makeProject({
+      slides: [{
+        id: 'slide-0', base_color: '#ffffff',
+        elements: [
+          textEl('t-a', { text: 'Source', color: '#ff0000', fontSize: '64', fontFamily: '"Syne"', effect: 'shadow', effectColor: '#111111' }, { googleFonts: ['Syne:wght@800'] }),
+          textEl('t-b', { text: 'Bee', color: '#000', fontSize: '10', fontFamily: 'system-ui' }),
+          textEl('t-c', { text: 'Sea', color: '#000' }),
+        ],
+      }],
+    } as Partial<Project>)
+  }
+  async function mountText(withTemplate = true) {
+    const adapter = makeFakeAdapter()
+    if (withTemplate) adapter.getDefaultTextOverlay = vi.fn(async () => TPL)
+    const onProjectChange = vi.fn()
+    render(<CarouselEditor project={textProject()} adapter={adapter} onProjectChange={onProjectChange} />)
+    await waitFor(() => findInteractiveWrapper('t-a'))
+    await act(async () => {})
+    return { adapter, onProjectChange }
+  }
+  const propsOf = (p: Project, id: string) => (p.slides![0].elements.find((e) => e.id === id) as { overlay: { props: Record<string, unknown> }; googleFonts?: string[] })
+
+  it('T adds one centred text box in one undo step; a held T adds one', async () => {
+    const { adapter } = await mountText()
+    const e = await key('t')
+    expect(e.defaultPrevented).toBe(true)
+    await key('t', { repeat: true })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const added = lastSave(adapter).slides![0].elements[3] as unknown as { x: number; y: number; w: number; h: number; overlay: { template: string } }
+    expect(lastSave(adapter).slides![0].elements).toHaveLength(4)
+    expect(added.overlay.template).toBe('static-text.jsx')
+    expect(added.x + added.w / 2).toBe(540)
+    expect(added.y + added.h / 2).toBe(540)
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(lastSave(adapter).slides![0].elements).toHaveLength(3)
+  })
+
+  it('T does nothing while typing, with a modifier, or with no text template', async () => {
+    const { adapter } = await mountText()
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    await key('t', {}, input)
+    input.remove()
+    for (const mod of [{ metaKey: true }, { ctrlKey: true }, { altKey: true }, { shiftKey: true }]) await key('t', mod)
+    expect(adapter.saveCalls).toHaveLength(0)
+    const bare = await mountText(false)
+    await key('t')
+    expect(bare.adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('Opt+Cmd+C then Opt+Cmd+V styles every selected text box in one undo step, keeping text', async () => {
+    const { adapter } = await mountText()
+    await plainClick('t-a')
+    const c = await key('c', { ...OPT_CMD, code: 'KeyC' })
+    expect(c.defaultPrevented).toBe(true)
+    expect(adapter.saveCalls).toHaveLength(0)
+    await plainClick('t-b')
+    await shiftClick('t-c')
+    const v = await key('√', { ...OPT_CMD, code: 'KeyV' })
+    expect(v.defaultPrevented).toBe(true)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const b = propsOf(lastSave(adapter), 't-b')
+    const c2 = propsOf(lastSave(adapter), 't-c')
+    expect(b.overlay.props).toEqual({ text: 'Bee', color: '#ff0000', fontSize: '64', fontFamily: '"Syne"' })
+    expect(b.googleFonts).toEqual(['Syne:wght@800'])
+    expect(c2.overlay.props).toEqual({ text: 'Sea', color: '#ff0000' })
+    expect(c2.googleFonts).toBeUndefined()
+
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(propsOf(lastSave(adapter), 't-b').overlay.props.color).toBe('#000')
+    expect(propsOf(lastSave(adapter), 't-c').overlay.props.color).toBe('#000')
+  })
+
+  it('Opt+Shift+Cmd+V, and the keys while typing, do nothing', async () => {
+    const { adapter } = await mountText()
+    await plainClick('t-a')
+    await key('c', { ...OPT_CMD, code: 'KeyC' })
+    await plainClick('t-b')
+    await key('v', { ...OPT_CMD, shiftKey: true, code: 'KeyV' })
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    await key('v', { ...OPT_CMD, code: 'KeyV' }, input)
+    input.remove()
+    expect(adapter.saveCalls).toHaveLength(0)
   })
 })

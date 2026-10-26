@@ -118,6 +118,7 @@ describe('ControlsInfoModal', () => {
     // What was there stays, in its place.
     expect(keyboard.entries.slice(0, 4).map((e) => e.label)).toEqual(['Undo', 'Redo', 'Remove the selected element', 'Add a note'])
     expect(keyboard.entries.slice(4)).toEqual([
+      { keys: ['T'], label: 'Add text' },
       { keys: ['⌘', 'C'], label: 'Copy' },
       { keys: ['⌘', 'X'], label: 'Cut' },
       { keys: ['⌘', 'V'], label: 'Paste' },
@@ -129,6 +130,8 @@ describe('ControlsInfoModal', () => {
       { keys: ['⌘', '['], label: 'Send backward' },
       { keys: ['⌘', '⌥', ']'], label: 'Bring to front' },
       { keys: ['⌘', '⌥', '['], label: 'Send to back' },
+      { keys: ['⌘', '⌥', 'C'], label: 'Copy text style' },
+      { keys: ['⌘', '⌥', 'V'], label: 'Paste text style' },
       { keys: ['⌥', '⇧', 'L'], label: 'Lock or unlock' },
       { keys: ['Esc'], label: 'Deselect' },
     ])
