@@ -8,14 +8,14 @@
   },
   "output": {
     "type": "json",
-    "description": "{pushed (clips), kept? (clips a person framed, left alone), noFace? (clips anchored at 0.35, no face seen)}. detail adds the pushed ids."
+    "description": "{pushed (clips), kept? (clips a person framed, left alone), noFace? (clips anchored at 0.35, no face seen), punches? ([{at, word}]: where each punch-in landed)}. detail adds the pushed ids."
   },
   "params": [
     {"name": "project", "type": "path", "required": true, "description": "The project id, its folder, or the absolute path of its project.json"},
     {"name": "items", "type": "string", "required": false, "description": "Only these clips: a JSON list of item ids. Default: every video on the main track."},
-    {"name": "zoom", "type": "float", "required": false, "min": 0.01, "max": 0.2, "description": "How much each clip grows across it (0.07 is 7%; default 0.07, alternate 0.09)."},
+    {"name": "zoom", "type": "float", "required": false, "min": 0.01, "max": 0.2, "description": "How much each clip grows across it (0.07 is 7%; default 0.07, alternate 0.09, punch 0.08 and at most 0.1)."},
     {"name": "anchor", "type": "string", "required": false, "default": 0.35, "description": "What stays put: a share of the height (0.35, the default), face (each clip's head) or follow (keyed along the head)."},
-    {"name": "style", "type": "enum", "options": ["push", "alternate"], "required": false, "default": "push", "description": "push (default): every clip pushes in; alternate: in, then out, clip to clip."},
+    {"name": "style", "type": "enum", "options": ["push", "alternate", "punch"], "required": false, "default": "push", "description": "push (default): every clip pushes in; alternate: in, then out, clip to clip; punch: light punch-ins held at cuts and on key words or sentence starts, never mid-word."},
     {"name": "detail", "type": "bool", "required": false, "description": "Also answer the pushed ids."}
   ]
 }

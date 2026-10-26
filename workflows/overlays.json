@@ -9,6 +9,7 @@
     { "id": "select-takes",     "uses": "montaj/select-takes",   "needs": ["cut_plan"], "note": "With several clips: review the plan's takes across clips and edit cut-plan.md; never apply here." },
     { "id": "cut_apply",        "uses": "montaj/cut",            "needs": ["select-takes"], "params": { "plan": "cut-plan.md" }, "note": "Applies the plan." },
     { "id": "captions",         "uses": "montaj/generate_captions", "needs": ["cut_apply"], "note": "Captions before the overlays; with no style given they draw in the profile's caption style and font. Leave them out only when the prompt says no captions." },
-    { "id": "overlays",         "uses": "montaj/overlay",        "needs": ["captions"], "params": { "style": "auto" } }
+    { "id": "punch",            "uses": "montaj/push_in",        "needs": ["cut_apply"], "params": { "style": "punch", "anchor": "face" }, "note": "Light punch-ins on the face (8%), at cuts and on key words, so the talking head is never still. Leave it out only when the prompt says no zoom." },
+    { "id": "overlays",         "uses": "montaj/overlay",        "needs": ["captions", "punch"], "params": { "style": "auto" } }
   ]
 }
