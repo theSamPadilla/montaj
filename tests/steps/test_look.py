@@ -28,7 +28,8 @@ def _project(tmp_path, overlays=(), base=((0, 5), (5, 10)), captions=(), extra_t
     items = []
     for ov in overlays:
         ov = dict(ov)
-        jsx = ov.pop("jsx", "export default function O() { return <div>hi</div> }")
+        # moving by default (PL89b: look says when an overlay has no motion); the motion tests pass their own
+        jsx = ov.pop("jsx", "export default function O() { const m = Motion.motion(frame, fps, duration); return <div style={m.style}>hi</div> }")
         if jsx is not None:
             (d / "overlays" / f"{ov['id']}.jsx").write_text(jsx)
         items.append({"type": "overlay", "src": f"./overlays/{ov['id']}.jsx", **ov})
@@ -212,8 +213,9 @@ def _has_render():
 def test_look_through_the_real_measurer_finds_the_text_off_the_frame(tmp_path):
     wide = ("export default function O() { return <div style={{position: 'absolute', left: 700, top: 500, "
             "fontSize: 120, whiteSpace: 'nowrap', color: 'white'}}>A headline far too long</div> }")
-    fits = ("export default function O() { return <div style={{position: 'absolute', left: 200, top: 700, "
-            "fontSize: 60, color: 'white'}}>Fits</div> }")
+    # it moves with the runtime's Motion global (PL89b), so the real render also proves Motion is there
+    fits = ("export default function O() { const m = Motion.motion(frame, fps, duration); return <div style={{position: 'absolute', left: 200, top: 700, "
+            "fontSize: 60, color: 'white', ...m.style}}>Fits</div> }")
     path, _ = _project(tmp_path, overlays=[{"id": "ov-wide", "start": 1, "end": 3, "jsx": wide},
                                            {"id": "ov-fits", "start": 4, "end": 6, "jsx": fits}])
     out = look.run(str(path), detail=True)
@@ -385,3 +387,68 @@ def test_a_tight_heading_at_the_top_edge_is_not_off_the_frame(tmp_path, monkeypa
     path, _ = _project(tmp_path, overlays=[{"id": "ov-top", "start": 1, "end": 3, "jsx": tight}])
     out = look.run(str(path), detail=True)
     assert out["overlays"] == 1 and not any("runs off the frame" in i or "spills" in i for i in out.get("issues", [])), out
+
+
+# ── PL89b: motion and type a phone can read ───────────────────────────────────────────────────────────────────────
+
+MOVING = ("export default function O() {\n  const m = Motion.motion(frame, fps, duration)\n"
+          "  return <div style={m.style}>hi</div>\n}\n")
+
+
+def _motion(tmp_path, jsx, files=()):
+    d = tmp_path / "m"
+    (d / "overlays" / "_shared").mkdir(parents=True, exist_ok=True)
+    for name, text in files:
+        (d / "overlays" / name).write_text(text)
+    (d / "overlays" / "o.jsx").write_text(jsx)
+    item = {"id": "ov-o", "type": "overlay", "src": "./overlays/o.jsx", "start": 2, "end": 6}
+    return [i["text"] for i in lc.motion_issues(item, str(d), "ov-o")]
+
+
+def test_an_overlay_using_motion_or_springs_and_its_duration_moves_well(tmp_path):
+    assert _motion(tmp_path, MOVING) == []
+    eased = ("export default function O() {\n  const s = spring({frame, fps})\n"
+             "  const out = interpolate(frame, [duration - 4, duration], [1, 0])\n"
+             "  return <div style={{opacity: out, transform: `scale(${s})`}}>hi</div>\n}\n")
+    assert _motion(tmp_path, eased) == []
+    # motion in a shared module the overlay imports counts too
+    shared = "export const enter = (f, fps, d) => Motion.motion(f, fps, d)\n"
+    assert _motion(tmp_path, "import { enter } from './_shared/anim.js'\nexport default function O() { return <div style={enter(frame, fps, duration).style}>x</div> }",
+                   files=[("_shared/anim.js", shared)]) == []
+
+
+def test_a_still_overlay_and_a_linear_one_that_never_exits_are_said(tmp_path):
+    still = _motion(tmp_path, "export default function O() { return <div>hi</div> }")
+    assert len(still) == 1 and "no motion" in still[0] and "Motion.motion" in still[0]
+    linear = _motion(tmp_path, "export default function O() {\n  const a = interpolate(frame, [0, 10], [0, 1])\n"
+                               "  return <div style={{opacity: a}}>hi</div>\n}\n")
+    assert any("never leaves" in t for t in linear) and any("linear" in t for t in linear), linear
+
+
+def _sized(*texts):
+    return {"texts": [{"text": t, "fontSize": f"{px}px", "bbox": {"x": 100, "y": 300 + 100 * k, "w": 300, "h": px},
+                       "overflow": {}, "clippingAncestor": None} for k, (t, px) in enumerate(texts)]}
+
+
+def test_text_under_the_phone_floors_is_said_once_per_kind_at_its_size_on_screen():
+    item = {"id": "ov-a", "type": "overlay", "start": 0, "end": 4}
+    said = [i["text"] for i in lc.type_floor_issues(item, _sized(("FOOTAGE", 18), ("PhoneBot", 64), ("UCLA", 24)), 1080, 1920, 2, "ov-a")]
+    assert len(said) == 2, said
+    assert any('"FOOTAGE" is 18 px' in t and "36 px" in t for t in said), said
+    assert any('"PhoneBot" is 64 px' in t and "72 px" in t for t in said), said
+    # the item's own scale counts: at 2x the same texts are 36, 128 and 48 px on screen
+    assert lc.type_floor_issues({**item, "scale": 2}, _sized(("FOOTAGE", 18), ("PhoneBot", 64), ("UCLA", 24)), 1080, 1920, 2, "ov-a") == []
+    # one size alone is a label, not a missing title
+    assert lc.type_floor_issues(item, _sized(("sensors", 40), ("compute", 40)), 1080, 1920, 2, "ov-a") == []
+
+
+def test_look_reports_motion_and_type_floors_with_the_rest(tmp_path):
+    path, _ = _project(tmp_path, overlays=[{"id": "ov-still", "start": 1, "end": 4, "jsx": "export default function O() { return <div>hi</div> }"},
+                                           {"id": "ov-good", "start": 5, "end": 9, "jsx": MOVING}])
+
+    def measure(item, *a):
+        return (_sized(("tiny", 20)) if item["id"] == "ov-still" else _sized(("Big title", 96), ("label", 40))), None
+    out = look.run(str(path), measure_fn=measure, detail=True)
+    mine = [i for i in out["issues"] if "ov-still" in i]
+    assert any("no motion" in i for i in mine) and any('"tiny" is 20 px' in i for i in mine), out["issues"]
+    assert not any("ov-good" in i for i in out["issues"]), out["issues"]

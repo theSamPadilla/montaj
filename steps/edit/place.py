@@ -198,32 +198,10 @@ SYSTEM = GENERIC | {"-apple-system", "blinkmacsystemfont", "helvetica", "helveti
                     "times", "times new roman", "georgia", "verdana", "tahoma", "trebuchet ms", "courier",
                     "courier new", "menlo", "monaco", "consolas", "segoe ui", "sf pro", "sf pro display",
                     "sf pro text", "sf mono", "sfmono-regular", "apple color emoji", "segoe ui emoji", "noto color emoji"}
-IMPORT = re.compile(r"""(?:import|from)\s*(?:[^'"`;]*?\sfrom\s*)?['"](\.{1,2}/[^'"]+)['"]""")
 LITERAL = re.compile(r"""'([^'\n]*)'|"([^"\n]*)"|`([^`\n]*)`""")
 FONT_FAMILY = re.compile(r"""fontFamily\s*:\s*(?:'([^'\n]*)'|"([^"\n]*)"|`([^`\n]*)`)""")
 WEIGHT = re.compile(r"""fontWeight\s*:\s*['"]?(\d{3}|bold)\b""")
 EXPORTED = re.compile(r"""export\s+const\s+googleFonts\s*=\s*\[([^\]]*)\]""")
-
-
-def _overlay_sources(project_dir, path, limit=12):
-    """The overlay file and the project files it imports by a relative path (./ or ../), transitively: [text]."""
-    root, seen, out, todo = write_places.real(project_dir), set(), [], [path]
-    while todo and len(out) < limit:
-        p = todo.pop(0)
-        real = os.path.realpath(p)
-        if real in seen or not os.path.isfile(real) or not write_places.within(real, root):
-            continue
-        seen.add(real)
-        try:
-            with open(real, encoding="utf-8", errors="replace") as f:
-                text = f.read(400_000)
-        except OSError:
-            continue
-        out.append(text)
-        for rel in IMPORT.findall(text):
-            q = os.path.normpath(os.path.join(os.path.dirname(real), rel))
-            todo += [q] if os.path.splitext(q)[1] else [q + ext for ext in (".js", ".jsx", ".mjs")]
-    return out
 
 
 def _vendored_faces():
@@ -247,7 +225,7 @@ def overlay_fonts(project_dir, path):
     files use (fontWeight): one spec when the bundled set (MONTAJ_FONTS_DIR) has all of them; otherwise the family as
     it loads for sure (bundled, or Google's regular face) plus a spec of the missing weights alone, which the render
     fetches on a link of its own, so a weight Google lacks fails that link and never the family. Notes: none yet."""
-    texts = _overlay_sources(project_dir, path)
+    texts = lc.overlay_texts(project_dir, path)
     named = []
     for t in texts:
         for body in EXPORTED.findall(t):

@@ -162,11 +162,19 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=measure, sh
             continue
         bands = lc.caption_bands(project, s, e, width, height)
         issues += lc.measured_issues(it, m, width, height, mid, label, bands)
+        issues += lc.type_floor_issues(it, m, width, height, mid, label)   # PL89b
         placed.append((label, s, e, [b for _, b, _, _ in lc.text_boxes(m, it, width, height)]))
         checked.append(label)
         if it.get("keyframes"):
             notes.append(f"{label}: keyframed geometry read at its base values")
     issues += lc.text_overlaps(placed)
+    # PL89b: every overlay's motion, from its code (no render): none, no exit, or linear only
+    for ti, row in enumerate(lc.drawn_tracks(project)):
+        if ti == 0:
+            continue
+        for it in row:
+            if it.get("type") == "overlay":
+                issues += lc.motion_issues(it, project_dir, lc._label(it, ti))
     extra = {"overlays": len(checked)}
     if unmeasured:
         extra["unmeasured"] = unmeasured

@@ -19,6 +19,7 @@ Times are timeline seconds. Keyframed geometry is read at its base values (said 
 """
 import json
 import os
+import re
 
 from lib.project_tracks import enabled_track_items
 
@@ -538,13 +539,8 @@ def _moving_spans(project, project_dir):
                 spans += _scene_motion(it, project_dir)
             elif kind == "overlay":
                 path = overlay_path(it, project_dir)
-                text = ""
-                try:
-                    with open(path, encoding="utf-8") as f:
-                        text = f.read()
-                except (OSError, TypeError):
-                    pass
-                if "motion(" in text:        # the runtime's motion() helper keeps it alive while held
+                # the runtime's Motion helpers keep it alive while held, in its own file or one it imports (3c)
+                if isinstance(path, str) and uses_motion("\n".join(overlay_texts(project_dir, path))):
                     spans.append((s, e))
     return spans
 
@@ -571,4 +567,90 @@ def still_holds(project, project_dir):
             if y - x > STILL_HOLD_S + 1e-6:
                 out.append({"t": r2(x), "id": "still", "text": f"still for {y - x:.1f} s ({r2(x)}-{r2(y)}s): "
                             "cut, push it (push_in) or add a beat"})
+    return out
+
+
+# ── PL89b: motion and type a phone can read (3c) ──────────────────────────────────────────────────────────────────
+
+LABEL_FLOOR_PX = 36     # the smallest text that reads on a phone, on the 1080 design canvas
+TITLE_FLOOR_PX = 72     # an overlay's biggest text, when it has a title above its labels
+TITLE_RATIO = 1.5       # an overlay has a title when its biggest text is this much bigger than its smallest
+
+_IMPORT = re.compile(r"""(?:import|from)\s*(?:[^'"`;]*?\sfrom\s*)?['"](\.{1,2}/[^'"]+)['"]""")
+_COMMENTS = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
+_EASED = re.compile(r"\b(?:spring|springStep|springSum)\s*\(|\bMath\.(?:pow|sin|cos|exp|sqrt)\b|\*\*|\bease\w*\s*\(|\bcubic|\bbezier", re.I)
+
+
+def overlay_texts(project_dir, path, limit=12):
+    """The overlay file and the project files it imports by a relative path (./ or ../), transitively, as texts: what
+    its look and its fonts are written in. Never outside the project folder."""
+    from lib import write_places
+    root, seen, out, todo = write_places.real(project_dir), set(), [], [path]
+    while todo and len(out) < limit:
+        p = todo.pop(0)
+        real = os.path.realpath(p)
+        if real in seen or not os.path.isfile(real) or not write_places.within(real, root):
+            continue
+        seen.add(real)
+        try:
+            with open(real, encoding="utf-8", errors="replace") as f:
+                text = f.read(400_000)
+        except OSError:
+            continue
+        out.append(text)
+        for rel in _IMPORT.findall(text):
+            q = os.path.normpath(os.path.join(os.path.dirname(real), rel))
+            todo += [q] if os.path.splitext(q)[1] else [q + ext for ext in (".js", ".jsx", ".mjs")]
+    return out
+
+
+def uses_motion(text):
+    """Whether overlay code uses the runtime's Motion helpers (an eased enter, a hold that lives, an exit)."""
+    return bool(re.search(r"\bMotion\.\w", _COMMENTS.sub("", text or "")))
+
+
+def motion_issues(item, project_dir, label):
+    """[{t, id, text}] from an overlay's code and the files it imports, read as text (no render): no frame-driven
+    motion at all; motion that never reads `duration` (so it cannot leave before its end, and vanishes with the cut);
+    motion with no easing (only linear interpolate). Code that uses Motion has all three."""
+    src = item.get("src")
+    if not isinstance(src, str) or not src.startswith("./") or not src.endswith((".jsx", ".js", ".tsx")):
+        return []
+    code = _COMMENTS.sub("", "\n".join(overlay_texts(project_dir, os.path.join(project_dir, src[2:]))))
+    if not code or uses_motion(code):
+        return []
+    t = r2(_num(item.get("start")))
+    say = lambda text: {"t": t, "id": label, "text": text}
+    hint = "Motion.motion(frame, fps, duration) gives it an eased enter, a hold that lives and an exit"
+    if not re.search(r"\bframe\b", code):
+        return [say(f"no motion: it cuts on and off; {hint}")]
+    out = []
+    if not re.search(r"\bduration\b", code):
+        out.append(say(f"never leaves: it vanishes with the cut; fade it out before its end ({hint})"))
+    if not _EASED.search(code):
+        out.append(say("its motion is linear: ease it (Motion.motion, Motion.progress or spring)"))
+    return out
+
+
+def _px(v):
+    m = re.match(r"\s*([\d.]+)\s*px", str(v or ""))
+    return float(m.group(1)) if m else None
+
+
+def type_floor_issues(item, measurement, frame_w, frame_h, t, label):
+    """[{t, id, text}] for text too small for a phone, on screen (its CSS size times the item's own scale), on the
+    1080 design canvas: any text under LABEL_FLOOR_PX, and, when the overlay has a title (its biggest text
+    TITLE_RATIO times its smallest), a title under TITLE_FLOOR_PX. One issue of each kind per item."""
+    scale = min(_num(item.get("scaleX", item.get("scale", 1)), 1), _num(item.get("scaleY", item.get("scale", 1)), 1))
+    sized = [(str(x.get("text") or "")[:24], _px(x.get("fontSize")) * scale) for x in (measurement or {}).get("texts") or []
+             if isinstance(x, dict) and str(x.get("text") or "").strip() and _px(x.get("fontSize"))]
+    if not sized:
+        return []
+    out = []
+    small = min(sized, key=lambda s: s[1])
+    if small[1] < LABEL_FLOOR_PX - 0.5:
+        out.append({"t": r2(t), "id": label, "text": f'text "{small[0]}" is {round(small[1])} px: under the {LABEL_FLOOR_PX} px a phone reads (labels {LABEL_FLOOR_PX}+, titles {TITLE_FLOOR_PX}+, on the 1080 canvas)'})
+    big = max(sized, key=lambda s: s[1])
+    if big[1] >= small[1] * TITLE_RATIO and big[1] < TITLE_FLOOR_PX - 0.5:
+        out.append({"t": r2(t), "id": label, "text": f'title "{big[0]}" is {round(big[1])} px: a title is at least {TITLE_FLOOR_PX} px'})
     return out
