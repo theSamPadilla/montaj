@@ -194,6 +194,8 @@ export const SESSION_MAX_PAGES = 4
 // PL89: the longest one frame of a session may take before it is sampled alone instead (sampleInSessions). A 3D frame
 // over overlays takes about 8 s; a capture that never returns otherwise waits out the 300 s protocolTimeout.
 export const SESSION_FRAME_TIMEOUT_MS = 60_000
+// PL89f: the longest a session's close waits on one page or browser (then the browser is killed).
+export const SESSION_CLOSE_CAP_MS = 10_000
 // PL89c: a sheet's frames run in up to this many lanes side by side, each its own session (its own browser, so its own
 // front page): 17 and 19 times over 12 overlays and a 3D took about 130 s each in one session.
 export const SHEET_LANES = 4
@@ -453,7 +455,8 @@ if (isMain) {
       })()
       : sampleAt(atArg, resolve(outArg))
     sampled.then(result => {
-      process.stdout.write(result.pngPath + '\n')
+      // PL89f: then exit, so a browser handle left open somewhere can never hold the step (and the app's call) open.
+      process.stdout.write(result.pngPath + '\n', () => process.exit(0))
     }).catch(err => {
       // A 3D item's refusal keeps its own code (render/scene3d.js), so `--scene nope` answers scene3d_scene_missing.
       const error = isThreeFrameBlank(err) ? 'three_frame_blank' : err instanceof Scene3dError ? err.code : 'sample_failed'
@@ -478,8 +481,17 @@ if (isMain) {
  * blanks later frames): opening one more closes the least recently used once its uses finish.
  * close() closes every page and browser and removes the bundles.
  */
-export function createSampleSession({ maxPages = SESSION_MAX_PAGES } = {}) {
+export function createSampleSession({ maxPages = SESSION_MAX_PAGES, closeCapMs = SESSION_CLOSE_CAP_MS } = {}) {
   const browsers = new Map()
+  // PL89f: once closed or aborted, a session opens nothing more: a capture stuck past the frame limit runs on and
+  // would otherwise launch a browser into a session nobody closes again, holding the process open.
+  let ended = false
+  const refuse = () => { throw new Error('sampling session closed') }
+  // Never waits forever on a page or browser that will not close.
+  const capped = (p) => {
+    let timer
+    return Promise.race([Promise.resolve(p).catch(() => {}), new Promise((r) => { timer = setTimeout(r, closeCapMs) })]).finally(() => clearTimeout(timer))
+  }
   // In use order, least recently used first.
   const pages = new Map()
   const evicting = []
@@ -487,7 +499,7 @@ export function createSampleSession({ maxPages = SESSION_MAX_PAGES } = {}) {
   let captures = Promise.resolve()
   // Closing never throws: it runs on a failure, whose own error is the one to report.
   const drop = (held) => held.ready.then(async (ctx) => {
-    await ctx.page.close().catch(() => {})
+    await capped(ctx.page.close())
     try {
       cleanupBundle(ctx.workDir)
     } catch { /* a bundle folder already gone */ }
@@ -495,10 +507,12 @@ export function createSampleSession({ maxPages = SESSION_MAX_PAGES } = {}) {
   return {
     /** The browser for `key` (a kind of launch), started with `launch` the first time. */
     browserFor(key, launch) {
+      if (ended) refuse()
       if (!browsers.has(key)) browsers.set(key, launch())
       return browsers.get(key)
     },
     async sample(key, open, capture) {
+      if (ended) refuse()
       let held = pages.get(key)
       if (held) {
         pages.delete(key)
@@ -535,23 +549,28 @@ export function createSampleSession({ maxPages = SESSION_MAX_PAGES } = {}) {
       }
     },
     async close() {
+      ended = true
       const open = [...pages.values()]
       pages.clear()
-      for (const held of open) await drop(held)
-      await Promise.all(evicting.splice(0))
-      for (const b of browsers.values()) await b.then((x) => x.close()).catch(() => {})
+      for (const held of open) await capped(drop(held))
+      await capped(Promise.all(evicting.splice(0)))
+      for (const b of browsers.values()) {
+        await b.then(async (x) => {
+          await capped(x.close())
+          x.process?.()?.kill('SIGKILL')
+        }).catch(() => {})
+      }
       browsers.clear()
     },
     /** For a session with a capture stuck in it: the browsers go first, which fails what is stuck; then the bundles. */
     async abort() {
+      ended = true
       const open = [...pages.values()]
       pages.clear()
       evicting.length = 0
       for (const b of browsers.values()) {
         await b.then(async (x) => {
-          let timer
-          await Promise.race([x.close(), new Promise((r) => { timer = setTimeout(r, 10_000) })]).catch(() => {})
-          clearTimeout(timer)
+          await capped(x.close())
           x.process?.()?.kill('SIGKILL')
         }).catch(() => {})
       }
@@ -575,7 +594,10 @@ export async function sampleInSessions({ count, sampleWith, order = [...Array(co
   const size = Math.ceil(order.length / n)
   const runs = Array.from({ length: n }, (_, i) => order.slice(i * size, (i + 1) * size)).filter((r) => r.length)
   if (runs.length > 1) log(`sampling ${order.length} frames in ${runs.length} lanes`)
-  await Promise.all(runs.map((run) => sampleLane(run)))
+  // PL89f: every lane settles (and closes its session) before a failure propagates, so none is left open.
+  const settled = await Promise.allSettled(runs.map((run) => sampleLane(run)))
+  const failed = settled.find((r) => r.status === 'rejected')
+  if (failed) throw failed.reason
   return out
 
   async function sampleLane(run) {
