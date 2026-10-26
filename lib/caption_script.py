@@ -111,6 +111,22 @@ def _lay(heard_run, script_run):
     return out
 
 
+_TRAIL = re.compile(r"[^\w]+$")
+
+
+def _as_heard(heard_run, script_run):
+    """The heard words as heard; a heard word that is an inflection of exactly one script word in the stretch
+    ("protect" for "protecting.") takes that word's closing punctuation, so a sentence still ends there."""
+    out = [copy.deepcopy(w) for w in heard_run]
+    for w in out:
+        hk = _key(w["word"])
+        kin = [t for t in script_run if hk and _key(t) and _key(t) != hk and (_key(t).startswith(hk) or hk.startswith(_key(t)))]
+        trail = _TRAIL.search(kin[0]) if len(kin) == 1 else None
+        if trail and not _TRAIL.search(w["word"]):
+            w["word"] = w["word"] + trail.group()
+    return out
+
+
 def _replace(heard_run, script_run):
     """(words, corrected) for a stretch where the two disagree: the best-matching pair of runs (each at most RUN_WORDS
     words) is replaced when it reads alike, and the stretches either side of it are looked at again; the rest of the
@@ -132,7 +148,7 @@ def _replace(heard_run, script_run):
                     if r >= MATCH_RATIO and (best is None or r > best[0]):
                         best = (r, a, b, c, d)
     if best is None:
-        return [copy.deepcopy(w) for w in heard_run], 0
+        return _as_heard(heard_run, script_run), 0
     _, a, b, c, d = best
     left, nl = _replace(heard_run[:a], script_run[:c])
     right, nr = _replace(heard_run[b:], script_run[d:])

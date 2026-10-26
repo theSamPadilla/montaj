@@ -50,7 +50,7 @@ from lib import project_lock as _project_lock_mod
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, project_lock, project_lock_async, write_json_atomic
 from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwargs
 from lib.overlay_validation import overlay_item_errors
-from lib.caption_profile_look import resolve_style_and_look
+from lib.caption_profile_look import caption_words_args, resolve_style_and_look
 from lib.caption_script import script_of, spell_from_script
 from lib.caption_translation import TranslationError, apply_show, apply_translation, show_new_language, finish_regenerated_track, is_translation, merge_caption_theme as _lib_merge_caption_theme, record_source_language
 from lib.project_tracks import normalize_tracks, track_items
@@ -6186,7 +6186,7 @@ async def _run_caption_pipeline(
         (
             "caption",
             [str(caption_py), "--input", str(words_json_path),
-             "--style", style, "--out", str(track_path)],
+             "--style", style, "--out", str(track_path), *caption_words_args(project)],
         ),
     ]
 

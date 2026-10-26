@@ -87,7 +87,7 @@ def test_one_heard_word_for_two_script_words_splits_its_time():
 def test_a_word_that_sounds_alike_is_corrected():
     heard = W(("robot", 9.3, 9.6), ("dance", 9.6, 9.9), ("a", 9.9, 10.0), ("car", 10.0, 10.3))
     out, n = align(heard, "the robot dents cars, throws flying elbows")
-    assert words_of(out) == ["robot", "dents", "a", "car"] and n == 1
+    assert words_of(out) == ["robot", "dents", "a", "car,"] and n == 1   # "car" as said, with the comma of the script's "cars,"
 
 
 @pytest.mark.parametrize("said,script", [
@@ -210,7 +210,7 @@ def _step_run(tmp_path, monkeypatch, capsys, argv_extra, project_extra):
 def test_the_step_spells_from_the_editing_prompt_by_default(tmp_path, monkeypatch, capsys):
     prompt = "Edit this video to follow the script:\n<Setup>\nIn the demo, the robot dents cars.\n<Play the clip>\n"
     out = _step_run(tmp_path, monkeypatch, capsys, [], {"editingPrompt": prompt})
-    assert out["corrected"] == 1 and out["segments"][0]["text"] == "the robot dents a car"
+    assert out["corrected"] == 1 and out["segments"][0]["text"] == "the robot dents a car."
 
 
 def test_an_empty_script_turns_it_off_and_no_prompt_answers_no_count(tmp_path, monkeypatch, capsys):

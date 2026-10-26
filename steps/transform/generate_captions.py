@@ -38,7 +38,7 @@ from serve.caption_job import build_audio_mix_spec, caption_input_change, captio
 from lib.project_revisions import engine_guard_enabled  # noqa: E402
 from lib import caption_ink  # noqa: E402
 from lib.caption_script import script_of, spell_from_script  # noqa: E402
-from lib.caption_profile_look import resolve_style_and_look  # noqa: E402
+from lib.caption_profile_look import caption_words_args, resolve_style_and_look  # noqa: E402
 from serve.caption_theme import seed_prev  # noqa: E402
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, update_project  # noqa: E402
 from lib.sync_clash import SyncConflict, exit_refused  # noqa: E402
@@ -159,7 +159,7 @@ def main():
 
         # 4. Group words into a styled caption track.
         run([sys.executable, caption_py,
-             "--input", words_json_path, "--style", style, "--out", track_path])
+             "--input", words_json_path, "--style", style, "--out", track_path, *caption_words_args(project)])
 
         # 5. Load the track, finish it like the SSE route (theme, ids, kept
         #    translations), persist onto project.

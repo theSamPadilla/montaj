@@ -108,3 +108,11 @@ def resolve_style_and_look(explicit, project: dict) -> tuple[str, dict]:
     style = explicit or prior or picked or "pop"
     look = {} if prior else caption_look(style, prefs, emphasis=picked is not None)
     return style, look
+
+
+def caption_words_args(project) -> list:
+    """`--max-words N` for the caption step when the project's profile sets captionWords (a whole number from 1 to 12),
+    else nothing: the style's own cap applies (lib/caption_group.max_words_for)."""
+    from lib.profile_assets import profile_preferences
+    n = profile_preferences(project).get("captionWords")
+    return ["--max-words", str(n)] if isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= 12 else []

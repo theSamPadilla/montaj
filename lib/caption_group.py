@@ -3,6 +3,7 @@
 Words are `{"word", "start", "end"}` in seconds. Shared by the caption step and
 anything else that turns a word list into caption segments.
 """
+import re
 
 # Minimum word duration in SECONDS, not frames. This is the single funnel for
 # both the SSE route and the CLI step, and neither knows the project's fps
@@ -99,30 +100,58 @@ def floor_word_durations(words, floor_s=MIN_WORD_DURATION_S):
 
 PHRASE_GAP_S = 0.4
 PHRASE_MAX_WORDS = 8
+# How many words a caption holds at most, by style: the styles that show the whole line read best short (2-4 words,
+# what people's own captions land on); word-by-word and pop show one word at a time, so their lines can run longer.
+# A profile's `captionWords` preference (1..CAPTION_WORDS_MAX) overrides it.
+LINE_WORDS = 4
+STYLE_WORDS = {"word-by-word": PHRASE_MAX_WORDS, "pop": PHRASE_MAX_WORDS}
+CAPTION_WORDS_MAX = 12
+
+# A word that ends a sentence: ., ? or !, then any closing quotes or brackets. An initialism ("U.S.") does not.
+_SENTENCE_END = re.compile(r"[.?!]+[\"'\u201d\u2019)\]]*$")
+_INITIALISM = re.compile(r"^(?:[A-Za-z]\.){2,}$")
+# A word that ends a clause: a comma, semicolon, colon or dash, then any closing quotes or brackets.
+_CLAUSE_END = re.compile(r"(?:[,;:]|\u2014|--)[\"'\u201d\u2019)\]]*$")
 
 
-def group(words):
+def max_words_for(style, override=None) -> int:
+    """The most words a caption holds for `style`, or `override` (a profile's captionWords) when it is a whole number
+    from 1 to CAPTION_WORDS_MAX."""
+    if isinstance(override, int) and not isinstance(override, bool) and 1 <= override <= CAPTION_WORDS_MAX:
+        return override
+    return STYLE_WORDS.get(style, LINE_WORDS)
+
+
+def _ends_sentence(word) -> bool:
+    w = str(word)
+    return bool(_SENTENCE_END.search(w)) and not _INITIALISM.match(w)
+
+
+def group(words, max_words=PHRASE_MAX_WORDS):
     """Floor word durations, then group into display phrases.
 
-    A new phrase starts when the gap to the next word exceeds 0.4 s or the
-    phrase already holds 8 words. Returns segments
+    A phrase ends after a word that ends a sentence (never runs across one), after a word that ends a clause (unless
+    it is a lone word opening a sentence: "Yeah,"), when it holds `max_words`, or before a gap over 0.4 s. Returns segments
     `{"text", "start", "end", "words": [{"word", "start", "end"}]}` with times
     rounded to milliseconds. Pure: never mutates `words`.
     """
     words = floor_word_durations(words, MIN_WORD_DURATION_S)
     if not words:
         return []
+    max_words = max(1, int(max_words))
     items = []
-    phrase = [words[0]]
-    for w in words[1:]:
-        gap = w["start"] - phrase[-1]["end"]
-        if gap > PHRASE_GAP_S or len(phrase) >= PHRASE_MAX_WORDS:
+    phrase = []
+    opens = True   # whether the phrase being built opens a sentence (the first one does, and each after a sentence end)
+    for i, w in enumerate(words):
+        phrase.append(w)
+        nxt = words[i + 1] if i + 1 < len(words) else None
+        # A clause comma ends the phrase, except after a lone word that opens a sentence ("Yeah," "So,").
+        clause = _CLAUSE_END.search(str(w["word"])) and (len(phrase) >= 2 or not opens)
+        if (nxt is None or nxt["start"] - w["end"] > PHRASE_GAP_S or len(phrase) >= max_words
+                or _ends_sentence(w["word"]) or clause):
             items.append(phrase)
-            phrase = [w]
-        else:
-            phrase.append(w)
-    if phrase:
-        items.append(phrase)
+            opens = _ends_sentence(w["word"]) or (nxt is not None and nxt["start"] - w["end"] > PHRASE_GAP_S)
+            phrase = []
 
     return [
         {
