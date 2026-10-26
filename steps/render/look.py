@@ -164,6 +164,7 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=measure, sh
         bands = lc.caption_bands(project, s, e, width, height)
         issues += lc.measured_issues(it, m, width, height, mid, label, bands)
         issues += lc.type_floor_issues(it, m, width, height, mid, label)   # PL89b
+        issues += lc.mark_cover_issues(project, project_dir, it, m, width, height, mid, label)   # PL89e
         placed.append((label, s, e, [b for _, b, _, _ in lc.text_boxes(m, it, width, height)]))
         checked.append(label)
         if it.get("keyframes"):

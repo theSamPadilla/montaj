@@ -520,6 +520,13 @@ def measured_issues(item, measurement, frame_w, frame_h, t, label, bands=()):
             return True
         return False
 
+    # PL89e: a face that did not load in a stack with no generic family draws in the default serif
+    for node in (measurement or {}).get("texts") or []:
+        if isinstance(node, dict) and node.get("fellBack") is True:
+            face = str(node.get("fontFamily") or "").split(",")[0].strip().strip("'\"")
+            quote = f' "{str(node.get("text") or "")[:40]}"' if node.get("text") else ""
+            add("font", f'text{quote} draws in serif: "{face}" did not load; name it in googleFonts, and end the stack in a '
+                        f'generic family ("{face}, sans-serif")')
     for text, b, clipped, spills in text_boxes(measurement, item, frame_w, frame_h):
         quote = f' "{text}"' if text else ""
         x0, y0, x1, y1 = b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"]
@@ -565,6 +572,54 @@ def text_overlaps(placed):
             if any(_cross(x, y) for x in ba for y in bb):
                 out.append({"t": r2(s), "id": la, "text": f"text overlaps {lb}"})
     return out
+
+
+# PL89e (52's round-6 notes): "sensors" sat on the phone's edge. An overlay that imports a direct_scene mark file has its
+# labels checked against the marked parts at the scene's moment under it.
+MARK_IMPORT = re.compile(r"""from\s+['"]\./_marks/([a-z0-9-]{1,64})\.json['"]""")
+COVER_SHARE = 0.3   # of the label's box over a part's box: on it
+
+
+def _box_cover(b, part):
+    x0, y0, x1, y1 = part
+    w = max(0.0, min(b["x"] + b["w"], x1) - max(b["x"], x0))
+    h = max(0.0, min(b["y"] + b["h"], y1) - max(b["y"], y0))
+    return w * h / max(1.0, b["w"] * b["h"])
+
+
+def mark_cover_issues(project, project_dir, item, measurement, frame_w, frame_h, t, label):
+    """[{t, id, text}]: a label over a part the overlay's mark file marks, at the scene second under it (the engine:scene3d
+    item of that scene playing at `t`, else the mark's own moment). At most one, the first found."""
+    path = overlay_path(item, project_dir)
+    if not path:
+        return []
+    names = list(dict.fromkeys(n for txt in overlay_texts(project_dir, path) for n in MARK_IMPORT.findall(txt)))
+    scenes = [it for row in drawn_tracks(project) for it in row if it.get("src") == "engine:scene3d"]
+    for name in names:
+        try:
+            with open(os.path.join(project_dir, "overlays", "_marks", f"{name}.json"), encoding="utf-8") as f:
+                mark = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(mark, dict):
+            continue
+        rows = mark.get("track") if isinstance(mark.get("track"), list) and mark["track"] else [{"t": mark.get("at", 0), "parts": mark.get("parts") or []}]
+        scene = re.sub(r"-\d+$", "", name)
+        under = next((it for it in scenes if (it.get("props") or {}).get("scene") in (name, scene)
+                      and _num(it.get("start")) <= t <= _num(it.get("end"))), None)
+        st = t - _num(under.get("start")) + _num((under.get("props") or {}).get("inPoint")) if under else _num(mark.get("at"))
+        row = next((r for r in reversed(rows) if isinstance(r, dict) and _num(r.get("t")) <= st + 1e-6), rows[0])
+        size = mark.get("size") if isinstance(mark.get("size"), dict) else {}
+        short = min(_num(size.get("width"), frame_w), _num(size.get("height"), frame_h)) or min(frame_w, frame_h)
+        k = min(frame_w, frame_h) / short
+        for text, b, _, _ in text_boxes(measurement, item, frame_w, frame_h):
+            for p in row.get("parts") or []:
+                box = p.get("box") if isinstance(p, dict) else None
+                if isinstance(box, list) and len(box) == 4 and _box_cover(b, [v * k for v in box]) > COVER_SHARE:
+                    quote = f' "{text}"' if text else ""
+                    return [{"t": r2(t), "id": label, "text": f"label{quote} sits on the part {p.get('part')}: put it at "
+                                                               "the part's leader.to, beside the model"}]
+    return []
 
 
 # PL89d (52's round-5 notes): six keyword chips at top 120 and a diagram strip at y 150, one after another, read as a

@@ -755,6 +755,7 @@ async function captureOverlay({ page, guard, pageErrors, fontFailures, component
   if (measure) {
     measurements = await page.evaluate((canvasW, canvasH) => {
       const texts = []
+      const probe = document.createElement('canvas').getContext('2d')   // measures a face, for fellBack
 
       // Walk all elements in document body
       function walk(el) {
@@ -846,10 +847,20 @@ async function captureOverlay({ page, guard, pageErrors, fontFailures, component
               parent = parent.parentElement
             }
 
+            // PL89e: the face the text names did not load and its stack names no generic family, so it draws in
+            // the default serif (the ring's bare "JetBrains Mono" drew in Times). A face that did not load measures
+            // the same as the fallback it sits in front of, for monospace and for serif alike.
+            const faces = style.fontFamily.split(',').map((f) => f.trim().replace(/^["']|["']$/g, '')).filter(Boolean)
+            const generic = faces.some((f) => /^(serif|sans-serif|monospace|system-ui|cursive|fantasy|ui-[a-z-]+|-apple-system|blinkmacsystemfont)$/i.test(f))
+            const width = (font) => { probe.font = font; return probe.measureText('Hamburgefonstiv 0123 WMil').width }
+            const missing = (f) => width(`40px "${f}", monospace`) === width('40px monospace') && width(`40px "${f}", serif`) === width('40px serif')
+            const fellBack = !generic && faces.length > 0 && faces.every(missing)
+
             texts.push({
               text: text.slice(0, 200),
               tag: el.tagName,
               fontFamily: style.fontFamily,
+              fellBack,
               fontSize: style.fontSize,
               fontWeight: style.fontWeight,
               position: style.position,

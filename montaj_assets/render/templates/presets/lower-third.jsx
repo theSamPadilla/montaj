@@ -22,6 +22,13 @@
  *   canvasW, canvasH  the design canvas in px; place sets them (default 1080 x 1920)
  *   anim        'slide' | 'fade' | 'pop' (default 'slide')
  */
+// A face it is given ends in a generic family, so a face that does not load falls back to its kind, never to serif.
+const withGeneric = (f, d) => {
+  const s = String(f || '').trim()
+  if (!s) return d
+  return /(^|,)\s*(serif|sans-serif|monospace|system-ui|cursive|fantasy|ui-[a-z-]+)\s*$/i.test(s) ? s : `${s}, ${/mono|code|courier/i.test(s) ? 'ui-monospace, monospace' : 'system-ui, sans-serif'}`
+}
+
 export default function LowerThird() {
   const p = props || {}
   // the design canvas (1080 on the short edge): place writes it as canvasW / canvasH; no global carries it
@@ -54,7 +61,7 @@ export default function LowerThird() {
   const size = fit(want, name.length)
   const subSize = fit(Math.round(want * 0.55), subtitle.length)
   const text = {
-    fontFamily: p.fontFamily || 'Inter, system-ui, sans-serif',
+    fontFamily: withGeneric(p.fontFamily, 'Inter, system-ui, sans-serif'),
     fontStyle: p.fontStyle || 'normal',
     color: p.color || '#ffffff',
     textAlign: p.textAlign || 'left',

@@ -635,3 +635,59 @@ def test_own_footage_or_a_credited_card_is_not_said(tmp_path):
     b.mkdir()
     path, p = _card_project(b, "youtube-phonebot-o_Q4rFSNZuE.mp4", "Footage: UCLA")
     assert [i for i in lc.data_issues(p, str(path.parent)) if "credit" in i["text"]] == []
+
+
+# ── a font that fell back to serif (PL89e) ────────────────────────────────────────────────────────────────────────
+# 52's round-6 notes: the ring's label drew in Times, given "JetBrains Mono" bare with no font loading it.
+
+def test_text_whose_face_fell_back_to_serif_is_one_issue_naming_the_face():
+    m = {"texts": [{"text": "live video", "bbox": {"x": 300, "y": 900, "w": 400, "h": 60}, "overflow": {}, "clippingAncestor": None,
+                    "fontFamily": '"JetBrains Mono"', "fellBack": True},
+                   {"text": "again", "bbox": {"x": 300, "y": 1000, "w": 400, "h": 60}, "overflow": {}, "clippingAncestor": None,
+                    "fontFamily": '"JetBrains Mono"', "fellBack": True}], "anyOverflow": False}
+    out = [i for i in lc.measured_issues({}, m, 1080, 1920, 3.0, "ov-ring") if "serif" in i["text"]]
+    assert len(out) == 1, out
+    assert '"live video" draws in serif' in out[0]["text"] and "JetBrains Mono" in out[0]["text"]
+    assert "googleFonts" in out[0]["text"] and "generic family" in out[0]["text"]
+    ok = {"texts": [dict(m["texts"][0], fellBack=False)], "anyOverflow": False}
+    assert not [i for i in lc.measured_issues({}, ok, 1080, 1920, 3.0, "ov-ring") if "serif" in i["text"]]
+
+
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+def test_the_real_measurer_sees_a_face_that_did_not_load(tmp_path):
+    bare = ("export default function O() { const m = Motion.motion(frame, fps, duration); return <div style={{position: 'absolute', "
+            "left: 200, top: 700, fontSize: 60, color: 'white', fontFamily: 'Nonexistent Face', ...m.style}}>live video</div> }")
+    stacked = bare.replace("'Nonexistent Face'", "'Nonexistent Face, sans-serif'")
+    path, _ = _project(tmp_path, overlays=[{"id": "ov-bare", "start": 1, "end": 3, "jsx": bare},
+                                           {"id": "ov-stack", "start": 4, "end": 6, "jsx": stacked}])
+    out = look.run(str(path), detail=True)
+    assert any("ov-bare" in i and "draws in serif" in i for i in out["issues"]), out
+    assert not any("ov-stack" in i and "serif" in i for i in out["issues"]), out
+
+
+# ── a label on its own part (PL89e) ───────────────────────────────────────────────────────────────────────────────
+# 52's round-6 notes: "sensors" sat on the phone's edge. An overlay that imports a direct_scene mark file
+# (overlays/_marks/<scene>.json) has its labels checked against the marked parts at the scene's moment: a label over a
+# part is an issue (labels go at the leader's `to`, beside the model).
+
+def _marked(tmp_path, box):
+    jsx = ("import mark from './_marks/stack.json'\n"
+           "export default function O() { const m = Motion.motion(frame, fps, duration); return <div style={m.style}>sensors</div> }")
+    scene = {"id": "s3d", "items": [{"id": "s3d-1", "type": "overlay", "src": "engine:scene3d", "start": 2, "end": 8,
+                                     "props": {"scene": "stack", "inPoint": 1}}]}
+    path, _ = _project(tmp_path, base=((0, 10),), overlays=[{"id": "ov-labels", "start": 2, "end": 8, "jsx": jsx}], extra_tracks=[scene])
+    part = lambda x: {"cast": 0, "part": "sensors", "pixel": [x, 1000], "box": [x - 200, 900, x + 200, 1100], "inView": True,
+                      "leader": {"side": "right", "from": [x + 200, 1000], "to": [x + 500, 1000], "align": "start"}}
+    mark = {"kind": "mark", "at": 0, "size": {"width": 2160, "height": 3840}, "parts": [part(1000)], "casts": [],
+            "track": [{"t": 0, "parts": [part(1000)], "casts": []}, {"t": 4, "parts": [part(1000)], "casts": []}]}
+    (path.parent / "overlays" / "_marks").mkdir()
+    (path.parent / "overlays" / "_marks" / "stack.json").write_text(json.dumps(mark))
+    return look.run(str(path), measure_fn=_fake_measure({"ov-labels": [box]}), detail=True)
+
+
+def test_a_label_over_its_marked_part_is_an_issue_and_one_beside_it_is_not(tmp_path):
+    # the part's box at 2160 x 3840 is 800-1200 x 900-1100: 400-600 x 450-550 on the 1080 canvas
+    out = _marked(tmp_path / "on", ("sensors", 430, 470, 160, 60))
+    assert any("ov-labels" in i and 'label "sensors" sits on the part sensors' in i for i in out["issues"]), out["issues"]
+    out = _marked(tmp_path / "beside", ("sensors", 780, 470, 160, 60))
+    assert not any("sits on the part" in i for i in out["issues"]), out["issues"]

@@ -18,6 +18,13 @@
  *   fontFamily  the credit's font (default 'JetBrains Mono, ui-monospace, monospace')
  *   canvasW, canvasH  the design canvas in px; frame_broll sets them (default 1080 x 1920)
  */
+// A face it is given ends in a generic family, so a face that does not load falls back to its kind, never to serif.
+const withGeneric = (f, d) => {
+  const s = String(f || '').trim()
+  if (!s) return d
+  return /(^|,)\s*(serif|sans-serif|monospace|system-ui|cursive|fantasy|ui-[a-z-]+)\s*$/i.test(s) ? s : `${s}, ${/mono|code|courier/i.test(s) ? 'ui-monospace, monospace' : 'system-ui, sans-serif'}`
+}
+
 export default function FootageCard() {
   const p = props || {}
   const W = Number(p.canvasW) > 0 ? Number(p.canvasW) : 1080
@@ -72,7 +79,7 @@ export default function FootageCard() {
       ) : null}
       {p.credit ? (
         <div style={{ position: 'absolute', left: L, top: T + BH + Math.round(H * 0.012), width: BW,
-          fontFamily: p.fontFamily || 'JetBrains Mono, ui-monospace, monospace', fontSize: Math.max(36, Math.round(W * 0.034)),
+          fontFamily: withGeneric(p.fontFamily, 'JetBrains Mono, ui-monospace, monospace'), fontSize: Math.max(36, Math.round(W * 0.034)),
           color: ink, opacity: 0.6 * credit.opacity, transform: credit.style.transform, letterSpacing: '0.02em', textAlign: 'center' }}>{String(p.credit)}</div>
       ) : null}
     </div>

@@ -18,6 +18,13 @@
  *   accent      the line, arrowheads and the travelling dot (default '#00b4d8')
  *   canvasW, canvasH  the design canvas in px; place sets them (default 1080 x 1920)
  */
+// A face it is given ends in a generic family, so a face that does not load falls back to its kind, never to serif.
+const withGeneric = (f, d) => {
+  const s = String(f || '').trim()
+  if (!s) return d
+  return /(^|,)\s*(serif|sans-serif|monospace|system-ui|cursive|fantasy|ui-[a-z-]+)\s*$/i.test(s) ? s : `${s}, ${/mono|code|courier/i.test(s) ? 'ui-monospace, monospace' : 'system-ui, sans-serif'}`
+}
+
 export default function Flow() {
   const p = props || {}
   const W = Number(p.canvasW) > 0 ? Number(p.canvasW) : 1080
@@ -80,7 +87,7 @@ export default function Flow() {
         const m = Motion.motion(frame, fps, duration, { delay: i * step, hold: 'none', exit: 'none' })
         return (
           <div key={i} style={{ position: 'absolute', left: pts[i][0], top: pts[i][1], transform: `translate(-50%, -50%) ${m.style.transform}`, opacity: m.opacity,
-            fontFamily: p.fontFamily || 'Inter, system-ui, sans-serif', fontWeight: p.fontWeight || '800', fontSize: size, lineHeight: 1.05,
+            fontFamily: withGeneric(p.fontFamily, 'Inter, system-ui, sans-serif'), fontWeight: p.fontWeight || '800', fontSize: size, lineHeight: 1.05,
             color, textAlign: 'center', whiteSpace: 'nowrap', textShadow: light ? '0 2px 12px rgba(0,0,0,0.55)' : 'none' }}>
             {ls.map((l, j) => <div key={j}>{l}</div>)}
           </div>

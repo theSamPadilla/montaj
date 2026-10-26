@@ -247,6 +247,14 @@ def overlay_fonts(project_dir, path):
         if first and first.lower() not in SYSTEM and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 \-]*", first) and first not in families:
             families.append(first)
     weights = sorted({700 if w == "bold" else int(w) for t in texts for w in WEIGHT.findall(t)} - {400})
+    return family_specs(families, weights), []
+
+
+def family_specs(families, weights):
+    """googleFonts specs for these families at these weights (400 left out): one spec when the bundled set
+    (MONTAJ_FONTS_DIR) has every weight; otherwise the family as it loads for sure (bundled, or Google's regular face)
+    plus a spec of the missing weights alone, which the render fetches on a link of its own, so a weight Google lacks
+    fails that link and never the family."""
     bundled, specs = _vendored_faces() or {}, []
     for fam in families:
         key = fam.replace(" ", "+")
@@ -260,7 +268,20 @@ def overlay_fonts(project_dir, path):
         missing = [w for w in weights if w not in have]
         if missing:
             specs.append(f"{key}:wght@{';'.join(str(w) for w in missing)}")
-    return specs, []
+    return specs
+
+
+def preset_fonts(props):
+    """PL89e: the Google Font a preset is given in its props (fontFamily's first face, at fontWeight), as googleFonts
+    specs: [] when none is named or it is a system face. A bare face no font loads draws in serif (the ring's "JetBrains
+    Mono" drew in Times)."""
+    stack = props.get("fontFamily") if isinstance(props, dict) else None
+    first = stack.split(",")[0].strip().strip("'\"").strip() if isinstance(stack, str) else ""
+    if not first or first.lower() in SYSTEM or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 \-]*", first):
+        return []
+    w = str(props.get("fontWeight") or "").strip().lower()
+    weight = 700 if w == "bold" else int(w) if w.isdigit() and 100 <= int(w) <= 900 and int(w) % 100 == 0 else 400
+    return family_specs([first], [weight] if weight != 400 else [])
 
 
 def _new_id(project):
@@ -397,6 +418,10 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
         if preset:
             new_props.setdefault("canvasW", str(width))
             new_props.setdefault("canvasH", str(height))
+            specs = preset_fonts(new_props) if not item.get("googleFonts") else []
+            if specs:   # PL89e: the face the preset is given loads
+                item["googleFonts"] = specs
+                written["fonts"] = specs
         if new_props:
             item["props"] = new_props
         # PL89b: the fonts the overlay itself names, unless the item names its own.

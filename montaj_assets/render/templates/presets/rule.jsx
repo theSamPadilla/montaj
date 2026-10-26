@@ -17,6 +17,13 @@
  *   accent      the line and its ticks (default '#00b4d8')
  *   canvasW, canvasH  the design canvas in px; place sets them (default 1080 x 1920)
  */
+// A face it is given ends in a generic family, so a face that does not load falls back to its kind, never to serif.
+const withGeneric = (f, d) => {
+  const s = String(f || '').trim()
+  if (!s) return d
+  return /(^|,)\s*(serif|sans-serif|monospace|system-ui|cursive|fantasy|ui-[a-z-]+)\s*$/i.test(s) ? s : `${s}, ${/mono|code|courier/i.test(s) ? 'ui-monospace, monospace' : 'system-ui, sans-serif'}`
+}
+
 export default function Rule() {
   const p = props || {}
   const W = Number(p.canvasW) > 0 ? Number(p.canvasW) : 1080
@@ -42,7 +49,7 @@ export default function Rule() {
         {[-1, 1].map((s) => <line key={s} x1={cx + (s * len) / 2} y1={y - 14 * tick} x2={cx + (s * len) / 2} y2={y + 14 * tick} stroke={accent} strokeWidth={6} strokeLinecap="round" opacity={tick} />)}
       </svg>
       <div style={{ position: 'absolute', left: cx, top: above ? y - 24 : y + 28, transform: `translate(-50%, ${above ? '-100%' : '0'}) ${m.style.transform}`, opacity: m.opacity,
-        fontFamily: p.fontFamily || 'Inter, system-ui, sans-serif', fontWeight: p.fontWeight || '800', fontSize: size, lineHeight: 1.1,
+        fontFamily: withGeneric(p.fontFamily, 'Inter, system-ui, sans-serif'), fontWeight: p.fontWeight || '800', fontSize: size, lineHeight: 1.1,
         color, whiteSpace: 'nowrap', textAlign: 'center', textShadow: light ? '0 2px 12px rgba(0,0,0,0.55)' : 'none' }}>{text}</div>
     </div>
   )

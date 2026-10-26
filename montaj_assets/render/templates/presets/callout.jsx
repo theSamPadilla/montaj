@@ -19,6 +19,13 @@
  *   anim        'pop' | 'slide' | 'fade' (default 'pop')
  *   top         the plate's top as a share of the frame height (default '0.28')
  */
+// A face it is given ends in a generic family, so a face that does not load falls back to its kind, never to serif.
+const withGeneric = (f, d) => {
+  const s = String(f || '').trim()
+  if (!s) return d
+  return /(^|,)\s*(serif|sans-serif|monospace|system-ui|cursive|fantasy|ui-[a-z-]+)\s*$/i.test(s) ? s : `${s}, ${/mono|code|courier/i.test(s) ? 'ui-monospace, monospace' : 'system-ui, sans-serif'}`
+}
+
 export default function Callout() {
   const p = props || {}
   // the design canvas (1080 on the short edge): place writes it as canvasW / canvasH; no global carries it
@@ -49,7 +56,7 @@ export default function Callout() {
       <div style={{
         maxWidth: safeW, padding: '18px 40px', borderRadius: 24, background: p.bgColor || '#00b4d8',
         opacity: fadeIn * fadeOut, transform: `translateY(${y}px) scale(${scale})`,
-        fontFamily: p.fontFamily || 'Inter, system-ui, sans-serif', fontSize: size, fontWeight: p.fontWeight || '900',
+        fontFamily: withGeneric(p.fontFamily, 'Inter, system-ui, sans-serif'), fontSize: size, fontWeight: p.fontWeight || '900',
         fontStyle: p.fontStyle || 'normal', color: p.color || '#1c1c1e', textAlign: p.textAlign || 'center',
         textTransform: p.textTransform || 'none', whiteSpace: wraps ? 'normal' : 'nowrap', lineHeight: 1.1,
       }}>{text}</div>
