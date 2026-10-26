@@ -323,3 +323,24 @@ describe('SlideCanvas: the margin around the page (§586 M4)', () => {
     expect(frameOf(c.chromeLayer)).toEqual(SLIDE_FRAME)
   })
 })
+
+describe('SlideCanvas lock badge (§586 M5b)', () => {
+  it('is drawn in the chrome layer, whole for an element at the slide top-right edge', () => {
+    const onUnlock = vi.fn()
+    const el = image({ x: 1080 - 200, y: 0, locked: true })
+    const c = setup([el], { onUnlock })
+    const badge = c.chrome().querySelector<HTMLElement>('[data-testid="lock-badge"]')!
+    expect(badge).not.toBeNull()
+    expect(clipsAbove(badge)).toEqual([c.chromeLayer])
+    expect(badge.style.pointerEvents).toBe('auto')
+    // Centred on the box's top-right corner, so half of it is past the slide edge.
+    expect(badge.style.right).toBeTruthy()
+    fireEvent.click(badge)
+    expect(onUnlock).toHaveBeenCalledWith('el')
+  })
+
+  it('is absent for an unlocked element and a press on it starts no drag', () => {
+    const c = setup([image()], { onUnlock: vi.fn() })
+    expect(c.chrome().querySelector('[data-testid="lock-badge"]')).toBeNull()
+  })
+})

@@ -443,3 +443,69 @@ describe('CarouselEditor: lock key and crop, select all, distribute (§586 M5)',
     expect(xs.slice(1)).toEqual([100, 400, 700])
   })
 })
+
+describe('CarouselEditor: lock badge (§586 M5b)', () => {
+  const badgeOf = (id: string) => chromeOf(id).querySelector<HTMLElement>('[data-testid="lock-badge"]')
+
+  it('shows only on a selected locked element, with or without the lock key', async () => {
+    await mount()
+    expect(badgeOf('el-a')).toBeNull()
+    await click('el-a')
+    expect(badgeOf('el-a')).not.toBeNull()
+    expect(badgeOf('el-a')!.getAttribute('aria-label')).toBe('Unlock')
+    await click('el-b')
+    expect(badgeOf('el-a')).toBeNull()
+    expect(badgeOf('el-b')).toBeNull()
+  })
+
+  it('a click unlocks in one undo step, keeps the element selected with its handles, and Cmd+Z relocks', async () => {
+    const { adapter } = await mount()
+    await click('el-a')
+    await act(async () => { fireEvent.click(badgeOf('el-a')!) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(byId(last(adapter), 'el-a').locked).toBeUndefined()
+    expect(badgeOf('el-a')).toBeNull()
+    expect(handlesOn('el-a')).toBe(true)
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(byId(last(adapter), 'el-a').locked).toBe(true)
+    expect(outlined('el-a')).toBe(true)
+  })
+
+  it('saves a crop picked on another image before the unlock, as its own step', async () => {
+    const { adapter, r } = await mount()
+    await click('el-b')
+    await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
+    const source = wrapperOf('el-b').querySelector<HTMLImageElement>('img[alt="Crop source"]')!
+    await act(async () => { loadImage(source, 200, 300) })
+    const handle = chromeOf('el-b').querySelector('[data-testid="crop-handle-e"]') as HTMLElement
+    const root = document.querySelector('[data-interactive]') as HTMLElement
+    const d = 40 * (parseFloat(root.style.width) / 1080)
+    await act(async () => {
+      pointer(handle, 'pointerdown', { clientX: 0, clientY: 0 })
+      pointer(handle, 'pointermove', { clientX: -d, clientY: 0 })
+      pointer(handle, 'pointerup', { clientX: -d, clientY: 0 })
+      fireEvent.click(handle)
+    })
+    // Selecting the locked image leaves crop mode, applying the crop; the badge
+    // click then unlocks as a step of its own.
+    await click('el-a')
+    expect(badgeOf('el-a')).not.toBeNull()
+    await act(async () => { fireEvent.click(badgeOf('el-a')!) })
+    await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThan(1))
+    const els = adapter.saveCalls.map((c) => byId(c.project, 'el-a'))
+    expect(els[els.length - 1].locked).toBeUndefined()
+    expect((byId(last(adapter), 'el-b') as ImageElement).crop).toBeTruthy()
+    // The crop was saved on its own, while the image was still locked.
+    expect(byId(adapter.saveCalls[0].project, 'el-a').locked).toBe(true)
+  })
+
+  it('a press beside the badge still reaches the element', async () => {
+    await mount()
+    await click('el-a')
+    const badge = badgeOf('el-a')!
+    expect(badge.style.pointerEvents).toBe('auto')
+    expect(chromeOf('el-a').style.pointerEvents).toBe('none')
+    expect(document.querySelector('[data-slide-chrome]')!.getAttribute('style')).toContain('pointer-events: none')
+  })
+})

@@ -680,6 +680,14 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     void state.editElements(selectedSlide.id, (els) => toggleLock(els, ids))
   }
 
+  /** The lock badge: unlocks one element (not the selection), as its own undo
+   *  step; a pending crop is applied first, like the lock key. */
+  function unlockElement(elementId: string) {
+    if (!selectedSlide || !canEdit) return
+    if (cropElementId) flushSync(applyCrop)
+    void state.editElements(selectedSlide.id, (els) => els.some((el) => el.id === elementId && isLocked(el)) ? toggleLock(els, [elementId]) : els)
+  }
+
   /** Select all: every element on the slide the host is not hiding. */
   function selectAll() {
     if (!selectedSlide) return
@@ -1626,6 +1634,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 cropElementId={cropElementId}
                 onExitCrop={() => setCropElementId(null)}
                 onEnterCrop={enterCrop}
+                onUnlock={unlockElement}
                 cropControlRef={cropControlRef}
                 hiddenElementIds={hiddenElementIds}
                 onDragEnter={handleCanvasDragOver}
