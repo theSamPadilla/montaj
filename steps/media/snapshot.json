@@ -1,6 +1,6 @@
 {
   "name": "snapshot",
-  "description": "Look at a video: a grid sheet (default), every frame (frames all), one full frame at a time (at), or one labelled sheet of many times (at repeated, up to 36): find a source's moments in one call.",
+  "description": "Look at a video: a grid sheet (default), every frame (frames all), one full frame at a time (at), or one labelled sheet of many times (at repeated, up to 36): find a source's moments in one call. Look at footage in two calls: a sheet of each clip, then one sheet of the moments you pick.",
   "input": {
     "type": "video",
     "description": "Source video file"
