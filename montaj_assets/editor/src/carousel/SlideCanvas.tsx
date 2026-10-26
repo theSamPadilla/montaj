@@ -11,7 +11,7 @@ import {
   type SnapGuide,
 } from '../gestures'
 import { OverlayPreview } from '../preview/OverlayPreview'
-import { CanvasCropOverlay } from '../crop/CanvasCropOverlay'
+import { CanvasCropOverlay, CanvasCropHandles } from '../crop/CanvasCropOverlay'
 import { croppedBox } from '../crop/crop-math'
 import { InlineTextEditor } from '../text/InlineTextEditor'
 import { ensureGoogleFontsLoaded } from '../lib/google-fonts'
@@ -186,10 +186,19 @@ interface Props {
 
   /**
    * Layers drawn over the slide (the editor's note pins and armed-note layer,
-   * PL70): rendered last inside the outer box, above the elements, so they
-   * can position themselves in percentages of the slide. Absent → nothing.
+   * PL70): rendered last inside the slide box, above the elements and clipped
+   * with them, so they can position themselves in percentages of the slide.
+   * Absent → nothing.
    */
   children?: ReactNode
+
+  /**
+   * Room the host keeps around an interactive slide, in display pixels (§586
+   * M4). The selection outlines and handles draw out to it past the slide
+   * edge, and a press in it is a press on the empty canvas. 0 (the default)
+   * → they clip at the slide edge.
+   */
+  margin?: number
 }
 
 // Plain default for the inline editor when we can't read the rendered text's
@@ -284,6 +293,7 @@ export default function SlideCanvas({
   onDragOver,
   onDrop,
   children,
+  margin = 0,
 }: Props) {
   const sid = slideId ?? slide.id
   const resolveSrc = resolveImageSrc ?? ((el: ImageElement) => resolveAssetDefault(el.src))
@@ -320,21 +330,31 @@ export default function SlideCanvas({
   const dimsOf = (open: CropSession | null) =>
     open && cropSrcDims?.src === open.src ? { width: cropSrcDims.width, height: cropSrcDims.height } : undefined
 
+  // Each outlined element's box in the chrome layer (§586 M4): its outline
+  // and handles, drawn past the slide edge on the wrapper's transform and size.
+  const chromeRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  const setChromeRef = (id: string) => (el: HTMLDivElement | null) => {
+    if (el) chromeRefs.current.set(id, el)
+    else chromeRefs.current.delete(id)
+  }
+  const boxesOf = (id: string) =>
+    [wrapperRefs.current.get(id), chromeRefs.current.get(id)].filter((el): el is HTMLDivElement => !!el)
+
   // ── Gesture preview helper: write transform/size directly to the wrapper ──
+  // and to its chrome box in the same call, so the handles never lag the element.
   const applyPreviewTransform = (id: string, x: number, y: number, rotation: number) => {
-    const el = wrapperRefs.current.get(id)
-    if (el) el.style.transform = buildElementTransform(x, y, scale, rotation)
+    for (const el of boxesOf(id)) el.style.transform = buildElementTransform(x, y, scale, rotation)
   }
   const applyPreviewBox = (
     id: string,
     box: { x: number; y: number; w: number; h: number },
     rotation: number,
   ) => {
-    const el = wrapperRefs.current.get(id)
-    if (!el) return
-    el.style.transform = buildElementTransform(box.x, box.y, scale, rotation)
-    el.style.width = `${box.w * scale}px`
-    el.style.height = `${box.h * scale}px`
+    for (const el of boxesOf(id)) {
+      el.style.transform = buildElementTransform(box.x, box.y, scale, rotation)
+      el.style.width = `${box.w * scale}px`
+      el.style.height = `${box.h * scale}px`
+    }
   }
 
   // ── Gesture hooks ──
@@ -499,6 +519,20 @@ export default function SlideCanvas({
     endTextEdit()
   }
 
+  // Double-click on an element, or on its handles: an overlay edits its text;
+  // an image crops, as its Crop button does: not while turned (the crop math
+  // is for an upright box), nor again in crop. Absent `onEnterCrop` → an
+  // image takes no double-click.
+  const doubleClickOf = (element: Slide['elements'][number]): React.MouseEventHandler | undefined =>
+    element.type === 'overlay'
+      ? (e) => { e.stopPropagation(); beginTextEdit(element) }
+      : onEnterCrop
+        ? (e) => {
+            e.stopPropagation()
+            if (cropSession?.elementId !== element.id && (element.rotation ?? 0) === 0) onEnterCrop(element.id)
+          }
+        : undefined
+
   // ── Pointer wiring shared by drag/resize/rotate ──
   // We attach window-level move/up listeners while a gesture is active so the
   // gesture keeps tracking outside the element bounds.
@@ -597,6 +631,16 @@ export default function SlideCanvas({
   const displayW = width * scale
   const displayH = height * scale
 
+  // The chrome layer and the margin box share this frame: the slide plus the
+  // host's margin on every side.
+  const marginBox: React.CSSProperties = {
+    position: 'absolute',
+    left: -margin,
+    top: -margin,
+    width: displayW + 2 * margin,
+    height: displayH + 2 * margin,
+  }
+
   return (
     <div
       data-interactive={interactive ? 'true' : undefined}
@@ -605,11 +649,16 @@ export default function SlideCanvas({
       style={{
         width: displayW,
         height: displayH,
-        overflow: 'hidden',
+        // An interactive slide clips its elements in the layer below, so the
+        // chrome layer can draw past its edge (§586 M4).
+        overflow: interactive ? undefined : 'hidden',
         position: 'relative',
         flexShrink: 0,
       }}
       onPointerDownCapture={interactive ? () => { swallowClickRef.current = false } : undefined}
+      // The empty canvas is the slide's background and the margin around it:
+      // a click there deselects, and the host applies a crop in progress. A
+      // drag-select would start from a press on either.
       onClick={interactive ? () => {
         if (swallowClickRef.current) { swallowClickRef.current = false; return }
         onSelect?.(null)
@@ -618,9 +667,14 @@ export default function SlideCanvas({
       onDragOver={interactive ? onDragOver : undefined}
       onDrop={interactive ? onDrop : undefined}
     >
+      {/* The margin around the page (§586 M4): a press here is a press on the
+          empty canvas, and its click reaches the root. Under the slide. */}
+      {interactive && margin > 0 && <div data-canvas-margin="" style={marginBox} />}
+
       {/* Inner native-resolution layer. Elements are positioned at native coords
           and the wrapper transform applies translate(...*scale) so gesture
-          previews can mutate the same transform string. */}
+          previews can mutate the same transform string. It clips at the slide
+          edge, as the export does. */}
       <div
         style={{
           width: displayW,
@@ -629,53 +683,13 @@ export default function SlideCanvas({
           top: 0,
           left: 0,
           backgroundColor: slide.base_color || '#ffffff',
+          ...(interactive ? { overflow: 'hidden' } : null),
         }}
       >
-        {/* Snap guides — drawn at the drag hook's reported guide axes. */}
-        {interactive && (groupGuides.length > 0 ? groupGuides : drag.guides).map((g: SnapGuide, i) =>
-          g.axis === 'x' ? (
-            <div
-              key={`gx-${i}`}
-              data-testid="snap-guide-x"
-              style={{
-                position: 'absolute',
-                left: g.at * scale - 1,
-                top: 0,
-                width: 2,
-                height: displayH,
-                background: '#ff2d88',
-                boxShadow: '0 0 6px 1px rgba(255,45,136,0.9)',
-                pointerEvents: 'none',
-                zIndex: 999,
-              }}
-            />
-          ) : (
-            <div
-              key={`gy-${i}`}
-              data-testid="snap-guide-y"
-              style={{
-                position: 'absolute',
-                left: 0,
-                top: g.at * scale - 1,
-                width: displayW,
-                height: 2,
-                background: '#ff2d88',
-                boxShadow: '0 0 6px 1px rgba(255,45,136,0.9)',
-                pointerEvents: 'none',
-                zIndex: 999,
-              }}
-            />
-          ),
-        )}
-
         {slide.elements.map((element) => {
           // Editor-only visibility: omit hidden elements from this canvas.
           if (hiddenSet?.has(element.id)) return null
-          // Outlined when selected at all; handles only for the one selected element.
-          const isOutlined = selectedIds.includes(element.id)
-          const isSelected = selectedElementId === element.id
           const inCrop = cropSession?.elementId === element.id
-          const isRotated = (element.rotation ?? 0) !== 0
 
           const wrapperStyle: React.CSSProperties = {
             position: 'absolute',
@@ -687,7 +701,8 @@ export default function SlideCanvas({
             transformOrigin: 'center center',
             pointerEvents: interactive ? 'auto' : 'none',
             userSelect: 'none',
-            outline: isSelected || isOutlined ? '1px solid var(--editor-selection)' : 'none',
+            // The selection outline is drawn in the chrome layer.
+            outline: 'none',
             cursor: interactive ? 'grab' : 'default',
           }
 
@@ -811,21 +826,12 @@ export default function SlideCanvas({
                 onSelect?.(element.id)
               } : undefined}
               onPointerDown={handlePointerDownDrag}
-              onDoubleClick={
-                !interactive
-                  ? undefined
-                  : element.type === 'overlay'
-                    ? (e) => { e.stopPropagation(); beginTextEdit(element) }
-                    : onEnterCrop
-                      // An image crops, as its Crop button does: not while turned
-                      // (the crop math is for an upright box), nor again in crop.
-                      ? (e) => { e.stopPropagation(); if (!inCrop && (element.rotation ?? 0) === 0) onEnterCrop(element.id) }
-                      : undefined
-              }
+              onDoubleClick={interactive ? doubleClickOf(element) : undefined}
             >
               {innerContent}
 
-              {/* In-canvas crop overlay for the image being cropped. */}
+              {/* In-canvas crop overlay for the image being cropped. Its window's
+                  border and handles are drawn in the chrome layer. */}
               {inCrop && element.type === 'image' && cropSession && (
                 <CanvasCropOverlay
                   element={element}
@@ -835,131 +841,11 @@ export default function SlideCanvas({
                   onLocalCropChange={(next) => changeCropSession((open) => ({ ...open, localCrop: next }))}
                   onSrcDimsLoaded={(dims) => setCropSrcDims({ src: element.src, ...dims })}
                   srcDims={dimsOf(cropSession)}
-                  // The click the browser sends after a window or handle drag
-                  // changes nothing, even when let go off the image.
+                  // The click the browser sends after a window drag changes
+                  // nothing, even when let go off the image.
                   onDragEnd={() => { swallowClickRef.current = true }}
+                  handles={false}
                 />
-              )}
-
-              {/* Selection handles (hidden while cropping or rotated-crop guard).
-                  Placed in percentages of the box, so they follow the size a
-                  resize preview writes straight to the wrapper. */}
-              {isSelected && !inCrop && editingId !== element.id && interactive && (
-                <>
-                  {HANDLES.map((h) => (
-                    <div
-                      key={h.id}
-                      data-testid={`resize-handle-${h.id}`}
-                      onPointerDown={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        activeGesture.current = 'resize'
-                        resize.onPointerDown(
-                          element.id,
-                          h.id,
-                          { x: e.clientX, y: e.clientY },
-                          { x: element.x, y: element.y, w: element.w, h: element.h, rotation: element.rotation },
-                        )
-                      }}
-                      style={{
-                        position: 'absolute',
-                        left: `${h.xPct * 100}%`,
-                        top: `${h.yPct * 100}%`,
-                        marginLeft: -HANDLE_SIZE / 2,
-                        marginTop: -HANDLE_SIZE / 2,
-                        width: HANDLE_SIZE,
-                        height: HANDLE_SIZE,
-                        background: 'var(--editor-selection)',
-                        border: '1px solid #fff',
-                        borderRadius: 1,
-                        cursor: h.cursor,
-                        zIndex: 10,
-                        boxSizing: 'border-box',
-                        touchAction: 'none',
-                      }}
-                    />
-                  ))}
-                  {/* Rotate handle */}
-                  <div
-                    style={{
-                      position: 'absolute',
-                      left: '50%',
-                      marginLeft: -0.5,
-                      top: -ROTATE_OFFSET,
-                      width: 1,
-                      height: ROTATE_OFFSET,
-                      background: 'var(--editor-selection)',
-                      pointerEvents: 'none',
-                      zIndex: 9,
-                    }}
-                  />
-                  <div
-                    data-testid="rotate-handle"
-                    title="Drag to rotate"
-                    onPointerDown={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      const rect = (e.currentTarget as HTMLElement)
-                        .closest('[data-element-wrapper]')!
-                        .getBoundingClientRect()
-                      const center = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
-                      activeGesture.current = 'rotate'
-                      rotate.onPointerDown(
-                        element.id,
-                        center,
-                        { x: e.clientX, y: e.clientY },
-                        element.rotation ?? 0,
-                        { x: element.x, y: element.y },
-                      )
-                    }}
-                    style={{
-                      position: 'absolute',
-                      left: '50%',
-                      marginLeft: -7,
-                      top: -ROTATE_OFFSET - 14,
-                      width: 14,
-                      height: 14,
-                      background: 'var(--editor-selection)',
-                      border: '2px solid #fff',
-                      borderRadius: '50%',
-                      cursor: 'crosshair',
-                      zIndex: 10,
-                      boxSizing: 'border-box',
-                      touchAction: 'none',
-                    }}
-                  />
-                  {element.type === 'overlay' && typeof element.overlay.props.text === 'string' && (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        bottom: -20,
-                        left: 0,
-                        fontSize: 10,
-                        color: 'var(--editor-selection)',
-                        pointerEvents: 'none',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      double-click to edit text
-                    </div>
-                  )}
-                  {/* Guard hint: crop disabled while rotated (enforced in panel). */}
-                  {element.type === 'image' && isRotated && (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        bottom: -20,
-                        left: 0,
-                        fontSize: 10,
-                        color: '#fca5a5',
-                        pointerEvents: 'none',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      reset rotation to crop
-                    </div>
-                  )}
-                </>
               )}
             </div>
           )
@@ -982,8 +868,227 @@ export default function SlideCanvas({
             />
           )
         })()}
+        {children}
       </div>
-      {children}
+
+      {/* Chrome layer (§586 M4): selection outlines, handles, snap guides and
+          the crop window's handles, over the slide and out into the margin.
+          Only the handles take the pointer. A click on one ends here: its
+          press already did what it does. */}
+      {interactive && (
+        <div
+          data-slide-chrome=""
+          style={{ ...marginBox, overflow: 'hidden', pointerEvents: 'none' }}
+          onClick={(e) => { e.stopPropagation(); swallowClickRef.current = false }}
+        >
+          <div style={{ position: 'absolute', left: margin, top: margin, width: displayW, height: displayH }}>
+            {/* Snap guides — drawn at the drag hook's reported guide axes. */}
+            {(groupGuides.length > 0 ? groupGuides : drag.guides).map((g: SnapGuide, i) =>
+              g.axis === 'x' ? (
+                <div
+                  key={`gx-${i}`}
+                  data-testid="snap-guide-x"
+                  style={{
+                    position: 'absolute',
+                    left: g.at * scale - 1,
+                    top: 0,
+                    width: 2,
+                    height: displayH,
+                    background: '#ff2d88',
+                    boxShadow: '0 0 6px 1px rgba(255,45,136,0.9)',
+                    pointerEvents: 'none',
+                    zIndex: 999,
+                  }}
+                />
+              ) : (
+                <div
+                  key={`gy-${i}`}
+                  data-testid="snap-guide-y"
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    top: g.at * scale - 1,
+                    width: displayW,
+                    height: 2,
+                    background: '#ff2d88',
+                    boxShadow: '0 0 6px 1px rgba(255,45,136,0.9)',
+                    pointerEvents: 'none',
+                    zIndex: 999,
+                  }}
+                />
+              ),
+            )}
+
+            {slide.elements.map((element) => {
+              if (hiddenSet?.has(element.id)) return null
+              // Outlined when selected at all; handles only for the one selected element.
+              const isOutlined = selectedIds.includes(element.id)
+              const isSelected = selectedElementId === element.id
+              if (!isOutlined && !isSelected) return null
+              const inCrop = cropSession?.elementId === element.id
+              const isRotated = (element.rotation ?? 0) !== 0
+
+              return (
+                <div
+                  key={element.id}
+                  ref={setChromeRef(element.id)}
+                  data-chrome-for={element.id}
+                  onDoubleClick={doubleClickOf(element)}
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    top: 0,
+                    width: element.w * scale,
+                    height: element.h * scale,
+                    transform: buildElementTransform(element.x, element.y, scale, element.rotation),
+                    transformOrigin: 'center center',
+                    outline: '1px solid var(--editor-selection)',
+                    pointerEvents: 'none',
+                  }}
+                >
+                  {/* The crop window's border and handles, whole at the image's edge. */}
+                  {inCrop && element.type === 'image' && cropSession && (
+                    <CanvasCropHandles
+                      element={element}
+                      scale={scale}
+                      localCrop={cropSession.localCrop}
+                      onLocalCropChange={(next) => changeCropSession((open) => ({ ...open, localCrop: next }))}
+                      srcDims={dimsOf(cropSession)}
+                      // The click the browser sends after a handle drag changes
+                      // nothing, even when let go off the image.
+                      onDragEnd={() => { swallowClickRef.current = true }}
+                    />
+                  )}
+
+                  {/* Selection handles (hidden while cropping or rotated-crop guard).
+                      Placed in percentages of the box, so they follow the size a
+                      resize preview writes straight to this box. */}
+                  {isSelected && !inCrop && editingId !== element.id && (
+                    <>
+                      {HANDLES.map((h) => (
+                        <div
+                          key={h.id}
+                          data-testid={`resize-handle-${h.id}`}
+                          onPointerDown={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            activeGesture.current = 'resize'
+                            resize.onPointerDown(
+                              element.id,
+                              h.id,
+                              { x: e.clientX, y: e.clientY },
+                              { x: element.x, y: element.y, w: element.w, h: element.h, rotation: element.rotation },
+                            )
+                          }}
+                          style={{
+                            position: 'absolute',
+                            left: `${h.xPct * 100}%`,
+                            top: `${h.yPct * 100}%`,
+                            marginLeft: -HANDLE_SIZE / 2,
+                            marginTop: -HANDLE_SIZE / 2,
+                            width: HANDLE_SIZE,
+                            height: HANDLE_SIZE,
+                            background: 'var(--editor-selection)',
+                            border: '1px solid #fff',
+                            borderRadius: 1,
+                            cursor: h.cursor,
+                            zIndex: 10,
+                            boxSizing: 'border-box',
+                            pointerEvents: 'auto',
+                            touchAction: 'none',
+                          }}
+                        />
+                      ))}
+                      {/* Rotate handle */}
+                      <div
+                        style={{
+                          position: 'absolute',
+                          left: '50%',
+                          marginLeft: -0.5,
+                          top: -ROTATE_OFFSET,
+                          width: 1,
+                          height: ROTATE_OFFSET,
+                          background: 'var(--editor-selection)',
+                          pointerEvents: 'none',
+                          zIndex: 9,
+                        }}
+                      />
+                      <div
+                        data-testid="rotate-handle"
+                        title="Drag to rotate"
+                        onPointerDown={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          // The element turns about the middle of its wrapper.
+                          const wrapper = wrapperRefs.current.get(element.id)
+                          if (!wrapper) return
+                          const rect = wrapper.getBoundingClientRect()
+                          const center = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+                          activeGesture.current = 'rotate'
+                          rotate.onPointerDown(
+                            element.id,
+                            center,
+                            { x: e.clientX, y: e.clientY },
+                            element.rotation ?? 0,
+                            { x: element.x, y: element.y },
+                          )
+                        }}
+                        style={{
+                          position: 'absolute',
+                          left: '50%',
+                          marginLeft: -7,
+                          top: -ROTATE_OFFSET - 14,
+                          width: 14,
+                          height: 14,
+                          background: 'var(--editor-selection)',
+                          border: '2px solid #fff',
+                          borderRadius: '50%',
+                          cursor: 'crosshair',
+                          zIndex: 10,
+                          boxSizing: 'border-box',
+                          pointerEvents: 'auto',
+                          touchAction: 'none',
+                        }}
+                      />
+                      {element.type === 'overlay' && typeof element.overlay.props.text === 'string' && (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            bottom: -20,
+                            left: 0,
+                            fontSize: 10,
+                            color: 'var(--editor-selection)',
+                            pointerEvents: 'none',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          double-click to edit text
+                        </div>
+                      )}
+                      {/* Guard hint: crop disabled while rotated (enforced in panel). */}
+                      {element.type === 'image' && isRotated && (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            bottom: -20,
+                            left: 0,
+                            fontSize: 10,
+                            color: '#fca5a5',
+                            pointerEvents: 'none',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          reset rotation to crop
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -104,6 +104,11 @@ function findInteractiveWrapper(elementId: string): HTMLElement {
   return els[els.length - 1] as HTMLElement
 }
 
+/** The element's box in the canvas's chrome layer (§586 M4): its outline and handles; an empty box when it is not outlined. */
+function chromeOf(elementId: string): HTMLElement {
+  return (document.querySelector(`[data-chrome-for="${elementId}"]`) as HTMLElement | null) ?? document.createElement('div')
+}
+
 async function plainClick(id: string) {
   await act(async () => { fireEvent.click(findInteractiveWrapper(id)) })
 }
@@ -125,11 +130,11 @@ function elementsOf(p: Project, slide = 0) {
 }
 
 function outlined(id: string): boolean {
-  return findInteractiveWrapper(id).style.outline.includes('solid')
+  return chromeOf(id).style.outline.includes('solid')
 }
 
 function handlesOn(id: string): boolean {
-  return findInteractiveWrapper(id).querySelector('[data-testid="resize-handle-nw"]') !== null
+  return chromeOf(id).querySelector('[data-testid="resize-handle-nw"]') !== null
 }
 
 // This jsdom has no PointerEvent: a MouseEvent named for the pointer event carries the point.
@@ -156,7 +161,7 @@ async function pickCrop(r: { getByTitle: (title: string) => HTMLElement }) {
   const source = findInteractiveWrapper('el-img').querySelector<HTMLImageElement>('img[alt="Crop source"]')
   if (!source) throw new Error('el-img is not in crop mode')
   await act(async () => { loadImage(source, 400, 200) })
-  const handle = findInteractiveWrapper('el-img').querySelector('[data-testid="crop-handle-e"]') as HTMLElement
+  const handle = chromeOf('el-img').querySelector('[data-testid="crop-handle-e"]') as HTMLElement
   const d = 50 * (parseFloat((document.querySelector('[data-interactive]') as HTMLElement).style.width) / 1080)
   await act(async () => {
     pointer(handle, 'pointerdown', { clientX: 0, clientY: 0 })

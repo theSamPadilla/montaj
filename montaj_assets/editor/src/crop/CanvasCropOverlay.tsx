@@ -48,20 +48,25 @@ export type CanvasCropOverlayProps = {
    * can ignore the click the browser sends after it (§556 M4).
    */
   onDragEnd?: () => void
+  /**
+   * Draws the window's border and its eight handles inside the overlay. A host
+   * that draws them over its own clip (§586 M4: the slide canvas's chrome
+   * layer, past the slide edge) passes false and renders `CanvasCropHandles`
+   * there. Default true.
+   */
+  handles?: boolean
 }
 
-export function CanvasCropOverlay({
-  element,
-  resolveImageSrc,
-  scale,
-  localCrop,
-  onLocalCropChange,
-  onSrcDimsLoaded,
-  srcDims,
-  onDragEnd,
-}: CanvasCropOverlayProps) {
-  const srcUrl = resolveImageSrc(element)
+/** What the window's border and handles need: the overlay's props bar the image's. */
+export type CanvasCropHandlesProps = Pick<
+  CanvasCropOverlayProps,
+  'element' | 'scale' | 'localCrop' | 'onLocalCropChange' | 'srcDims' | 'onDragEnd'
+>
 
+// The window in box pixels and the press that drags it or one of its handles.
+// The overlay and the handles each hold one, so a host may draw the handles
+// apart from the image: each press is measured on its own from where it began.
+function useCropWindow({ element, scale, localCrop, onLocalCropChange, srcDims, onDragEnd }: CanvasCropHandlesProps) {
   const wrapperW = element.w * scale
   const wrapperH = element.h * scale
 
@@ -115,34 +120,115 @@ export function CanvasCropOverlay({
     onDragEnd?.()
   }
 
+  /** The pointer handlers for a press on `handle`, or on the window ('move'). */
+  const press = (handle: CropHandle | 'move') => ({
+    onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => onPointerDown(handle, e),
+    onPointerMove,
+    onPointerUp,
+    onPointerCancel: onPointerUp,
+    onLostPointerCapture: onPointerUp,
+  })
+
+  return { windowPx, press }
+}
+
+/**
+ * The crop window's border and its eight handles, in pixels of the image's box:
+ * draw them in a box of the image's size and place. They take the pointer
+ * themselves; the rest lets it through.
+ */
+export function CanvasCropHandles(props: CanvasCropHandlesProps) {
+  const { windowPx, press } = useCropWindow(props)
+  if (!windowPx) return null
   return (
-    <div
-      style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'auto' }}
-      onPointerDown={(e) => {
-        e.stopPropagation()
-      }}
-    >
-      {/* Letterbox preview of the full source image */}
-      <img
-        src={srcUrl}
-        alt="Crop source"
-        onLoad={(e) => {
-          const img = e.currentTarget
-          onSrcDimsLoaded({ width: img.naturalWidth, height: img.naturalHeight })
-        }}
+    <>
+      {/* Crop window border */}
+      <div
+        data-testid="crop-window"
         style={{
           position: 'absolute',
-          inset: 0,
-          width: '100%',
-          height: '100%',
-          objectFit: 'contain',
+          left: windowPx.x,
+          top: windowPx.y,
+          width: windowPx.w,
+          height: windowPx.h,
+          outline: '2px solid var(--editor-selection)',
           pointerEvents: 'none',
         }}
       />
 
-      {windowPx && (
-        <>
-          {/* Dark dimming mask outside the crop window */}
+      {/* 8 resize handles */}
+      {CROP_HANDLES.map((handle) => {
+        const o = HANDLE_OFFSET[handle]
+        return (
+          <div
+            key={handle}
+            data-testid={`crop-handle-${handle}`}
+            {...press(handle)}
+            style={{
+              position: 'absolute',
+              left: windowPx.x + o.dx * windowPx.w - 6,
+              top: windowPx.y + o.dy * windowPx.h - 6,
+              width: 12,
+              height: 12,
+              backgroundColor: '#fff',
+              border: '1.5px solid var(--editor-selection)',
+              borderRadius: 2,
+              cursor: o.cursor,
+              zIndex: 10,
+              pointerEvents: 'auto',
+              touchAction: 'none',
+            }}
+          />
+        )
+      })}
+    </>
+  )
+}
+
+export function CanvasCropOverlay({
+  element,
+  resolveImageSrc,
+  scale,
+  localCrop,
+  onLocalCropChange,
+  onSrcDimsLoaded,
+  srcDims,
+  onDragEnd,
+  handles = true,
+}: CanvasCropOverlayProps) {
+  const srcUrl = resolveImageSrc(element)
+  const windowProps = { element, scale, localCrop, onLocalCropChange, srcDims, onDragEnd }
+  const { windowPx, press } = useCropWindow(windowProps)
+
+  // Only the image area clips: the handles at its edge stay whole (§586 M4).
+  return (
+    <div
+      style={{ position: 'absolute', inset: 0, pointerEvents: 'auto' }}
+      onPointerDown={(e) => {
+        e.stopPropagation()
+      }}
+    >
+      <div data-testid="crop-image-area" style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
+        {/* Letterbox preview of the full source image */}
+        <img
+          src={srcUrl}
+          alt="Crop source"
+          onLoad={(e) => {
+            const img = e.currentTarget
+            onSrcDimsLoaded({ width: img.naturalWidth, height: img.naturalHeight })
+          }}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            width: '100%',
+            height: '100%',
+            objectFit: 'contain',
+            pointerEvents: 'none',
+          }}
+        />
+
+        {windowPx && (
+          /* Dark dimming mask outside the crop window */
           <div
             data-testid="crop-dim"
             style={{
@@ -160,73 +246,29 @@ export function CanvasCropOverlay({
               pointerEvents: 'none',
             }}
           />
+        )}
+      </div>
 
-          {/* Crop window border */}
-          <div
-            data-testid="crop-window"
-            style={{
-              position: 'absolute',
-              left: windowPx.x,
-              top: windowPx.y,
-              width: windowPx.w,
-              height: windowPx.h,
-              outline: '2px solid var(--editor-selection)',
-              pointerEvents: 'none',
-            }}
-          />
-
-          {/* The window itself: drag it to move it. Under the handles. */}
-          <div
-            data-testid="crop-move"
-            onPointerDown={(e) => onPointerDown('move', e)}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerUp}
-            onPointerCancel={onPointerUp}
-            onLostPointerCapture={onPointerUp}
-            style={{
-              position: 'absolute',
-              left: windowPx.x,
-              top: windowPx.y,
-              width: windowPx.w,
-              height: windowPx.h,
-              cursor: 'move',
-              zIndex: 5,
-              pointerEvents: 'auto',
-              touchAction: 'none',
-            }}
-          />
-
-          {/* 8 resize handles */}
-          {CROP_HANDLES.map((handle) => {
-            const o = HANDLE_OFFSET[handle]
-            return (
-              <div
-                key={handle}
-                data-testid={`crop-handle-${handle}`}
-                onPointerDown={(e) => onPointerDown(handle, e)}
-                onPointerMove={onPointerMove}
-                onPointerUp={onPointerUp}
-                onPointerCancel={onPointerUp}
-                onLostPointerCapture={onPointerUp}
-                style={{
-                  position: 'absolute',
-                  left: windowPx.x + o.dx * windowPx.w - 6,
-                  top: windowPx.y + o.dy * windowPx.h - 6,
-                  width: 12,
-                  height: 12,
-                  backgroundColor: '#fff',
-                  border: '1.5px solid var(--editor-selection)',
-                  borderRadius: 2,
-                  cursor: o.cursor,
-                  zIndex: 10,
-                  pointerEvents: 'auto',
-                  touchAction: 'none',
-                }}
-              />
-            )
-          })}
-        </>
+      {windowPx && (
+        /* The window itself: drag it to move it. Under the handles. */
+        <div
+          data-testid="crop-move"
+          {...press('move')}
+          style={{
+            position: 'absolute',
+            left: windowPx.x,
+            top: windowPx.y,
+            width: windowPx.w,
+            height: windowPx.h,
+            cursor: 'move',
+            zIndex: 5,
+            pointerEvents: 'auto',
+            touchAction: 'none',
+          }}
+        />
       )}
+
+      {handles && <CanvasCropHandles {...windowProps} />}
     </div>
   )
 }

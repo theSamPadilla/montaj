@@ -199,8 +199,8 @@ export type {
   WrapperPxRect,
   CropHandle,
 } from './crop/crop-math'
-export { CanvasCropOverlay } from './crop/CanvasCropOverlay'
-export type { CanvasCropOverlayProps } from './crop/CanvasCropOverlay'
+export { CanvasCropOverlay, CanvasCropHandles } from './crop/CanvasCropOverlay'
+export type { CanvasCropOverlayProps, CanvasCropHandlesProps } from './crop/CanvasCropOverlay'
 
 // ── Text ──────────────────────────────────────────────────────────────────────
 export {

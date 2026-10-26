@@ -106,6 +106,11 @@ function findInteractiveWrapper(elementId: string): HTMLElement {
   return els[els.length - 1] as HTMLElement
 }
 
+/** The element's box in the canvas's chrome layer (§586 M4): its outline and handles; an empty box when it is not outlined. */
+function chromeOf(elementId: string): HTMLElement {
+  return (document.querySelector(`[data-chrome-for="${elementId}"]`) as HTMLElement | null) ?? document.createElement('div')
+}
+
 describe('CarouselEditor — editor-core integration', () => {
   it('renders the host-supplied assetsPanel slot', async () => {
     const adapter = makeFakeAdapter()
@@ -734,8 +739,12 @@ describe('CarouselEditor — N adds a note (PL70)', () => {
 
     await key('n')
     const layer = armLayer()!
-    // The layer fills the box, so its rect is the box's rect.
-    expect(layer.parentElement).toBe(box)
+    // The layer fills the slide box, which is the canvas box's size at its
+    // origin (§586 M4: it clips the elements), so its rect is the box's rect.
+    const slideBox = layer.parentElement as HTMLElement
+    expect(slideBox.parentElement).toBe(box)
+    expect([slideBox.style.left, slideBox.style.top, slideBox.style.width, slideBox.style.height])
+      .toEqual(['0px', '0px', box.style.width, box.style.height])
     expect([layer.style.width, layer.style.height]).toEqual(['100%', '100%'])
     const rect = { left: 40, top: 20, width: boxW, height: boxH }
     for (const el of [box, layer]) {
@@ -1396,11 +1405,11 @@ async function dragFrom(id: string, to: { clientX: number; clientY: number }) {
 }
 
 function outlined(id: string): boolean {
-  return findInteractiveWrapper(id).style.outline.includes('solid')
+  return chromeOf(id).style.outline.includes('solid')
 }
 
 function handlesOn(id: string): boolean {
-  return findInteractiveWrapper(id).querySelector('[data-testid="resize-handle-nw"]') !== null
+  return chromeOf(id).querySelector('[data-testid="resize-handle-nw"]') !== null
 }
 
 function elementsOf(p: Project) {
@@ -3135,7 +3144,7 @@ describe('CarouselEditor: an edit lands on the elements the project has now (§5
 
 describe('CarouselEditor: resize handles and clicks (§556 M3)', () => {
   function handleOf(id: string, testId: string): HTMLElement {
-    return findInteractiveWrapper(id).querySelector(`[data-testid="${testId}"]`) as HTMLElement
+    return chromeOf(id).querySelector(`[data-testid="${testId}"]`) as HTMLElement
   }
 
   it('a press and release in place, on the element, a handle or the rotate handle, records nothing: undo then takes back the edit before', async () => {
@@ -3266,7 +3275,7 @@ async function loadCropSource(id = 'el-img') {
 /** Drags the crop window's right edge in by 50 px of the slide: a quarter of
  *  the 200 wide el-img, so its window becomes {0, 0, 0.75, 1}. */
 async function dragCropRightEdgeIn(id = 'el-img') {
-  const handle = findInteractiveWrapper(id).querySelector('[data-testid="crop-handle-e"]') as HTMLElement
+  const handle = chromeOf(id).querySelector('[data-testid="crop-handle-e"]') as HTMLElement
   const d = 50 * (parseFloat(canvasRoot().style.width) / 1080)
   await act(async () => {
     pointer(handle, 'pointerdown', { clientX: 0, clientY: 0 })
@@ -3331,6 +3340,22 @@ describe('CarouselEditor: a crop that keeps what you picked (§556 M4)', () => {
     expect(adapter.saveCalls).toHaveLength(0)
 
     await act(async () => { fireEvent.click(canvasRoot()) })
+    await waitFor(() => expectCropApplied(elementsOf(lastSave(adapter))[0]))
+    expect(inCrop()).toBe(false)
+    expect(outlined('el-img')).toBe(false)
+    await expectOneUndoStep(adapter, r)
+  })
+
+  it('a press in the margin around the page is a press on the empty canvas: it applies the crop, as one undo step, and selects nothing (§586 M4)', async () => {
+    const { adapter, r } = await mount()
+    await pickCrop(r)
+    const margin = document.querySelector('[data-canvas-margin]') as HTMLElement
+    expect(margin.parentElement).toBe(canvasRoot())
+    await act(async () => {
+      pointer(margin, 'pointerdown', { clientX: 2, clientY: 2 })
+      pointer(window, 'pointerup', { clientX: 2, clientY: 2 })
+      fireEvent.click(margin)
+    })
     await waitFor(() => expectCropApplied(elementsOf(lastSave(adapter))[0]))
     expect(inCrop()).toBe(false)
     expect(outlined('el-img')).toBe(false)
@@ -3689,7 +3714,7 @@ describe('CarouselEditor: a crop that keeps what you picked (§556 M4)', () => {
     const { adapter, r } = await mount()
     await pickCrop(r)
     const windowBox = () => {
-      const w = findInteractiveWrapper('el-img').querySelector('[data-testid="crop-window"]') as HTMLElement | null
+      const w = chromeOf('el-img').querySelector('[data-testid="crop-window"]') as HTMLElement | null
       return w && [w.style.left, w.style.top, w.style.width, w.style.height]
     }
     const before = windowBox()
@@ -3723,7 +3748,7 @@ describe('CarouselEditor: a crop that keeps what you picked (§556 M4)', () => {
     frame.slides![0].elements[1] = { ...frame.slides![0].elements[1], x: 700 }
     await act(async () => { push!(frame) })
     expect(inCrop()).toBe(true)
-    expect(findInteractiveWrapper('el-img').querySelector('[data-testid="crop-window"]')).not.toBeNull()
+    expect(chromeOf('el-img').querySelector('[data-testid="crop-window"]')).not.toBeNull()
 
     await key('Escape')
     await waitFor(() => expectCropApplied(elementsOf(lastSave(adapter))[0]))
