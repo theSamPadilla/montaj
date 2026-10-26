@@ -23,7 +23,7 @@ The cut's transcripts are made per voiced run and are trustworthy. Never transcr
 3. In each kept take, delete the words a `repeat?` names, so only the last saying stays. Delete what a `noise?` names unless it is a real word.
 4. Order: put the kept rows in the order the prompt or script asks for; with neither, keep the recording order. The apply plays `## Cut` top to bottom. Read every join between sections: the same fact or beat said on both sides loses one.
 5. Edit only the plan: delete rows or words, move rows; never add or change a word. `write_file` it back, then run `cut` with `plan`. An untagged plan applies as it is.
-6. Check the result in the apply's answer, not with other steps: `seams` lists every join where words were skipped, as `<time> <3 words before> | <3 words after>`, ending `(cuts a word)` when a join falls inside a word; `notes` says what a kept tag does. Fix a bad seam by editing the plan again and running `cut` with `plan` once more.
+6. Check the result in the apply's answer, not with other steps: `seams` lists every join where words were skipped, as `<time> <3 words before> | <3 words after>`, ending `(cuts a word)` when a join falls inside a word; `notes` says what a kept tag does. To fix a bad seam, restore the version the answer's `undo` names (the project is cut now, so an edited plan applied on top is refused as stale), edit the plan, and run `cut` with `plan` again.
 
 ## On a project already cut
 

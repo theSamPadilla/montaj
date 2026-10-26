@@ -187,3 +187,17 @@ def test_v5_checks_still_pass_on_a_labeled_plan(tmp_path, monkeypatch):
     d = tc.spoken_project(tmp_path, RETAKE + ["thanks all."])
     plan, text, applied, said, before = v5.plan_apply(d, monkeypatch)
     v5.checked(d, plan, applied, before)
+
+
+def test_a_bad_seam_is_fixed_by_restoring_the_version_then_applying_the_edited_plan(tmp_path, monkeypatch, capsys):
+    """After an apply the project is cut, so an edited plan applied on top is refused as stale. The answer's undo
+    names the version from before the cut: restored, the same plan, edited, applies."""
+    d = tc.spoken_project(tmp_path, RETAKE)
+    _, text = plan_of(d, monkeypatch)
+    applied = apply(d, monkeypatch)
+    assert applied["undo"].startswith("Restore the latest version")          # HEAD holds the project before the cut
+    (d / "cut-plan.md").write_text(without(text, "A1"))
+    assert tc.refused(d, "--plan", str(d / "cut-plan.md"), monkeypatch=monkeypatch, capsys=capsys) == "stale_plan"
+    (d / "project.json").write_text(tc.git(d, "show", "HEAD:project.json"))     # restore the version
+    apply(d, monkeypatch)
+    assert tc.said_text(d) == RETAKE[1]
