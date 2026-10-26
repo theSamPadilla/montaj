@@ -35,7 +35,8 @@
  * boundary, so an overlay that runs from a clip into a footage-less stretch
  * changes level exactly at that frame. A full-screen card (cover-probe.js) is
  * at that level for its whole span even with footage running under it, and what is
- * stacked above it follows it (encode-segment.js overlayWhiteNits). Both levels
+ * stacked above it follows it (encode-segment.js overlayWhiteNits); a full-screen
+ * 3D beat is the exception and keeps 800 (2026-10-26). Both levels
  * are one mapping with the white as its parameter, each with its own generated
  * LUT.
  *

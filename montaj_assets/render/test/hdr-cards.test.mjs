@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { FFMPEG } from '../ffmpeg-bin.js'
 import { isCardPlacement, captureHasOpaqueFrame, markCards } from '../cover-probe.js'
+import { overlayDescriptor } from '../slice-run.js'
 import { encodeSegment, overlayWhiteNits } from '../encode-segment.js'
 import { graphicsLutPath, GRAPHICS_WHITE_NITS, GRAPHICS_WHITE_NITS_NO_FOOTAGE } from '../hdr-graphics.js'
 
@@ -118,5 +119,41 @@ for (const colorSpace of ['hdr_hlg', 'hdr_pq']) {
     assert.ok(withCard.includes(lut(GRAPHICS_WHITE_NITS_NO_FOOTAGE)) && !withCard.includes(lut(800)), 'the card uses the no-footage LUT')
     const withThird = await graph([{ ...full, scale: 0.4 }])
     assert.ok(withThird.includes(lut(800)) && !withThird.includes(lut(GRAPHICS_WHITE_NITS_NO_FOOTAGE)), 'a lower third over footage stays 800')
+  })
+}
+
+// A full-screen 3D beat (a scene3d overlay that covers the frame) is the one card that keeps the footage level, 800
+// nits, for itself and what is stacked on it (the product owner, 2026-10-26): its paper reads as paper next to the
+// footage around it. Every other full-screen graphic keeps the no-footage level.
+test('a full-screen 3D beat and what is stacked on it keep 800; any other card is still 300', () => {
+  const beat = { ...full, coversFrame: true, scene3d: true }
+  const card = { ...full, coversFrame: true }
+  const lower = { ...full, scale: 0.4 }
+  const caption = { ...full, isCaption: true }
+  const N = GRAPHICS_WHITE_NITS_NO_FOOTAGE
+  assert.equal(overlayWhiteNits([beat, lower, caption], 0, N), GRAPHICS_WHITE_NITS, 'the beat, no footage visible')
+  assert.equal(overlayWhiteNits([beat, lower, caption], 1, N), GRAPHICS_WHITE_NITS, 'a label on the beat')
+  assert.equal(overlayWhiteNits([beat, lower, caption], 2, N), GRAPHICS_WHITE_NITS, 'a caption on the beat')
+  assert.equal(overlayWhiteNits([beat, card, caption], 2, N), N, 'a card stacked on the beat: the card decides above it')
+  assert.equal(overlayWhiteNits([card, beat, caption], 0, N), N, 'a card under the beat keeps 300')
+  assert.equal(overlayWhiteNits([card, beat, caption], 2, N), GRAPHICS_WHITE_NITS, 'the topmost card at or below decides')
+  assert.equal(overlayWhiteNits([{ ...full, scene3d: true, scale: 0.5 }, caption], 1, N), N, 'a 3D overlay that is not a card changes nothing')
+})
+
+test('the overlay descriptor carries scene3d only when the spec has it', () => {
+  assert.equal(overlayDescriptor({ scene3d: true }, {}).scene3d, true)
+  assert.equal('scene3d' in overlayDescriptor({}, {}), false)
+})
+
+for (const colorSpace of ['hdr_hlg', 'hdr_pq']) {
+  test(`${colorSpace}: a full-screen 3D beat over culled footage maps at 800; a plain card there at the no-footage level`, async () => {
+    const video = { type: 'video', src: '/x/clip.mp4', start: 0, end: 1, trackIdx: 0, colorTransfer: 'bt709', hasAudio: false, muted: true, probedWidth: 640, probedHeight: 360 }
+    const lut = (nits) => graphicsLutPath(colorSpace, { write: false, whiteNits: nits }).split('/').pop()
+    const graph = async (overlays) => (await encodeSegment({ start: 0, end: 1, vw: 640, vh: 360, fps: 30, colorSpace, items: [video], overlays, opaqueVideo: true },
+      '/tmp/x.mp4', { _dryRun: true })).filterParts.join(';')
+    const beat = await graph([{ ...full, opaque: true, coversFrame: true, scene3d: true }, { ...full, isCaption: true }])
+    assert.ok(beat.includes(lut(GRAPHICS_WHITE_NITS)) && !beat.includes(lut(GRAPHICS_WHITE_NITS_NO_FOOTAGE)), 'the beat and its caption use the 800 LUT')
+    const card = await graph([{ ...full, opaque: true, coversFrame: true }, { ...full, isCaption: true }])
+    assert.ok(card.includes(lut(GRAPHICS_WHITE_NITS_NO_FOOTAGE)) && !card.includes(lut(GRAPHICS_WHITE_NITS)), 'a plain card keeps 300')
   })
 }

@@ -9,7 +9,8 @@
  * placement is the whole canvas and its capture has at least one frame whose
  * alpha is fully opaque everywhere, or it carries the explicit `opaque: true`.
  * A card maps graphics white to GRAPHICS_WHITE_NITS_NO_FOOTAGE (300 nits) for its WHOLE span, its fades
- * included, and overlays stacked above it follow it (overlayWhiteNits). Deciding
+ * included, and overlays stacked above it follow it (overlayWhiteNits), except a
+ * full-screen 3D beat (`scene3d`), which keeps GRAPHICS_WHITE_NITS. Deciding
  * per segment instead would step the white at clip cuts hidden under the card,
  * mid-animation.
  *

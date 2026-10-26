@@ -385,6 +385,12 @@ export function graphicsWhiteNitsFor(segment) {
  * footage, for the card's whole span. Graphics below the card, and every
  * graphic in a segment without one, take the segment's level.
  *
+ * The one exception is a full-screen 3D beat (a card that is a 3D stage,
+ * `scene3d`): it and what is stacked on it keep GRAPHICS_WHITE_NITS, so its
+ * paper reads as paper next to the footage around it (the product owner,
+ * 2026-10-26). The topmost card at or below `index` decides, so a plain card
+ * stacked on a beat is 300 again from there up.
+ *
  * Read over the segment's whole bottom-to-top layer list (§308 P3), so an
  * IMAGE stacked above a card takes the card's white too, as an overlay above
  * it does; one below takes the segment's. A list with every item below every
@@ -396,8 +402,12 @@ export function graphicsWhiteNitsFor(segment) {
  * @returns {number}
  */
 export function overlayWhiteNits(overlays, index, segmentWhiteNits) {
-  const cardAt = overlays.findIndex((ov) => ov.coversFrame === true)
-  return cardAt !== -1 && index >= cardAt ? GRAPHICS_WHITE_NITS_NO_FOOTAGE : segmentWhiteNits
+  let card = null
+  for (let i = 0; i <= index && i < overlays.length; i++) {
+    if (overlays[i].coversFrame === true) card = overlays[i]
+  }
+  if (!card) return segmentWhiteNits
+  return card.scene3d === true ? GRAPHICS_WHITE_NITS : GRAPHICS_WHITE_NITS_NO_FOOTAGE
 }
 
 // Cache the `ffmpeg -filters` listing across calls — a build's filter set can't
