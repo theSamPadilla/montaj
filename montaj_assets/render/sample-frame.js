@@ -62,7 +62,7 @@ import {
   hasLut3d,
   SEEK_PREROLL_S,
 } from './encode-segment.js'
-import { resolveAt, sourceWindow, opaqueReplacesPicture, trackLayerPositions, RESOLVER_VERSION } from '@bycrux/timeline-core'
+import { resolveAt, sourceWindow, opaqueReplacesPicture, isFullCanvasPlacement, opacityAt, trackLayerPositions, RESOLVER_VERSION } from '@bycrux/timeline-core'
 import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
 import { captionOverlayFields } from './caption-spec.js'
 import { materializeScene3d, Scene3dError, SCENE3D_SRC } from './scene3d.js'
@@ -180,6 +180,9 @@ const SHORT_EDGE_TARGET = 1080
  *    child or a zero-width wrapper is not its text), and it widens the box
  *    up or down only past that same 30% slack, so a tight heading at top 0 is
  *    not off the frame. 18's entries call it off by the glyph's rise.
+ * 20: a full-canvas overlay measured fully opaque hides the footage below it,
+ *    flagged `opaque` or not. A frame cached before took the footage through
+ *    the composite's yuv420 round trip, a few levels off the culled frame.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -187,7 +190,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 19
+const SAMPLE_CACHE_VERSION = 20
 
 // PL89: the most overlay pages a sampling session keeps open (createSampleSession).
 export const SESSION_MAX_PAGES = 4
@@ -1077,6 +1080,19 @@ export async function sampleOverlay({
   return { pngPath: outPath, inputs: recordedInputs, degraded, warnings }
 }
 
+/**
+ * Whether every pixel of a PNG has alpha 255, read with the bundled ffmpeg
+ * (the minimum of the alpha plane). A PNG with no alpha channel is opaque.
+ * Any failure to read it answers false: the footage is then decoded as before.
+ */
+function pngFullyOpaque(pngPath) {
+  const r = spawnSync(FFMPEG, ['-v', 'error', '-i', pngPath, '-vf',
+    'format=rgba,alphaextract,format=gray,signalstats,metadata=print:key=lavfi.signalstats.YMIN:file=-',
+    '-frames:v', '1', '-f', 'null', '-'], { encoding: 'utf8', timeout: 30_000 })
+  if (r.status !== 0) return false
+  return /lavfi\.signalstats\.YMIN=255\b/.test(r.stdout)
+}
+
 // ---------------------------------------------------------------------------
 // sampleFrame
 // ---------------------------------------------------------------------------
@@ -1236,7 +1252,8 @@ export async function sampleFrame({
   for (let k = stack.length - 1; k >= 0 && coverAt < 0; k--) {
     if (stack[k].kind === 1 && opaqueReplacesPicture(stack[k].ri.item, stack[k].ri.seek)) coverAt = k
   }
-  const culled = new Set(stack.slice(0, Math.max(0, coverAt)).filter(e => e.kind === 0).map(e => e.ri))
+  const culledBelow = (k) => new Set(stack.slice(0, Math.max(0, k)).filter(e => e.kind === 0).map(e => e.ri))
+  let culled = culledBelow(coverAt)
   const hasOpaque = culled.size > 0
 
   log(`active items: ${videoCount} video, ${imageCount} image` +
@@ -1318,6 +1335,27 @@ export async function sampleFrame({
       opaque:       ov.opaque ?? false,
     }
   }, OVERLAY_CONCURRENCY)
+
+  // A full-canvas overlay at full opacity whose rendered PNG is opaque in every
+  // pixel hides what is below it just as an `opaque` one does, flagged or not
+  // (a 3D scene's backdrop, a full-screen card). The alpha is measured on the
+  // PNG. The frame is the one an `opaque` overlay gives (SAMPLE_CACHE_VERSION 20).
+  // MONTAJ_SAMPLE_NO_COVER_SKIP=1 turns this off: a seam for the comparison test
+  // only; the `opaque` cull above stays.
+  if (process.env.MONTAJ_SAMPLE_NO_COVER_SKIP !== '1') {
+    for (let k = stack.length - 1; k > coverAt; k--) {
+      const e = stack[k]
+      if (e.kind !== 1) continue
+      if (!stack.slice(0, k).some(b => b.kind === 0)) break
+      if (!isFullCanvasPlacement(e.ri.item) || opacityAt(e.ri.item, e.ri.seek) !== 1) continue
+      if (!pngFullyOpaque(overlayPngs[e.i].webmPath)) continue
+      coverAt = k
+      const before = culled.size
+      culled = culledBelow(coverAt)
+      if (culled.size > before) log('footage hidden by an overlay measured fully opaque (alpha 255 everywhere)')
+      break
+    }
+  }
 
   // §59: the captions, drawn as the export draws them (caption-spec.js, the
   // `captions` segment render.js composites after every overlay): one overlay
