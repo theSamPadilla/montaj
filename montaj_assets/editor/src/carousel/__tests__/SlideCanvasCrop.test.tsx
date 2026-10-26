@@ -3,6 +3,7 @@ import { createRef } from 'react'
 import { render, waitFor, act, fireEvent } from '@testing-library/react'
 import type { ImageElement, OverlayElement, Slide } from '../../types'
 import SlideCanvas, { type SlideCanvasCropControl } from '../SlideCanvas'
+import { croppedBox, drawnSourceRect } from '../../crop/crop-math'
 
 beforeEach(() => {
   ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
@@ -218,8 +219,12 @@ function wrapperOf(id: string): HTMLElement {
 function chromeOf(elementId: string): HTMLElement {
   return (document.querySelector(`[data-chrome-for="${elementId}"]`) as HTMLElement | null) ?? document.createElement('div')
 }
+/** The crop overlay draws in the chrome layer, so the picture can reach past the slide (M3b). */
 function cropSource(id = 'el-img'): HTMLImageElement | null {
-  return wrapperOf(id).querySelector('img[alt="Crop source"]')
+  return chromeOf(id).querySelector('img[alt="Crop source"]')
+}
+function cropMove(id = 'el-img'): HTMLElement {
+  return chromeOf(id).querySelector('[data-testid="crop-move"]') as HTMLElement
 }
 function cropWindow(id = 'el-img'): HTMLElement | null {
   return chromeOf(id).querySelector('[data-testid="crop-window"]')
@@ -290,7 +295,7 @@ describe('SlideCanvas: crop mode (§556 M4)', () => {
     const stored = { x: 0.25, y: 0, w: 0.5, h: 1 }
     const { fns } = mountCanvas(slideWith({ ...IMG, crop: stored }))
     await loadSource()
-    const move = wrapperOf('el-img').querySelector('[data-testid="crop-move"]') as HTMLElement
+    const move = cropMove()
     await act(async () => {
       pointer(move, 'pointerdown', { clientX: 100, clientY: 100 })
       pointer(move, 'pointermove', { clientX: 133, clientY: 100 })
@@ -307,16 +312,17 @@ describe('SlideCanvas: crop mode (§556 M4)', () => {
   it('moving the window keeps its size, so the box keeps its shape: the box moves to where the kept part was drawn', async () => {
     const { fns } = mountCanvas(slideWith({ ...IMG, crop: { x: 0.25, y: 0, w: 0.5, h: 1 } }))
     await loadSource()
-    const move = wrapperOf('el-img').querySelector('[data-testid="crop-move"]') as HTMLElement
+    const move = cropMove()
     await act(async () => {
       pointer(move, 'pointerdown', { clientX: 100, clientY: 100 })
       pointer(move, 'pointermove', { clientX: 60, clientY: 100 })
       pointer(move, 'pointerup', { clientX: 60, clientY: 100 })
     })
     await esc()
-    // The picture (400 wide) starts at x 0; the new window starts 0.05 of it in.
-    expect(fns.resizeElement).toHaveBeenCalledWith('slide-0', 'el-img', { x: 20, y: 100, w: 200, h: 200 })
-    expectCrop(fns.updateImageCrop.mock.calls[0][2], { x: 0.05, y: 0, w: 0.5, h: 1 })
+    // M3b: the picture is drawn 400 wide from x 0, so 40 px is a tenth of it
+    // and the box moves 40 left.
+    expect(fns.resizeElement).toHaveBeenCalledWith('slide-0', 'el-img', { x: 60, y: 100, w: 200, h: 200 })
+    expectCrop(fns.updateImageCrop.mock.calls[0][2], { x: 0.15, y: 0, w: 0.5, h: 1 })
     expect(fns.commit).toHaveBeenCalledTimes(1)
   })
 
@@ -352,7 +358,8 @@ describe('SlideCanvas: crop mode (§556 M4)', () => {
     // Its size is not known until it loads.
     expect(cropWindow()).toBeNull()
     await loadSource()
-    expect(boxOf(cropWindow())).toEqual(['50px', '50px', '100px', '100px'])
+    // M3b: the window on the new file's crop is the box.
+    expect(boxOf(cropWindow())).toEqual(['0px', '0px', '200px', '200px'])
 
     // The window is the new file's own crop: nothing to write.
     await esc()
@@ -414,7 +421,7 @@ describe('SlideCanvas: crop mode (§556 M4)', () => {
   it('a click after a window drag let go off the image changes nothing; a later click on the canvas still selects nothing', async () => {
     const { fns } = mountCanvas(slideWith({ ...IMG, crop: { x: 0.25, y: 0, w: 0.5, h: 1 } }))
     await loadSource()
-    const move = wrapperOf('el-img').querySelector('[data-testid="crop-move"]') as HTMLElement
+    const move = cropMove()
     const canvas = document.querySelector('[data-interactive]') as HTMLElement
     await act(async () => {
       pointer(move, 'pointerdown', { clientX: 100, clientY: 100 })
@@ -432,6 +439,152 @@ describe('SlideCanvas: crop mode (§556 M4)', () => {
       fireEvent.click(canvas)
     })
     expect(fns.onSelect).toHaveBeenCalledWith(null)
+  })
+})
+
+// ── Re-crop at the current scale (M3b) ───────────────────────────────────────
+//
+// Crop mode draws the whole picture where it is drawn on the slide now, at its
+// scale, past the box. The window starts on the box, so the kept part lands on
+// the slide exactly where the window was drawn.
+
+describe('SlideCanvas: re-crop at the current scale (M3b)', () => {
+  // The middle half of the 400 x 200 source in the 200 x 200 box at (100, 100):
+  // the picture is drawn 400 x 200 from (0, 100).
+  const CROP = { x: 0.25, y: 0, w: 0.5, h: 1 }
+  const CROPPED: ImageElement = { ...IMG, crop: CROP }
+  const SRC = { width: 400, height: 200 }
+
+  function imageArea(): HTMLElement {
+    return chromeOf('el-img').querySelector('[data-testid="crop-image-area"]') as HTMLElement
+  }
+  /** A box drawn in pixels of the element's box, in slide units. */
+  function inSlide(el: HTMLElement, box: { x: number; y: number }, scale: number) {
+    const px = (v: string) => parseFloat(v) / scale
+    return { x: box.x + px(el.style.left), y: box.y + px(el.style.top), w: px(el.style.width), h: px(el.style.height) }
+  }
+  async function drag(target: HTMLElement, dx: number, dy: number) {
+    await act(async () => {
+      pointer(target, 'pointerdown', { clientX: 500, clientY: 500 })
+      pointer(target, 'pointermove', { clientX: 500 + dx, clientY: 500 + dy })
+      pointer(target, 'pointerup', { clientX: 500 + dx, clientY: 500 + dy })
+    })
+  }
+  const handle = (id: string) => chromeOf('el-img').querySelector(`[data-testid="crop-handle-${id}"]`) as HTMLElement
+
+  it('the whole picture is drawn at its scale on the slide: its kept region is the box, and the window starts on it', async () => {
+    mountCanvas(slideWith(CROPPED), { scale: 0.5 })
+    await loadSource()
+    const picture = inSlide(imageArea(), CROPPED, 0.5)
+    expectCrop(picture, { x: 0, y: 100, w: 400, h: 200 })
+    // The crop's region of it is the box.
+    expectCrop(
+      { x: picture.x + CROP.x * picture.w, y: picture.y + CROP.y * picture.h, w: CROP.w * picture.w, h: CROP.h * picture.h },
+      { x: 100, y: 100, w: 200, h: 200 },
+    )
+    expectCrop(inSlide(cropWindow()!, CROPPED, 0.5), { x: 100, y: 100, w: 200, h: 200 })
+    expect(cropSource()!.style.visibility).toBe('')
+  })
+
+  it('the element\'s own picture is hidden under the crop picture, and shows again after', async () => {
+    mountCanvas(slideWith(CROPPED))
+    const own = () => wrapperOf('el-img').firstElementChild as HTMLElement
+    // Until the size is known the crop picture is not drawn, so the image shows.
+    expect(own().style.visibility).toBe('')
+    await loadSource()
+    expect(own().style.visibility).toBe('hidden')
+    await esc()
+    expect(own().style.visibility).toBe('')
+  })
+
+  it('moving the window right by N moves the box right by N at its size and the picture\'s scale', async () => {
+    const { fns } = mountCanvas(slideWith(CROPPED))
+    await loadSource()
+    await drag(cropMove(), 40, 0)
+    expectCrop(inSlide(cropWindow()!, CROPPED, 1), { x: 140, y: 100, w: 200, h: 200 })
+    await esc()
+    const box = fns.resizeElement.mock.calls[0][2]
+    expect(box).toEqual({ x: 140, y: 100, w: 200, h: 200 })
+    const crop = fns.updateImageCrop.mock.calls[0][2] as Crop
+    expectCrop(crop, { x: 0.35, y: 0, w: 0.5, h: 1 })
+    // The picture is drawn where it was, at the size it was.
+    const after = drawnSourceRect(box, crop, SRC)
+    expectCrop({ x: box.x + after.offsetX, y: box.y + after.offsetY, w: after.width, h: after.height }, { x: 0, y: 100, w: 400, h: 200 })
+  })
+
+  it('re-cropping back to the full frame gives the box the whole picture takes at that scale', async () => {
+    const { fns } = mountCanvas(slideWith(CROPPED))
+    await loadSource()
+    await drag(handle('nw'), -1000, -1000)
+    await drag(handle('se'), 1000, 1000)
+    expectCrop(inSlide(cropWindow()!, CROPPED, 1), { x: 0, y: 100, w: 400, h: 200 })
+    await esc()
+    expect(fns.resizeElement).toHaveBeenCalledWith('slide-0', 'el-img', { x: 0, y: 100, w: 400, h: 200 })
+    expectCrop(fns.updateImageCrop.mock.calls[0][2], { x: 0, y: 0, w: 1, h: 1 })
+  })
+
+  it('on a box a side resize changed, the window starts on the box and applying it writes nothing', async () => {
+    // 300 x 200 on the same crop: the picture is drawn 600 x 300 from (-50, 50).
+    const stretched = { ...CROPPED, w: 300 }
+    const { fns } = mountCanvas(slideWith(stretched))
+    await loadSource()
+    expectCrop(inSlide(imageArea(), stretched, 1), { x: -50, y: 50, w: 600, h: 300 })
+    expectCrop(inSlide(cropWindow()!, stretched, 1), { x: 100, y: 100, w: 300, h: 200 })
+    await esc()
+    expect(fns.resizeElement).not.toHaveBeenCalled()
+    expect(fns.updateImageCrop).not.toHaveBeenCalled()
+    expect(fns.commit).not.toHaveBeenCalled()
+    expect(fns.onExitCrop).toHaveBeenCalledTimes(1)
+  })
+
+  it('a letterboxed uncropped image: the window starts on the picture\'s contain rect, unmoved writes nothing, moved gives croppedBox\'s box', async () => {
+    // A 16:9 source in the 200 x 200 box is drawn 200 x 112.5, 43.75 down.
+    const src = { width: 1600, height: 900 }
+    const { fns } = mountCanvas(slideWith(IMG))
+    await loadSource(src.width, src.height)
+    expectCrop(inSlide(cropWindow()!, IMG, 1), { x: 100, y: 143.75, w: 200, h: 112.5 })
+    expectCrop(inSlide(imageArea(), IMG, 1), { x: 100, y: 143.75, w: 200, h: 112.5 })
+    await esc()
+    expect(fns.resizeElement).not.toHaveBeenCalled()
+    expect(fns.updateImageCrop).not.toHaveBeenCalled()
+    expect(fns.commit).not.toHaveBeenCalled()
+
+    // Again: the right edge 50 in, then the window 20 right.
+    const again = mountCanvas(slideWith(IMG))
+    await act(async () => { loadImage(again.r.container.querySelector('img[alt="Crop source"]') as HTMLImageElement, src.width, src.height) })
+    const inThis = (sel: string) => again.r.container.querySelector(sel) as HTMLElement
+    await drag(inThis('[data-testid="crop-handle-e"]'), -50, 0)
+    await drag(inThis('[data-testid="crop-move"]'), 20, 0)
+    await esc()
+    const crop = again.fns.updateImageCrop.mock.calls[0][2] as Crop
+    expectCrop(crop, { x: 0.1, y: 0, w: 0.75, h: 1 })
+    const want = croppedBox(IMG, undefined, crop, src)
+    expect(want.x).toBeCloseTo(120, 9)
+    expect(want.y).toBeCloseTo(143.75, 9)
+    expect(again.fns.resizeElement).toHaveBeenCalledWith('slide-0', 'el-img', {
+      x: Math.round(want.x), y: Math.round(want.y), w: Math.round(want.w), h: Math.round(want.h),
+    })
+  })
+
+  it('a source that fails to load leaves the element\'s own picture showing in crop mode, and writes nothing', async () => {
+    const { fns } = mountCanvas(slideWith(CROPPED))
+    await act(async () => { fireEvent.error(cropSource()!) })
+    expect((wrapperOf('el-img').firstElementChild as HTMLElement).style.visibility).toBe('')
+    expect(cropSource()!.style.visibility).toBe('hidden')
+    expect(cropWindow()).toBeNull()
+    await esc()
+    expect(fns.resizeElement).not.toHaveBeenCalled()
+    expect(fns.updateImageCrop).not.toHaveBeenCalled()
+    expect(fns.commit).not.toHaveBeenCalled()
+  })
+
+  it('on that box, a window moved right by N moves the box right by N at its size', async () => {
+    const stretched = { ...CROPPED, w: 300 }
+    const { fns } = mountCanvas(slideWith(stretched))
+    await loadSource()
+    await drag(cropMove(), 30, 0)
+    await esc()
+    expect(fns.resizeElement).toHaveBeenCalledWith('slide-0', 'el-img', { x: 130, y: 100, w: 300, h: 200 })
   })
 })
 
@@ -455,7 +608,7 @@ describe('SlideCanvas: double-click (§556 M4)', () => {
   it('double-click on the image already in crop does not enter it again', async () => {
     const { fns } = mountCanvas(slideWith(IMG))
     await loadSource()
-    await act(async () => { fireEvent.doubleClick(wrapperOf('el-img').querySelector('[data-testid="crop-move"]') ?? wrapperOf('el-img')) })
+    await act(async () => { fireEvent.doubleClick(cropMove() ?? wrapperOf('el-img')) })
     expect(fns.onEnterCrop).not.toHaveBeenCalled()
   })
 

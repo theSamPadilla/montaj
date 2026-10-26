@@ -226,11 +226,13 @@ describe('SlideCanvas: handles past the slide edge (§586 M4)', () => {
 describe('SlideCanvas: crop handles at the image edge are whole (§586 M4)', () => {
   it('the window\'s handles and border sit in the chrome layer; only the image area clips', async () => {
     const c = setup([AT_EDGE], { cropElementId: 'el' })
-    const source = c.wrapper().querySelector('img[alt="Crop source"]') as HTMLImageElement
+    const source = c.chrome().querySelector('img[alt="Crop source"]') as HTMLImageElement
     // 400 x 200 in the 200 x 100 box: the window is the whole box.
     await act(async () => { loadImage(source, 400, 200) })
-    // The image area clips, then the slide.
-    expect(clipsAbove(source).map(frameOf)[1]).toEqual(SLIDE_FRAME)
+    // M3b: the crop picture is drawn in the chrome layer too, so the image
+    // area clips it, then the margin edge, never the slide.
+    const area = c.chrome().querySelector('[data-testid="crop-image-area"]') as HTMLElement
+    expect(clipsAbove(source)).toEqual([area, c.chromeLayer])
     for (const id of HANDLES) {
       const h = c.chrome().querySelector(`[data-testid="crop-handle-${id}"]`) as HTMLElement
       expect(h).not.toBeNull()
@@ -240,9 +242,26 @@ describe('SlideCanvas: crop handles at the image edge are whole (§586 M4)', () 
     expect(clipsAbove(c.chrome().querySelector('[data-testid="crop-window"]')!)).toEqual([c.chromeLayer])
   })
 
+  it('a cropped image at the slide edge draws its whole picture past the slide, into the margin, its handles whole (M3b)', async () => {
+    // The middle half of a 400 x 100 source in the 200 x 100 box half off the
+    // corner: the picture is drawn 400 x 100 from x -200, the box 100 into it.
+    const c = setup([image({ x: -100, y: -50, crop: { x: 0.25, y: 0, w: 0.5, h: 1 } })], { cropElementId: 'el' })
+    const source = c.chrome().querySelector('img[alt="Crop source"]') as HTMLImageElement
+    await act(async () => { loadImage(source, 400, 100) })
+    const area = c.chrome().querySelector('[data-testid="crop-image-area"]') as HTMLElement
+    // In display pixels of the box at half scale.
+    expect(frameOf(area)).toEqual(['-50px', '0px', '200px', '50px'])
+    expect(clipsAbove(source)).toEqual([area, c.chromeLayer])
+    expect(frameOf(c.chrome().querySelector('[data-testid="crop-window"]') as HTMLElement)).toEqual(['0px', '0px', '100px', '50px'])
+    for (const id of HANDLES) {
+      const h = c.chrome().querySelector(`[data-testid="crop-handle-${id}"]`) as HTMLElement
+      expect(clipsAbove(h)).toEqual([c.chromeLayer])
+    }
+  })
+
   it('a crop handle in the chrome layer still moves the window, and Esc applies it', async () => {
     const c = setup([image({ x: 0, y: 0, w: 200, h: 200 })], { cropElementId: 'el' })
-    const source = c.wrapper().querySelector('img[alt="Crop source"]') as HTMLImageElement
+    const source = c.chrome().querySelector('img[alt="Crop source"]') as HTMLImageElement
     // 400 x 200 in the 200 x 200 box at half scale: drawn 100 x 50.
     await act(async () => { loadImage(source, 400, 200) })
     const e = c.chrome().querySelector('[data-testid="crop-handle-e"]') as HTMLElement
