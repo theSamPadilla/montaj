@@ -94,6 +94,9 @@ function OverlayElementView({
 
 // ── SlideCanvas ───────────────────────────────────────────────────────────────
 
+/** The lock badge's diameter, in display pixels. */
+const LOCK_BADGE_SIZE = 24
+
 type Crop = { x: number; y: number; w: number; h: number }
 
 /** The whole source: what an image with no crop shows. */
@@ -188,6 +191,8 @@ interface Props {
   onEnterCrop?: (elementId: string) => void
   /** Set to the control that ends crop mode from the host (§556 M4). */
   cropControlRef?: Ref<SlideCanvasCropControl>
+  /** A click on the lock badge of the selected locked element (§586 M5b). Absent → no badge. */
+  onUnlock?: (elementId: string) => void
 
   /**
    * Editor-only element ids to omit from this canvas (non-persisted). Used by
@@ -309,6 +314,7 @@ export default function SlideCanvas({
   cropElementId,
   onExitCrop,
   onEnterCrop,
+  onUnlock,
   cropControlRef,
   hiddenElementIds,
   onDragEnter,
@@ -999,6 +1005,44 @@ export default function SlideCanvas({
                       // changes nothing, even when let go off the image.
                       onDragEnd={() => { swallowClickRef.current = true }}
                     />
+                  )}
+
+                  {/* Lock badge (§586 M5b): the selected locked element's way back
+                      to unlocked. Only the badge takes the pointer. */}
+                  {isSelected && locked && onUnlock && (
+                    <button
+                      type="button"
+                      data-testid="lock-badge"
+                      aria-label="Unlock"
+                      title="Unlock"
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => { e.stopPropagation(); swallowClickRef.current = false; onUnlock(element.id) }}
+                      style={{
+                        position: 'absolute',
+                        top: -LOCK_BADGE_SIZE / 2 - 2,
+                        right: -LOCK_BADGE_SIZE / 2 - 2,
+                        width: LOCK_BADGE_SIZE,
+                        height: LOCK_BADGE_SIZE,
+                        padding: 0,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        boxSizing: 'border-box',
+                        background: 'var(--editor-surface)',
+                        border: '1.5px solid var(--editor-selection)',
+                        borderRadius: '50%',
+                        color: 'var(--editor-selection)',
+                        boxShadow: '0 1px 4px rgba(0,0,0,0.35)',
+                        cursor: 'pointer',
+                        zIndex: 10,
+                        pointerEvents: 'auto',
+                      }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <rect x="5" y="11" width="14" height="10" rx="2" />
+                        <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+                      </svg>
+                    </button>
                   )}
 
                   {/* Selection handles (hidden while cropping or rotated-crop guard).
