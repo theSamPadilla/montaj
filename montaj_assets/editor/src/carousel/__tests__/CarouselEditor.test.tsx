@@ -6,6 +6,7 @@ import type { SlideNote } from '../../schema'
 import CarouselEditor from '../CarouselEditor'
 import { CAROUSEL_CONTROLS, LOCK_CONTROL } from '../../ControlsInfoModal'
 import { stubPlatform } from '../../ui/__tests__/platform'
+import { modifierLabel } from '../../ui/modifierKeys'
 
 // jsdom never loads an image, so a real size read would wait out its 5 s
 // timeout while these tests wait 1 s. Answer at once with no size: the square
@@ -549,7 +550,16 @@ describe('CarouselEditor — editor-core integration', () => {
       ])
       // The lock key is listed only with `lockKey` on (it is not bound otherwise).
       expect(ctx.sections.map((s) => s.entries.map((e) => e.label))).toEqual(
-        CAROUSEL_CONTROLS.map((s) => s.entries.filter((e) => e !== LOCK_CONTROL).map((e) => e.label)),
+        CAROUSEL_CONTROLS.map((s) => s.entries.filter((e) => e !== LOCK_CONTROL).map((e) => modifierLabel(e.label, false))),
+      )
+      // Off Apple the modifier glyph in a gesture label reads Ctrl.
+      expect(ctx.sections.find((s) => s.heading === 'Canvas')!.entries.map((e) => e.label)).toEqual(
+        expect.arrayContaining([
+          'Ctrl-click to select the layer below',
+          'Drag on empty canvas to select several',
+          'Hold Ctrl while dragging for no snapping',
+          'Corner-drag text to scale the text',
+        ]),
       )
       const keyboard = ctx.sections.find((s) => s.heading === 'Keyboard')!
       expect(keyboard.entries.map((e) => e.keys)).toEqual([

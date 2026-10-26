@@ -344,6 +344,10 @@ export const CAROUSEL_CONTROLS: ControlSection[] = [
       { icon: MousePointerClick, label: 'Double-click text to edit it' },
       { icon: MousePointerClick, label: 'Double-click an image to crop it' },
       { icon: MousePointerClick, label: 'Shift-click to select several' },
+      { icon: MousePointerClick, label: '⌘-click to select the layer below' },
+      { icon: MousePointer2, label: 'Drag on empty canvas to select several' },
+      { icon: Magnet, label: 'Hold ⌘ while dragging for no snapping' },
+      { icon: Maximize2, label: 'Corner-drag text to scale the text' },
     ],
   },
   {

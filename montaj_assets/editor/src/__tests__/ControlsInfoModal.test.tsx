@@ -164,6 +164,10 @@ describe('ControlsInfoModal', () => {
       'Double-click text to edit it',
       'Double-click an image to crop it',
       'Shift-click to select several',
+      '⌘-click to select the layer below',
+      'Drag on empty canvas to select several',
+      'Hold ⌘ while dragging for no snapping',
+      'Corner-drag text to scale the text',
     ])
   })
 
