@@ -13,7 +13,7 @@ they are, with a warning) and writes the ones it has.
 
 The write: `captions` only, under the project lock, onto the captions as they are now; refused (`project_changed`,
 nothing written) when a caption it changes, or the captions' style, was edited meanwhile. Prints one short JSON: {dark,
-light, cleared, kept, split, changed, warnings?}; `changed` is whether anything was written.
+light, cleared, kept, split, snapped, changed, warnings?}; `changed` is whether anything was written.
 """
 import argparse, json, os, sys
 

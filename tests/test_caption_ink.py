@@ -618,7 +618,8 @@ def test_a_caption_over_footage_then_a_card_splits_at_the_word_nearest_the_edge(
     pieces = changes[("id", "a")]["split"]
     assert [x["id"] for x in pieces] == ["a", "cap-0"]
     assert [x["text"] for x in pieces] == ["one two three", "four five six"]
-    assert [(x["start"], x["end"]) for x in pieces] == [(1.0, 2.5), (2.5, 4.0)]
+    # "four" (2.5-3.0) starts before the card: its piece is snapped to the card's start (see the snap tests below)
+    assert [(x["start"], x["end"]) for x in pieces] == [(1.0, 2.6), (2.6, 4.0)]
     assert [w["word"] for w in pieces[1]["words"]] == ["four", "five", "six"]
     assert "ink" not in pieces[0] and "inkAuto" not in pieces[0]
     assert pieces[1]["ink"] == "dark" and pieces[1]["inkAuto"]["card"] == "card"
@@ -941,3 +942,133 @@ def test_a_caption_only_change_does_not_render_an_overlay(tmp_path):
     p["captions"]["segments"][0]["text"] = "another line"
     _ov_cached(p, tmp_path, calls)
     assert len(calls) == 1
+
+
+# -- a caption that overhangs its card by a few frames is snapped to the card's edge -------------------------------
+# pl89h: "supplies a camera, compute, sensors, and a" ran 42.89-45.53 over a footage card from 43.00; every word's middle
+# was on the card, so it was inked dark from 42.89 and drawn dark over the talking head for 3 frames.
+
+def _snap_plan(project, tmp_path, light=("card",), dark=()):
+    return _plan(project, tmp_path, light=light, dark=dark)
+
+
+def _pl89h(**kw):
+    spec = [("supplies", 42.89, 43.3), ("a", 43.3, 43.4), ("camera,", 43.4, 43.9), ("compute,", 43.9, 44.5),
+            ("sensors,", 44.5, 45.0), ("and", 45.0, 45.3), ("a", 45.3, 45.53)]
+    return _straddler("cap-26", spec, **kw)
+
+
+def test_a_caption_starting_frames_before_its_card_is_snapped_to_the_cards_start(tmp_path):
+    p = _project([_card("card", 43.0, 47.7)], [_pl89h()], base=_video(end=60))
+    changes, counts, warnings = _snap_plan(p, tmp_path)
+    ch = changes[("id", "cap-26")]
+    assert ch["ink"] == "dark" and ch["inkAuto"]["card"] == "card"
+    assert ch["start"] == 43.0 and ch["words"][0] == {"word": "supplies", "start": 43.0, "end": 43.3}
+    assert [w["word"] for w in ch["words"]] == ["supplies", "a", "camera,", "compute,", "sensors,", "and", "a"]
+    assert "end" not in ch, "the end is inside the card"
+    assert (counts["dark"], counts["snapped"], counts["split"], counts["kept"]) == (1, 1, 0, 0) and warnings == []
+
+
+def test_a_caption_ending_frames_after_its_card_is_snapped_to_the_cards_end(tmp_path):
+    spec = [("one", 1.0, 1.4), ("two", 1.4, 1.7), ("three", 1.7, 2.12)]
+    p = _project([_card("card", 0, 2.0)], [_straddler("a", spec)])
+    changes, counts, _ = _snap_plan(p, tmp_path)
+    ch = changes[("id", "a")]
+    assert ch["end"] == 2.0 and ch["words"][-1] == {"word": "three", "start": 1.7, "end": 2.0}
+    assert "start" not in ch and counts["snapped"] == 1
+
+
+def test_an_overhang_that_shows_no_frame_is_left(tmp_path):
+    # 34.49 against a card from 34.5: no frame (n/30) falls in between
+    spec = [("walk", 34.49, 34.78), ("only", 34.78, 35.1)]
+    p = _project([_card("card", 34.5, 40)], [_straddler("a", spec)], base=_video(end=60))
+    changes, counts, _ = _snap_plan(p, tmp_path)
+    assert set(changes[("id", "a")]) == {"ink", "inkAuto"} and counts["snapped"] == 0
+
+
+def test_an_overhang_onto_another_card_is_left(tmp_path):
+    p = _project([_card("other", 30, 43.0), _card("card", 43.0, 47.7)], [_pl89h()], base=_video(end=60))
+    changes, counts, _ = _plan(p, tmp_path, light=("card", "other"), dark=())
+    assert set(changes[("id", "cap-26")]) == {"ink", "inkAuto"} and counts["snapped"] == 0
+
+
+def test_a_light_ink_caption_is_not_snapped(tmp_path):
+    p = _project([_card("card", 43.0, 47.7)], [_pl89h()], base=_video(end=60))
+    changes, counts, _ = _snap_plan(p, tmp_path, light=(), dark=("card",))
+    assert set(changes[("id", "cap-26")]) == {"ink", "inkAuto"} and changes[("id", "cap-26")]["ink"] == "light"
+    assert counts["snapped"] == 0
+
+
+def test_a_snap_that_would_leave_a_word_no_time_on_screen_keeps_the_caption_light(tmp_path):
+    # "so and" end before the card starts: two words, too short a piece to split off, so the caption is one run
+    spec = [("so", 0.9, 0.93), ("and", 0.93, 0.96), ("then", 0.96, 1.5), ("it", 1.5, 2.0), ("goes", 2.0, 2.5)]
+    p = _project([_card("card", 1.0, 10)], [_straddler("a", spec)])
+    changes, counts, _ = _snap_plan(p, tmp_path)
+    assert changes == {} and (counts["kept"], counts["dark"], counts["snapped"]) == (1, 0, 0)
+
+
+def test_ink_of_ours_is_cleared_when_the_snap_cannot_be_made(tmp_path):
+    spec = [("so", 0.9, 0.93), ("and", 0.93, 0.96), ("then", 0.96, 1.5), ("it", 1.5, 2.0), ("goes", 2.0, 2.5)]
+    seg = _straddler("a", spec, ink="dark", inkAuto={"card": "card", "ink": "dark", "backdrop": 0.83})
+    p = _project([_card("card", 1.0, 10)], [seg])
+    changes, counts, _ = _snap_plan(p, tmp_path)
+    assert changes == {("id", "a"): None} and counts["kept"] == 1
+
+
+def test_a_split_piece_starting_before_its_card_is_snapped_and_the_piece_before_holds_to_it(tmp_path):
+    # "four" (2.5-3.0) straddles the card's start at 2.6: its middle is on the card
+    p = _project([_card("card", 2.6, 10)], [_straddler()])
+    pieces = _split_plan(p, tmp_path)[0][("id", "a")]["split"]
+    assert [(x["start"], x["end"]) for x in pieces] == [(1.0, 2.6), (2.6, 4.0)]
+    assert pieces[0]["words"][-1]["end"] == 2.5, "the footage piece holds its last word on screen, its time unchanged"
+    assert pieces[1]["words"][0] == {"word": "four", "start": 2.6, "end": 3.0}
+
+
+def test_the_snap_is_written_and_is_idempotent(tmp_path):
+    p = _project([_card("card", 43.0, 47.7)], [_pl89h()], base=_video(end=60))
+    changes, _, _ = _snap_plan(p, tmp_path)
+    fresh = json_copy(p)
+    assert ci.apply_changes(fresh, changes, _read_of(p)) is True
+    seg = fresh["captions"]["segments"][0]
+    assert seg["start"] == 43.0 and seg["words"][0]["start"] == 43.0 and seg["ink"] == "dark"
+    again, counts, _ = _snap_plan(fresh, tmp_path)
+    assert ci.apply_changes(json_copy(fresh), again, _read_of(fresh)) is False and counts["snapped"] == 0
+
+
+def test_a_snap_refuses_when_the_caption_changed_since_it_was_read(tmp_path):
+    p = _project([_card("card", 43.0, 47.7)], [_pl89h()], base=_video(end=60))
+    changes, _, _ = _snap_plan(p, tmp_path)
+    fresh = json_copy(p)
+    fresh["captions"]["segments"][0]["start"] = 42.8
+    with pytest.raises(ci.InkProjectChanged):
+        ci.apply_changes(fresh, changes, _read_of(p))
+    assert fresh["captions"]["segments"][0]["start"] == 42.8
+
+
+def test_aside_a_short_edge_word_over_footage_splits_off_and_the_rest_snaps(tmp_path):
+    # pl89h: "pounds and costs about $400. That is, aside" (10.333-12.891) over the specs 3D, which ends at 12.6. "aside"
+    # (12.665-12.891, 0.226 s) is over the talking head: under the split's floor, but a whole word at the edge.
+    spec = [("pounds", 10.333, 10.7), ("and", 10.7, 10.9), ("costs", 10.9, 11.3), ("about", 11.3, 11.6),
+            ("$400.", 11.6, 12.2), ("That", 12.311, 12.488), ("is,", 12.488, 12.665), ("aside", 12.665, 12.891)]
+    p = _project([_card("card", 7.23, 12.6)], [_straddler("cap-4", spec), _seg("cap-0", 20, 21)], base=_video(end=60))
+    changes, counts, _ = _split_plan(p, tmp_path)
+    pieces = changes[("id", "cap-4")]["split"]
+    assert [x["text"] for x in pieces] == ["pounds and costs about $400. That is,", "aside"]
+    assert [(x["start"], x["end"]) for x in pieces] == [(10.333, 12.6), (12.6, 12.891)]
+    assert pieces[0]["ink"] == "dark" and pieces[0]["words"][-1] == {"word": "is,", "start": 12.488, "end": 12.6}
+    assert "ink" not in pieces[1] and pieces[1]["words"] == [{"word": "aside", "start": 12.665, "end": 12.891}]
+    assert [x["id"] for x in pieces] == ["cap-4", "cap-1"]
+    assert (counts["split"], counts["snapped"], counts["dark"]) == (1, 1, 1)
+
+
+def test_a_short_edge_piece_of_two_words_or_inside_the_caption_still_does_not_split(tmp_path):
+    # two words at the edge, 0.2 s: no split (the snap then cannot be made, so the caption is kept)
+    spec = _run(1.0, ["one", "two", "three", "four"]) + [("five", 3.0, 3.1), ("six", 3.1, 3.2)]
+    p = _project([_card("card", 0, 3.0)], [_straddler("a", spec)])
+    changes, counts, _ = _split_plan(p, tmp_path)
+    assert counts["split"] == 0
+    # a short word over footage between two runs on the card: not an edge, no split
+    spec = _run(1.0, ["one", "two", "three"]) + [("four", 2.5, 2.6)] + _run(2.6, ["five", "six", "seven"])
+    p = _project([_card("card", 0, 2.5), _card("card2", 2.6, 10)], [_straddler("b", spec)])
+    changes, counts, _ = _plan(p, tmp_path, light=("card", "card2"), dark=())
+    assert counts["split"] == 0
