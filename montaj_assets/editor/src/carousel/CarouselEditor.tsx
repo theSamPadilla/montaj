@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { RefreshCw, AlertCircle, Download, Info, Undo2, Redo2 } from 'lucide-react'
-import type { Project, Slide, CarouselElement, ImageElement, CarouselEditorProps, OverlayFactory, SlideNotesApi, CarouselApi, ImageDropPayload } from '../types'
+import type { Project, Slide, CarouselElement, ImageElement, CarouselEditorProps, OverlayFactory, SlideNotesApi, CarouselApi, ImageDropPayload, GlobalOverlay } from '../types'
 import { IMAGE_DND_MIME } from '../types'
 import type { SlideNote } from '../schema'
 import { applyTheme, defaultMontajTheme, isLightTheme } from '../theme'
@@ -21,6 +21,8 @@ import type { ReorderDirection } from '../state/project-reducer'
 import { COPY_OFFSET, cloneElement, copyElements, duplicateCopies, insertCopies, pasteElements, withoutLock, type ElementClipboard } from './clipboard'
 import { isLocked, toggleLock } from './lock'
 import { reorderSelection } from './layerOrder'
+import { newTextElement } from './newText'
+import { applyTextStyle, isTextOverlay, pickTextStyle, type TextStyle } from './textStyle'
 import { Button } from '../ui'
 import { shortcutText } from '../ui/modifierKeys'
 
@@ -266,6 +268,16 @@ const matchesLayerKey = (code: 'BracketLeft' | 'BracketRight', alt: boolean) => 
  *  the physical key: Option changes what a Mac types for it. */
 const matchesLockKey = (e: KeyboardEvent) =>
   e.code === 'KeyL' && e.altKey && e.shiftKey && !e.metaKey && !e.ctrlKey
+
+/** T with no Cmd, Ctrl, Alt or Shift held. */
+const matchesTextKey = (e: KeyboardEvent) =>
+  e.key.toLowerCase() === 't' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
+
+/** Option+Cmd (Alt+Ctrl on Windows) with the physical letter key `code`, no
+ *  Shift: Shift+Opt+Cmd+V is the system's paste-and-match-style. Matched on
+ *  `code`, as Option changes what a Mac types for the letter. */
+const matchesTextStyleKey = (code: 'KeyC' | 'KeyV') => (e: KeyboardEvent) =>
+  (e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && e.code === code
 
 /** The arrows and the way each one nudges. */
 const ARROWS = new Map<string, [dx: number, dy: number]>([
@@ -613,10 +625,22 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // (those keys belong to the crop UI), and the ones that change the project
   // only when it can be edited.
   const clipboardRef = useRef<ElementClipboard | null>(null)
+  // The copied text style; it lives as long as the clipboard does.
+  const textStyleRef = useRef<TextStyle | null>(null)
+  // The host's default text overlay, fetched ahead so the T key is claimed
+  // only when it has one to add.
+  const [textTemplate, setTextTemplate] = useState<GlobalOverlay | null>(null)
+  useEffect(() => {
+    let live = true
+    setTextTemplate(null)
+    adapter.getDefaultTextOverlay?.().then((tpl) => { if (live) setTextTemplate(tpl ?? null) }).catch(() => {})
+    return () => { live = false }
+  }, [adapter])
   // It survives a change of slide, but not of project: the host may put another
   // project in this editor without remounting it.
   useEffect(() => {
     clipboardRef.current = null
+    textStyleRef.current = null
   }, [project.id])
   const slideLive = !!selectedSlide && !showPendingSurface && !cropElementId
   const hasSelection = slideLive && liveSelectedIds.length > 0
@@ -678,6 +702,36 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (!selectedSlide) return
     const ids = liveSelectedIds
     void state.editElements(selectedSlide.id, (els) => toggleLock(els, ids))
+  }
+
+  /** T: a text box at the slide centre, as the "+ Text" button adds it. */
+  function addTextBox() {
+    if (!selectedSlide || !textTemplate) return
+    handleAddElement(selectedSlide.id, newTextElement(textTemplate, project.settings.resolution))
+  }
+
+  /** Opt+Cmd+C: the first selected text box's style replaces the copied style. */
+  function copyTextStyle() {
+    if (!selectedSlide) return
+    const source = selectedSlide.elements.find(el => liveSelectedIds.includes(el.id) && isTextOverlay(el))
+    if (source && isTextOverlay(source)) textStyleRef.current = pickTextStyle(source)
+  }
+
+  /** Opt+Cmd+V: the copied style onto every selected text box, in one slide write. */
+  function pasteTextStyle() {
+    const style = textStyleRef.current
+    if (!style || !selectedSlide) return
+    const ids = new Set(liveSelectedIds)
+    void state.editElements(selectedSlide.id, (els) => {
+      let changed = false
+      const next = els.map((el) => {
+        if (!ids.has(el.id) || !isTextOverlay(el)) return el
+        const styled = applyTextStyle(el, style)
+        if (styled !== el) changed = true
+        return styled
+      })
+      return changed ? next : els
+    })
   }
 
   /** Select all: every element on the slide the host is not hiding. */
@@ -896,6 +950,37 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       action: () => {
         if (cropElementId) flushSync(applyCrop)
         toggleSelectionLock()
+      },
+    },
+    {
+      // Plain T, as the "+ Text" button; a held key adds one. A crop in
+      // progress is applied first, as for every other add.
+      id: 'carousel.add-text',
+      description: 'Add a text box',
+      keyHint: ['T'],
+      matches: (e) => matchesTextKey(e) && !e.repeat,
+      guard: () => canEdit && !!selectedSlide && !showPendingSurface && !!textTemplate,
+      action: () => addTextBox(),
+    },
+    {
+      id: 'carousel.copy-text-style',
+      description: 'Copy the text style',
+      keyHint: ['⌘', '⌥', 'C'],
+      matches: matchesTextStyleKey('KeyC'),
+      guard: () => hasSelection && selectedElements.some(isTextOverlay),
+      action: () => copyTextStyle(),
+    },
+    {
+      // Also in crop mode, where the pending crop is applied first, as its own
+      // undo step, like every other way out of it.
+      id: 'carousel.paste-text-style',
+      description: 'Paste the text style',
+      keyHint: ['⌘', '⌥', 'V'],
+      matches: matchesTextStyleKey('KeyV'),
+      guard: () => canEdit && !!selectedSlide && !showPendingSurface && !!textStyleRef.current && selectedElements.some(isTextOverlay),
+      action: () => {
+        if (cropElementId) flushSync(applyCrop)
+        pasteTextStyle()
       },
     },
     {

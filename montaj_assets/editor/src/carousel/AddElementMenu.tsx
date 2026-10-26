@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Project, CarouselElement, OverlayElement, EditorAdapter } from '../types'
+import type { Project, CarouselElement, EditorAdapter } from '../types'
 import { Button } from '../ui'
 import OverlayPicker from './OverlayPicker'
 import { newImageElement } from './newImage'
+import { newTextElement } from './newText'
 
 interface Props {
   project: Project
@@ -49,24 +50,7 @@ export default function AddElementMenu({ project, selectedSlideId, adapter, onAd
     try {
       const tpl = await adapter.getDefaultTextOverlay()
       if (!tpl) throw new Error('static-text overlay template not found')
-      const props: Record<string, unknown> = Object.fromEntries(
-        tpl.props.filter(p => p.default !== undefined).map(p => [p.name, p.default]),
-      )
-      if (typeof props.text !== 'string') props.text = 'Your text here'
-      const [fullW, fullH] = project.settings.resolution
-      const elementW = Math.round(fullW * 0.7)
-      const elementH = Math.round(fullH * 0.18)
-      const element: OverlayElement = {
-        id: crypto.randomUUID(),
-        type: 'overlay',
-        overlay: { template: tpl.jsxPath, props },
-        frame: 0,
-        x: Math.round(fullW / 2 - elementW / 2),
-        y: Math.round(fullH / 2 - elementH / 2),
-        w: elementW,
-        h: elementH,
-        rotation: 0,
-      }
+      const element = newTextElement(tpl, project.settings.resolution)
       onAddElement(selectedSlideId, element)
     } catch (e) {
       setTextError(e instanceof Error ? e.message : String(e))
