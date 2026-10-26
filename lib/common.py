@@ -431,12 +431,17 @@ def _absolute_whisper_paths(args: list[str]) -> list[str]:
     return out
 
 
-def run_whisper(cmd: list[str], audio_path: str, check: bool = False) -> subprocess.CompletedProcess:
+def run_whisper(cmd: list[str], audio_path: str, check: bool = False,
+                duration_s=None) -> subprocess.CompletedProcess:
     """Run a whisper-cli command under the runaway guard (``check`` as in
-    ``run``). A run that outlives the guard is stopped and fails with
+    ``run``). ``duration_s``: the seconds of audio the command transcribes when
+    that is not one file's length (a command with many ``-f`` clips: their sum);
+    the guard is then ``whisper_runaway_timeout(duration_s)``, the same rule.
+    A run that outlives the guard is stopped and fails with
     ``transcription_timeout``, naming the limit, rather than escaping as a raw
     TimeoutExpired traceback that serve would pass on as the error message."""
-    timeout = whisper_runaway_timeout_for(audio_path)
+    timeout = (whisper_runaway_timeout(duration_s) if duration_s is not None
+               else whisper_runaway_timeout_for(audio_path))
     # whisper.cpp loads its ggml-cpu-* backends (ggml-cpu-*.dll on Windows,
     # libggml-cpu-*.so on macOS and Linux) from the current directory as well as
     # the exe's, so it must not inherit serve's cwd (a planted library there

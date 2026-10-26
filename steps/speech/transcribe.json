@@ -29,6 +29,12 @@
       "description": "Cap on prior-text tokens carried between windows (whisper.cpp -mc). Set 0 to disable cross-window context — the reliable fix for the repetition-loop hallucination on long audio (especially non-English). Omit for the whisper default."
     },
     {
+      "name": "by-runs",
+      "type": "bool",
+      "default": true,
+      "description": "Transcribe each run of voice as its own clip, all of a take's clips in one whisper call, so retakes said back to back are all heard and times do not drift. On by default; false transcribes the whole file in one pass, and a trim spec always does. A file with no voiced run falls back to the whole-file pass. max-context is ignored when on."
+    },
+    {
       "name": "fit-pauses",
       "type": "bool",
       "default": false,

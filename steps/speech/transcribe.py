@@ -38,9 +38,14 @@ def _write_srt(entries, path):
         for n, e in enumerate(cues, 1)))
 
 
-def transcribe(input_path, out=None, model=DEFAULT_WHISPER_MODEL, language="en", max_context=None, fit_pauses=False):
+def transcribe(input_path, out=None, model=DEFAULT_WHISPER_MODEL, language="en", max_context=None, fit_pauses=False,
+               by_runs=True):
     """Transcribe one file (or trim spec) and write `<out>.srt` and `<out>.json` (default: beside the
-    input). Returns {srt, words} plus the speech stats. cut calls this for an untranscribed clip."""
+    input). Returns {srt, words} plus the speech stats. cut calls this for an untranscribed clip.
+
+    by_runs (PL89 A1, the default): a plain file is transcribed run by run of voice, all of a take's clips in one
+    whisper call (lib/speech_runs), because over a whole take whisper loses words and times. A trim spec, by_runs
+    False, and a file with no voiced run keep the full-file run. max_context is ignored by runs (always 0)."""
 
     require_file(input_path)
 
@@ -77,14 +82,19 @@ def transcribe(input_path, out=None, model=DEFAULT_WHISPER_MODEL, language="en",
         output_prefix = out or os.path.splitext(input_path)[0]
 
     pauses = heard_s = None
+    by_runs_done = False
     try:
-        # Single pass: word-level JSON + SRT in one decode
-        whisper_cmd = [whisper_bin, "-m", model_path, "-f", audio_input, "-l", language,
-                       "--split-on-word", "--max-len", "1", "--output-srt", "--output-json",
-                       "--output-file", output_prefix]
-        if max_context is not None:
-            whisper_cmd += ["-mc", str(max_context)]
-        run_whisper(whisper_cmd, audio_input, check=True)
+        if by_runs and trim_spec_data is None:
+            from lib import speech_runs
+            by_runs_done = not speech_runs.transcribe_runs(audio_input, output_prefix, model_path, language).get("fell_back")
+        if not by_runs_done:
+            # Single pass: word-level JSON + SRT in one decode
+            whisper_cmd = [whisper_bin, "-m", model_path, "-f", audio_input, "-l", language,
+                           "--split-on-word", "--max-len", "1", "--output-srt", "--output-json",
+                           "--output-file", output_prefix]
+            if max_context is not None:
+                whisper_cmd += ["-mc", str(max_context)]
+            run_whisper(whisper_cmd, audio_input, check=True)
         # Measured on the audio whisper heard, so in its time base (the spec's, for a trim spec).
         if fit_pauses:
             from lib.caption_timing import caption_pauses
@@ -114,7 +124,7 @@ def transcribe(input_path, out=None, model=DEFAULT_WHISPER_MODEL, language="en",
             # The .srt is left in the spec's own time (keeps back to back).
             data["montaj"] = {"input": "spec", "spec": os.path.abspath(input_path), "keeps": keeps,
                               "offsets": "source", "timestamps": "source", "srt": "spec"}
-        else:
+        elif not by_runs_done:
             data["montaj"] = {"input": "file", "offsets": "source",
                               "timestamps": "source", "srt": "source"}
         if pauses is not None:
@@ -155,8 +165,13 @@ def main():
     parser.add_argument("--fit-pauses", action="store_true",
                         help="For captions: fit word times to the pauses measured in the audio, so a word "
                              "after a pause starts on the voice. Leave it off for anything that cuts on word times.")
+    parser.add_argument("--by-runs", nargs="?", const="true", default="true", choices=["true", "false"],
+                        help="Transcribe each run of voice as its own clip, all in one whisper call (default). "
+                             "'false' transcribes the whole file in one pass. A trim spec always does. "
+                             "--max-context is ignored when on.")
     args = parser.parse_args()
-    result = transcribe(args.input, args.out, args.model, args.language, args.max_context, args.fit_pauses)
+    result = transcribe(args.input, args.out, args.model, args.language, args.max_context, args.fit_pauses,
+                        args.by_runs == "true")
     print(json.dumps(result))
 
 if __name__ == "__main__":

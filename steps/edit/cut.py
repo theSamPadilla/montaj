@@ -83,7 +83,8 @@ def _load(project_path):
 
 def _transcribe_missing(project, track_id, project_path, project_dir, model, language):
     """lib/speech_units.transcribe_missing with this module's transcriber (looked up at call time)."""
-    return speech_units.transcribe_missing(project, track_id, project_path, project_dir, model, language, transcribe_file)
+    return speech_units.transcribe_missing(project, track_id, project_path, project_dir, model, language, transcribe_file,
+                                           redo_full_file=True)
 
 
 def _window(item, src):

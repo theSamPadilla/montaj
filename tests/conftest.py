@@ -203,6 +203,12 @@ def fake_whisper_env(tmp_path_factory) -> dict:
                 {"text": "test",    "offsets": {"from": 2200, "to": 2800}},
             ]
         }
+        if not out_file:
+            # by runs (the default): no --output-file, a <clip>.json beside every -f clip
+            for i, a in enumerate(args):
+                if a == "-f" and i + 1 < len(args):
+                    with open(args[i + 1] + ".json", "w") as f:
+                        json.dump(data, f)
         if out_file:
             with open(out_file + ".json", "w") as f:
                 json.dump(data, f)

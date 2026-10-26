@@ -113,7 +113,7 @@ def test_transcribe_single_whisper_invocation(transcribe_module, monkeypatch, tm
 
     out_prefix = str(tmp_path / "out")
     monkeypatch.setattr(sys, "argv",
-                        ["transcribe.py", "--input", str(audio_file), "--out", out_prefix])
+                        ["transcribe.py", "--input", str(audio_file), "--out", out_prefix, "--by-runs", "false"])
     transcribe_module.main()
 
     assert len(calls) == 1, f"Expected 1 whisper invocation, got {len(calls)}: {calls}"
@@ -163,7 +163,7 @@ def _capture_whisper_cmd(transcribe_module, monkeypatch, tmp_path, argv,
     audio.write_bytes(b"\x00" * 16)
     monkeypatch.setattr(sys, "argv",
                         ["transcribe.py", "--input", str(audio),
-                         "--out", str(tmp_path / "out"), *argv])
+                         "--out", str(tmp_path / "out"), "--by-runs", "false", *argv])
     transcribe_module.main()
     assert len(calls) == 1, f"expected 1 whisper call, got {calls}"
     return calls[0]
@@ -212,7 +212,8 @@ def test_transcribe_runs_whisper_under_the_runaway_guard(transcribe_module, monk
     _stub_weights(monkeypatch, tmp_path, "large-v3-turbo-q5_0")
     audio = tmp_path / "audio.wav"
     audio.write_bytes(b"\x00" * 16)
-    monkeypatch.setattr(sys, "argv", ["transcribe.py", "--input", str(audio), "--out", str(tmp_path / "out")])
+    monkeypatch.setattr(sys, "argv", ["transcribe.py", "--input", str(audio), "--out", str(tmp_path / "out"),
+                                      "--by-runs", "false"])
     transcribe_module.main()
     assert seen == {"audio": str(audio), "check": True}
 
