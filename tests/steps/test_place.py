@@ -284,7 +284,7 @@ def test_a_change_outside_the_tracks_is_kept_and_not_refused(tmp_path, monkeypat
 def test_the_measured_issues_come_back_short(tmp_path):
     d = make_project(tmp_path)
     out = run(d, at="2", preset="callout", measure_fn=fake_measure((("3x faster", 900, 500, 400, 120),)))
-    assert out["issues"] == ['3.5s ' + out["id"] + ': text "3x faster" runs off the frame']
+    assert out["issues"] == ['3.5s ' + out["id"] + ': text "3x faster" runs off the frame: move it left 274 px']
     assert len(json.dumps(out)) <= 300
 
 

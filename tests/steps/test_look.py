@@ -159,7 +159,7 @@ def test_look_reports_the_overflowing_overlay_and_not_the_clean_one_and_writes_n
     fake = _fake_measure({"ov-wide": [("A very long headline", 600, 400, 900, 120)]})
     out = look.run(str(path), measure_fn=fake)
     assert out["ok"] is False and out["overlays"] == 2 and "looked" not in out, "text mode renders no frame"
-    assert out["issues"] == ['2.0s ov-wide: text "A very long headline" runs off the frame']
+    assert out["issues"] == ['2.0s ov-wide: text "A very long headline" runs off the frame: move it left 474 px']
     assert sorted(c[0] for c in fake.calls) == ["ov-clean", "ov-wide"]
     assert ("ov-wide", 30, 60, 1080, 1920) in fake.calls, "the middle of its span, its whole length, the design canvas"
     assert hashlib.sha256(path.read_bytes()).hexdigest() == before
@@ -305,6 +305,22 @@ def test_text_that_spills_out_of_its_own_box_is_reported_not_ok():
 def test_app_zones_apply_to_tall_frames_and_the_title_safe_margin_to_every_frame(box, frame, want):
     got = [i["text"] for i in lc.measured_issues({}, _texts(box), *frame, 1, "ov")]
     assert [w for w in want if not any(w in g for g in got)] == [] and len(got) == len(want), got
+
+
+@pytest.mark.parametrize("item,box,frame,want", [
+    # PL89c: the agent guessed each fix in another rewrite. Each safe-area issue says how far to move the text box,
+    # in the overlay's own px (the item's scale undone), to clear the zone it is in.
+    ({}, ("Edge", 20, 600, 400, 80), (1080, 1920), ['text "Edge" inside the 5% title-safe margin: move it right 34 px']),
+    ({}, ("Edge", 600, 1270, 400, 60), (1080, 1350), ['text "Edge" inside the 5% title-safe margin: move it up 48 px']),
+    ({}, ("Name", 100, 1700, 400, 80), (1080, 1920), ["text \"Name\" over the apps' bottom controls: move it up 210 px"]),
+    ({}, ("Tag", 800, 1000, 200, 80), (1080, 1920), ["text \"Tag\" under the apps' right-side buttons: move it left 120 px"]),
+    ({}, ("Title", 900, 100, 400, 80), (1080, 1920), ['text "Title" runs off the frame: move it left 274 px']),
+    ({}, ("Corner", 20, 30, 400, 80), (1080, 1920), ['text "Corner" inside the 5% title-safe margin: move it right 34 px and down 66 px']),
+    ({"scale": 0.5}, ("Edge", -480, 600, 400, 80), (1080, 1920), ['text "Edge" inside the 5% title-safe margin: move it right 48 px']),
+    ({}, ("Wide", 30, 600, 1040, 80), (1080, 1920), ['text "Wide" inside the 5% title-safe margin: make it at most 972 px wide']),
+])
+def test_a_safe_area_issue_says_how_far_to_move_the_text(item, box, frame, want):
+    assert [i["text"] for i in lc.measured_issues(item, _texts(box), *frame, 1, "ov")] == want
 
 
 def test_a_switched_off_track_draws_nothing(tmp_path):
