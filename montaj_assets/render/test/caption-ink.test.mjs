@@ -260,3 +260,20 @@ describe('dark ink darkens keyword colours to 4.5:1 against the backdrop', () =>
     assert.ok(json.includes('"color":"#111111"'))
   })
 })
+
+describe('pop over footage: a dark stroke behind the spoken word', () => {
+  // Round 8: a yellow pop word on a light shirt (about 1.3:1) had only a soft blurred shadow and nearly vanished.
+  const wordStyle = (tree) => stylesOf(tree).find((s) => s.transform?.startsWith('scale('))
+  test('light ink: a black stroke painted under the fill, scaled to the font size', () => {
+    const s = wordStyle(render('pop', 1.2, [SEG]))
+    assert.equal(s.WebkitTextStroke, '9px #000000')
+    assert.equal(s.paintOrder, 'stroke fill')
+    assert.equal(wordStyle(render('pop', 1.2, [SEG], { fontSize: 136 })).WebkitTextStroke, '18px #000000')
+    assert.equal(wordStyle(render('pop', 1.2, [{ ...SEG, fontSize: 34 }])).WebkitTextStroke, '4px #000000')
+  })
+  test('dark ink on a card: no stroke', () => {
+    const s = wordStyle(render('pop', 1.2, [{ ...SEG, ink: 'dark' }]))
+    assert.equal(s.WebkitTextStroke, undefined)
+    assert.equal(s.paintOrder, undefined)
+  })
+})

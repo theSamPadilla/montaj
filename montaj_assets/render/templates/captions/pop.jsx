@@ -187,6 +187,9 @@ function renderWord(seg, { fps, t, activeColor, fontSize, fontFamily, fontWeight
       // §558: a word's own colour (words[].color) beats the pop colour
       color: inkOf(seg, activeWord.color ?? activeColor),
       textShadow: isDark(seg) ? '0 0 30px rgba(255,230,0,0.4)' : '0 0 30px rgba(255,230,0,0.4), 0 2px 12px rgba(0,0,0,0.85)',
+      // Over footage a crisp dark stroke under the fill (outline's technique and ratio, ~13% of the size): a yellow word on a
+      // light shirt had only the soft shadow and nearly vanished (round 8). Dark ink on a card draws none.
+      ...(isDark(seg) ? {} : { WebkitTextStroke: `${Math.round(fontSize * 0.13)}px #000000`, paintOrder: 'stroke fill' }),
       letterSpacing,
       lineHeight,
       textTransform,

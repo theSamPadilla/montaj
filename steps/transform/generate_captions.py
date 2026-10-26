@@ -37,6 +37,8 @@ from serve.common import get_project_dir  # noqa: E402
 from serve.caption_job import build_audio_mix_spec, caption_input_change, caption_input_fingerprint  # noqa: E402
 from lib.project_revisions import engine_guard_enabled  # noqa: E402
 from lib import caption_ink  # noqa: E402
+from lib.caption_profile_look import resolve_style_and_look  # noqa: E402
+from serve.caption_theme import seed_prev  # noqa: E402
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, update_project  # noqa: E402
 from lib.sync_clash import SyncConflict, exit_refused  # noqa: E402
 
@@ -45,12 +47,11 @@ STEP_LOCK_TIMEOUT = 30.0
 
 
 def resolve_style(args_style, project: dict) -> str:
-    """style = explicit arg, else prior captions.style, else 'pop'.
+    """style = explicit arg, else prior captions.style, else the profile's captionStyle, else 'pop'.
 
-    Mirrors the SSE route's: body.style or prior captions.style or 'pop'.
+    Mirrors the SSE route's (lib/caption_profile_look.resolve_style_and_look).
     """
-    prior = project.get("captions") or {}
-    return args_style or prior.get("style") or "pop"
+    return resolve_style_and_look(args_style, project)[0]
 
 
 def merge_caption_theme(track: dict, prev) -> dict:
@@ -112,7 +113,8 @@ def main():
     except ValueError as e:
         fail("no_audible_timeline", str(e))
 
-    style = resolve_style(args.style, project)
+    # The profile's caption look (font, emphasis colour) for a new track, as the editor seeds it.
+    style, look = resolve_style_and_look(args.style, project)
 
     mix_timeline_py = os.path.join(MONTAJ_ROOT, "steps", "audio", "mix_timeline.py")
     transcribe_py = os.path.join(MONTAJ_ROOT, "steps", "speech", "transcribe.py")
@@ -166,7 +168,7 @@ def main():
                 change = caption_input_change(fingerprint, fresh)
                 if change is not None:
                     fail("project_changed", change["message"])
-            done = finish_regenerated_track(fresh.get("captions"), dict(track))
+            done = finish_regenerated_track(seed_prev(fresh.get("captions") or {}, look), dict(track))
             record_source_language(done, args.language, words_json_path)
             fresh["captions"] = done
             written["track"] = done
