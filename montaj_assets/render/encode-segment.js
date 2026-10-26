@@ -44,7 +44,7 @@ import { childKilledError } from './child-killed.js'
 import { specFor, encoderArgsFor, detectFromTransfer, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { lutPath } from './look.js'
 import { ffmpegFilterPath } from './ffmpeg-filter-path.js'
-import { graphicsToHdrChain, GRAPHICS_WHITE_NITS, GRAPHICS_WHITE_NITS_NO_FOOTAGE } from './hdr-graphics.js'
+import { graphicsToHdrChain } from './hdr-graphics.js'
 import { externalizeFilterGraph } from './filter-script.js'
 import { assertSegmentHasVideo } from './segment-check.js'
 import {
@@ -352,62 +352,6 @@ export function culledClips(segment) {
   if (!segment.layers) return segment.opaqueVideo ? new Set(items) : new Set()
   const cover = segment.cullBelow == null ? -1 : segment.layers.indexOf(segment.cullBelow)
   return new Set(segment.layers.slice(0, Math.max(0, cover)).filter((x) => items.includes(x)))
-}
-
-/**
- * Where graphics white lands in one HDR compose segment (POSTLAUNCH §47):
- * GRAPHICS_WHITE_NITS (800) when a video clip is visible in the segment, so
- * captions and overlays over footage stay bright against camera HDR, and
- * GRAPHICS_WHITE_NITS_NO_FOOTAGE (300) when none is: an end card, a
- * title card, a full-screen overlay, or a timeline image or screenshot with no
- * clip at that time, which then match SDR and the editor preview.
- *
- * A clip is visible when the segment has a non-image item whose picture no
- * opaque overlay above it replaces (culledClips: segment.opaqueVideo, or since
- * §308 P3 only the items below `cullBelow`). An image over a clip is graphics
- * over footage. planSegments splits at every clip boundary, so the set
- * of items is constant within a segment, and an overlay that runs from a clip
- * into a footage-less stretch changes level at exactly that frame.
- *
- * @param {{ items?: object[], opaqueVideo?: boolean }} segment
- * @returns {number} nits
- */
-export function graphicsWhiteNitsFor(segment) {
-  const culled = culledClips(segment)
-  const footage = (segment.items ?? []).some((item) => !isImageItem(item) && !culled.has(item))
-  return footage ? GRAPHICS_WHITE_NITS : GRAPHICS_WHITE_NITS_NO_FOOTAGE
-}
-
-/**
- * Where the graphic at `index` maps white: a full-screen card (cover-probe.js
- * markCards set `coversFrame`) and every graphic stacked above it take
- * GRAPHICS_WHITE_NITS_NO_FOOTAGE, since they sit on the card and not on
- * footage, for the card's whole span. Graphics below the card, and every
- * graphic in a segment without one, take the segment's level.
- *
- * The one exception is a full-screen 3D beat (a card that is a 3D stage,
- * `scene3d`): it and what is stacked on it keep GRAPHICS_WHITE_NITS, so its
- * paper reads as paper next to the footage around it (the product owner,
- * 2026-10-26). The topmost card at or below `index` decides, so a plain card
- * stacked on a beat is 300 again from there up.
- *
- * Read over the segment's whole bottom-to-top layer list (§308 P3), so an
- * IMAGE stacked above a card takes the card's white too, as an overlay above
- * it does; one below takes the segment's. A list with every item below every
- * overlay (no image above a card) answers exactly as the overlays alone did.
- *
- * @param {object[]} overlays       the segment's layers (or overlays), in compositing order
- * @param {number}   index
- * @param {number}   segmentWhiteNits  graphicsWhiteNitsFor(segment)
- * @returns {number}
- */
-export function overlayWhiteNits(overlays, index, segmentWhiteNits) {
-  let card = null
-  for (let i = 0; i <= index && i < overlays.length; i++) {
-    if (overlays[i].coversFrame === true) card = overlays[i]
-  }
-  if (!card) return segmentWhiteNits
-  return card.scene3d === true ? GRAPHICS_WHITE_NITS : GRAPHICS_WHITE_NITS_NO_FOOTAGE
 }
 
 // Cache the `ffmpeg -filters` listing across calls — a build's filter set can't
@@ -1208,8 +1152,8 @@ const BAKED_OVERLAY_GEOMETRY = geometryFor({}, 'overlay')
  *   MAX_ANIMATED_CROP_PX when absent. No production caller passes it.
  *   `toHdr` ('hdr_hlg' or 'hdr_pq'): map the image into that space through the
  *   graphics mapping (hdr-graphics.js); encodeSegment sets it for an HDR
- *   segment, with `whiteNits` from graphicsWhiteNitsFor (GRAPHICS_WHITE_NITS
- *   when absent). `dryRun` names the mapping's LUT without writing it.
+ *   segment; `whiteNits` is GRAPHICS_WHITE_NITS when absent. `dryRun` names
+ *   the mapping's LUT without writing it.
  * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string }}
  */
 // NOTE: item.speed is intentionally ignored here — a still image has no
@@ -1712,9 +1656,8 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
  *   capture into that space (hdr-graphics.js), right after the scale step.
  *   encodeSegment sets it for an HDR segment, whose canvas is tagged bt2020nc.
  *   PNG callers leave it off (sample-frame composites in SDR).
- * @param {number} [opts.captureWhiteNits] — where the mapping puts white:
- *   encodeSegment passes graphicsWhiteNitsFor(segment); GRAPHICS_WHITE_NITS when
- *   absent.
+ * @param {number} [opts.captureWhiteNits] — where the mapping puts white;
+ *   GRAPHICS_WHITE_NITS when absent.
  * @param {boolean} [opts.dryRun=false] — name the mapping's LUT without writing it.
  * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string }}
  */
@@ -2089,8 +2032,6 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   const duration = end - start
   const projectColorSpace = segment.colorSpace ?? DEFAULT_COLOR_SPACE
   const spec = specFor(projectColorSpace)
-  // HDR graphics white for this segment: 800 over footage, 300 without (§47).
-  const graphicsWhiteNits = graphicsWhiteNitsFor(segment)
   // Dry-run pins both probes to true so the golden capture never depends on the
   // host's ffmpeg build (see encode-args-golden.test.mjs's determinism note).
   const zscaleAvailable = opts._dryRun ? true : hasZscale()
@@ -2151,7 +2092,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   // it. Carries that partner so the blend closes on the item it opened for and
   // not merely on the next `to` to come along. Null everywhere else.
   let pendingBlend = null
-  for (const [layerPos, layer] of layers.entries()) {
+  for (const layer of layers) {
     // --- Overlay + caption layers ---
     if (overlayLayers.has(layer)) {
       const ov = layer
@@ -2160,7 +2101,6 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
         buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, start, duration,
           { fps, captureToBt709: !isHdr(projectColorSpace),
             captureToHdr: isHdr(projectColorSpace) ? projectColorSpace : null,
-            captureWhiteNits: overlayWhiteNits(layers, layerPos, graphicsWhiteNits),
             dryRun: opts._dryRun })
       inputs.push(...inputArgs)
       filterParts.push(...fp)
@@ -2222,11 +2162,9 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
       // audio, so an image item contributes nothing here — skip it entirely
       // (no input, no inputIdx bump).
       if (culled.has(item)) continue
-      // White by position (§308 P3): an image above a full-screen card sits on
-      // the card, as an overlay above it does.
       const { inputArgs, filterParts: fp, newVideoLabel } =
         buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration, start,
-          { toHdr: isHdr(projectColorSpace) ? projectColorSpace : null, whiteNits: overlayWhiteNits(layers, layerPos, graphicsWhiteNits), dryRun: opts._dryRun })
+          { toHdr: isHdr(projectColorSpace) ? projectColorSpace : null, dryRun: opts._dryRun })
       inputs.push(...inputArgs)
       filterParts.push(...fp)
       videoLabel = newVideoLabel

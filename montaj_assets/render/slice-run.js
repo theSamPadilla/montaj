@@ -9,12 +9,10 @@
 // tests drive it with fakes.
 //
 // Also here: the overlay descriptor compose reads (overlayDescriptor, shared
-// with the unsliced path), the HDR card rule that keeps a render unsliced
-// (hdrCardCandidates), and the preliminary compose groups and disk terms the
-// estimate uses.
+// with the unsliced path), and the preliminary compose groups and disk terms
+// the estimate uses.
 import { mkdirSync, rmSync } from 'node:fs'
 import { join, basename } from 'node:path'
-import { isCardPlacement } from './cover-probe.js'
 import { planSegments, groupShortSegments, MIN_SEGMENT_FRAMES } from './segment-plan.js'
 import { FFV1_CAPTION_BYTES_PER_PIXEL, FFV1_DENSE_BYTES_PER_PIXEL, FFV1_SPARSE_BYTES_PER_PIXEL } from './disk-space.js'
 
@@ -68,9 +66,6 @@ export function overlayDescriptor(spec, base) {
   // the spec actually has tracks, so a static overlay's descriptor keeps no
   // `keyframes` key at all and takes the byte-identical filter path.
   if (spec.keyframes?.length) base.keyframes = spec.keyframes
-  // A 3D stage (render.js `scene3d`): a full-screen one keeps the footage's
-  // graphics white (encode-segment.js overlayWhiteNits). Absent otherwise.
-  if (spec.scene3d === true) base.scene3d = true
   return base
 }
 
@@ -82,17 +77,6 @@ export function plannedDescriptors(specs) {
   return specs.map((spec) => overlayDescriptor(spec, {
     id: spec.id, startSeconds: spec.startSeconds, endSeconds: spec.endSeconds, opaque: spec.opaque ?? false,
   }))
-}
-
-/**
- * The overlays an HDR compose would probe for a full-screen card
- * (cover-probe.js markCards): placed over the whole canvas and not flagged
- * `opaque`. The probe reads a whole-span capture and decides for the whole
- * span, so no slice can decide it: an HDR render with any of these runs
- * unsliced.
- */
-export function hdrCardCandidates(specs) {
-  return specs.filter((spec) => spec.opaque !== true && isCardPlacement(overlayDescriptor(spec, {})))
 }
 
 /**

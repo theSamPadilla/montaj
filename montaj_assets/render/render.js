@@ -41,7 +41,7 @@ import {
 } from './disk-space.js'
 import { planSlices, fitBudget, parseSliceBudget, SLICE_BUDGET_BYTES } from './slice-plan.js'
 import {
-  runSlices, overlayDescriptor, plannedDescriptors, hdrCardCandidates, previewGroups, commonEdges,
+  runSlices, overlayDescriptor, plannedDescriptors, previewGroups, commonEdges,
   sliceDiskTerms, slicingLine,
 } from './slice-run.js'
 import { tmpdir }                         from 'os'
@@ -1120,7 +1120,7 @@ function planDisk({
   const unsliced = estimateRenderDisk(inputs)
   const slicing = planSlicing({
     inputs, unsliced, segmentSpecs, items: [...imageItems, ...videoItems], fps: settings.fps || 30,
-    renderWidth, renderHeight, captureScale, chunkFrames: plan.chunkSize, projectColorSpace, renderDir, reclaimBytes,
+    renderWidth, renderHeight, captureScale, chunkFrames: plan.chunkSize, renderDir, reclaimBytes,
   })
   const estimate = slicing.terms ? estimateRenderDisk({ ...inputs, slicing: slicing.terms }) : unsliced
   return { plan, estimate, scratch, reclaimBytes, slicing }
@@ -1142,9 +1142,8 @@ function planDisk({
  * slice at the sparse rate beside the lower bound of the rest, no headroom);
  * anything the lower bounds hold runs, at the smallest slices if need be.
  *
- * Unsliced, always, when an HDR render has a card candidate (slice-run.js
- * hdrCardCandidates): the card probe reads a whole capture. If the planning
- * throws, the unsliced numbers stand (they err high) and the render goes on.
+ * If the planning throws, the unsliced numbers stand (they err high) and the
+ * render goes on.
  *
  * Returns `{ sliced, slices, budgetBytes, wantedBytes, freeBytes, peakBytes,
  * captureBytes, reason, refused, needBytes, terms }`; `terms` (for
@@ -1152,7 +1151,7 @@ function planDisk({
  */
 function planSlicing({
   inputs, unsliced, segmentSpecs, items, fps, renderWidth, renderHeight, captureScale, chunkFrames,
-  projectColorSpace, renderDir, reclaimBytes,
+  renderDir, reclaimBytes,
 }) {
   const wantedBytes = parseSliceBudget(process.env.MONTAJ_SLICE_BUDGET_MB) ?? SLICE_BUDGET_BYTES
   const px = renderWidth * renderHeight * captureScale * captureScale
@@ -1163,9 +1162,6 @@ function planSlicing({
     captureBytes, reason, refused: false, needBytes: null, terms: null, ...extra,
   })
   if (segmentSpecs.length === 0) return off(null)
-  if (isHdr(projectColorSpace) && hdrCardCandidates(segmentSpecs).length > 0) {
-    return off('an HDR card candidate needs its whole capture probed')
-  }
   try {
     const overlays = plannedDescriptors(segmentSpecs).map((d) => ({ ...d, sparse: d.isCaption === true }))
     const groups = previewGroups(items, overlays, renderWidth, renderHeight, fps)

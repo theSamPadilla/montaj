@@ -16,18 +16,17 @@
 //
 //   1. The mapping. Before it, captures and image items went into the HDR
 //      canvas unconverted: white at Y10 940 (the HLG peak) and sRGB colours
-//      read as BT.2020 primaries. Now white is at GRAPHICS_WHITE_NITS over a
-//      clip (800 nits: HLG Y10 910, PQ 701) and at
-//      GRAPHICS_WHITE_NITS_NO_FOOTAGE with no clip under it (300 nits:
-//      HLG Y10 776, PQ 609), decided per segment (POSTLAUNCH §47).
+//      read as BT.2020 primaries. Now white is at GRAPHICS_WHITE_NITS (800
+//      nits: HLG Y10 910, PQ 701) over a clip and over nothing alike (one
+//      white, the product owner, 2026-10-26).
 //   2. Alpha. The bottom third catches a conversion that drops the alpha of the
 //      lower rows (zscale does, writing 4:2:0 under slice threading), the
 //      middle third one that makes the graphic opaque.
 //   3. The composite's matrix. With an untagged HDR canvas, `overlay`
 //      re-matrixed a mapped layer whenever no clip sat under it. The
-//      bare-canvas cases now map at 300 nits, so each case is held to its own
-//      level's prediction, swatch by swatch, which still catches a re-matrix
-//      (it moved saturated swatches by more than TOL; see encode-segment.js).
+//      bare-canvas cases are held to the same prediction, swatch by swatch,
+//      which still catches a re-matrix (it moved saturated swatches by more
+//      than TOL; see encode-segment.js).
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -37,8 +36,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { FFMPEG } from '../ffmpeg-bin.js'
 import { encodeSegment, hasZscale } from '../encode-segment.js'
-import { markCards } from '../cover-probe.js'
-import { graphicsToHdr, GRAPHICS_WHITE_NITS, GRAPHICS_WHITE_NITS_NO_FOOTAGE } from '../hdr-graphics.js'
+import { graphicsToHdr, GRAPHICS_WHITE_NITS } from '../hdr-graphics.js'
 
 const SWATCHES = [
   { name: 'white', rgb: [255, 255, 255] },
@@ -64,13 +62,9 @@ const GREY_BG = [96, 96, 96]
 // rounds about 2 codes high at white: 912 for 910 on HLG).
 const TOL = 4
 
-// Graphics white in Y10 at each level, from the independent Python derivation
-// in hdr-graphics.test.mjs and hdr-graphics-no-footage.test.mjs, not from
-// graphicsToHdr: round(64 + 876 * signal).
-const WHITE_Y10 = {
-  hdr_hlg: { [GRAPHICS_WHITE_NITS]: 910, [GRAPHICS_WHITE_NITS_NO_FOOTAGE]: 776 },
-  hdr_pq: { [GRAPHICS_WHITE_NITS]: 701, [GRAPHICS_WHITE_NITS_NO_FOOTAGE]: 609 },
-}
+// Graphics white in Y10, from the independent Python derivation in
+// hdr-graphics.test.mjs, not from graphicsToHdr: round(64 + 876 * signal).
+const WHITE_Y10 = { hdr_hlg: 910, hdr_pq: 701 }
 
 /** graphicsToHdr's R'G'B' at `whiteNits` as limited-range BT.2020 NCL Y'CbCr, 10-bit. */
 function predicted(rgb, colorSpace, whiteNits) {
@@ -201,39 +195,37 @@ function assertMatches(t, label, got, want) {
 }
 
 for (const colorSpace of ['hdr_hlg', 'hdr_pq']) {
-  test(`${colorSpace}: overlays, captions and image items land at 800 nits over a clip and 300 over nothing`,
+  test(`${colorSpace}: overlays, captions and image items land at 800 nits over a clip and over nothing`,
     { timeout: 240_000 }, async (t) => {
       // zscale is the HDR encode's own requirement (an SDR clip's stretch needs it).
       assert.ok(hasZscale(), `${FFMPEG} lacks zscale: point MONTAJ_FFMPEG at the managed build`)
       const dir = mkdtempSync(path.join(tmpdir(), 'montaj-hdr-ov-'))
       try {
-        const wantAt = (nits) => SWATCHES.map((s) => predicted(s.rgb, colorSpace, nits))
-        t.diagnostic(`predicted white over a clip ${fmt(wantAt(GRAPHICS_WHITE_NITS)[0])}, over nothing ${fmt(wantAt(GRAPHICS_WHITE_NITS_NO_FOOTAGE)[0])}`)
+        const want = SWATCHES.map((s) => predicted(s.rgb, colorSpace, GRAPHICS_WHITE_NITS))
+        t.diagnostic(`predicted white ${fmt(want[0])}`)
         const png = swatchPng(dir)
         const capture = captureOf(dir, png)
         const sdr = sdrClip(dir)
         const hlg = hlgClip(dir)
 
-        const OVER = GRAPHICS_WHITE_NITS, NONE = GRAPHICS_WHITE_NITS_NO_FOOTAGE
         const cases = [
-          ['overlay over an SDR clip', [videoItem(sdr, 'bt709')], [overlayOf(capture)], OVER],
-          ['overlay over an HLG clip', [videoItem(hlg, 'arib-std-b67')], [overlayOf(capture)], OVER],
-          ['overlay on bare canvas', [], [overlayOf(capture)], NONE],
-          ['caption on bare canvas', [], [overlayOf(capture, true)], NONE],
-          ['image item over an HLG clip', [videoItem(hlg, 'arib-std-b67'), imageItem(png)], [], OVER],
-          ['image item on bare canvas', [{ ...imageItem(png), trackIdx: 0 }], [], NONE],
+          ['overlay over an SDR clip', [videoItem(sdr, 'bt709')], [overlayOf(capture)]],
+          ['overlay over an HLG clip', [videoItem(hlg, 'arib-std-b67')], [overlayOf(capture)]],
+          ['overlay on bare canvas', [], [overlayOf(capture)]],
+          ['caption on bare canvas', [], [overlayOf(capture, true)]],
+          ['image item over an HLG clip', [videoItem(hlg, 'arib-std-b67'), imageItem(png)], []],
+          ['image item on bare canvas', [{ ...imageItem(png), trackIdx: 0 }], []],
         ]
-        for (const [label, items, overlays, nits] of cases) {
-          const want = wantAt(nits)
+        for (const [label, items, overlays] of cases) {
           const out = await encode(dir, colorSpace, items, overlays)
           const top = codes(out, 0)
           assertMatches(t, `${label}, top`, top, want)
           assertMatches(t, `${label}, bottom`, codes(out, 2), want)
-          // White at this level's independently derived code, so a segment can
-          // never land at the other level's white unnoticed.
-          const whiteWant = WHITE_Y10[colorSpace][nits]
+          // White at the independently derived code, so a segment can never
+          // land at another level's white unnoticed.
+          const whiteWant = WHITE_Y10[colorSpace]
           assert.ok(Math.abs(top[0].y - whiteWant) <= TOL,
-            `${label}: white Y10 ${top[0].y.toFixed(1)}, want ${whiteWant} (${nits} nits)`)
+            `${label}: white Y10 ${top[0].y.toFixed(1)}, want ${whiteWant} (${GRAPHICS_WHITE_NITS} nits)`)
           // The middle third is the layer beneath, untouched by the graphic.
           const under = items.filter((it) => it.type === 'video')
           const alone = await encode(dir, colorSpace, under, [])
@@ -245,32 +237,21 @@ for (const colorSpace of ['hdr_hlg', 'hdr_pq']) {
     })
 }
 
-// POSTLAUNCH §47, cards: footage kept running under a full-screen overlay (for
-// its audio) used to keep that overlay at 800 nits. Through the production path
-// (cover-probe.js markCards, then encodeSegment), a fully opaque full-canvas
-// capture over a running clip is a card and lands at the 300-nit mapping; the
-// same capture left unmarked, as 5.19.4 composed it, lands at 800.
+// A full-screen card over running footage maps at the same 800 as everything
+// else: no probe, no second level.
 for (const colorSpace of ['hdr_hlg', 'hdr_pq']) {
-  test(`${colorSpace}: a full-screen card over running footage lands at 300 nits`, { timeout: 240_000 }, async (t) => {
+  test(`${colorSpace}: a full-screen card over running footage lands at 800 nits`, { timeout: 240_000 }, async (t) => {
     assert.ok(hasZscale(), `${FFMPEG} lacks zscale: point MONTAJ_FFMPEG at the managed build`)
     const dir = mkdtempSync(path.join(tmpdir(), 'montaj-hdr-card-'))
     try {
       const capture = captureOf(dir, cardPng(dir), 'card')
       const clip = [videoItem(hlgClip(dir), 'arib-std-b67')]
-      const card = overlayOf(capture)
-      await markCards([card], { colorSpace })
-      assert.equal(card.coversFrame, true, 'the probe finds the capture fully opaque over the whole canvas')
-      const out = await encode(dir, colorSpace, clip, [card])
-      const want = SWATCHES.map((s) => predicted(s.rgb, colorSpace, GRAPHICS_WHITE_NITS_NO_FOOTAGE))
+      const out = await encode(dir, colorSpace, clip, [overlayOf(capture)])
+      const want = SWATCHES.map((s) => predicted(s.rgb, colorSpace, GRAPHICS_WHITE_NITS))
       for (const row of [0, 1, 2]) assertMatches(t, `card, row ${row}`, codes(out, row), want)
       const white = codes(out, 1)[0].y
-      const whiteWant = WHITE_Y10[colorSpace][GRAPHICS_WHITE_NITS_NO_FOOTAGE]
+      const whiteWant = WHITE_Y10[colorSpace]
       assert.ok(Math.abs(white - whiteWant) <= TOL, `card white Y10 ${white.toFixed(1)}, want ${whiteWant}`)
-
-      const unmarked = await encode(dir, colorSpace, clip, [overlayOf(capture)])
-      const at800 = codes(unmarked, 1)[0].y
-      t.diagnostic(`card white: marked ${white.toFixed(1)}, unmarked (5.19.4) ${at800.toFixed(1)}`)
-      assert.ok(Math.abs(at800 - WHITE_Y10[colorSpace][GRAPHICS_WHITE_NITS]) <= TOL, `unmarked white ${at800.toFixed(1)} is the 800-nit code`)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

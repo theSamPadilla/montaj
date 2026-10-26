@@ -51,7 +51,9 @@ import { childKilledError } from '../../child-killed.js'
 import { specFor, detectFromTransfer, isHdr, DEFAULT_COLOR_SPACE } from '../../color-space.js'
 import { lutPath } from '../../look.js'
 import { ffmpegFilterPath } from '../../ffmpeg-filter-path.js'
-import { graphicsToHdrChain, GRAPHICS_WHITE_NITS, GRAPHICS_WHITE_NITS_NO_FOOTAGE } from '../../hdr-graphics.js'
+import { graphicsToHdrChain, GRAPHICS_WHITE_NITS } from '../../hdr-graphics.js'
+// frozen 5.33.3 copy: the 300-nit rule it had; live code retired it 2026-10-26
+const GRAPHICS_WHITE_NITS_NO_FOOTAGE = 300
 import { externalizeFilterGraph } from '../../filter-script.js'
 import { assertSegmentHasVideo } from '../../segment-check.js'
 import {

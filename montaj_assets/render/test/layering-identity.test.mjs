@@ -28,6 +28,7 @@ import { trackLayerPositions, opacityAt, isOpaqueCover } from '@bycrux/timeline-
 import { planSegments, replacesPicture } from '../segment-plan.js'
 import { trackItems, enabledTrackItems } from '../project-tracks.js'
 import { encodeSegment, culledClips } from '../encode-segment.js'
+import { graphicsLutPath } from '../hdr-graphics.js'
 import { planSegments as planSegments533 } from './frozen/segment-plan.5.33.3.js'
 import { encodeSegment as encodeSegment533 } from './frozen/encode-segment.5.33.3.js'
 import { collectAllItems, collectPuppeteerSegments } from '../render.js'
@@ -115,9 +116,17 @@ function inputs(project, fps) {
   const [vw, vh] = project.settings.resolution
   const { imageItems, videoItems } = collectAllItems(project)
   const specs = collectPuppeteerSegments(project, fps, vw, vh, '/fz/seg')
-  const hdr = project.settings.colorSpace !== 'sdr_bt709'
-  const segs = specs.map((spec, k) => ({ ...spec, webmPath: spec.outputPath, ...(hdr && spec.opaque && k % 2 === 0 ? { coversFrame: true } : {}) }))
+  const segs = specs.map((spec) => ({ ...spec, webmPath: spec.outputPath }))
   return { allItems: [...imageItems, ...videoItems], segs, vw, vh }
+}
+
+/** The frozen encoder's args with its 300-nit LUT name swapped for the 800-nit one. */
+function whiteLutDiff(args, colorSpace) {
+  if (colorSpace === 'sdr_bt709') return { args }
+  const name = (nits) => graphicsLutPath(colorSpace, { write: false, whiteNits: nits }).split('/').pop()
+  const [from, to] = [name(300), name(800)]
+  const swapped = args.map((x) => (typeof x === 'string' ? x.split(from).join(to) : x))
+  return { args: swapped }
 }
 
 const CASES = 400
@@ -142,7 +151,12 @@ test('byte-identity: canonical projects with no clip above an overlay plan and e
       const segThen = { ...planThen[k], colorSpace: project.settings.colorSpace }
       const a = await encodeSegment(segNow, `/fz/out-${k}.mp4`, { _dryRun: true })
       const b = await encodeSegment533(segThen, `/fz/out-${k}.mp4`, { _dryRun: true })
-      assert.deepStrictEqual(a.args, b.args, `case ${c} segment ${k}: ffmpeg args`)
+      // The frozen encoder keeps 5.33.3's 300-nit white for graphics with no
+      // footage (a bare canvas, a covered clip, an image alone). Live code maps
+      // every graphic at 800 (2026-10-26), so those segments differ by exactly
+      // the LUT: name it, and require nothing else to differ.
+      const frozen = whiteLutDiff(b.args, project.settings.colorSpace)
+      assert.deepStrictEqual(a.args, frozen.args, `case ${c} segment ${k}: ffmpeg args`)
       // Builder-independent (outlives the frozen encoder, see the retirement
       // rule): no layer list, and the inputs are the canvas, then every item
       // the picture or the audio needs (an image culled under a cover adds

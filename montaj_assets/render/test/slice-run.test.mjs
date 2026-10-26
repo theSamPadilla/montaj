@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import {
   runSlices, sliceSpecs, groupsInSlice, commonEdges, overlayDescriptor, plannedDescriptors,
-  hdrCardCandidates, sliceDiskTerms, slicingLine, previewGroups, sliceDirName,
+  sliceDiskTerms, slicingLine, previewGroups, sliceDirName,
 } from '../slice-run.js'
 import { planSlices } from '../slice-plan.js'
 import { FFV1_DENSE_BYTES_PER_PIXEL, FFV1_CAPTION_BYTES_PER_PIXEL, FFV1_SPARSE_BYTES_PER_PIXEL } from '../disk-space.js'
@@ -200,20 +200,6 @@ test('overlayDescriptor: the fields compose reads, keyframes and layerTrack only
   assert.deepEqual([d.id, d.startSeconds, d.endSeconds, d.opaque, 'webmPath' in d], ['a', 1, 2, true, false])
 })
 
-test('hdrCardCandidates: full-canvas, not opaque, not a caption, no keyframes, full opacity', () => {
-  const specs = [
-    spec('card', 0, 2),
-    spec('flagged', 0, 2, { opaque: true }),
-    spec('cap', 0, 2, { isCaption: true }),
-    spec('small', 0, 2, { scale: 0.5 }),
-    spec('moved', 0, 2, { offsetX: 10 }),
-    spec('faded', 0, 2, { opacity: 0.5 }),
-    spec('keyed', 0, 2, { keyframes: [{ prop: 'opacity', keys: [] }] }),
-  ]
-  assert.deepEqual(hdrCardCandidates(specs).map((s) => s.id), ['card'])
-  assert.deepEqual(hdrCardCandidates([]), [])
-})
-
 test('sliceDiskTerms: the peak slice, its largest window (the join term), its frames at the sparse rate', () => {
   const px = 1080 * 1920
   const overlays = [
@@ -243,9 +229,9 @@ test('slicingLine: the sliced and unsliced lines, never a phase marker', () => {
   assert.equal(on, 'slicing: 10 slice(s) of <=1420 MB (budget used 1500 MB, wanted 2000 MB, free 9000 MB)')
   const off = slicingLine({ sliced: false, budgetBytes: 2e9, captureBytes: 3.4e8 })
   assert.equal(off, 'slicing: off (captures 340 MB fit the 2000 MB budget)')
-  const card = slicingLine({ reason: 'an HDR card candidate needs its whole capture probed' })
-  assert.equal(card, 'slicing: off (an HDR card candidate needs its whole capture probed)')
-  for (const line of [on, off, card]) assert.doesNotMatch(line, /bundling segment|with Puppeteer|composing final video|concatenating|deriving SDR rendition/)
+  const single = slicingLine({ reason: 'the timeline is a single slice at the smallest size' })
+  assert.equal(single, 'slicing: off (the timeline is a single slice at the smallest size)')
+  for (const line of [on, off, single]) assert.doesNotMatch(line, /bundling segment|with Puppeteer|composing final video|concatenating|deriving SDR rendition/)
 })
 
 test('previewGroups: planCompose\'s groups, the leading gap included', () => {

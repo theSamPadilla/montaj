@@ -351,16 +351,11 @@ test('estimateMain §434: MONTAJ_SLICE_BUDGET_MB forces slices, and the estimate
   assert.equal(readFileSync(p.projectPath, 'utf8'), p.json, 'never written to project.json')
 })
 
-test('estimateMain §434: an HDR project with a full-canvas card candidate stays unsliced', async () => {
+test('estimateMain §434: an HDR project with a full-canvas overlay slices like any other', async () => {
   const p = longProject({ settings: { resolution: [1080, 1920], fps: 30, colorSpace: 'hdr_hlg', colorSpaceSource: 'explicit' } })
   const r = await withEnv({ MONTAJ_SLICE_BUDGET_MB: '1' }, () => estimateMain(p.projectPath, { workers: 2 }))
   assert.equal(r.colorSpace, 'hdr_hlg')
-  assert.equal(r.slicing.sliced, false)
-  assert.equal(r.slicing.slices, 1)
-  // Moved off full canvas, it is no candidate, and the same project slices.
-  const q = longProject({ settings: { resolution: [1080, 1920], fps: 30, colorSpace: 'hdr_hlg', colorSpaceSource: 'explicit' }, overlay: { offsetX: 10 } })
-  const s = await withEnv({ MONTAJ_SLICE_BUDGET_MB: '1' }, () => estimateMain(q.projectPath, { workers: 2 }))
-  assert.equal(s.slicing.sliced, true)
+  assert.equal(r.slicing.sliced, true)
 })
 
 // planSlicing on its own: a 30 s timeline cut at 2, 10, 20 and 30 s, one
@@ -449,14 +444,11 @@ test('planSlicing §434: a render that passes the lower-bound preflight is not r
   }
 })
 
-test('planSlicing §434: HDR with a card candidate is unsliced and says why; no overlays, nothing to plan', async () => {
+test('planSlicing §434: an HDR render with a full-canvas overlay slices; no overlays, nothing to plan', async () => {
   const c = slicingCase()
   const r = await withEnv({ MONTAJ_SLICE_BUDGET_MB: '1' }, () => planSlicing({ ...c.args, projectColorSpace: 'hdr_hlg' }))
-  assert.equal(r.sliced, false)
-  assert.equal(r.reason, 'an HDR card candidate needs its whole capture probed')
-  const sdr = await withEnv({ MONTAJ_SLICE_BUDGET_MB: '1' }, () => planSlicing(c.args))
-  assert.equal(sdr.sliced, true)
-  assert.equal(sdr.budgetBytes, 1e6)
+  assert.equal(r.sliced, true)
+  assert.equal(r.budgetBytes, 1e6)
   const empty = planSlicing({ ...c.args, segmentSpecs: [], inputs: { ...c.args.inputs, segments: [] } })
   assert.deepEqual([empty.sliced, empty.slices, empty.reason], [false, 1, null])
 })

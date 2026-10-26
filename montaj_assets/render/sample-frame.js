@@ -148,8 +148,8 @@ const SHORT_EDGE_TARGET = 1080
  *    (hdr-graphics.js GRAPHICS_WHITE_NITS). Defensive only: samples composite
  *    in SDR (overlays as sRGB PNGs over footage graded to SDR) and never pass
  *    through hdr-graphics.js, so no cached pixel depended on the HDR white.
- *    The per-segment white (800 over footage, 300 without, POSTLAUNCH §47)
- *    needs no bump for the same reason.
+ *    The later 300-nit white for graphics without footage (POSTLAUNCH §47,
+ *    since removed: one 800-nit white) needed no bump for the same reason.
  * 11: an opaque overlay hides the footage only when it covers the whole canvas
  *    (timeline-core `opaqueReplacesPicture`). A frame cached before holds black
  *    around a scaled one.

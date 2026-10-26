@@ -1,21 +1,16 @@
 // render/test/hdr-layering.test.mjs (§308 P3, task 14)
 //
-// HDR graphics white follows each layer's place in the one bottom-to-top list,
-// now that images and overlays interleave by track. The two rules (POSTLAUNCH
-// §47) are unchanged in kind:
-//   - the segment's level: 800 nits over visible footage, 300 with none. Footage
-//     culled under an opaque overlay is not visible; footage stacked ABOVE the
-//     overlay that replaces the picture is.
-//   - a full-screen card (coversFrame) and every graphic stacked above it take
-//     300, since they sit on the card. Before, only overlays could be above a
-//     card; now an image on a higher track can, and it takes the card's white.
-// A segment where every item is below every overlay answers exactly as before:
-// hdr-cards.test.mjs and hdr-graphics-no-footage.test.mjs pass unedited, and
-// layering-identity.test.mjs holds the encoder args to 5.33.3's.
+// HDR graphics white with images and overlays interleaved by track: every
+// layer maps white to 800 nits wherever it sits in the one bottom-to-top list,
+// over footage, over a full-screen card or over nothing (the product owner,
+// 2026-10-26: one white). Before, a full-screen card and everything stacked
+// above it mapped to 300 and the layer list decided which; the plan itself
+// (layer order, culled footage) is unchanged and is held by layering.test.mjs
+// and layering-identity.test.mjs.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { GRAPHICS_WHITE_NITS, GRAPHICS_WHITE_NITS_NO_FOOTAGE, graphicsLutPath } from '../hdr-graphics.js'
-import { encodeSegment, graphicsWhiteNitsFor, overlayWhiteNits } from '../encode-segment.js'
+import { GRAPHICS_WHITE_NITS, graphicsLutPath } from '../hdr-graphics.js'
+import { encodeSegment } from '../encode-segment.js'
 import { planSegments } from '../segment-plan.js'
 
 const FPS = 30
@@ -32,44 +27,27 @@ async function whites(seg) {
   for (const f of filterParts) {
     const m = /^\[(?:(\d+):v|ovfmt(\d+))\]/.exec(f)
     if (!m) continue
-    const nits = f.includes(lut(GRAPHICS_WHITE_NITS_NO_FOOTAGE)) ? 300 : f.includes(lut(GRAPHICS_WHITE_NITS)) ? 800 : null
+    const nits = f.includes(lut(300)) ? 300 : f.includes(lut(GRAPHICS_WHITE_NITS)) ? 800 : null
     if (nits) at[m[1] ?? m[2]] = nits
   }
   return at
 }
 
-test('overlayWhiteNits over the layer list: an image above a card takes the card\'s white, one below the segment\'s', () => {
-  const layers = [video(), image('below', 1), overlay('card', 2, { coversFrame: true }), image('above', 3)]
-  assert.deepEqual(layers.map((_, k) => overlayWhiteNits(layers, k, GRAPHICS_WHITE_NITS)), [800, 800, 300, 300])
-})
-
-test('an HDR segment with an image above a probed card: footage drawn, the card and the image on it at 300, the image under it at 800', async () => {
-  // A probed card (coversFrame, not opaque) replaces nothing, so the footage
-  // stays visible and the segment's level is 800.
-  const [seg] = planSegments([video(), image('below', 1), image('above', 3)], [overlay('card', 2, { coversFrame: true })], 1080, 1920, FPS)
+test('an HDR segment with an image above a full-screen card: the card and both images map at 800', async () => {
+  const [seg] = planSegments([video(), image('below', 1), image('above', 3)], [overlay('card', 2)], 1080, 1920, FPS)
   assert.deepEqual(seg.layers.map(x => x.id), ['v', 'below', 'card', 'above'])
-  assert.equal(graphicsWhiteNitsFor(seg), GRAPHICS_WHITE_NITS)
   // Inputs: 1 footage, 2 image below, 3 card capture, 4 image above.
-  assert.deepEqual(await whites(seg), { 2: 800, 3: 300, 4: 300 })
+  assert.deepEqual(await whites(seg), { 2: 800, 3: 800, 4: 800 })
 })
 
-test('the segment\'s level counts only footage that is drawn: culled under an opaque overlay is none, stacked above it is', () => {
-  // Footage under an opaque full-screen overlay, an image above it: no footage shows.
-  const [culled] = planSegments([video(), image('top', 2)], [overlay('cover', 1, { opaque: true })], 1080, 1920, FPS)
-  assert.equal(culled.opaqueVideo, true)
-  assert.equal(graphicsWhiteNitsFor(culled), GRAPHICS_WHITE_NITS_NO_FOOTAGE)
-  // An overlay on the bottom video track and footage on a video track above it
-  // (only an agent writes this): the opaque overlay culls nothing above it, so
-  // the upper footage shows.
-  const low = video({ id: 'low', trackIdx: 0, layerTrack: 0 })
-  const high = video({ id: 'high', src: '/h.mp4', trackIdx: 1, layerTrack: 1 })
-  const [shown] = planSegments([low, high], [overlay('cover', 0, { opaque: true })], 1080, 1920, FPS)
-  assert.deepEqual(shown.layers.map(x => x.id), ['low', 'cover', 'high'])
-  assert.equal(graphicsWhiteNitsFor(shown), GRAPHICS_WHITE_NITS)
+test('footage culled under an opaque overlay, with an image above it, still maps every graphic at 800', async () => {
+  const [seg] = planSegments([video(), image('top', 2)], [overlay('cover', 1, { opaque: true })], 1080, 1920, FPS)
+  assert.equal(seg.opaqueVideo, true)
+  assert.deepEqual(await whites(seg), { 2: 800, 3: 800 }, 'the cover capture and the image above it')
 })
 
-test('with every item below every overlay the whites are what they were', async () => {
-  const [seg] = planSegments([video(), image('i', 1)], [overlay('card', 2, { coversFrame: true }), overlay('top', 3)], 1080, 1920, FPS)
+test('with every item below every overlay, every graphic is at 800', async () => {
+  const [seg] = planSegments([video(), image('i', 1)], [overlay('card', 2), overlay('top', 3)], 1080, 1920, FPS)
   assert.equal('layers' in seg, false)
-  assert.deepEqual(await whites(seg), { 2: 800, 3: 300, 4: 300 }, 'image at the segment\'s level, the card and the overlay on it at 300')
+  assert.deepEqual(await whites(seg), { 2: 800, 3: 800, 4: 800 })
 })

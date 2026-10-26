@@ -18,27 +18,16 @@
  * (oversaturated), and an <img> converted on its own looked different from the
  * CSS around it.
  *
- * 800 nits is the product owner's choice for graphics OVER FOOTAGE, made by eye
- * against SDR clips and camera HDR on an XDR display: first 900 (2026-10-01),
- * lowered to 800 the next day because 900 was too much. It is brighter than
- * BT.2408's 203-nit graphics white, which SDR clips in an HDR project use
+ * Every graphic maps white to 800 nits (the product owner, 2026-10-26: one
+ * white), over footage or not: overlays, captions, full-screen cards, 3D beats
+ * and timeline images alike. 800 is his choice made by eye against SDR clips
+ * and camera HDR on an XDR display: first 900 (2026-10-01), lowered to 800 the
+ * next day because 900 was too much. It is brighter than BT.2408's 203-nit
+ * graphics white, which SDR clips in an HDR project use
  * (lib/normalize.py SDR_WHITE_NITS), so a caption over a clip sits above an SDR
- * clip's white on purpose.
- *
- * Graphics with NO FOOTAGE under them (a title card, an end card, a full-screen
- * overlay, a timeline image or screenshot with no clip at that time) take
- * GRAPHICS_WHITE_NITS_NO_FOOTAGE, 300 nits, instead of filling the screen at 800
- * ("it is SO bright", product owner, 2026-10-02; POSTLAUNCH §47). He picked 300
- * from 4K renders at 203, 300 and 400: BT.2408's 203 (what SDR clips use) read
- * too dim next to footage. encode-segment.js decides per
- * compose segment (graphicsWhiteNitsFor); segments already split at every clip
- * boundary, so an overlay that runs from a clip into a footage-less stretch
- * changes level exactly at that frame. A full-screen card (cover-probe.js) is
- * at that level for its whole span even with footage running under it, and what is
- * stacked above it follows it (encode-segment.js overlayWhiteNits); a full-screen
- * 3D beat is the exception and keeps 800 (2026-10-26). Both levels
- * are one mapping with the white as its parameter, each with its own generated
- * LUT.
+ * clip's white on purpose. A 300-nit white for graphics with no footage under
+ * them (POSTLAUNCH §47) came and went; the white level stays a parameter of
+ * the mapping (`whiteNits`), defaulting to GRAPHICS_WHITE_NITS.
  *
  * Applied in ffmpeg as a 65-point 3D LUT (tetrahedral) on float RGB: a
  * per-pixel geq is far too slow for every overlay frame. Measured against the
@@ -61,16 +50,8 @@ import { join } from 'node:path'
 
 import { ffmpegFilterPath } from './ffmpeg-filter-path.js'
 
-/** Where sRGB white lands in an HLG or PQ output over footage, in nits. */
+/** Where sRGB white lands in an HLG or PQ output, in nits: every graphic. */
 export const GRAPHICS_WHITE_NITS = 800
-
-/**
- * Where sRGB white lands when no video clip is visible under the graphics, and
- * on a full-screen card: the product owner's pick, a little above BT.2408's
- * 203-nit reference white that SDR clips use (encode-segment.js and
- * lib/normalize.py SDR_WHITE_NITS, deliberately a separate constant).
- */
-export const GRAPHICS_WHITE_NITS_NO_FOOTAGE = 300
 
 // HLG's nominal display: 1000-nit peak, system gamma 1.2 (BT.2100). Scene
 // light E maps to display light 1000 * E^1.2 for a neutral, so white at
@@ -190,7 +171,6 @@ export function graphicsLutPath(dstKey, { write = true, whiteNits = GRAPHICS_WHI
  * @param {'capture'|'rgb'} opts.input
  * @param {boolean} [opts.write=true]  write the LUT file (false for dry runs)
  * @param {number} [opts.whiteNits=GRAPHICS_WHITE_NITS]  where sRGB white lands
- *   (encode-segment.js graphicsWhiteNitsFor: 800 over footage, 300 without)
  * @returns {string}
  */
 export function graphicsToHdrChain(dstKey, { input, write = true, whiteNits = GRAPHICS_WHITE_NITS }) {
