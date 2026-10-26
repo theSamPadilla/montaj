@@ -328,3 +328,22 @@ test('a sheet over two overlays in four lanes matches each time sampled alone, p
     assert.ok(readFileSync(paths[k]).equals(readFileSync(join(two.dir, `lane-one-${t}.png`))), `at ${t}s`)
   })
 })
+
+// PL89c: a sheet's frames composite at the design canvas (--max-short-edge), a single sample at the project's own size,
+// and the cache never serves one for the other.
+test('--max-short-edge caps the frames of a 4K project, and the cache keeps the two sizes apart', { skip: !canSample && 'no browser' }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'session-4k-'))
+  const file = join(dir, 'project.json')
+  const jsx = join(dir, 'box.jsx')
+  writeFileSync(jsx, 'export default function B() { return <div style={{ position: "absolute", left: 100 + frame, top: 200, width: 300, height: 120, background: "#00b4d8" }} /> }\n')
+  writeFileSync(file, JSON.stringify({ settings: { resolution: [2160, 3840], fps: 10 }, tracks: [[{ id: 'o1', type: 'overlay', src: jsx, start: 0, end: 5, props: {} }]] }))
+  const tmp = mkdtempSync(join(tmpdir(), 'session-tmp-'))
+  const go = (args) => spawnSync('node', [SCRIPT, '--mode', 'frame', '--project', file, ...args], { encoding: 'utf8', timeout: 90_000, env: { ...process.env, TMPDIR: tmp } })
+  const size = (p) => { const b = readFileSync(p); return [b.readUInt32BE(16), b.readUInt32BE(20)] }
+  const small = go(['--at', '0.5', '--at', '1.5', '--frames-dir', join(dir, 'small'), '--max-short-edge', '1080'])
+  assert.equal(small.status, 0, small.stderr.slice(-300))
+  for (const p of small.stdout.trim().split('\n')) assert.deepEqual(size(p), [1080, 1920])
+  const full = go(['--at', '0.5', '--out', join(dir, 'full.png')])
+  assert.equal(full.status, 0, full.stderr.slice(-300))
+  assert.deepEqual(size(join(dir, 'full.png')), [2160, 3840], 'the same time, after a capped one, is full size')
+})
