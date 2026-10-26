@@ -1,7 +1,7 @@
 {
   "name": "frame_broll",
   "category": "edit",
-  "description": "Frame a landscape clip on a vertical timeline (b-roll) in one call, never a blind centre crop: track follows its moving subject with a keyframed crop; card insets the whole frame on paper with corner brackets and a 'Footage: <source>' credit, above the captions; auto (default) tracks one clear subject the captions stay clear of, else cards (text off the subject). A human edit since the read is refused. Answers with a sheet of the clip's range.",
+  "description": "Frame a landscape clip on a vertical timeline (b-roll) in one call, never a blind centre crop: track follows its moving subject with a keyframed crop; card insets the whole frame on paper with corner brackets and a 'Footage: <source>' credit, above the captions; auto (default) tracks one clear subject the captions stay clear of, else cards (text off the subject); when the profile's titles and overlays notes ask for mattes for wide footage, auto cards it on that matte (its colour, small centred credit). A human edit since the read is refused. Answers with a sheet of the clip's range.",
   "input": {
     "type": "project",
     "description": "The project id, its folder, or the absolute path of its project.json"
