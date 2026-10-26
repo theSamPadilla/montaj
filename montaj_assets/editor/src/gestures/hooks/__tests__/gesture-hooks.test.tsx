@@ -45,9 +45,23 @@ describe('useOverlayResize', () => {
     })
     // The corner goes to the cursor's projection onto the diagonal:
     // 1 + (200 * 120 + 100 * 10) / (200² + 100²) = 1.5 times the box.
-    expect(onPreview).toHaveBeenLastCalledWith('el', { x: 100, y: 100, w: 300, h: 150 }, 0)
+    expect(onPreview).toHaveBeenLastCalledWith('el', { x: 100, y: 100, w: 300, h: 150 }, 0, expect.objectContaining({ keptRatio: true }))
     act(() => { gesture().onPointerMove({ x: 130, y: 20 }, { shiftKey: true }) })
-    expect(onPreview).toHaveBeenLastCalledWith('el', { x: 100, y: 100, w: 320, h: 110 }, 0)
+    expect(onPreview).toHaveBeenLastCalledWith('el', { x: 100, y: 100, w: 320, h: 110 }, 0, expect.objectContaining({ keptRatio: false }))
+  })
+
+  it('tells the commit whether the final box kept the ratio: a corner without Shift does, a side handle never (§586 M8)', () => {
+    const { gesture, onCommit } = setup()
+    act(() => {
+      gesture().onPointerDown('el', 'se', { x: 10, y: 10 }, BOX)
+      gesture().onPointerMove({ x: 130, y: 20 }, { shiftKey: true })
+      gesture().onPointerMove({ x: 130, y: 20 }, { shiftKey: false })
+      gesture().onPointerUp()
+      gesture().onPointerDown('el', 'e', { x: 10, y: 10 }, BOX)
+      gesture().onPointerMove({ x: 130, y: 20 }, { shiftKey: false })
+      gesture().onPointerUp()
+    })
+    expect(onCommit.mock.calls.map((call) => call[2].keptRatio)).toEqual([true, false])
   })
 
   it('a caller that passes no modifiers still resizes a corner freely, as before (§556 review: the hook\'s API stays additive)', () => {
@@ -56,7 +70,7 @@ describe('useOverlayResize', () => {
       gesture().onPointerDown('el', 'se', { x: 10, y: 10 }, BOX)
       gesture().onPointerMove({ x: 130, y: 20 })
     })
-    expect(onPreview).toHaveBeenLastCalledWith('el', { x: 100, y: 100, w: 320, h: 110 }, 0)
+    expect(onPreview).toHaveBeenLastCalledWith('el', { x: 100, y: 100, w: 320, h: 110 }, 0, expect.objectContaining({ keptRatio: false }))
     act(() => { gesture().onPointerUp() })
     expect(onCommit.mock.calls[0][1]).toEqual({ x: 100, y: 100, w: 320, h: 110 })
   })
@@ -73,7 +87,7 @@ describe('useOverlayResize', () => {
     const [id, box, info] = onCommit.mock.calls[0]
     expect(id).toBe('el')
     expect(box).toEqual({ x: 100, y: 100, w: 230, h: 100 })
-    expect(info).toMatchObject({ handle: 'e', startBox: BOX })
+    expect(info).toMatchObject({ handle: 'e', startBox: BOX, keptRatio: false })
   })
 })
 
