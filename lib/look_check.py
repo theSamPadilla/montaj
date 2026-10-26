@@ -502,6 +502,27 @@ def text_overlaps(placed):
     return out
 
 
+# PL89d (52's round-5 notes): six keyword chips at top 120 and a diagram strip at y 150, one after another, read as a
+# page heading over every shot. An overlay whose text starts in the top TOP_SLOT_SHARE of the frame sits in the top
+# slot; TOP_SLOT_MAX of them across the video is a choice, more is the website look.
+TOP_SLOT_SHARE = 0.15
+TOP_SLOT_MAX = 2
+
+
+def top_slot_issues(placed, frame_w, frame_h):
+    """[{t, id: "top-slot", text}] when more than TOP_SLOT_MAX overlays put their text in the top slot, at the start of the
+    first one past it. `placed`: [(label, start, end, boxes)], as text_overlaps takes."""
+    top = frame_h * TOP_SLOT_SHARE
+    hits = sorted(((s, label) for label, s, e, boxes in placed if boxes and min(b["y"] for b in boxes) < top),
+                  key=lambda x: x[0])
+    if len(hits) <= TOP_SLOT_MAX:
+        return []
+    names = ", ".join(label for _, label in hits[:5]) + (f" and {len(hits) - 5} more" if len(hits) > 5 else "")
+    return [{"t": r2(hits[TOP_SLOT_MAX][0]), "id": "top-slot",
+             "text": f"{names} all put text in one top slot (above {round(top)} px), a page heading over every shot: "
+                     "keywords go mid-frame (over the subject or just above the captions), a diagram beside what it explains"}]
+
+
 def answer(issues, *, extra=None, cap=300, line=None):
     """The short JSON answer: ok and the extra counts, or the issues in time order while it stays within `cap`."""
     import json

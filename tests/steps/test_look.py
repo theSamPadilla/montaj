@@ -554,3 +554,27 @@ def test_ink_set_for_a_matte_is_fine_while_the_matte_is_on_screen_and_reported_w
     p["tracks"][1]["items"].append({"id": "matte", "type": "overlay", "src": "./overlays/footage-card.jsx", "start": 0, "end": 4})
     issues = lc.caption_ink_issues(p)
     assert len(issues) == 1 and issues[0]["t"] == 5.5 and "now over footage" in issues[0]["text"]
+
+
+# ── the top slot (PL89d) ──────────────────────────────────────────────────────────────────────────────────────────
+# 52's round-5 notes: six keyword chips at top 120 and a diagram strip at y 150, one after another: a page heading over
+# every shot. Three or more overlays whose text sits in the same top slot are one issue; two are a choice.
+
+def test_three_overlays_in_the_top_slot_are_one_issue_naming_them():
+    top = [{"x": 340, "y": 120, "w": 400, "h": 90}]
+    placed = [("kw-1", 2, 4, top), ("kw-2", 9, 11, top), ("flow", 14, 17, [{"x": 100, "y": 150, "w": 880, "h": 60}]),
+              ("mid", 20, 22, [{"x": 340, "y": 900, "w": 400, "h": 90}])]
+    out = lc.top_slot_issues(placed, 1080, 1920)
+    assert len(out) == 1, out
+    assert out[0]["t"] == 14 and out[0]["id"] == "top-slot"
+    for s in ["kw-1, kw-2, flow", "one top slot", "mid-frame", "beside what it explains"]:
+        assert s in out[0]["text"], out[0]["text"]
+    assert lc.top_slot_issues(placed[:2] + placed[3:], 1080, 1920) == [], "two are a choice"
+    assert lc.top_slot_issues([(f"kw-{k}", k, k + 1, top) for k in range(3)], 1920, 1080) != [], "a wide frame too"
+
+
+def test_look_reports_the_top_slot(tmp_path):
+    path, _ = _project(tmp_path, base=((0, 20),), overlays=[{"id": f"kw-{k}", "start": 1 + 5 * k, "end": 3 + 5 * k} for k in range(3)])
+    fake = _fake_measure({f"kw-{k}": [("keyword", 340, 120, 400, 90)] for k in range(3)})
+    out = look.run(str(path), measure_fn=fake, detail=True)
+    assert any("top-slot" in i and "one top slot" in i for i in out["issues"]), out["issues"]
