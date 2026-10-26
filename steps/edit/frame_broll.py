@@ -36,6 +36,9 @@ UNDER_CAPTIONS = 0.5      # the share of the frames with the subject that put it
 DEFAULT_CAPTION_BAND = (0.56, 0.76)   # where montaj's captions draw on a tall frame, every style (look_check.CAPTION_BAND)
 VERSION_MESSAGE = "version: before frame_broll"
 STEP_LOCK_TIMEOUT = 30.0
+CARD_ZOOM_MIN = 0.45      # a card zooms to at most this share of the frame (the subject at a readable size)
+CARD_ZOOM_MAX = 0.85      # and only when it keeps under this share: a subject that roams the frame is not zoomed
+CARD_ZOOM_MARGIN = 0.06   # room round everywhere the subject goes, a share of the frame
 DEFAULT_MATTE = "#F5F3EB"   # a warm cream, when a profile asks for mattes but names no colour
 MAX_ITEMS = 12          # items in one call
 MAX_PARALLEL = 4        # clips read and tracked at once
@@ -212,12 +215,28 @@ def analyse(project, on_disk, project_path, item_id, mode, matte=None):
 
     item_t = lambda st: round((st - t_in) / rate, 3) if rate > 0 else 0.0  # noqa: E731
     found = [(item_t(st), p) for st, p in zip(times, path["points"]) if p["box"] is not None]
+    # PL89d: the card zooms toward the subject: a still crop of the source, the source's own shape (so the card's box
+    # on screen is the same), round everywhere the subject goes; the brackets' boxes move into the zoomed frame.
+    zoom = None
+    if mode == "card" and found and path["found"] >= 0.6 * n:
+        u0 = min(p["box"][0] for _, p in found) - CARD_ZOOM_MARGIN
+        v0 = min(p["box"][1] for _, p in found) - CARD_ZOOM_MARGIN
+        u1 = max(p["box"][0] + p["box"][2] for _, p in found) + CARD_ZOOM_MARGIN
+        v1 = max(p["box"][1] + p["box"][3] for _, p in found) + CARD_ZOOM_MARGIN
+        z = max(u1 - u0, v1 - v0, CARD_ZOOM_MIN)
+        if z < CARD_ZOOM_MAX:
+            zx = min(max((u0 + u1) / 2 - z / 2, 0.0), 1 - z)
+            zy = min(max((v0 + v1) / 2 - z / 2, 0.0), 1 - z)
+            zoom = {"x": round(float(zx), 4), "y": round(float(zy), 4), "w": round(float(z), 4), "h": round(float(z), 4)}
+            found = [(t, {**p, "box": [(p["box"][0] - zx) / z, (p["box"][1] - zy) / z, p["box"][2] / z, p["box"][3] / z]})
+                     for t, p in found]
+            why += f"; zoomed to the subject ({round(z * 100)}% of the frame)"
     width_ratio = sw / sh
     card_h = CARD_SCALE * (W / H) / width_ratio            # the footage's height on screen, a share of the canvas
     box = [round((1 - CARD_SCALE) / 2, 4), round(CARD_CENTER_Y - card_h / 2, 4), CARD_SCALE, round(card_h, 4)]
     return {"id": item_id, "mode": mode, "why": why, "probed": probed, "crop_w": crop_w, "box": box, "start": start,
             "end": end, "W": W, "H": H, "track_keys": [(item_t(st), round(p["x"], 4)) for st, p in zip(times, path["points"])] if mode == "track" else None,
-            "found_boxes": found, "found": path["found"], "n": n, "crossed": crossed}
+            "found_boxes": found, "found": path["found"], "n": n, "crossed": crossed, "zoom": zoom}
 
 
 def run(project_path, item_id, *, mode="auto", source=None, detail=False, sampler=None):
@@ -290,6 +309,8 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
                 keyframes.append({"prop": "cropX", "points": [{"t": t, "value": v} for t, v in keys]})
                 written[pl["id"]] = {"keys": len(keys)}
             else:
+                if pl["zoom"]:
+                    it["sourceCrop"] = dict(pl["zoom"])
                 it["scale"] = CARD_SCALE
                 it["offsetX"] = 0
                 it["offsetY"] = round((CARD_CENTER_Y - 0.5) * 100, 3)
@@ -362,6 +383,8 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
                 out["issues"] = [f"the captions cross the subject in {round(pl['crossed'] * 100)}% of the clip: card keeps it clear of them"]
         else:
             out["card"] = written[pl["id"]]["card"]
+            if pl["zoom"]:
+                out["zoom"] = pl["zoom"]
             if not credit:
                 out["note"] = "no credit: pass source for a 'Footage: <source>' line"
         if detail:

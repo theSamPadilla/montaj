@@ -400,3 +400,49 @@ def test_a_card_made_before_props_for_is_matched_by_its_clips_range(tmp_path):
     Path(p).write_text(json.dumps(doc, indent=2))
     fb.run(str(p), "br-1", mode="track", sampler=stub_sampler())
     assert cards_for(p) == []
+
+
+# PL89d: on the card the robot was tiny inside the wide frame, and the agent tried crop, track and card again. The card
+# now zooms toward the tracked subject: a still crop of the source, the same shape (so the card's box on screen is the
+# same), around everywhere the subject goes, at least CARD_ZOOM_MIN of the frame; no zoom when it roams the frame.
+def small_subject_project(tmp_path):
+    d = tmp_path / "proj"
+    d.mkdir()
+    src = d / "broll.mp4"
+    room = "color=c=0xd8d2c4:s=640x360:d=4:r=30"
+    box = "color=c=0x151515:s=40x70:d=4:r=30"
+    subprocess.run([ffmpeg_bin(), "-v", "error", "-y", "-f", "lavfi", "-i", room, "-f", "lavfi", "-i", box,
+                    "-filter_complex", "[0][1]overlay=x='400+12*t':y=200", "-pix_fmt", "yuv420p", str(src)], check=True)
+    proj = {"version": "0.2", "id": "fb-small", "name": "Small", "status": "draft", "workflow": "overlays",
+            "editingPrompt": "", "settings": {"fps": 30, "resolution": [1080, 1920]},
+            "tracks": [{"id": "trk-0", "items": [{"id": "talk", "type": "video", "src": str(src), "start": 0, "end": 8,
+                                                  "inPoint": 0, "outPoint": 4, "sourceDuration": 4}]},
+                       {"id": "trk-1", "items": [{"id": "br-1", "type": "video", "src": str(src), "start": 2, "end": 6,
+                                                  "inPoint": 0, "outPoint": 4, "sourceDuration": 4,
+                                                  "sourceWidth": 640, "sourceHeight": 360, "muted": True}]}]}
+    (d / "project.json").write_text(json.dumps(proj, indent=2))
+    return d / "project.json"
+
+
+def test_the_card_zooms_toward_a_small_subject_and_keeps_the_card_box(tmp_path):
+    p = small_subject_project(tmp_path)
+    out = fb.run(str(p), "br-1", mode="card", sampler=stub_sampler())
+    item, doc = item_of(p, "br-1")
+    crop = item["sourceCrop"]
+    assert abs(crop["w"] - crop["h"]) < 1e-6, "the same shape as the source, so the card's box is unchanged"
+    assert fb.CARD_ZOOM_MIN <= crop["w"] < 0.85
+    # the subject (x 400-460 of 640, y 200-270 of 360) is inside the crop
+    assert crop["x"] <= 400 / 640 and crop["x"] + crop["w"] >= 460 / 640
+    assert crop["y"] <= 200 / 360 and crop["y"] + crop["h"] >= 270 / 360
+    assert item["scale"] == fb.CARD_SCALE
+    assert "zoom" in out and "subject" in out["why"]
+    card = next(it for t in doc["tracks"] for it in t["items"] if it.get("id") == out["card"])
+    boxes = json.loads(card["props"]["subject"])
+    assert all(0 <= v <= 1 for b in boxes for v in b[1:]), "the brackets' boxes are in the zoomed frame"
+
+
+def test_no_zoom_when_the_subject_crosses_the_frame(tmp_path):
+    p = project(tmp_path)   # a box crossing the room left to right
+    out = fb.run(str(p), "br-1", mode="card", sampler=stub_sampler())
+    item, _ = item_of(p, "br-1")
+    assert "sourceCrop" not in item and "zoom" not in out
