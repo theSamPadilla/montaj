@@ -2,7 +2,9 @@
  * footage-card.jsx: a landscape clip in a vertical frame, inset as a card (PL89, frame_broll's `card`). The
  * clip itself is the video item under this overlay, scaled into `box`; this draws everything around it: paper over
  * the rest of the frame, thin corner brackets on the subject (or the footage's corners when none was tracked), and
- * a small credit line under the footage. No motion of its own: it cuts in and out with the clip.
+ * a credit line under the footage. The paper cuts in and out with the clip (it frames the video item exactly, so it
+ * never moves); the brackets pop in on the subject and the credit rises in after them, and both fade out before the
+ * end (Motion.motion, PL89b: look says an overlay that vanishes with the cut or moves linearly).
  *
  * Props (strings, as the editor's properties panel writes them):
  *   box         the footage on screen, "x,y,w,h" as shares of the frame (frame_broll sets it from the clip)
@@ -44,23 +46,29 @@ export default function FootageCard() {
   const sx = L + sub[0] * BW, sy = T + sub[1] * BH, sw = sub[2] * BW, sh = sub[3] * BH
   const arm = Math.round(Math.min(sw, sh) * 0.18 + 8)
   const line = Math.max(3, Math.round(W / 360))
-  const corner = (x, y, dx, dy) => (
-    <div style={{ position: 'absolute', left: dx > 0 ? x : x - arm, top: dy > 0 ? y : y - arm, width: arm, height: arm,
-      borderLeft: dx > 0 ? `${line}px solid ${accent}` : 'none', borderRight: dx < 0 ? `${line}px solid ${accent}` : 'none',
-      borderTop: dy > 0 ? `${line}px solid ${accent}` : 'none', borderBottom: dy < 0 ? `${line}px solid ${accent}` : 'none' }} />
-  )
+  // each bracket pops in from its own corner, one after another; the credit rises in after them
+  const corner = (x, y, dx, dy, i) => {
+    const m = Motion.motion(frame, fps, duration, { delay: Motion.stagger(i, 0.05) })
+    return (
+      <div style={{ position: 'absolute', left: dx > 0 ? x : x - arm, top: dy > 0 ? y : y - arm, width: arm, height: arm,
+        borderLeft: dx > 0 ? `${line}px solid ${accent}` : 'none', borderRight: dx < 0 ? `${line}px solid ${accent}` : 'none',
+        borderTop: dy > 0 ? `${line}px solid ${accent}` : 'none', borderBottom: dy < 0 ? `${line}px solid ${accent}` : 'none',
+        opacity: m.opacity, transform: `scale(${m.scale})`, transformOrigin: `${dx > 0 ? 'left' : 'right'} ${dy > 0 ? 'top' : 'bottom'}` }} />
+    )
+  }
+  const credit = Motion.motion(frame, fps, duration, { enter: 'rise', delay: Motion.stagger(4, 0.05) })
   return (
     <div style={{ position: 'absolute', inset: 0 }}>
       {/* paper over everything but the footage: one box whose shadow is the card */}
       <div style={{ position: 'absolute', left: L, top: T, width: BW, height: BH, boxShadow: `0 0 0 ${W + H}px ${paper}` }} />
-      {corner(sx, sy, 1, 1)}
-      {corner(sx + sw, sy, -1, 1)}
-      {corner(sx, sy + sh, 1, -1)}
-      {corner(sx + sw, sy + sh, -1, -1)}
+      {corner(sx, sy, 1, 1, 0)}
+      {corner(sx + sw, sy, -1, 1, 1)}
+      {corner(sx + sw, sy + sh, -1, -1, 2)}
+      {corner(sx, sy + sh, 1, -1, 3)}
       {p.credit ? (
         <div style={{ position: 'absolute', left: L, top: T + BH + Math.round(H * 0.012), width: BW,
-          fontFamily: p.fontFamily || 'JetBrains Mono, ui-monospace, monospace', fontSize: Math.round(W * 0.024),
-          color: ink, opacity: 0.6, letterSpacing: '0.02em' }}>{String(p.credit)}</div>
+          fontFamily: p.fontFamily || 'JetBrains Mono, ui-monospace, monospace', fontSize: Math.max(36, Math.round(W * 0.034)),
+          color: ink, opacity: 0.6 * credit.opacity, transform: credit.style.transform, letterSpacing: '0.02em' }}>{String(p.credit)}</div>
       ) : null}
     </div>
   )
