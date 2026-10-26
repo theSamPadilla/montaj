@@ -57,7 +57,8 @@ PLAN_HELP = ("Edit, then run cut with plan. Silences and fillers are already gon
              "false-start? name the take said after it (delete this row to keep that one); repeat? names words said "
              "again later (delete them to keep the last saying); noise? names words with no voice under them. Delete "
              "rows or words, move rows to reorder, never add or change a word. A ## Unused row went with the silence "
-             "(no sound, or no voice, under it): move it into ## Cut to keep it.")
+             "(no sound, or no voice, under it), or [earlier] before this cut, said just before its time: move it into "
+             "## Cut to keep it.")
 # The labels a plan's ## Cut rows carry (PL89), from the take rules' whys: for a whole take, and for words inside one.
 _LABEL = {"retake": "retake?", "repeat": "retake?", "false-start": "false-start?", "restart": "false-start?",
           "abandoned": "false-start?", "pause": "noise?", "inaudible": "noise?", "noise": "noise?"}
@@ -387,6 +388,10 @@ def _plan(d, title, units, trailing, labels, gone, at, of_source, language, max_
     out += [_other_row(r) for r in trailing]
 
     played = {(_line_key(r.line)[0], w.idx) for r in d.cut if r.kind == "speech" for w in r.words}
+    spans = {}
+    for r in d.cut:
+        if r.kind == "speech":
+            spans.setdefault(_line_key(r.line)[0], []).extend((w.start, w.end) for w in r.words)
     for ln in d.unused:
         letter = _line_key(ln.id)[0]
         missing = [w for w in ln.words if (letter, w.idx) not in played and (letter, w.idx) not in gone
@@ -398,8 +403,10 @@ def _plan(d, title, units, trailing, labels, gone, at, of_source, language, max_
         t = of_source(src, missing[0].start) if src else None
         text = " ".join(w.text for w in missing)
         if t is None:
-            # not on the timeline before this cut either (an earlier cut took it): listed to restore, not counted
-            unused.append((ln.id, None, text, "earlier"))
+            # not on the timeline before this cut either (an earlier cut or the take split took it): listed to restore,
+            # not counted, at the time it would play (PL89i: with no time the agent grepped the transcripts for it)
+            near = _earlier_at(of_source, src, sorted(spans.get(letter, [])), missing[0].start, missing[-1].end) if src else None
+            unused.append((ln.id, None if near is None else round(near, 1), text, "earlier"))
             continue
         why = "noise" if all((letter, w.idx) in noise for w in missing) else "inaudible"
         unused.append((ln.id, round(t, 1), text, why))
@@ -408,6 +415,20 @@ def _plan(d, title, units, trailing, labels, gone, at, of_source, language, max_
         out += ["", "## Unused", ""]
         out += [f"{i} {txt} [{why}]" if t is None else f"{i} {txt} [{t:.1f} {why}]" for i, t, txt, why in unused]
     return _seal("\n".join(out) + "\n"), kept, unused, counts
+
+
+def _earlier_at(of_source, src, spans, start, end):
+    """The timeline time words said at `start`-`end` of `src` would play at, though no item plays them: the start of the
+    next played word of that file after them, else the end of the last one before. `spans`: the file's played words'
+    (start, end) in source seconds, sorted. None when no played word of the file is on the timeline."""
+    after = next((s for s, _ in spans if s >= end - 1e-6), None)
+    t = of_source(src, after) if after is not None else None
+    if t is None:
+        before = [(s, e) for s, e in spans if e <= start + 1e-6]
+        # from the word's start (its end can sit on its item's out point, which maps to no time), then its length
+        t0 = of_source(src, before[-1][0]) if before else None
+        t = None if t0 is None else t0 + (before[-1][1] - before[-1][0])
+    return None if t is None else round(t, 3)
 
 
 _TAG = re.compile(r"\s\[(?:(\d+(?:\.\d+)?)(?:\s([^\[\]]*))?|(earlier))\]\s*$")
@@ -459,7 +480,7 @@ def _untagged(text):
         m = _TAG.search(raw) if (s and not s.startswith(("<!--", "#", "--"))) else None
         if m:
             why = ((m.group(2) or "").split() or [""])[0]
-            if section == "unused" and why and not why.endswith("?"):
+            if section == "unused" and why and not why.endswith("?") and why != "earlier":
                 why_left[why] = why_left.get(why, 0) + 1
             raw = raw[:m.start()]
         out.append(raw)
