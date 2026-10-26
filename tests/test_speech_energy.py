@@ -203,19 +203,26 @@ def test_a_word_with_no_sound_in_a_pause_is_offered_and_one_in_a_silence_is_inau
     assert [k for *_, k in out] == ["heard", "quiet", "heard", "inaudible", "inaudible", "heard"], out
 
 
-def test_a_lone_word_in_a_silence_is_whispers_timing_and_kept():
+def test_a_lone_word_in_a_silence_between_heard_words_is_inaudible_and_takes_no_neighbours_sound():
+    """'x' wholly in a silence between two heard words: inaudible (removed), never folded or offered, and placed on no
+    voiced frame; its neighbours keep their own sound."""
     env = env_of(4.0, (0.3, 0.6, SP), (2.9, 3.2, SP))
+    ref = refiner({"a": (env, words(("a", 0.3, 0.6), ("x", 1.6, 1.8), ("c.", 2.9, 3.2)))})
+    lay, p, k = ref.layers["a"], ref.placed["a"], ref.kinds["a"]
+    assert k == ["heard", "inaudible", "heard"], (k, p)
+    fa, fb = se._frames(lay.env, p[1].start, p[1].end)
+    assert all(lay.flat[f] for f in range(fa, fb)), p
+    assert (p[0].start, p[0].end) == (0.3, 0.6) and (p[2].start, p[2].end) == (2.9, 3.2), p
+
+
+def test_a_protected_word_with_no_sound_of_its_own_is_quiet_never_folded():
+    """L-B3: 'x' alone in a silence between heard words, its span holding a 20 ms blip at the guard (-44, under the
+    line at -40, too short for a burst): never auto-removed, so it is placed against its nearest heard neighbour's
+    sound and offered, as quiet."""
+    env = env_of(4.0, (0.3, 0.6, -10.0), (1.70, 1.72, -44.0), (2.9, 3.2, -10.0))
     out = placed_of(env, words(("a", 0.3, 0.6), ("x", 1.6, 1.8), ("c.", 2.9, 3.2)))
-    assert out[1][3] == "folded" and 0.6 <= out[1][1] <= 0.64, out
-
-
-def test_a_run_a_long_neighbour_holds_is_kept():
-    env = env_of(4.0, (0.3, 0.55, SP), (0.6, 1.65, SP), (2.4, 2.65, SP))
-    out = placed_of(env, words(("we", 0.3, 0.6), ("ride", 0.6, 1.7), ("the", 1.7, 2.05), ("bike", 2.05, 2.4),
-                               ("all.", 2.4, 2.65)))
-    # §577 (A): "ride" (0.6-1.65) is long for its own text, so "the bike" take the tail of its sound by letters, in order
-    assert [k for *_, k in out] == ["heard"] * 5, out
-    assert 0.6 <= out[1][1] < out[1][2] <= out[2][1] < out[2][2] <= out[3][1] < out[3][2] <= 1.65 + 1e-6, out
+    assert [k for *_, k in out] == ["heard", "quiet", "heard"], out
+    assert 0.6 <= out[1][1] < out[1][2] <= 0.6 + se.BREATH_S + 1e-9, out
 
 
 def test_an_inaudible_word_sits_in_the_breath_of_the_sound_before_it():
@@ -223,6 +230,19 @@ def test_an_inaudible_word_sits_in_the_breath_of_the_sound_before_it():
     ref = refiner({"a": (env, words(("a", 0.3, 0.6), ("x", 1.4, 1.6), ("y", 1.6, 1.8), ("c.", 2.9, 3.2)))})
     p = ref.placed["a"]
     assert all(0.6 < (w.start + w.end) / 2 < ref.keeps("a")[0][1] for w in p[1:3]), p
+
+
+def test_words_of_no_length_never_share_an_instant():
+    """ucla B88: a kept word of no length on the instant a removed word starts put the cut on the kept one, which
+    then played on neither side. place() gives every word INAUDIBLE_S at least, in order."""
+    lay = se.layer1(MEDIA, env_of(4.0, (0.5, 2.0, -15.0), noise=-60.0), 0.45)
+    ws = [Word(0, "we", "we", 0.5, 1.0), Word(1, "go", "go", 1.0, 1.5)] + \
+        [Word(2 + k, t, t, 1.5, 1.5) for k, t in enumerate(["room.", "the", "team"])] + [Word(5, "now.", "now", 1.5, 2.0)]
+    placed, kind = se.place(ws, lay)
+    zero = [p for p in placed[2:5]]
+    assert len({round(p.start, 6) for p in zero}) == 3, placed
+    assert all(a.end <= b.start + 1e-9 for a, b in zip(placed, placed[1:])), placed
+    assert all(p.end - p.start >= se.INAUDIBLE_S - 1e-9 for p in placed), placed
 
 
 # ── the silence trim and the island rule on the apply's runs ────────────────────────────────────────────────

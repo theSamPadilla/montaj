@@ -140,19 +140,6 @@ def test_a_soft_aside_in_dense_speech_with_no_lead_in_is_kept(tmp_path, monkeypa
     assert not lost and len(said) == len(toks), (lost, said, plan["removed"], text.split("## Cut")[-1])
 
 
-def test_misplaced_words_at_a_normal_pace_keep_their_text(tmp_path, monkeypatch):
-    """R3 should-fix 1: 'ride the bike' said at a normal pace as three bursts (0.60-1.15 s) inside whisper's span
-    for 'ride'; whisper put 'the bike' in the pause after. Their sound plays, so their text stays."""
-    spans = [(0.30, 0.55, SP), (0.60, 0.78, SP), (0.82, 0.90, SP), (0.94, 1.15, SP), (2.40, 2.65, SP),
-             (2.70, 2.95, SP)]
-    words = [("we", 0.30, 0.60), ("ride", 0.60, 1.20), ("the", 1.20, 1.80), ("bike", 1.80, 2.40),
-             ("all", 2.40, 2.70), ("day.", 2.70, 2.95)]
-    d = tc.tone_project(tmp_path, [("vo", spans, 3.6, words)])
-    plan, text, _, said = plan_apply(d, monkeypatch)
-    assert all(cover(d, a, b) > 0.99 for a, b, _ in spans)
-    assert said == ["we", "ride", "the", "bike", "all", "day."], (said, plan["removed"], text.split("## Cut")[-1])
-
-
 # ── review #3 fuzz: whisper drift up to 0.25 s, gapless spans, very short and near-noise tones ──────────────
 
 def _fuzz(seed, levels=(-20, -30, -45, -55, -58), drift=0.25, durs=(0.03, 0.05, 0.08, 0.15, 0.3, 0.6)):
@@ -376,7 +363,7 @@ def test_the_kungfu_shape_with_the_last_take_trimmed_by_tidy_is_still_whole(tmp_
 
 def test_the_stamp_names_every_constant_that_changes_a_cut():
     for name in ("ISLAND_S", "SILENCE_BELOW_SPEECH_DB", "ATTACHED_BELOW_SPEECH_DB", "BREATH_S", "SENTENCE_END_S",
-                 "DRIFT_S", "EDGE_BLEED_FRAMES", "LETTER_S", "WORD_BASE_S", "MISPLACED_SHARE", "VIDEO_EDGE_S",
+                 "DRIFT_S", "EDGE_BLEED_FRAMES", "LETTER_S", "WORD_BASE_S", "VIDEO_EDGE_S",
                  "SPEECH_PERCENTILE", "MIN_KEEP_S"):
         assert f"{name}={getattr(speech_energy, name)}" in speech_energy.Refiner.stamp, name
 

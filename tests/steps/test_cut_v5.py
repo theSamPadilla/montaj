@@ -151,19 +151,21 @@ STRETCHED = (
 @pytest.mark.parametrize("soft_db", [-56.0, -66.0])
 def test_stretched_spans_and_a_quiet_word_keep_no_long_silence(tmp_path, monkeypatch, soft_db):
     """Whisper stretches "alpha" and "gamma" over 1.5 s silences, and "soft" over 1.2 s of which 0.3 s is its sound,
-    under the line. No flat run over max-pause and every word kept in the text. At -56 (36 dB under, over the attached
-    line, room + 10) "soft" is attached: its own sound plays (an island), never its 1.2 s. At -66 (46 dB under) it
-    has no sound: offered inaudible?, folded into a breath."""
+    under the line. No flat run over max-pause. At -56 (36 dB under, over the attached line, room + 10) "soft" is
+    attached: its own sound plays (an island), never its 1.2 s, and every word stays in the text. At -66 (46 dB
+    under) it has no sound, and the guard does not hear it: inaudible, removed, and none of its 1.2 s plays."""
     tones, words, total = STRETCHED
     tones = [t if k != 3 else (t[0], t[1], soft_db) for k, t in enumerate(tones)]
     d = project(tmp_path, monkeypatch, [("vo", tones, total, words)], room=-65.0)
     plan, text, applied, said, before = plan_apply(d, monkeypatch)
-    assert said == [w for w, _, _ in words], (said, text)
     checked(d, plan, applied, before, kept_tones("vo", tones))
     if soft_db == -56.0:
+        assert said == [w for w, _, _ in words], (said, text)
         assert cover(d, 4.70, 5.00) > 0.99 and cover(d, 4.25, 5.45) * 1.2 <= 0.45, tc.kept_iv(d)
     else:
-        assert cover(d, 4.25, 5.45) * 1.2 <= 0.05 and "soft [inaudible?]" in plan.get("cut", ""), (tc.kept_iv(d), plan)
+        assert said == [w for w, _, _ in words if w != "soft"], (said, text)
+        assert cover(d, 4.25, 5.45) * 1.2 <= 0.05 and "soft [" in plan.get("cut", "") \
+            and "inaudible]" in plan.get("cut", ""), (tc.kept_iv(d), plan)
 
 
 # ── gain down (red on b7639ba5 for the flat check) ────────────────────────────────────────────────────────────
