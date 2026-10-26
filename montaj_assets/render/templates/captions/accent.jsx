@@ -179,7 +179,7 @@ export function heroLines(words) {
   return [units.slice(0, best), units.slice(best)]
 }
 
-function wordStyle(w, size, th, { running, dark }) {
+function wordStyle(w, size, th, { running, dark, accent = th.accentColor }) {
   const kind = w.accent === 'script' && running ? 'serif' : w.accent
   const base = {
     display: 'inline-block',
@@ -187,8 +187,8 @@ function wordStyle(w, size, th, { running, dark }) {
     letterSpacing: th.letterSpacing, lineHeight: th.lineHeight, textTransform: th.textTransform,
     color: dark ? INK : th.color, textShadow: dark ? 'none' : TEXT_SHADOW, whiteSpace: 'pre',
   }
-  if (kind === 'serif') return { ...base, fontFamily: th.accentFontFamily, fontWeight: 700, fontStyle: 'italic', fontSize: size * SERIF_SCALE, letterSpacing: '-0.02em', color: th.accentColor }
-  if (kind === 'sans') return { ...base, color: th.accentColor }
+  if (kind === 'serif') return { ...base, fontFamily: th.accentFontFamily, fontWeight: 700, fontStyle: 'italic', fontSize: size * SERIF_SCALE, letterSpacing: '-0.02em', color: accent }
+  if (kind === 'sans') return { ...base, color: accent }
   if (kind === 'script') return { ...base, fontFamily: th.scriptFontFamily, fontWeight: 700, fontSize: size * SCRIPT_SCALE, letterSpacing: '-0.08em' }
   return base
 }
@@ -223,7 +223,7 @@ function renderRunning(seg, key, th, lines = []) {
   const dark = isDark(seg)
   return renderBlock(seg, key, th, win ? win.map((w, i) => (
     // §558: a word's own colour (words[].color) beats its accent colour and the base
-    <span key={i} style={{ ...wordStyle(w, th.fontSize, th, { running: true, dark }), color: w.color ?? (ACCENTS.has(w.accent) ? th.accentColor : (dark ? INK : (seg.color ?? th.color))) }}>
+    <span key={i} style={{ ...wordStyle(w, th.fontSize, th, { running: true, dark, accent: inkOf(seg, th.accentColor) }), color: w.color ? inkOf(seg, w.color) : (ACCENTS.has(w.accent) ? inkOf(seg, th.accentColor) : (dark ? INK : (seg.color ?? th.color))) }}>
       {(i ? ' ' : '') + w.word}
     </span>
   )) : null, lines)
@@ -250,7 +250,7 @@ function renderHero(seg, key, th, translations = []) {
     if (run.length) {
       lineDivs.push(
         <div key={`s${li}`} style={{ marginBottom: -size * SCRIPT_GAP }}>
-          {run.map((w, i) => <span key={i} style={{ ...wordStyle(w, size, th, { running: false, dark }), color: w.color ?? (dark ? INK : (seg.color ?? th.color)), ...vis(w) }}>{(i ? ' ' : '') + w.word}</span>)}
+          {run.map((w, i) => <span key={i} style={{ ...wordStyle(w, size, th, { running: false, dark, accent: inkOf(seg, th.accentColor) }), color: w.color ? inkOf(seg, w.color) : (dark ? INK : (seg.color ?? th.color)), ...vis(w) }}>{(i ? ' ' : '') + w.word}</span>)}
         </div>,
       )
     }
@@ -260,7 +260,7 @@ function renderHero(seg, key, th, translations = []) {
     lineDivs.push(
       <div key={`l${li}`} style={{ paddingLeft: size * indent }}>
         {mains.map((u, i) => (
-          <span key={i} style={{ ...wordStyle(u.main, size, th, { running: false, dark }), ...(u.main.color ? { color: u.main.color } : ACCENTS.has(u.main.accent) ? null : { color: dark ? INK : (seg.color ?? th.color) }), ...vis(u.main) }}>
+          <span key={i} style={{ ...wordStyle(u.main, size, th, { running: false, dark, accent: inkOf(seg, th.accentColor) }), ...(u.main.color ? { color: inkOf(seg, u.main.color) } : ACCENTS.has(u.main.accent) ? null : { color: dark ? INK : (seg.color ?? th.color) }), ...vis(u.main) }}>
             {(i ? ' ' : '') + u.main.word}
           </span>
         ))}
@@ -301,13 +301,49 @@ function renderLine(seg, th, frame, fps, dark = isDark(seg)) {
  * Caption ink. A segment with `ink: "dark"` (written by the caption_ink step
  * or chosen by a person) is drawn as dark ink on paper: the base text takes
  * INK and loses its outline and shadow. Accents (the spoken word, a word's
- * own colour, highlight-box's box) stay as they are. A translation stacked
+ * own colour) is darkened in its own hue to 4.5:1 (darkSafe); highlight-box's box stays. A translation stacked
  * under a caption takes the ink of the caption it sits under. Duplicated in
  * the seven text-over-picture templates (plate and subtitle draw their own
  * box and ignore it); keep INK and isDark identical in each.
  */
 const INK = '#1c1c1e'
 const isDark = seg => seg.ink === 'dark'
+
+/**
+ * Under dark ink a colour drawn as text (the spoken word, a word's own
+ * colour, an accent run) is darkened in its own hue until it reaches 4.5:1
+ * against the backdrop, so a yellow keyword on paper becomes a deep amber.
+ * Backdrop: the caption_ink step's measured luminance (`inkAuto.backdrop`),
+ * else 0.5, the step's threshold for light. A colour that already passes is
+ * returned as given; one it cannot parse falls back to INK. Duplicated in
+ * the templates that draw an accent; keep identical in each.
+ */
+const backdropOf = seg => {
+  const b = seg.inkAuto?.backdrop
+  return Number.isFinite(b) && b >= 0 && b <= 1 ? b : 0.5
+}
+const inkOf = (seg, color) => (isDark(seg) ? darkSafe(color, backdropOf(seg)) : color)
+function darkSafe(color, backdrop) {
+  const s = String(color ?? '').trim().toLowerCase()
+  let rgb = null
+  let m = /^#([0-9a-f]{3,4})$/.exec(s)
+  if (m) rgb = [0, 1, 2].map(i => parseInt(m[1][i] + m[1][i], 16))
+  else if ((m = /^#([0-9a-f]{6})(?:[0-9a-f]{2})?$/.exec(s))) rgb = [0, 2, 4].map(i => parseInt(m[1].slice(i, i + 2), 16))
+  else if ((m = /^rgba?\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*(?:,[^)]*)?\)$/.exec(s))) rgb = [m[1], m[2], m[3]].map(Number)
+  if (!rgb || rgb.some(c => c > 255)) return INK
+  const lin = rgb.map(c => (c /= 255) <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
+  const lum = v => 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]
+  const target = Math.max(0, (backdrop + 0.05) / 4.5 - 0.05)
+  if (lum(lin) <= target) return color
+  let k = target / lum(lin)
+  for (let i = 0; i < 60; i++, k *= 0.98) {
+    const out = lin.map(c => Math.round(255 * (c * k <= 0.0031308 ? c * k * 12.92 : 1.055 * (c * k) ** (1 / 2.4) - 0.055)))
+    if (lum(out.map(c => (c /= 255) <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)) <= target || k < 1e-6) {
+      return '#' + out.map(c => c.toString(16).padStart(2, '0')).join('')
+    }
+  }
+  return INK
+}
 
 /**
  * One segment's theme: a styling field set on the segment wins over the
