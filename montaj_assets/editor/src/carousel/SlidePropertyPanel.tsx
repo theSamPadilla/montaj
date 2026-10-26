@@ -289,7 +289,8 @@ export default function SlidePropertyPanel({
   }
 
   const overlayEl = element?.type === 'overlay' ? (element as OverlayElement) : null
-  // A locked element's placement, crop, image and existence are fixed (§586 M5).
+  // A locked element's place, content and existence are fixed (§586 M5): its
+  // text and overlay controls sit in a disabled fieldset.
   const locked = element?.locked === true
 
   // X, Y, W, H and rotation: preview while typing, one write on Enter or blur.
@@ -473,7 +474,7 @@ export default function SlidePropertyPanel({
 
           {/* Overlay-specific */}
           {overlayEl && (
-            <div className="flex flex-col gap-4">
+            <fieldset disabled={locked} className="m-0 flex min-w-0 flex-col gap-4 border-0 p-0">
               {/* Rich-text formatting (bold/italic/case/color/align + font family
                   & size pickers) for overlays exposing the standard text contract. */}
               {updateOverlayProp && (
@@ -532,7 +533,7 @@ export default function SlidePropertyPanel({
                   ))}
                 </div>
               )}
-            </div>
+            </fieldset>
           )}
 
           {/* Element actions */}

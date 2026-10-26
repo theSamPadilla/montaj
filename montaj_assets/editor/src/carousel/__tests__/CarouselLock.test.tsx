@@ -8,8 +8,9 @@ vi.mock('../imageGeometry', async (importOriginal) => {
   return { ...actual, loadImageNaturalSize: vi.fn(async () => null) }
 })
 
-// Element lock (§586 M5): a locked element can be selected and styled, but its
-// placement, crop, image and existence are fixed.
+// Element lock (§586 M5): a locked element can be selected, copied and layered,
+// but its place and its content (text, style, image, crop) are fixed until it
+// is unlocked.
 
 interface FakeAdapter extends EditorAdapter<Project> {
   saveCalls: Array<{ id: string; project: Project }>
@@ -95,11 +96,27 @@ const elementsOf = (p: Project) => p.slides![0].elements
 const byId = (p: Project, id: string) => elementsOf(p).find((e) => e.id === id)!
 const last = (a: FakeAdapter) => a.saveCalls[a.saveCalls.length - 1].project
 
+/** A locked text (el-ov), a free text to copy a style from (t-src) and one to paste onto (t-free). */
+function textProject(): Project {
+  const p = lockProject()
+  const text = (id: string, label: string, color: string, y: number, extra: object = {}) => ({
+    id, type: 'overlay', overlay: { template: '/overlays/text.jsx', props: { text: label, fontWeight: '400', color } },
+    frame: 0, x: 50, y, w: 400, h: 100, rotation: 0, ...extra,
+  })
+  p.slides![0].elements = [
+    text('el-ov', 'Hello', '#000000', 50, { locked: true }),
+    text('t-src', 'Src', '#ff0000', 300),
+    text('t-free', 'Free', '#00ff00', 500),
+  ] as never
+  return p
+}
+const propsOf = (p: Project, id: string) => (byId(p, id) as unknown as { overlay: { props: Record<string, unknown> } }).overlay.props
+
 async function mount(extra: Partial<React.ComponentProps<typeof CarouselEditor>> = {}, project: Project = lockProject()) {
   const adapter = makeFakeAdapter()
   const onProjectChange = vi.fn()
   const r = render(<CarouselEditor project={project} adapter={adapter} onProjectChange={onProjectChange} {...extra} />)
-  await waitFor(() => wrapperOf('el-a'))
+  await waitFor(() => expect(document.querySelector('[data-element-id]')).not.toBeNull())
   return { adapter, onProjectChange, r }
 }
 
@@ -289,18 +306,86 @@ describe('CarouselEditor: element lock (§586 M5)', () => {
     expect(byId(last(adapter), 'el-a').locked).toBe(true)
   })
 
-  it('text of a locked overlay still edits on double-click, and a style change still applies', async () => {
+  it('double-click on a locked text overlay opens no inline editor and saves nothing', async () => {
     const { adapter, r } = await mount()
     await click('el-ov')
+    await act(async () => { fireEvent.doubleClick(wrapperOf('el-ov')) })
+    expect(r.queryByRole('textbox', { name: 'Edit text' })).toBeNull()
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('the text controls of a locked text overlay are disabled and write nothing', async () => {
+    const { adapter, r } = await mount()
+    await click('el-ov')
+    const bold = r.getByRole('button', { name: 'Bold' })
+    expect(bold.matches(':disabled')).toBe(true)
+    expect(r.getByRole('spinbutton', { name: 'Frame' }).matches(':disabled')).toBe(true)
+    await act(async () => { fireEvent.click(bold) })
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('a locked element is unlocked by its badge, and then its text edits and styles', async () => {
+    const { adapter, r } = await mount()
+    await click('el-ov')
+    await act(async () => { fireEvent.click(chromeOf('el-ov').querySelector('[data-testid="lock-badge"]')!) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(r.getByRole('button', { name: 'Bold' }).matches(':disabled')).toBe(false)
+
     await act(async () => { fireEvent.doubleClick(wrapperOf('el-ov')) })
     expect(r.queryByRole('textbox', { name: 'Edit text' })).not.toBeNull()
     await key('Escape', {}, r.getByRole('textbox', { name: 'Edit text' }))
 
     await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Bold' })) })
-    await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThan(0))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
     const ov = byId(last(adapter), 'el-ov') as { overlay: { props: Record<string, unknown> }; locked?: boolean }
     expect(ov.overlay.props.fontWeight).toBe('700')
-    expect(ov.locked).toBe(true)
+    expect(ov.locked).toBeUndefined()
+  })
+
+  it('style paste onto a locked and an unlocked text styles only the unlocked one, in one undo step', async () => {
+    const { adapter } = await mount({}, textProject())
+    await click('t-src')
+    await key('c', { metaKey: true, altKey: true, code: 'KeyC' })
+    await click('el-ov')
+    await shiftClick('t-free')
+    await key('√', { metaKey: true, altKey: true, code: 'KeyV' })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(propsOf(last(adapter), 'el-ov')).toMatchObject({ text: 'Hello', color: '#000000' })
+    expect(propsOf(last(adapter), 't-free')).toMatchObject({ text: 'Free', color: '#ff0000' })
+    expect(byId(last(adapter), 'el-ov').locked).toBe(true)
+
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(propsOf(last(adapter), 't-free').color).toBe('#00ff00')
+  })
+
+  it('style paste onto only locked text writes nothing', async () => {
+    const { adapter } = await mount({}, textProject())
+    await click('t-src')
+    await key('c', { metaKey: true, altKey: true, code: 'KeyC' })
+    await click('el-ov')
+    await key('√', { metaKey: true, altKey: true, code: 'KeyV' })
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('style copy reads a locked text, and the paste lands on a free one', async () => {
+    const { adapter } = await mount({}, textProject())
+    await click('el-ov')
+    await key('c', { metaKey: true, altKey: true, code: 'KeyC' })
+    await click('t-free')
+    await key('√', { metaKey: true, altKey: true, code: 'KeyV' })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(propsOf(last(adapter), 't-free').color).toBe('#000000')
+  })
+
+  it('layer order still moves a locked text overlay', async () => {
+    const { adapter } = await mount({}, textProject())
+    await click('el-ov')
+    const e = new KeyboardEvent('keydown', { key: ']', code: 'BracketRight', metaKey: true, bubbles: true, cancelable: true })
+    await act(async () => { document.dispatchEvent(e) })
+    await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThan(0))
+    expect(elementsOf(last(adapter)).map((x) => x.id).indexOf('el-ov')).toBeGreaterThan(0)
+    expect(propsOf(last(adapter), 'el-ov')).toMatchObject({ text: 'Hello', color: '#000000' })
   })
 
   it('a group drag moves only the unlocked members', async () => {

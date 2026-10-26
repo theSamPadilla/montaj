@@ -326,12 +326,6 @@ function hostDialogOpen(): boolean {
   return document.querySelector('[aria-modal="true"]') !== null
 }
 
-/** `patch` without the keys that place an element (position, size, rotation). */
-function withoutPlacement(patch: Partial<CarouselElement>): Partial<CarouselElement> {
-  const { x: _x, y: _y, w: _w, h: _h, rotation: _r, ...rest } = patch
-  return rest
-}
-
 /** The host path in a drag from the host (`IMAGE_DND_MIME`), or null when the
  *  drag carries none or it is not an `ImageDropPayload`: not JSON, or no
  *  `src` that is a non-empty string. */
@@ -717,7 +711,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (source && isTextOverlay(source)) textStyleRef.current = pickTextStyle(source)
   }
 
-  /** Opt+Cmd+V: the copied style onto every selected text box, in one slide write. */
+  /** Opt+Cmd+V: the copied style onto every selected unlocked text box, in one slide write. */
   function pasteTextStyle() {
     const style = textStyleRef.current
     if (!style || !selectedSlide) return
@@ -725,7 +719,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     void state.editElements(selectedSlide.id, (els) => {
       let changed = false
       const next = els.map((el) => {
-        if (!ids.has(el.id) || !isTextOverlay(el)) return el
+        // A locked text keeps its style.
+        if (!ids.has(el.id) || isLocked(el) || !isTextOverlay(el)) return el
         const styled = applyTextStyle(el, style)
         if (styled !== el) changed = true
         return styled
@@ -1391,6 +1386,15 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     void addImages(selectedSlide.id, sources, at)
   }
 
+  // A locked element's props and crop are not written, whoever asks (the canvas'
+  // inline editor, the panel's text controls, a host slot).
+  const lockedNow = (slideId: string, elementId: string) =>
+    isLocked(slidesRef.current.find(s => s.id === slideId)?.elements.find(el => el.id === elementId))
+  const updateOverlayProp: typeof state.updateOverlayProp = (slideId, elementId, key, value) =>
+    lockedNow(slideId, elementId) ? Promise.resolve() : state.updateOverlayProp(slideId, elementId, key, value)
+  const updateImageCrop: typeof state.updateImageCrop = (slideId, elementId, crop) =>
+    lockedNow(slideId, elementId) ? Promise.resolve() : state.updateImageCrop(slideId, elementId, crop)
+
   // Property-panel transform/frame edits → committed mutators.
   function handlePanelElementChange(patch: Partial<CarouselElement>) {
     if (!selectedSlideId || !selectedElementId) return
@@ -1399,8 +1403,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     const slide = slidesRef.current.find(s => s.id === selectedSlideId)
     const el = slide?.elements.find(e => e.id === selectedElementId)
     if (!el) return
-    // A locked element's placement is not edited.
-    if (isLocked(el)) patch = withoutPlacement(patch)
+    // A locked element's place and content are not edited.
+    if (isLocked(el)) return
     if ('x' in patch || 'y' in patch || 'w' in patch || 'h' in patch) {
       const box = {
         x: patch.x ?? el.x,
@@ -1725,8 +1729,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 resizeElement={state.resizeElement}
                 rotateElement={state.rotateElement}
                 commit={state.commit}
-                updateOverlayProp={state.updateOverlayProp}
-                updateImageCrop={state.updateImageCrop}
+                updateOverlayProp={updateOverlayProp}
+                updateImageCrop={updateImageCrop}
                 cropElementId={cropElementId}
                 onExitCrop={() => setCropElementId(null)}
                 onEnterCrop={enterCrop}
@@ -1805,7 +1809,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             onReorderElement={handleReorderElement}
             onEnterCrop={(_slideId, elementId) => enterCrop(elementId)}
             onReplaceImage={state.isEditingAllowed ? handleReplaceImage : undefined}
-            updateOverlayProp={state.updateOverlayProp}
+            updateOverlayProp={updateOverlayProp}
             hiddenElementIds={hiddenElementIds}
             onToggleElementVisibility={onToggleElementVisibility}
             // Fills the right column (drop the default w-80 width + left border).

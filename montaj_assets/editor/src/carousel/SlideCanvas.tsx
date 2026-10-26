@@ -577,7 +577,8 @@ export default function SlideCanvas({
 
   // ── Inline text edit ──
   function beginTextEdit(element: OverlayElement) {
-    if (!interactive || typeof element.overlay.props.text !== 'string') return
+    // A locked text is not edited (§586 M5).
+    if (!interactive || isLocked(element) || typeof element.overlay.props.text !== 'string') return
     // Snapshot the live text's style BEFORE we hide it / re-render.
     setEditStyle(
       captureTextStyle(wrapperRefs.current.get(element.id), element.overlay.props.text, scale),
