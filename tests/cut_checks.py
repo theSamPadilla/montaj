@@ -68,15 +68,10 @@ def burst_frames(d, project=None, max_pause=MAX_PAUSE):
     return out
 
 
-RETRANSCRIBE = None    # a test that stubs whisper's second run (§577, lib/speech_repair) sets it, so the checks read
-                       # the words cut reads
-
-
 def _refiner(max_pause=MAX_PAUSE):
-    """The engine's refiner as cut builds it for these English tests (its filler test too: §577's placement skips
-    fillers; and RETRANSCRIBE, when a test sets it)."""
+    """The engine's refiner as cut builds it for these English tests (its filler test too)."""
     from lib.speech_units import filler_test
-    return speech_energy.Refiner(max_pause, is_filler=filler_test("en"), retranscribe=RETRANSCRIBE, retranscribe_tag="en")
+    return speech_energy.Refiner(max_pause, is_filler=filler_test("en"))
 
 
 def _project(d):
@@ -168,9 +163,8 @@ def wordless(d, max_pause=MAX_PAUSE):
     ref = _refiner(max_pause)
     der = speech_text.derive(project, str(d), project["tracks"][0]["id"], refiner=ref)
     worded = {r.item_ids[0] for r in der.cut if r.kind == "speech" and r.words}
-    # the played words' whisper spans (their transcript's own times, as the refiner read them: §577 may have
-    # transcribed a broken stretch again): sound inside one may be that word's (drift), so it is no lone piece (the
-    # engine's rule too)
+    # the played words' whisper spans (their transcript's own times, as the refiner read them): sound inside one may
+    # be that word's (drift), so it is no lone piece (the engine's rule too)
     spans, raw = {}, {}
     for r in der.cut:
         if r.kind == "speech":

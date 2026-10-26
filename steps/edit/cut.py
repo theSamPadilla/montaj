@@ -14,7 +14,7 @@ carries speech_text's stamp of the base), and applies the plan through speech_ed
 was. The write records the cut (`cleanCut`). With no usable speech, the plan removes silences only (waveform_trim
 keeps through jump_cut). Each call prints one short JSON answer.
 """
-import argparse, contextlib, copy, hashlib, io, json, os, re, shutil, sys, tempfile
+import argparse, contextlib, copy, hashlib, io, json, os, re, sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -683,41 +683,6 @@ def _already_cut(project):
 
 # ── the run ──────────────────────────────────────────────────────────────────
 
-def _retranscriber(model, language):
-    """retranscribe(media, keeps) -> [(text, start, end)] on the source's clock, or None (§577, lib/speech_repair):
-    the same whisper call as a clip with no transcript gets (transcribe_file, this model and language), on one trim
-    spec of a broken window's voiced runs (one whisper run a window), in a temp folder removed after; nothing is
-    written beside the clip. run.last_error says why the last call came back with nothing."""
-    def run(media, keeps):
-        run.last_error = None
-        tmp = tempfile.mkdtemp(prefix="montaj-cut-")
-        try:
-            spec = os.path.join(tmp, "stretch.json")
-            with open(spec, "w", encoding="utf-8") as f:
-                json.dump({"input": media, "keeps": [[round(a, 3), round(b, 3)] for a, b in keeps]}, f)
-            prefix = os.path.join(tmp, "transcript")
-            try:
-                ok, res = _quiet(transcribe_file, spec, prefix, model, language)
-                if not ok or not os.path.isfile(prefix + ".json"):
-                    run.last_error = ((res.get("message") or res.get("error") or "failed") if isinstance(res, dict)
-                                      else "failed")[:200]
-                    return None
-                words = load_words(prefix + ".json")
-            except Exception as e:               # noqa: BLE001 (a failed run leaves the stretch as whisper wrote it)
-                run.last_error = f"{type(e).__name__}: {e}"[:200]
-                return None
-            # transcribe maps a trim spec's times back to the source's clock itself
-            lo, hi = keeps[0][0], keeps[-1][1]
-            got = [(w.text, w.start, w.end) for w in words if lo - 0.5 <= w.start and w.end <= hi + 0.5]
-            if not got:
-                run.last_error = "whisper heard no words there"
-            return got
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
-    run.last_error = None
-    return run
-
-
 def _build(project_path, project_dir, disk, track_id, language, warnings, max_pause=None, breath=speech_energy.BREATH_S,
            threshold=SILENCE_THRESHOLD_DB, model=None):
     """The base: the disk project with the mechanical pass on its speech track, in memory, and everything the
@@ -730,9 +695,7 @@ def _build(project_path, project_dir, disk, track_id, language, warnings, max_pa
     ti, track = _track(work, track_id)
     b = {"work": work, "ti": ti, "before_s": _seconds(track, project_dir),
          "origin": origin, "lineage": {}, "d": None, "fillers": 0,
-         "refiner": speech_energy.Refiner(max_pause, breath, _filler_test(language),
-                                          _retranscriber(model or DEFAULT_WHISPER_MODEL, language),
-                                          f"{language}|{model or DEFAULT_WHISPER_MODEL}"),
+         "refiner": speech_energy.Refiner(max_pause, breath, _filler_test(language)),
          "filler_spans": {}, "held": []}
     has_words = any((sc := sidecar_for(_resolved(it, project_dir))) and load_words(sc) for it in _media(track))
     if has_words:
@@ -1192,26 +1155,6 @@ def _layer1_warnings(b):
     can't be trimmed (review B should-fix 2)."""
     ref, out = b["refiner"], []
     letters = b["d"].letters if b.get("d") is not None else {}
-    # §577: whisper's times broke over a stretch, which was transcribed again (or could not be)
-    for src, rep in getattr(ref, "repaired", {}).items():
-        name = os.path.basename(src)
-        bad = [r for r in rep if "error" in r]
-        good = [r for r in rep if "error" not in r]
-        if good:
-            out.append(f"{name}: transcribed {len(good)} stretch(es) again where whisper's times broke ("
-                       + ", ".join(f"{r['window'][0]:.1f}-{r['window'][1]:.1f} s" for r in good[:4]) + ")"
-                       + (f"; {len(bad)} more could not be" if bad else ""))
-        for r in bad[:2]:
-            out.append(f"{name}: whisper's times broke over {r['window'][0]:.1f}-{r['window'][1]:.1f} s, and transcribing "
-                       f"it again failed ({r['error']}): its words are placed as written")
-        for r in good:
-            ext = r.get("extension")
-            if ext and "error" not in ext:
-                out.append(f"{name}: found {ext['moved']} word(s) left in silence again past "
-                           f"{ext['from']:.1f} s (transcribed to {ext['to']:.1f} s)")
-            elif ext:
-                out.append(f"{name}: looked past {ext['from']:.1f} s (to {ext['to']:.1f} s) for the words left in "
-                           f"silence: {ext['error']}")
     hits = [f"{letters.get(src, os.path.basename(src))} at {a:.2f} s" for src, iv in ref.dropped.items() for a, _ in iv]
     if hits:
         out.append(f"dropped {len(hits)} short piece(s) of sound with no word: {', '.join(hits[:8])}")

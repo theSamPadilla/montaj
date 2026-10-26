@@ -51,8 +51,19 @@ def git(d, *args):
     return subprocess.run([*GIT, *args], cwd=d, capture_output=True, text=True, check=True).stdout
 
 
-def retake_transcript():
+def real_transcript():
+    """The fixture's real transcript, less whisper's drift: its 30th and 38th words lay in the silence after their
+    sound, and lie on that sound's tail here, as per-run transcripts put them."""
     real = json.loads((FIX / "speech.json").read_text())
+    words = [w for w in real["transcription"] if w["text"].strip()]
+    for k, at, to in ((29, 16720, 16790), (37, 22240, 22290)):
+        words[k - 1]["offsets"]["to"] = at
+        words[k]["offsets"] = {**words[k]["offsets"], "from": at, "to": to}
+    return real
+
+
+def retake_transcript():
+    real = real_transcript()
     words = [w for w in real["transcription"] if w["text"].strip()]
     assert len(words) == len(SCRIPT)
     out = [{**w, "text": " " + text, "offsets": dict(w["offsets"])} for w, text in zip(words, SCRIPT)]
@@ -97,8 +108,6 @@ def stub_transcribe(monkeypatch):
 
     def install(transcript, fail=None):
         def fake(input_path, out=None, model=None, language="en", **kw):
-            if str(input_path).endswith("stretch.json"):         # §577's second run: not this stub's (see run)
-                cc.fail("whisper_model_missing", "stub: no second whisper run")
             calls.append({"input": input_path, "model": model, "language": language})
             if fail:
                 cc.fail(fail, "stub: whisper failed")
@@ -111,21 +120,7 @@ def stub_transcribe(monkeypatch):
     return install
 
 
-def _no_second_whisper(real):
-    """§577: cut transcribes a broken stretch of a transcript again (lib/speech_repair). A test that does not stub it
-    never reaches a real whisper for that: the run fails as with no model, and the stretch stays as written."""
-    def fake(input_path, out=None, model=None, language="en", **kw):
-        if str(input_path).endswith("stretch.json"):
-            cc.fail("whisper_model_missing", "test: no second whisper run")
-        return real(input_path, out, model, language, **kw)
-    fake.real = real
-    return fake
-
-
 def run(d, *extra, monkeypatch):
-    from steps.speech.transcribe import transcribe as _real
-    if cc.transcribe_file is _real:
-        monkeypatch.setattr(cc, "transcribe_file", _no_second_whisper(_real))
     before = json.loads((d / "project.json").read_text()) if "--plan" in extra else None
     held = {}
     if before is not None:
@@ -194,9 +189,7 @@ def as_cut_reads(project, d):
     """The timeline's speech as cut reads it: words placed by the audio (lib/speech_energy), so a word whisper put
     in a pause is read where cut folded it, beside the word that holds its sound."""
     from lib.speech_units import filler_test
-    from tests import cut_checks          # its RETRANSCRIBE: a test's stub of whisper's second run (§577)
-    return speech_text.derive(project, str(d), "trk-0", refiner=speech_energy.Refiner(
-        is_filler=filler_test("en"), retranscribe=cut_checks.RETRANSCRIBE, retranscribe_tag="en"))
+    return speech_text.derive(project, str(d), "trk-0", refiner=speech_energy.Refiner(is_filler=filler_test("en")))
 
 
 def phrases(d):
@@ -277,8 +270,7 @@ def test_the_plan_writes_nothing_to_the_project(tmp_path, stub_transcribe, monke
     assert sum(out["removed"]["lines"].values()) == len(groups) - len(offered)    # one group per take
     assert out["removed"]["lines"] == {"retake": 2, "false-start": 1}
     # F1 offers the earlier take (see KEPT); v5: words with no sound of their own are kept and offered inaudible?, one
-    # offer per take. §577: "timeline." (whisper put it in the silence after "the"), the first two "want." and "so"
-    # take the sound no word held between their neighbours, in order, so only the third take's "want." is offered
+    # offer per take: only the third take's "want." is offered
     assert out["suggested"] == {"retake?": 1, "inaudible?": 1}
     assert out["removed"]["fillers"] == 1 and out["removed"]["seconds"] > 0
     assert out["removed"]["seconds"] == pytest.approx(SOURCE_S - out["kept"]["seconds"], abs=0.02)
@@ -804,7 +796,7 @@ def test_parallel_sentences_are_never_cut_end_to_end(tmp_path, stub_transcribe, 
                  "The best part is the speed.", "This is the way we do it.", "Never, never, never give up today.",
                  "Thanks so much."]
     script = " ".join(sentences).split()
-    real = json.loads((FIX / "speech.json").read_text())
+    real = real_transcript()
     words = [w for w in real["transcription"] if w["text"].strip()]
     assert len(words) == len(script)
     stub_transcribe({**real, "transcription": [{**w, "text": " " + t} for w, t in zip(words, script)]})
@@ -876,7 +868,7 @@ def test_a_partly_kept_row_is_listed_whole_and_marked(tmp_path):
 
 def _scripted(sentences):
     script = " ".join(sentences).split()
-    real = json.loads((FIX / "speech.json").read_text())
+    real = real_transcript()
     words = [w for w in real["transcription"] if w["text"].strip()]
     assert len(words) == len(script)
     return {**real, "transcription": [{**w, "text": " " + t} for w, t in zip(words, script)]}
@@ -943,7 +935,7 @@ def test_the_plan_never_writes_through_a_link(tmp_path, stub_transcribe, monkeyp
 
 
 def test_a_clip_that_is_not_speech_is_kept_whole(tmp_path, stub_transcribe, monkeypatch):
-    real = json.loads((FIX / "speech.json").read_text())
+    real = real_transcript()
     w = [x for x in real["transcription"] if x["text"].strip()][:2]
     stub_transcribe({**real, "transcription": [{**w[0], "text": " Thank"}, {**w[1], "text": " you."}]})
     d = make_project(tmp_path)
@@ -956,7 +948,7 @@ def test_a_clip_that_is_not_speech_is_kept_whole(tmp_path, stub_transcribe, monk
 
 def synthetic(spec, start=0.2, word=0.3, gap=0.08, end_gap=0.7, lang="en"):
     """A transcript of `spec` on the fixture media with even word times; sentences end with . ? !"""
-    real = json.loads((FIX / "speech.json").read_text())
+    real = real_transcript()
     out, t = [], start
     for tok in spec.split():
         out.append({"timestamps": {"from": "", "to": ""}, "offsets": {"from": int(t * 1000), "to": int((t + word) * 1000)},
@@ -1099,7 +1091,7 @@ CAPTURES = json.loads((REPO_ROOT / "tests" / "fixtures" / "whisper_no_speech_cap
 
 
 def captured(name):
-    real = json.loads((FIX / "speech.json").read_text())
+    real = real_transcript()
     return {**real, **CAPTURES[name]}
 
 
@@ -1384,7 +1376,7 @@ def tone_media(path, spans, total, rate=RATE):
 
 def gapless(words):
     """A whisper transcript of (text, from, to) words, as whisper writes them (offsets in ms)."""
-    real = json.loads((FIX / "speech.json").read_text())
+    real = real_transcript()
     return {**real, "result": {"language": "en"}, "transcription": [
         {"timestamps": {"from": "", "to": ""}, "offsets": {"from": int(round(a * 1000)), "to": int(round(b * 1000))},
          "text": " " + t} for t, a, b in words]}
@@ -1928,19 +1920,6 @@ def test_a_real_last_word_stretched_over_outro_music_is_kept(tmp_path, monkeypat
 
 # misplaced words (orchestrator's bar; review #2 should-fix 5)
 
-def test_misplaced_words_whose_sound_is_in_a_long_neighbour_are_kept(tmp_path, monkeypatch):
-    """"ride the bike": whisper puts "the bike" in a pause; the audio of all three sits in "ride"'s long span."""
-    spans = [(0.30, 0.55, SPEECH_DB), (0.60, 1.65, SPEECH_DB), (2.40, 2.65, SPEECH_DB), (2.70, 2.95, SPEECH_DB)]
-    words = [("we", 0.30, 0.60), ("ride", 0.60, 1.70), ("the", 1.70, 2.05), ("bike", 2.05, 2.40),
-             ("all", 2.40, 2.70), ("day.", 2.70, 2.95)]
-    d = tone_project(tmp_path, [("vo", spans, 3.6, words)])
-    plan, text, said = plan_apply_said(d, monkeypatch)
-    assert said == "we ride the bike all day." and plan["removed"]["inaudible"] == 0
-    # §577 (A): "ride" is long for its own text, so the two words take their letter share of its sound's tail, in order:
-    # heard, never removed and no longer offered (v5 folded them and offered inaudible?)
-    assert " inaudible]" not in text.split("\n## Unused\n")[1] and "inaudible?" not in (plan.get("suggested") or {})
-
-
 def test_a_truly_silent_run_between_two_short_words_is_still_removed(tmp_path, monkeypatch):
     spans = [(0.30, 0.55, SPEECH_DB), (0.60, 0.85, SPEECH_DB), (2.40, 2.65, SPEECH_DB), (2.70, 2.95, SPEECH_DB)]
     words = [("we", 0.30, 0.60), ("ride", 0.60, 1.70), ("the", 1.70, 2.05), ("bike", 2.05, 2.40),
@@ -1950,17 +1929,6 @@ def test_a_truly_silent_run_between_two_short_words_is_still_removed(tmp_path, m
     # v5: both lie wholly in the silence and "ride" is too short to hold them: both go (b7639ba5 kept "bike", within
     # 40 ms of "all"'s sound)
     assert said == "we ride all day." and plan["removed"]["inaudible"] == 2
-
-
-def test_words_whisper_started_early_in_a_pause_are_kept(tmp_path, monkeypatch):
-    spans = [(0.3 + 0.3 * k, 0.55 + 0.3 * k, SPEECH_DB) for k in range(4)]
-    spans += [(3.0 + 0.3 * k, 3.25 + 0.3 * k, SPEECH_DB) for k in range(5)]
-    words = [("that", 0.3, 0.6), ("was", 0.6, 0.9), ("day", 0.9, 1.2), ("one.", 1.2, 1.5),
-             ("and", 1.9, 2.2), ("so", 2.2, 2.5), ("we", 2.5, 3.85), ("went", 3.9, 4.2), ("home.", 4.2, 4.45)]
-    d = tone_project(tmp_path, [("vo", spans, 5.5, words)])
-    plan, _, said = plan_apply_said(d, monkeypatch)
-    assert said == "that was day one. and so we went home." and plan["removed"]["inaudible"] == 0
-    assert all(plays_whole(d, a, b) for a, b, _ in spans)
 
 
 def test_words_in_the_quiet_band_are_offered_inaudible_and_kept(tmp_path, monkeypatch):

@@ -544,12 +544,13 @@ def test_clipped_loud_speech(tmp_path, monkeypatch):
 
 def test_an_attached_word_over_room_noise_keeps_no_stretched_room(tmp_path, monkeypatch):
     """kungfu's shape: speech -18, room -58 (40 dB under: the old attached line sat at the room). A word stretched over
-    1.5 s of room, between kept words, keeps at most its own burst, and the joined timeline no flat run over 0.45."""
+    1.5 s of room, between kept words, keeps at most its own burst (here none: under the attached line and the guard,
+    so it is inaudible and goes), and the joined timeline no flat run over 0.45."""
     tones = [(0.30, 0.60, -18.0), (0.65, 0.95, -18.0), (1.60, 1.80, -50.0), (2.80, 3.10, -18.0), (3.15, 3.45, -18.0)]
     words = [("this", 0.30, 0.65), ("is", 0.65, 1.10), ("so", 1.10, 2.60), ("very", 2.80, 3.15), ("good.", 3.15, 3.45)]
     d = v5.project(tmp_path, monkeypatch, [("vo", tones, 4.2, words)], room=-58.0)
     plan, text, applied, said_, before = v5.plan_apply(d, monkeypatch)
-    assert said_ == [w for w, _, _ in words], (said_, text)
+    assert said_ == ["this", "is", "very", "good."], (said_, text)
     assert v5.cover(d, 1.10, 2.60) * 1.5 <= 0.45, tc.kept_iv(d)
     v5.checked(d, plan, applied, before, v5.kept_tones("vo", tones))
 
@@ -645,7 +646,7 @@ def test_the_fixtures_applied_cut_passes_the_raw_flat_check_too(tmp_path, stub_t
     """09 and the orchestrator: flat.py v2's raw definition (no burst counted as sound) on the fixture's applied cut
     flags no run over max-pause but one that holds a word the -46 guard hears (fix pass: 0.83 s at source 22.24), and
     cut_checks agrees."""
-    stub_transcribe(tc.retake_transcript() if transcript == "retake" else json.loads((tc.FIX / "speech.json").read_text()))
+    stub_transcribe(tc.retake_transcript() if transcript == "retake" else tc.real_transcript())
     d = tc.make_project(tmp_path)
     plan, _ = tc.run(d, monkeypatch=monkeypatch)
     tc.run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)

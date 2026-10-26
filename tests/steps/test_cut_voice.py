@@ -342,41 +342,7 @@ def test_a_noise_row_put_back_is_refused_clearly(tmp_path, monkeypatch, capsys):
 
 
 def test_the_voice_constants_are_in_the_energy_stamp():
-    assert voice.STAMP in se.Refiner.STAMP and se.VERSION == "speech-energy v5d"
+    assert voice.STAMP in se.Refiner.STAMP and se.VERSION == "speech-energy v6"
     for k in ("VERSION", "RATE", "PITCH_MIN", "WINDOW_S", "PITCH_LAG_S", "LOWPASS_HZ", "_LOWPASS_TAPS"):
         assert f"{getattr(voice, k)}" in se.Refiner.STAMP
     assert f"SPEECH_WORD_S={se.SPEECH_WORD_S}" in se.Refiner.STAMP
-
-
-@pytest.mark.parametrize("check", [True, False])
-def test_a_deep_voiced_phrase_seeds_no_repair(tmp_path, monkeypatch, check):
-    """Review (c): the voice check runs before the repair; a soft deep-voiced phrase whisper stretched over 2.2 s must
-    not read as silence to it (which would seed a broken stretch and a second whisper run)."""
-    import steps.edit.cut as cc
-    from tests import cut_checks
-    monkeypatch.setenv("TMPDIR", str(tmp_path / "tmp"))
-    (tmp_path / "tmp").mkdir()
-    import tempfile
-    monkeypatch.setattr(tempfile, "tempdir", None)
-    if not check:
-        monkeypatch.setattr(voice, "flags", lambda media, n: None)
-    parts = [(0.30, 0.55, SPEECH, "voice"), (0.60, 0.95, SPEECH, "voice"),
-             (1.60, 1.85, -38.0, "low70"), (1.95, 2.25, -38.0, "low70"), (2.35, 2.60, -38.0, "low70"),
-             (4.40, 4.70, SPEECH, "voice"), (4.75, 5.10, SPEECH, "voice")]
-    words = [("we", 0.30, 0.60), ("went", 0.60, 0.95), ("i", 1.55, 2.30), ("don't", 2.30, 3.20),
-             ("think", 3.20, 3.90), ("so", 4.40, 4.75), ("now.", 4.75, 5.10)]
-    calls = []
-
-    def fake(input_path, out=None, model=None, language="en", **kw):
-        keeps = [tuple(k) for k in json.loads(open(input_path).read())["keeps"]]
-        calls.append(keeps)
-        heard = [(w, a, b) for (w, _, _), (a, b, _, _) in zip(words, parts)
-                 if any(a >= x - 1e-6 and b <= y + 1e-6 for x, y in keeps)]
-        with open(out + ".json", "w") as fh:
-            json.dump(tc.gapless(heard), fh)
-        return {"words": out + ".json"}
-    monkeypatch.setattr(cc, "transcribe_file", fake)
-    monkeypatch.setattr(cut_checks, "RETRANSCRIBE", lambda media, keeps: None)
-    d = project(tmp_path, monkeypatch, parts, 5.6, words)
-    v5.plan_apply(d, monkeypatch)
-    assert not calls, calls

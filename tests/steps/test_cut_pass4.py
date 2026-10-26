@@ -81,20 +81,20 @@ STRETCHED = (
 
 
 def test_stretched_spans_and_an_offered_soft_word_keep_no_long_silence(tmp_path, monkeypatch):
-    """Whisper stretches "alpha" and "gamma" over 1.5 s silences, and "soft" (7 dB over the room: offered, never
-    removed) over 1.2 s of which 0.3 s is its sound. A quieter first stretch (a camera's first frames) reads the
-    room low, which switched the old trim off. The applied timeline keeps no flat run over max-pause, every word
-    stays said, "soft" is offered, and it keeps a breath-length anchor, not its 1.2 s."""
+    """Whisper stretches "alpha" and "gamma" over 1.5 s silences, and "soft" (7 dB over the room) over 1.2 s of which
+    0.3 s is its sound. A quieter first stretch (a camera's first frames) reads the room low, which switched the old
+    trim off. The applied timeline keeps no flat run over max-pause, every other word stays said, and none of
+    "soft"'s 1.2 s plays."""
     spans, words, total = STRETCHED
     d = room_project(tmp_path, monkeypatch, [("vo", spans, total, words)], dips=[(0.0, 0.25)])
     plan, text, applied, said = plan_apply(d, monkeypatch)
-    assert said == [w for w, _, _ in words], (said, text)
+    assert said == [w for w, _, _ in words if w != "soft"], (said, text)
     # FINISH v5: "soft" (38 dB under the speech, 3 dB under the attached line, room + 10) keeps no sound and none of
-    # its 1.2 s: offered, folded into a breath (the fix pass kept its 0.3 s as a protected burst)
+    # its 1.2 s; under the guard, in a silence between heard words: inaudible, removed
     assert_flat_ok(d, text)
     lost = [(a, b) for a, b, db in spans if db >= ROOM + 10 and cover(d, a, b) < 0.99]
     assert not lost, (lost, tc.kept_iv(d))
-    assert cover(d, 4.25, 5.45) * 1.2 <= 0.05 and "soft [inaudible?]" in plan.get("cut", ""), (tc.kept_iv(d), text)
+    assert cover(d, 4.25, 5.45) * 1.2 <= 0.05 and "inaudible]" in plan.get("cut", ""), (tc.kept_iv(d), text)
     assert_no_unwarned_island(d, plan, applied)
 
 
