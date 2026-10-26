@@ -477,9 +477,13 @@ def text_boxes(measurement, item, frame_w, frame_h):
         g = t.get("glyphs")
         if isinstance(g, dict) and _num(g.get("w")) > 0 and _num(g.get("h")) > 0:
             b["glyphs"] = placed_box(g, item, frame_w, frame_h)   # PL89f: the text's own extent (glyphs_of)
+        own = g if "glyphs" in b else t["bbox"]
+        b["own"] = {k: _num(own.get(k)) for k in ("x", "y", "w", "h")}   # PL89j: the same, in the overlay's own render
         for k in ("color", "plate"):   # PL89g: what contrast_issues reads
             if isinstance(t.get(k), str):
                 b[k] = t[k]
+        if isinstance(t.get("opacity"), (int, float)):
+            b["opacity"] = float(t["opacity"])   # PL89j: how strongly it is drawn
         out.append((str(t.get("text") or "")[:24], b, clipped, t.get("spills") is True))
     return out
 
@@ -660,35 +664,118 @@ def backdrop_project(project, track_index):
     return out
 
 
-def contrast_issues(item, measurement, frame_w, frame_h, t, label, backdrop_png):
+# PL89j: a glyph-box pixel this close (RGB distance) to the text's fill is the text itself, not what it is read against.
+# Of the rest, at least OWN_SHARE drawn by the overlay itself means the text sits on the overlay's own paint.
+GLYPH_RGB = 60
+OWN_SHARE = 0.5
+OPACITY_SEEN = 0.1   # a text drawn fainter than this is not there to read
+AROUND_PX = 40000
+
+
+def _gray(lum):
+    """The sRGB level (0..255) of a gray of relative luminance `lum`."""
+    v = lum * 12.92 if lum <= 0.0031308 else 1.055 * lum ** (1 / 2.4) - 0.055
+    return max(0.0, min(255.0, v * 255))
+
+
+def _drawn(fill, opacity, behind):
+    """The fill as drawn at `opacity` over a backdrop of luminance `behind` (blended in sRGB, as the browser does)."""
+    g = _gray(behind)
+    return tuple(c * opacity + g * (1 - opacity) for c in fill[:3])
+
+
+def _around_glyphs(overlay_png, backdrop_png, own, placed, frame, fill, opacity=1.0):
+    """(luminance, on its own paint) of what a text is read against, from the overlay's own render (`overlay_png`, the
+    glyphs at `own`) over the picture under it (`backdrop_png`, the glyphs at `placed` on the frame; None for none): the
+    median over the glyph box's pixels that are not the text. None when nothing is there to read it against."""
+    from PIL import Image
+    from lib.caption_ink import _LUM, _linear_table
+
+    def crop(path, box, mode):
+        with Image.open(path) as im:
+            im = im.convert(mode)
+            sx, sy = im.width / frame[0], im.height / frame[1]
+            x0, y0 = max(0, int(round(box["x"] * sx))), max(0, int(round(box["y"] * sy)))
+            x1 = min(im.width, max(x0 + 1, int(round((box["x"] + box["w"]) * sx))))
+            y1 = min(im.height, max(y0 + 1, int(round((box["y"] + box["h"]) * sy))))
+            return im.crop((x0, y0, x1, y1))
+    mine = crop(overlay_png, own, "RGBA")
+    if mine.width * mine.height > AROUND_PX:   # a big title: every pixel is not needed (nearest keeps the fill exact)
+        f = (AROUND_PX / (mine.width * mine.height)) ** 0.5
+        mine = mine.resize((max(1, int(mine.width * f)), max(1, int(mine.height * f))), Image.NEAREST)
+    under = crop(backdrop_png, placed, "RGB").resize(mine.size, Image.NEAREST) if backdrop_png else None
+    table = _linear_table()
+    px, upx = mine.load(), (under.load() if under is not None else None)
+
+    def read(inks):
+        lums, covered = [], 0
+        for y in range(mine.height):
+            for x in range(mine.width):
+                r, g, b, a = px[x, y]
+                if a >= 128 and any((r - i[0]) ** 2 + (g - i[1]) ** 2 + (b - i[2]) ** 2 <= GLYPH_RGB ** 2 for i in inks):
+                    continue   # the text
+                if a >= 204:
+                    covered += 1
+                elif upx is None:
+                    continue   # nothing under this pixel to read the text against
+                if a < 255 and upx is not None:
+                    r, g, b = (round((c * a + d * (255 - a)) / 255) for c, d in zip((r, g, b), upx[x, y]))
+                lums.append(sum(w * table[c] for w, c in zip(_LUM, (r, g, b))))
+        if not lums:
+            return None
+        lums.sort()
+        return lums[len(lums) // 2], covered >= OWN_SHARE * len(lums)
+    got = read([fill])
+    if got and opacity < 1:   # a dim text's pixels are its fill blended into what is behind it: leave those out too
+        got = read([fill, _drawn(fill, opacity, got[0])]) or got
+    return got
+
+
+def contrast_issues(item, measurement, frame_w, frame_h, t, label, backdrop_png, overlay_png=None):
     """[{t, id, text}]: the first text of the overlay whose fill is under CONTRAST_MIN : 1 against its plate, or against
-    `backdrop_png` (the picture under the overlay's track at `t`, at the design size) over its glyphs. A text with no
-    measured colour, or no picture and no plate, says nothing."""
+    what is around its glyphs: the overlay's own render (`overlay_png`, PL89j: a card's paper drawn as a shadow is no
+    plate) over `backdrop_png` (the picture under the overlay's track at `t`, at the design size). Without the render,
+    the picture over its glyphs. A text with no measured colour, or nothing to read it against, says nothing."""
     from lib.caption_ink import luminance as picture_luminance
     from lib.slide_text import contrast, luminance
     for text, b, _, _ in text_boxes(measurement, item, frame_w, frame_h):
         fill = _css_rgb(b.get("color"))
         if not fill or fill[3] < 0.5:
             continue
+        opacity = b.get("opacity", 1.0)
+        if opacity < OPACITY_SEEN:
+            continue   # not in yet, or on its way out
         plate = _css_rgb(b.get("plate"))
+        own = False
+        g = glyphs_of(b)
         if plate:
             behind = luminance(plate[:3])
+        elif overlay_png:
+            try:
+                got = _around_glyphs(overlay_png, backdrop_png, b.get("own") or g, g, (frame_w, frame_h), fill, opacity)
+            except (OSError, ValueError):
+                continue
+            if got is None:
+                continue
+            behind, own = got
         elif backdrop_png:
-            g = glyphs_of(b)
             try:
                 behind = picture_luminance(backdrop_png, (g["x"], g["y"], g["x"] + g["w"], g["y"] + g["h"]), (frame_w, frame_h))
             except (OSError, ValueError):
                 continue
         else:
             continue
-        mine = luminance(fill[:3])
+        mine = luminance(_drawn(fill, opacity, behind) if opacity < 1 else fill[:3])
         r = contrast(mine, behind)
         if r < CONTRAST_MIN:
             quote = f' "{text}"' if text else ""
             way = "lighter" if behind < 0.179 else "darker"   # the side with room: white and black tie at 0.179
-            against = "its plate" if plate else "the picture behind it"
+            if plate or own:
+                against, fix = ("its plate" if plate else "its own background"), f"give it a {way} fill"
+            else:
+                against, fix = "the picture behind it", f"give it a plate, or a {way} fill"
             return [{"t": r2(t), "id": label, "text": f"text{quote} is {r:.1f} : 1 against {against} "
-                                                       f"(under {CONTRAST_MIN:g} : 1): give it a plate, or a {way} fill"}]
+                                                       f"(under {CONTRAST_MIN:g} : 1): {fix}"}]
     return []
 
 

@@ -158,9 +158,10 @@ def backdrops(project_path, project, entries):
 
 
 def overlays_to_measure(project, project_dir, times):
-    """[(track index, item, path)] of overlays to measure: those on screen at a looked-at time first, then the rest,
-    in time order; at most MAX_MEASURES. The count of the rest is returned too."""
-    found = []
+    """[(track index, item, path)] of overlays to measure: the first of each overlay file, then the rest on screen at a
+    looked-at time, then the others, each in time order; at most MAX_MEASURES. The count of the rest is returned too.
+    PL89j: 17 footage cards filled the measures and the two explainer cards went unmeasured."""
+    found, files = [], set()
     for ti, row in enumerate(lc.drawn_tracks(project)):
         if ti == 0:
             continue
@@ -170,7 +171,11 @@ def overlays_to_measure(project, project_dir, times):
             p = lc.overlay_path(it, project_dir)
             if p and os.path.isfile(p):
                 seen = any(lc._num(it.get("start")) <= x <= lc._num(it.get("end")) for x in times)
-                found.append((0 if seen else 1, lc._num(it.get("start")), ti, it, p))
+                found.append([0 if seen else 1, lc._num(it.get("start")), ti, it, p])
+    for f in sorted(found, key=lambda x: (x[0], x[1])):
+        if f[4] not in files:
+            files.add(f[4])
+            f[0] = -1
     found.sort(key=lambda x: (x[0], x[1]))
     keep = found[:lc.MAX_MEASURES]
     return [(ti, it, p) for _, _, ti, it, p in keep], len(found) - len(keep)
@@ -244,6 +249,7 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=None, sheet
         with ThreadPoolExecutor(max_workers=MEASURE_WORKERS) as pool:
             got = list(pool.map(one, entries))
     results = [(x["ti"], x["item"], x["label"], x["s"], x["e"], x["mid"], m, why) for x, (m, why) in zip(entries, got)]
+    renders = {x["label"]: x["out"] for x in entries if os.path.isfile(x["out"])}   # each overlay as measured, alone
     try:
         behind = pictures.result() if pictures else {}
     except Exception:  # noqa: BLE001 — no pictures: the labels' contrast goes unchecked
@@ -260,7 +266,7 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=None, sheet
         issues += lc.measured_issues(it, m, width, height, mid, label, bands)
         issues += lc.type_floor_issues(it, m, width, height, mid, label)   # PL89b
         issues += lc.mark_cover_issues(project, project_dir, it, m, width, height, mid, label)   # PL89e
-        issues += lc.contrast_issues(it, m, width, height, mid, label, behind.get(label))   # PL89g
+        issues += lc.contrast_issues(it, m, width, height, mid, label, behind.get(label), renders.get(label))   # PL89g, j
         placed.append((label, s, e, [lc.glyphs_of(b) for _, b, _, _ in lc.text_boxes(m, it, width, height)]))   # the text's own extent
         checked.append(label)
         if it.get("keyframes"):
