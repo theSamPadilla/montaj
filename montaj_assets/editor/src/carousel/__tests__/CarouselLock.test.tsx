@@ -614,3 +614,110 @@ describe('CarouselEditor: lock badge (§586 M5b)', () => {
     expect(document.querySelector('[data-slide-chrome]')!.getAttribute('style')).toContain('pointer-events: none')
   })
 })
+
+describe('CarouselEditor: an external lock lands mid-gesture (§586 batch 2)', () => {
+  async function mountLive(project: Project = lockProject()) {
+    const adapter = makeFakeAdapter()
+    let push: ((p: Project) => void) | undefined
+    adapter.subscribe = (_id, onFrame) => { push = onFrame; return () => {} }
+    const onProjectChange = vi.fn()
+    const r = render(<CarouselEditor project={project} adapter={adapter} onProjectChange={onProjectChange} />)
+    await waitFor(() => expect(document.querySelector('[data-element-id]')).not.toBeNull())
+    await waitFor(() => expect(push).toBeDefined())
+    const lockExternally = async (id: string) => {
+      const p = structuredClone(project)
+      p.slides![0].elements = p.slides![0].elements.map((e) => (e.id === id ? { ...e, locked: true } : e)) as never
+      await act(async () => { push!(p) })
+    }
+    return { adapter, r, lockExternally }
+  }
+  const handleOf = (id: string, testId: string) => chromeOf(id).querySelector(`[data-testid="${testId}"]`) as HTMLElement
+
+  /** A free edit afterwards is one save and one undo step that leaves el-b where the lock found it. */
+  async function nextEditIsOwnStep(adapter: FakeAdapter, expected: Record<string, number>) {
+    const before = adapter.saveCalls.length
+    // The release's click is swallowed once; the second lands.
+    await click('el-c')
+    await click('el-c')
+    await key('ArrowRight')
+    await act(async () => { document.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true })) })
+    await waitFor(() => expect(adapter.saveCalls.length).toBe(before + 1))
+    expect(byId(last(adapter), 'el-b')).toMatchObject(expected)
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls.length).toBe(before + 2))
+    expect(byId(last(adapter), 'el-c')).toMatchObject({ x: 700 })
+    expect(byId(last(adapter), 'el-b')).toMatchObject(expected)
+  }
+
+  it('a drag released after the element was locked leaves it where it was and records nothing', async () => {
+    const { adapter, lockExternally } = await mountLive()
+    await click('el-b')
+    await act(async () => {
+      pointer(wrapperOf('el-b'), 'pointerdown', { clientX: 100, clientY: 100 })
+      pointer(window, 'pointermove', { clientX: 180, clientY: 160 })
+    })
+    await lockExternally('el-b')
+    await act(async () => { pointer(window, 'pointerup') })
+    expect(adapter.saveCalls).toHaveLength(0)
+    await nextEditIsOwnStep(adapter, { x: 500, y: 400 })
+  })
+
+  it('a resize released after the element was locked leaves it and records nothing', async () => {
+    const { adapter, lockExternally } = await mountLive()
+    await click('el-b')
+    await act(async () => {
+      pointer(handleOf('el-b', 'resize-handle-se'), 'pointerdown', { clientX: 0, clientY: 0 })
+      pointer(window, 'pointermove', { clientX: 40, clientY: 40 })
+    })
+    await lockExternally('el-b')
+    await act(async () => { pointer(window, 'pointerup', { clientX: 40, clientY: 40 }) })
+    expect(adapter.saveCalls).toHaveLength(0)
+    await nextEditIsOwnStep(adapter, { w: 100, h: 300 })
+  })
+
+  it('a rotation released after the element was locked leaves it and records nothing', async () => {
+    const { adapter, lockExternally } = await mountLive()
+    await click('el-b')
+    await act(async () => {
+      pointer(handleOf('el-b', 'rotate-handle'), 'pointerdown', { clientX: 0, clientY: 0 })
+      pointer(window, 'pointermove', { clientX: 60, clientY: 20 })
+    })
+    await lockExternally('el-b')
+    await act(async () => { pointer(window, 'pointerup', { clientX: 60, clientY: 20 }) })
+    expect(adapter.saveCalls).toHaveLength(0)
+    await nextEditIsOwnStep(adapter, { rotation: 0 })
+  })
+
+  it('a crop open when the image is locked ends without applying, and Esc writes nothing', async () => {
+    const { adapter, r, lockExternally } = await mountLive()
+    await click('el-b')
+    await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
+    const source = chromeOf('el-b').querySelector<HTMLImageElement>('img[alt="Crop source"]')!
+    await act(async () => { loadImage(source, 200, 300) })
+    const handle = chromeOf('el-b').querySelector('[data-testid="crop-handle-e"]') as HTMLElement
+    const root = document.querySelector('[data-interactive]') as HTMLElement
+    const d = 40 * (parseFloat(root.style.width) / 1080)
+    await act(async () => {
+      pointer(handle, 'pointerdown', { clientX: 0, clientY: 0 })
+      pointer(handle, 'pointermove', { clientX: -d, clientY: 0 })
+      pointer(handle, 'pointerup', { clientX: -d, clientY: 0 })
+      fireEvent.click(handle)
+    })
+    await lockExternally('el-b')
+    expect(chromeOf('el-b').querySelector('img[alt="Crop source"]')).toBeNull()
+    await key('Escape')
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('an inline text edit open when the text is locked closes and keeps the text', async () => {
+    const free = lockProject()
+    free.slides![0].elements = free.slides![0].elements.map((e) => (e.id === 'el-ov' ? { ...e, locked: undefined } : e)) as never
+    const { adapter, r, lockExternally } = await mountLive(free)
+    await click('el-ov')
+    await act(async () => { fireEvent.doubleClick(wrapperOf('el-ov')) })
+    expect(r.getByRole('textbox', { name: 'Edit text' })).toBeTruthy()
+    await lockExternally('el-ov')
+    expect(r.queryByRole('textbox', { name: 'Edit text' })).toBeNull()
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+})
