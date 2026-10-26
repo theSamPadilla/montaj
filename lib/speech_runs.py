@@ -17,8 +17,10 @@ dropped lines.
    own 0.0, so a time rule cannot tell them from context; a context clip drops its echo by TEXT instead: the longest
    run of its opening words equal, in order, to the last words of the runs before (their transcript), and with no
    such match only the words whose END lies before the run's start less PAD_S. Every other word is kept; its time
-   is mapped to the source's clock and clamped into the run, in order. A run of under
-   HALLUCINATION_RUN_S whose words are only a stock phrase whisper writes on a blip ("Thank you.") has none.
+   is mapped to the source's clock and clamped into the run, in order. When the echo is the run's every word (a
+   back-to-back short retake, "PhoneBot." said again), the words inside the run by time stay. A run of under
+   HALLUCINATION_RUN_S with under VOICED_SHARE_MIN of its frames voiced, whose words are only a stock phrase whisper
+   writes on little voice ("Thank you."), has none; never the source's first or last run (a real opening or "Bye!").
 4. The file is whisper's own shape (`transcription[]`, one word an entry, offsets in ms) with `run` on each word and
    `montaj.by == "runs"` with `montaj.runs`, the runs themselves, so every reader still works. `runs_of`, `run_of` and
    `is_full_file_montaj` read it back.
@@ -45,6 +47,7 @@ PAD_S = 0.2                      # every clip opens and ends this long beside it
 BATCH = 40                       # clips to one whisper-cli call (the command line's length on Windows)
 HALLUCINATION_RUN_S = 0.6        # a run shorter than this whose words are only a stock phrase has none
 HALLUCINATIONS = ("thank you", "thanks for watching", "you", "bye")
+VOICED_SHARE_MIN = 0.3           # ... and under this share of its frames voiced (lib/voice): a stock phrase on little voice
 INAUDIBLE_S = speech_energy.INAUDIBLE_S     # a word of no length is given this long
 RATE = speech_energy.RATE
 DECODE_TIMEOUT_S = speech_energy.DECODE_TIMEOUT_S
@@ -56,9 +59,23 @@ def voiced_runs(media, max_pause=speech_energy.DEFAULT_MAX_PAUSE_S):
     """[(start, end)] seconds of the voiced runs of `media` (lib/speech_energy layer 1, read with cut's own voice check,
     lib/voice), without the blips. By level alone a bump of no voice just before the voice opened the run, and the
     run's first word was clamped onto it, on no voice (real take D: a -47 dB bump 0.15 s early)."""
+    return _runs_and_shares(media, max_pause)[0]
+
+
+def _runs_and_shares(media, max_pause=speech_energy.DEFAULT_MAX_PAUSE_S):
+    """(voiced_runs, the share of each run's frames lib/voice reads as voiced, or None with no voice check)."""
     env = speech_energy.envelope(media)
     lay = speech_energy.layer1(media, env, max_pause, spectral=voice.flags(media, len(env)))
-    return [(float(a), float(b)) for a, b in lay.voiced if b - a >= BLIP_S]
+    runs = [(float(a), float(b)) for a, b in lay.voiced if b - a >= BLIP_S]
+    if lay.voice is None:
+        return runs, [None] * len(runs)
+    shares = []
+    for a, b in runs:
+        k0 = int(round(a / speech_energy.FRAME_S))
+        k1 = max(int(round(b / speech_energy.FRAME_S)), k0 + 1)
+        fr = [lay.voice[k] for k in range(k0, min(k1, len(lay.voice)))]
+        shares.append(sum(1 for v in fr if v) / len(fr) if fr else 0.0)
+    return runs, shares
 
 
 def _srt_ts(ms):
@@ -173,14 +190,19 @@ def _words_of_run(doc, clip_start, run, before=None):
         got.append((text, clip_start + o["from"] / 1000.0, clip_start + o["to"] / 1000.0))
     if before is not None:
         k = _echo(got, before)
-        got = got[k:] if k else [w for w in got if w[2] >= lo - PAD_S]
+        kept = got[k:] if k else [w for w in got if w[2] >= lo - PAD_S]
+        if not kept and k:
+            # the echo is every word (a back-to-back short retake, "PhoneBot." said again): the run's own by time
+            kept = [w for w in got if lo - PAD_S <= (w[1] + w[2]) / 2 <= hi + PAD_S]
+        got = kept
     return _clamp(got, lo, hi)
 
 
-def _hallucination(words, run):
-    """A run of under HALLUCINATION_RUN_S whose words are only a stock phrase ("Thank you.") or made up (lib/
-    speech_units.made_up, as speech_repair reads it)."""
-    if run[1] - run[0] >= HALLUCINATION_RUN_S or not words:
+def _hallucination(words, run, share=None, edge=False):
+    """A run of under HALLUCINATION_RUN_S, with under VOICED_SHARE_MIN of its frames voiced (`share`; None: no voice
+    check, kept), whose words are only a stock phrase ("Thank you.") or made up (lib/speech_units.made_up). Never the
+    source's first or last run (`edge`): a real opening or sign-off ("Bye!") is said there."""
+    if edge or share is None or share >= VOICED_SHARE_MIN or run[1] - run[0] >= HALLUCINATION_RUN_S or not words:
         return False
     from lib.speech_units import made_up
     return _norm(" ".join(t for t, _, _ in words)) in HALLUCINATIONS or made_up(
@@ -191,7 +213,7 @@ def transcribe_runs(media, out_prefix, model, language):
     """Transcribe `media` run by run (see the module docstring) and write `<out_prefix>.json` and `.srt`. `model` is
     the weight's path. {"words", "srt", "runs"}; with no voiced run nothing is written and {"fell_back": True,
     "runs": 0} says so."""
-    runs = voiced_runs(media)
+    runs, shares = _runs_and_shares(media)
     if not runs:
         return {"fell_back": True, "runs": 0}
     whisper_bin = find_whisper_bin()
@@ -223,7 +245,7 @@ def transcribe_runs(media, out_prefix, model, language):
             before = [t for end, texts in said if end > spans[i][0] for t in texts]
         words = _words_of_run(docs[clip], spans[i][0], run_, before)
         said.append((run_[1], [t for t, _, _ in words]))
-        if _hallucination(words, run_):
+        if _hallucination(words, run_, shares[i], edge=i in (0, len(runs) - 1)):
             continue
         for t, s, e in words:
             a, b = int(round(s * 1000)), int(round(e * 1000))
