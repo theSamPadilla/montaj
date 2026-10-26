@@ -722,6 +722,27 @@ def _box_cover(b, part):
     return w * h / max(1.0, b["w"] * b["h"])
 
 
+def unread_marks_issues(project, project_dir):
+    """[{t, id, text}]: a mark file (overlays/_marks/<scene>.json) that no overlay on the timeline imports: its beat's
+    labels were dropped (round 9: the mount was marked and never labelled)."""
+    folder = os.path.join(project_dir, "overlays", "_marks")
+    try:
+        files = sorted(f[:-5] for f in os.listdir(folder) if f.endswith(".json"))
+    except OSError:
+        return []
+    if not files:
+        return []
+    read = set()
+    for row in drawn_tracks(project):
+        for it in row:
+            path = overlay_path(it, project_dir) if it.get("type") == "overlay" else None
+            if path and str(it.get("src", "")).endswith((".jsx", ".js", ".tsx")):
+                for txt in overlay_texts(project_dir, path):
+                    read.update(MARK_IMPORT.findall(txt))
+    return [{"t": 0.0, "id": "marks", "text": f"overlays/_marks/{name}.json has no overlay reading it: place scene_labels with "
+                                              f"marks: {name}, or its beat has no labels"} for name in files if name not in read]
+
+
 def mark_cover_issues(project, project_dir, item, measurement, frame_w, frame_h, t, label):
     """[{t, id, text}]: a label over a part the overlay's mark file marks, at the scene second under it (the engine:scene3d
     item of that scene playing at `t`, else the mark's own moment). At most one, the first found."""
