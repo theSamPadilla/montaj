@@ -19,6 +19,7 @@ MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."
 sys.path.insert(0, MONTAJ_ROOT)
 from lib import look_check as lc, project_revisions, subject_track, sync_clash  # noqa: E402
 from lib.common import fail, ffmpeg_bin, ffprobe_value, ff_seconds, ff_input, get_duration  # noqa: E402
+from lib.path_match import spaced_twin  # noqa: E402
 from lib.project_lock import update_project_or_fail  # noqa: E402
 from lib.project_tracks import normalize_tracks  # noqa: E402
 from lib.footage_credit import (  # noqa: E402,F401  (frame_broll's own names, kept for its callers and tests)
@@ -143,6 +144,7 @@ def analyse(project, on_disk, project_path, item_id, mode, matte=None):
         raise ItemRefused("not_broll", f"{item_id} is not a video clip on an upper track (b-roll); the first track is the main footage.")
     sw, sh = lc._num(item.get("sourceWidth")), lc._num(item.get("sourceHeight"))
     src = item.get("proxySrc") if item.get("proxySrc") and os.path.isfile(item["proxySrc"]) else item.get("src")
+    src = spaced_twin(src) or src  # PL89i: a src saved with a typed space for a U+202F (lib/path_match.py)
     if not src or not os.path.isfile(src):
         raise ItemRefused("file_not_found", f"The clip's file is missing: {item.get('src')}")
     probed = None

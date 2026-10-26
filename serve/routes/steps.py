@@ -3,7 +3,6 @@ import asyncio
 import json
 import math
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -12,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from lib.color_provenance import ProbeError, is_probe_retryable
 from lib.credentials import CredentialError, build_env_overlay
+from lib.path_match import spaced_twins
 from lib.step_schema import flag_value
 from serve.disk_full import STATUS as disk_full_status, child_disk_full, workspace_root as disk_full_root
 from serve.common import (
@@ -309,32 +309,19 @@ def validate_params(schema: dict, body: dict) -> None:
         raise HTTPException(422, detail={"error": "invalid_params", "message": "; ".join(errors)})
 
 
-# PL89i: macOS names a screen recording "... at 11.59.52\u202fAM.mov" (a narrow no-break space); an agent types a plain
-# space and the file is not found. Spaces of any kind compare equal when a typed path names no file.
-_SPACES = re.compile(r"[\s\u00a0\u2007\u202f]+")
-
-
-def _spaced_twin(path: str):
-    """The one file beside `path` whose name differs from it only in its kinds of space, else None."""
-    if not isinstance(path, str) or not os.path.isabs(path) or os.path.exists(path):
-        return None
-    folder, name = os.path.split(path)
-    try:
-        names = os.listdir(folder)
-    except OSError:
-        return None
-    want = _SPACES.sub(" ", name)
-    hits = [n for n in names if n != name and _SPACES.sub(" ", n) == want]
-    return os.path.join(folder, hits[0]) if len(hits) == 1 else None
-
-
 def resolve_spacing(schema: dict, body: dict) -> None:
     """In place: `input`, `inputs` and each path param (never an output) that names no file but has a twin differing
-    only in its kinds of space is pointed at the twin, so the step runs on the file meant."""
+    only in its kinds of space or its Unicode form (lib/path_match.py) is pointed at the twin, so the step runs on
+    the file meant. Several twins are a 422 naming them."""
     def fix(v):
         if isinstance(v, list):
             return [fix(x) for x in v]
-        return _spaced_twin(v) or v
+        hits = spaced_twins(v)
+        if len(hits) > 1:
+            raise HTTPException(422, detail={"error": "ambiguous_path", "message": (
+                f"No file at {v}; several match once spaces are read alike: "
+                + ", ".join(os.path.basename(h) for h in hits) + ". Name one exactly."), "matches": hits})
+        return hits[0] if hits else v
     for key in ("input", "inputs"):
         if body.get(key) is not None:
             body[key] = fix(body[key])
