@@ -109,7 +109,12 @@ def test_async_step_with_project_queues_proxies(env):
     pid, pdir, state = env
     r = client.post("/api/steps/fake_gen", json={"project-id": pid, "_async": True})
     assert r.status_code == 202
+    # the job runs on a worker: wait for it (bounded) rather than read it once, which raced a busy machine
+    deadline = time.monotonic() + 5
     job = client.get(f"/api/steps/jobs/{r.json()['job_id']}").json()
+    while job["status"] != "done" and time.monotonic() < deadline:
+        time.sleep(0.02)
+        job = client.get(f"/api/steps/jobs/{r.json()['job_id']}").json()
     assert job["status"] == "done"
     settle(state)
     assert [q[0] for q in state["queued"]] == [pid]

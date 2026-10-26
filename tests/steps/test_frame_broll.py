@@ -1,0 +1,214 @@
+"""frame_broll (PL89): landscape b-roll in a vertical project, framed in one call.
+
+A paid run's 9:16 centre crop of a landscape clip showed an empty wall while the robot walked out of frame (ucla
+section 06). `track` follows the moving subject with a keyframed crop; `card` insets the whole frame as a card with
+corner brackets and a "Footage: <source>" credit; `auto` tracks when it finds one clear subject, else makes the card.
+The clips here are synthetic: a dark box crossing a light room (a subject), and the same room with nothing moving.
+The still sheet's sampler is stubbed, so no renderer runs.
+"""
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from lib import subject_track  # noqa: E402
+from lib.common import ffmpeg_bin  # noqa: E402
+import steps.edit.frame_broll as fb  # noqa: E402
+
+
+def clip(path, moving=True, size="640x360", seconds=4, y=60):
+    room = f"color=c=0xd8d2c4:s={size}:d={seconds}:r=30"
+    box = "color=c=0x151515:s=50x90:d=%d:r=30" % seconds
+    x = "40+130*t" if moving else "295"
+    subprocess.run([ffmpeg_bin(), "-v", "error", "-y", "-f", "lavfi", "-i", room, "-f", "lavfi", "-i", box,
+                    "-filter_complex", f"[0][1]overlay=x='{x}':y={y}", "-pix_fmt", "yuv420p", str(path)], check=True)
+    return path
+
+
+def project(tmp_path, moving=True, size="640x360", y=60):
+    d = tmp_path / "proj"
+    d.mkdir()
+    src = clip(d / "broll.mp4", moving, size, y=y)
+    w, h = (int(v) for v in size.split("x"))
+    proj = {"version": "0.2", "id": "fb-fixture", "name": "Frame", "status": "draft", "workflow": "overlays",
+            "editingPrompt": "", "settings": {"fps": 30, "resolution": [1080, 1920]},
+            "tracks": [{"id": "trk-0", "items": [{"id": "talk", "type": "video", "src": str(src), "start": 0, "end": 8,
+                                                  "inPoint": 0, "outPoint": 4, "sourceDuration": 4}]},
+                       {"id": "trk-1", "items": [{"id": "br-1", "type": "video", "src": str(src), "start": 2, "end": 6,
+                                                  "inPoint": 0, "outPoint": 4, "sourceDuration": 4,
+                                                  "sourceWidth": w, "sourceHeight": h, "muted": True}]}]}
+    (d / "project.json").write_text(json.dumps(proj, indent=2))
+    return d / "project.json"
+
+
+def stub_sampler():
+    calls = []
+
+    def fn(project_path, times, out):
+        calls.append(list(times))
+        Path(out).write_bytes(b"png")
+        return out
+    fn.calls = calls
+    return fn
+
+
+def item_of(project_path, item_id):
+    doc = json.loads(Path(project_path).read_text())
+    return next(it for t in doc["tracks"] for it in t["items"] if it["id"] == item_id), doc
+
+
+# --- the tracker (numpy only) -----------------------------------------------------------------------------------
+
+def test_tracker_follows_a_moving_box_and_keeps_it_inside_the_crop():
+    bg = np.full((54, 96), 210.0)
+    frames = []
+    for i in range(12):
+        f = bg.copy()
+        x = 5 + i * 6
+        f[20:40, x:x + 8] = 20
+        frames.append(f)
+    path = subject_track.track(np.stack(frames), np.stack([bg] * 5), crop_w=0.3164)
+    assert path["found"] >= 11
+    for i, p in enumerate(path["points"]):
+        cx = (5 + i * 6 + 4) / 96
+        assert p["x"] <= cx <= p["x"] + 0.3164, (i, p, cx)
+    assert path["points"][-1]["x"] > path["points"][0]["x"]
+
+
+def test_tracker_finds_nothing_in_a_still_room():
+    bg = np.full((54, 96), 210.0)
+    path = subject_track.track(np.stack([bg] * 8), np.stack([bg] * 5), crop_w=0.3164)
+    assert path["found"] == 0
+
+
+# --- the step -----------------------------------------------------------------------------------------------------
+
+def test_track_writes_a_keyframed_crop_that_follows_the_subject(tmp_path):
+    p = project(tmp_path)
+    s = stub_sampler()
+    out = fb.run(str(p), "br-1", mode="track", sampler=s)
+    assert out["mode"] == "track"
+    item, _ = item_of(p, "br-1")
+    w = item["sourceCrop"]["w"]
+    assert abs(w - (360 * 9 / 16) / 640) < 0.01 and item["sourceCrop"]["h"] == 1
+    xs = next(t for t in item["keyframes"] if t["prop"] == "cropX")["points"]
+    assert xs[0]["t"] == 0 and xs[-1]["t"] <= 4
+    assert xs[-1]["value"] > xs[0]["value"] + 0.3, "the box crosses the room left to right"
+    # each keyframe holds the box: x of its centre at that time is 40 + 130 t + 25 (source px)
+    for k in xs:
+        cx = (40 + 130 * k["t"] + 25) / 640
+        assert k["value"] - 0.02 <= cx <= k["value"] + w + 0.02, k
+    assert out["sheet"] and s.calls and len(s.calls[0]) >= 3
+    assert all(2 <= t <= 6 for t in s.calls[0]), "the sheet samples the item's own range on the timeline"
+
+
+def test_card_insets_the_whole_frame_with_a_credit_overlay(tmp_path):
+    p = project(tmp_path)
+    out = fb.run(str(p), "br-1", mode="card", source="PhoneBot project video", sampler=stub_sampler())
+    assert out["mode"] == "card"
+    item, doc = item_of(p, "br-1")
+    assert "sourceCrop" not in item and not any(t["prop"].startswith("crop") for t in item.get("keyframes", []))
+    assert 0.8 <= item["scale"] <= 0.95 and item["offsetY"] < 0, "an inset above the captions"
+    card = next(it for t in doc["tracks"] for it in t["items"] if it.get("type") == "overlay")
+    assert (card["start"], card["end"]) == (2, 6)
+    assert card["src"].startswith("./overlays/footage-card")
+    props = card["props"]
+    assert props["credit"] == "Footage: PhoneBot project video"
+    x, y, w, h = (float(v) for v in props["box"].split(","))   # "x,y,w,h", shares of the frame
+    assert abs(w - item["scale"]) < 1e-6 and y + h < 0.56, "the footage sits above the captions"
+    assert props["subject"], "the moving box was tracked for the brackets"
+    assert (Path(p).parent / card["src"][2:]).is_file()
+    assert out["id"] == "br-1" and out["card"] == card["id"]
+
+
+def test_auto_tracks_a_moving_subject_and_cards_a_still_one(tmp_path):
+    a = tmp_path / "a"
+    a.mkdir()
+    assert fb.run(str(project(a)), "br-1", sampler=stub_sampler())["mode"] == "track"
+    b = tmp_path / "b"
+    b.mkdir()
+    out = fb.run(str(project(b, moving=False)), "br-1", sampler=stub_sampler())
+    assert out["mode"] == "card"
+    assert "no moving subject" in out["why"]
+
+
+def test_a_vertical_clip_needs_nothing(tmp_path):
+    p = project(tmp_path, size="360x640")
+    before = Path(p).read_text()
+    out = fb.run(str(p), "br-1", sampler=stub_sampler())
+    assert out["mode"] == "none"
+    assert Path(p).read_text() == before
+
+
+def test_a_human_edit_since_the_read_is_refused_and_nothing_is_written(tmp_path, monkeypatch, capsys):
+    p = project(tmp_path)
+    real = fb.read_tracks
+
+    def read_then_edit(path):
+        got = real(path)
+        doc = json.loads(Path(path).read_text())
+        doc["tracks"][0]["items"][0]["end"] = 7.5   # the person trims the talking head meanwhile
+        Path(path).write_text(json.dumps(doc, indent=2))
+        return got
+    monkeypatch.setattr(fb, "read_tracks", read_then_edit)
+    with pytest.raises(SystemExit):
+        fb.run(str(p), "br-1", mode="track", sampler=stub_sampler())
+    assert "project_changed" in capsys.readouterr().err
+    item, doc = item_of(p, "br-1")
+    assert "keyframes" not in item and doc["tracks"][0]["items"][0]["end"] == 7.5
+
+
+def test_a_missing_or_wrong_item_is_refused(tmp_path, capsys):
+    p = project(tmp_path)
+    for item_id, code in (("nope", "item_not_found"), ("talk", "not_broll")):
+        with pytest.raises(SystemExit):
+            fb.run(str(p), item_id, mode="track", sampler=stub_sampler())
+        assert code in capsys.readouterr().err
+
+
+def test_what_it_writes_passes_the_engine_validator_and_a_clip_without_its_size_gets_it(tmp_path):
+    sys.path.insert(0, str(REPO_ROOT / "engine"))
+    from validate import validate_project
+    for mode in ("track", "card"):
+        d = tmp_path / mode
+        d.mkdir()
+        p = project(d)
+        doc = json.loads(Path(p).read_text())
+        for k in ("sourceWidth", "sourceHeight"):
+            del doc["tracks"][1]["items"][0][k]
+        Path(p).write_text(json.dumps(doc))
+        fb.run(str(p), "br-1", mode=mode, source="the lab", sampler=stub_sampler())
+        item, _ = item_of(p, "br-1")
+        assert (item["sourceWidth"], item["sourceHeight"]) == (640, 360)
+        validate_project(str(p))
+
+
+def test_a_sheet_that_cannot_be_made_never_fails_the_written_step(tmp_path, capsys):
+    p = project(tmp_path)
+
+    def broken(project_path, times, out):
+        print('{"error": "sample_failed", "message": "no 3D stage"}', file=sys.stderr)
+        raise SystemExit(1)
+    out = fb.run(str(p), "br-1", mode="track", sampler=broken)
+    assert out["mode"] == "track" and out["keys"] >= 2
+    assert "path" not in out and "no 3D stage" in out["sheet_error"]
+    item, _ = item_of(p, "br-1")
+    assert any(k["prop"] == "cropX" for k in item["keyframes"])
+
+
+def test_a_subject_under_the_captions_is_carded_by_auto_and_said_by_track(tmp_path):
+    # the box low in the frame (y 220-310 of 360): a full-height crop puts it in the caption band (56-76% of the height)
+    a = tmp_path / "a"
+    a.mkdir()
+    out = fb.run(str(project(a, y=220)), "br-1", sampler=stub_sampler())
+    assert out["mode"] == "card" and "captions" in out["why"]
+    b = tmp_path / "b"
+    b.mkdir()
+    out = fb.run(str(project(b, y=220)), "br-1", mode="track", sampler=stub_sampler())
+    assert out["mode"] == "track" and any("captions" in i for i in out["issues"])
