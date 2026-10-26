@@ -3768,3 +3768,156 @@ describe('CarouselEditor: a crop that keeps what you picked (§556 M4)', () => {
     expect(r.getByRole('textbox', { name: 'Edit text' })).toBeTruthy()
   })
 })
+
+// ── Typed numbers in the property panel are one step (M9) ────────────────────
+//
+// X, Y, W, H and rotation preview while typing (a transient) and write once, on
+// Enter or blur. Font size and Frame write on commit only. A stepper click is
+// one step. Esc gives the edit up.
+
+describe('CarouselEditor: typed panel numbers are one undo step', () => {
+  async function mount(project: Project = makeProject()) {
+    const adapter = makeFakeAdapter()
+    const r = render(<CarouselEditor project={project} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper(project.slides![0].elements[0].id))
+    await plainClick(project.slides![0].elements[0].id)
+    return { adapter, r }
+  }
+  const field = (r: ReturnType<typeof render>, name: string) => r.getByRole('spinbutton', { name }) as HTMLInputElement
+  async function type(input: HTMLInputElement, text: string) {
+    // One change per keystroke: "1", "10", "108", "1080". Focused, as a typist
+    // is: Enter commits by blurring, and a blur needs a focus.
+    input.focus()
+    for (let i = 1; i <= text.length; i++) {
+      await act(async () => { fireEvent.change(input, { target: { value: text.slice(0, i) } }) })
+    }
+  }
+  const enter = (input: HTMLInputElement) => act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+  const overlayWith = (props: Record<string, unknown>) =>
+    makeProject({
+      slides: [{
+        id: 'slide-0',
+        base_color: '#ffffff',
+        elements: [{ id: 'el-ov', type: 'overlay', overlay: { template: '/overlays/text.jsx', props }, frame: 3, x: 100, y: 100, w: 600, h: 200, rotation: 0 }],
+      }],
+    } as Partial<Project>)
+
+  it('typing 1080 into X then Enter is one save and one undo step', async () => {
+    const { adapter, r } = await mount()
+    const x = field(r, 'X')
+    x.focus()
+    await type(x, '1080')
+    expect(adapter.saveCalls).toHaveLength(0)
+    await enter(x)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 1080 })
+
+    await key('z', { metaKey: true })
+    expect(field(r, 'X').value).toBe('100')
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 100 })
+    // Nothing else was on the stack.
+    await key('z', { metaKey: true })
+    expect(adapter.saveCalls).toHaveLength(2)
+  })
+
+  it('blur commits the typed value the same way', async () => {
+    const { adapter, r } = await mount()
+    const w = field(r, 'W')
+    await type(w, '640')
+    await act(async () => { fireEvent.blur(w) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ w: 640 })
+  })
+
+  it('selecting another element mid-edit, with no blur, writes the typed value once and leaves the other alone', async () => {
+    const two = makeProject()
+    two.slides![0].elements.push({ id: 'el-b', type: 'image', src: 'b.png', x: 400, y: 400, w: 100, h: 100, rotation: 0 } as ImageElement)
+    const { adapter, r } = await mount(two)
+    const x = field(r, 'X')
+    await type(x, '555')
+    expect(adapter.saveCalls).toHaveLength(0)
+    await plainClick('el-b')
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const [a, b] = elementsOf(lastSave(adapter))
+    expect(a).toMatchObject({ id: 'el-img', x: 555 })
+    expect(b).toMatchObject({ id: 'el-b', x: 400, y: 400 })
+
+    // Nothing is left open: a later commit adds no second write, and one undo takes the edit back.
+    await key('z', { metaKey: true })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 100 })
+    await key('z', { metaKey: true })
+    await settle()
+    expect(adapter.saveCalls).toHaveLength(2)
+  })
+
+  it('rotation is previewed and written once too', async () => {
+    const { adapter, r } = await mount()
+    const rot = field(r, 'Rotation')
+    await type(rot, '45')
+    expect(adapter.saveCalls).toHaveLength(0)
+    await enter(rot)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ rotation: 45 })
+  })
+
+  it('typing back to the start value then blur records nothing', async () => {
+    const { adapter, r } = await mount()
+    const x = field(r, 'X')
+    await type(x, '5')
+    await type(x, '100')
+    await act(async () => { fireEvent.blur(x) })
+    await settle()
+    expect(adapter.saveCalls).toHaveLength(0)
+    expect(field(r, 'X').value).toBe('100')
+    // No undo step either.
+    await key('z', { metaKey: true })
+    await settle()
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('Esc reverts the field and records nothing', async () => {
+    const { adapter, r } = await mount()
+    const x = field(r, 'X')
+    x.focus()
+    await type(x, '777')
+    expect(field(r, 'X').value).toBe('777')
+    await act(async () => { fireEvent.keyDown(x, { key: 'Escape' }) })
+    expect(field(r, 'X').value).toBe('100')
+    await settle()
+    expect(adapter.saveCalls).toHaveLength(0)
+    await key('z', { metaKey: true })
+    await settle()
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('one stepper click is one save and one undo step', async () => {
+    const { adapter, r } = await mount()
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Increase X' })) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 101 })
+    await key('z', { metaKey: true })
+    expect(field(r, 'X').value).toBe('100')
+  })
+
+  it('Frame writes once, on commit, with no preview', async () => {
+    const { adapter, r } = await mount(overlayWith({ text: 'Hi' }))
+    const frame = field(r, 'Frame')
+    await type(frame, '12')
+    expect(adapter.saveCalls).toHaveLength(0)
+    await enter(frame)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect((elementsOf(lastSave(adapter))[0] as OverlayElement).frame).toBe(12)
+  })
+
+  it('font size writes once, on commit, with no preview', async () => {
+    const { adapter, r } = await mount(overlayWith({ text: 'Hi', fontSize: '40px' }))
+    const size = field(r, 'Font size')
+    await type(size, '120')
+    expect(adapter.saveCalls).toHaveLength(0)
+    await enter(size)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect((elementsOf(lastSave(adapter))[0] as OverlayElement).overlay.props.fontSize).toBe('120px')
+  })
+})
