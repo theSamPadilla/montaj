@@ -10,14 +10,20 @@ step: true
 
 ## Between a cut plan and its apply
 
-Right after the cut's plan (`cut-plan.md`), before the apply. The plan has already picked one take per section by the cut's rules; you review that choice across clips, in the plan file only. This section is the whole job: the steps further down are for a project already cut, not for a plan.
+Right after `cut` plans, before the apply. This section is the whole job; the steps further down are for a project already cut.
 
-1. `read_file` `cut-plan.md`. `## Cut` is what will play, in order; `## Unused` holds every removed take and every offer (a tag ending in `?`, which may name its other take's line and time).
-2. Map the script: its sections in narrative order. For each, find every take in both lists and keep one: complete over cut off, no restart inside it, fewer fillers, the last when they are equal.
-3. In each kept take, a phrase of 3 or more words said twice keeps only its last saying.
-4. Order: put the kept rows in the order the prompt or script asks for; with neither, keep the recording order. The apply plays `## Cut` top to bottom. Then read every seam between sections: the same fact or beat said on both sides loses one.
-5. Edit only the plan: move a row from `## Unused` into `## Cut` to keep it, delete a row from `## Cut` to drop it, move rows to reorder, delete words from a row (never add or change one); a `*` row is the whole of a trimmed row, put in place of that row. To take a `?` offer: for `retake?` or `false-start?`, delete that take's rows from `## Cut` (they are still there); for any other `?` group, put its rows in place of that take's rows in `## Cut`. Then `write_file` it back. The next step applies it.
-6. If the plan cannot say what the video needs (a clip with no rows at all, a long silence kept), tell the person what you see and stop there. Never rebuild the cut with other steps: no `waveform_trim`, `jump_cut`, `speech_text`, `speech_edit` or `crop_spec`. Each changes the project, and the apply is then refused as stale.
+The cut's transcripts are made per voiced run and are trustworthy. Never transcribe a window, render one, or re-measure the audio, and never rebuild the cut with `waveform_trim`, `jump_cut`, `speech_text`, `speech_edit` or `mix_timeline`: each changes the project, and the apply is then refused as stale.
+
+1. Read the plan: the cut's answer carries it as `text` (else `read_file` `cut-plan.md`). Silences and fillers are already gone. Every saying is a row of `## Cut`, in recording order, and nothing else is removed. A tag ending in `?` is a label, never a cut:
+   - `retake?` / `false-start?`: an earlier take; it names the line and time of the take said after it.
+   - `repeat? "words"`: those words are said again later in the take.
+   - `noise? "words"`: no voice under those words.
+   - `## Unused` rows went with the silence (no sound, or no voice, under them). Move one into `## Cut` only if it was really said.
+2. Map the script: its sections in narrative order. For each, keep one take: complete over cut off, no restart inside it, fewer fillers, the last when they are equal. Delete the other takes' rows.
+3. In each kept take, delete the words a `repeat?` names, so only the last saying stays. Delete what a `noise?` names unless it is a real word.
+4. Order: put the kept rows in the order the prompt or script asks for; with neither, keep the recording order. The apply plays `## Cut` top to bottom. Read every join between sections: the same fact or beat said on both sides loses one.
+5. Edit only the plan: delete rows or words, move rows; never add or change a word. `write_file` it back, then run `cut` with `plan`. An untagged plan applies as it is.
+6. Check the result in the apply's answer, not with other steps: `seams` lists every join where words were skipped, as `<time> <3 words before> | <3 words after>`, ending `(cuts a word)` when a join falls inside a word; `notes` says what a kept tag does. Fix a bad seam by editing the plan again and running `cut` with `plan` once more.
 
 ## On a project already cut
 
