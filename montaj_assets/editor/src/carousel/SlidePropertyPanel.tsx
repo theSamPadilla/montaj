@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Crop, Eye, EyeOff, Replace } from 'lucide-react'
 import type {
   Project,
@@ -14,9 +14,7 @@ import { Loader } from '../ui/Loader'
 import { TextFormattingToolbar } from '../text/TextFormattingToolbar'
 import { TextEffectControls } from '../text/TextEffectControls'
 import { AlignControls } from './AlignControls'
-
-// Shared small muted label that sits just above an inspector control.
-const fieldLabelClass = 'text-[11px] uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]'
+import { cropBlockedReason, fieldLabelClass, numInput, SlideBackgroundField, TransformFields, useReplaceImagePicker } from './ElementControls'
 
 // Section header: SLIDE / OVERLAY / IMAGE.
 const sectionHeaderClass =
@@ -101,59 +99,6 @@ function HideToggle({
     >
       {isHidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
     </button>
-  )
-}
-
-// `label` doubles as NumberField's accessible `name` — there is no separate
-// visible `<label htmlFor>` wired to the box, just the wrapping `<label>`
-// element below (which already associates the two natively), so reusing the
-// same string keeps the accessible name identical to what a screen reader
-// announced before this converted from a bare `<input>`.
-//
-// A typed number is ONE edit: `onPreview` shows it as it is typed (a transient,
-// nothing recorded) and `onCommit` writes it once, on Enter or blur. A box with
-// no `onPreview` shows nothing until then. `onCancel` (Esc) gives the typed
-// value up: it drops the preview, then blurs so NumberField releases its draft
-// and shows the value the project holds. A stepper click is its own discrete
-// edit (`onStep`), one write per click.
-interface NumInputHandlers {
-  onPreview?: (v: number) => void
-  onCommit: (v: number) => void
-  onCancel?: () => void
-  onStep: (v: number) => void
-}
-
-function numInput(
-  label: string,
-  value: number,
-  h: NumInputHandlers,
-  opts?: { min?: number; max?: number; step?: number; disabled?: boolean }
-) {
-  const step = opts?.step ?? 1
-  return (
-    <label className="flex flex-col gap-1">
-      <span className={fieldLabelClass}>{label}</span>
-      <div
-        onKeyDown={e => {
-          if (e.key !== 'Escape' || !h.onCancel) return
-          h.onCancel()
-          e.stopPropagation()
-          ;(e.target as HTMLElement).blur()
-        }}
-      >
-        <NumberField
-          name={label}
-          value={value}
-          disabled={opts?.disabled}
-          onPreview={h.onPreview ?? (() => {})}
-          onCommit={h.onCommit}
-          min={opts?.min}
-          max={opts?.max}
-          step={step}
-          onStep={d => h.onStep(stepValue(value, d, { step, min: opts?.min, max: opts?.max }))}
-        />
-      </div>
-    </label>
   )
 }
 
@@ -257,8 +202,7 @@ export default function SlidePropertyPanel({
   const [schemasLoading, setSchemasLoading] = useState(false)
   // Replace image: the hidden file input its button opens, and whether a
   // replace is in flight (the button is off until it settles).
-  const replaceInputRef = useRef<HTMLInputElement>(null)
-  const [replacing, setReplacing] = useState(false)
+  const replace = useReplaceImagePicker(slide?.id, element?.id, onReplaceImage)
 
   useEffect(() => {
     setSchemasLoading(true)
@@ -293,56 +237,14 @@ export default function SlidePropertyPanel({
   // text and overlay controls sit in a disabled fieldset.
   const locked = element?.locked === true
 
-  // X, Y, W, H and rotation: preview while typing, one write on Enter or blur.
-  // Without the preview hooks (a host panel with only `onElementChange`) the
-  // write still happens once, on commit.
-  const transformInput = (
-    label: string,
-    value: number,
-    key: 'x' | 'y' | 'w' | 'h' | 'rotation',
-    opts?: { min?: number; max?: number },
-  ) =>
-    numInput(
-      label,
-      value,
-      {
-        onPreview: onElementPreview ? v => onElementPreview({ [key]: v }) : undefined,
-        onCommit: onElementPreview ? () => onElementCommit?.() : v => onElementChange({ [key]: v }),
-        onCancel: onElementPreview ? onElementCancel : undefined,
-        onStep: v => onElementChange({ [key]: v }),
-      },
-      { ...opts, disabled: locked },
-    )
   const overlaySchema = overlayEl ? overlaySchemas.get(overlayEl.overlay.template) : null
-
-  const slideId = slide.id
-  async function handleReplacePicked(e: React.ChangeEvent<HTMLInputElement>) {
-    const input = e.target
-    const file = input.files?.[0]
-    // Cleared so the same file can be picked again.
-    input.value = ''
-    if (!file || !element || !onReplaceImage) return
-    setReplacing(true)
-    try {
-      await onReplaceImage(slideId, element.id, file)
-    } finally {
-      setReplacing(false)
-    }
-  }
 
   return (
     <div className={cn('w-80 flex-shrink-0 border-l border-[var(--editor-border)] flex flex-col overflow-y-auto bg-[var(--editor-bg)]', className)}>
       {/* Slide section */}
       <div className="flex flex-col gap-4 p-4">
         <div className={sectionHeaderClass}>Slide</div>
-        <div className="flex flex-col gap-1">
-          <span className={fieldLabelClass}>Background color</span>
-          <SwatchInput
-            value={slide.base_color || '#ffffff'}
-            onChange={v => onSlideChange({ base_color: v })}
-            ariaLabel="Background color"
-          />
-        </div>
+        <SlideBackgroundField slide={slide} onSlideChange={onSlideChange} />
         <div className="flex gap-2">
           <Button
             size="sm"
@@ -406,15 +308,14 @@ export default function SlidePropertyPanel({
           </div>
 
           {/* Transform */}
-          <div className="flex flex-col gap-3">
-            <div className="grid grid-cols-2 gap-3">
-              {transformInput('X', element.x, 'x')}
-              {transformInput('Y', element.y, 'y')}
-              {transformInput('W', element.w, 'w', { min: 1 })}
-              {transformInput('H', element.h, 'h', { min: 1 })}
-            </div>
-            {transformInput('Rotation', element.rotation ?? 0, 'rotation', { min: -360, max: 360 })}
-          </div>
+          <TransformFields
+            element={element}
+            disabled={locked}
+            onChange={onElementChange}
+            onPreview={onElementPreview}
+            onCommit={onElementCommit}
+            onCancel={onElementCancel}
+          />
 
           <AlignControls
             element={element}
@@ -438,12 +339,8 @@ export default function SlidePropertyPanel({
                   size="sm"
                   variant="secondary"
                   className="flex flex-1 items-center gap-1.5"
-                  disabled={locked || (element.rotation ?? 0) !== 0 || !onEnterCrop}
-                  title={
-                    (element.rotation ?? 0) !== 0
-                      ? 'Reset rotation to 0 before cropping'
-                      : 'Crop image'
-                  }
+                  disabled={locked || cropBlockedReason(element) !== null || !onEnterCrop}
+                  title={cropBlockedReason(element) ?? 'Crop image'}
                   onClick={() => onEnterCrop?.(slide.id, element.id)}
                 >
                   <Crop className="h-3.5 w-3.5" />
@@ -453,22 +350,15 @@ export default function SlidePropertyPanel({
                   size="sm"
                   variant="secondary"
                   className="flex flex-1 items-center gap-1.5"
-                  disabled={locked || !onReplaceImage || replacing}
+                  disabled={locked || !onReplaceImage || replace.replacing}
                   title="Replace image"
-                  onClick={() => replaceInputRef.current?.click()}
+                  onClick={replace.open}
                 >
                   <Replace className="h-3.5 w-3.5" />
                   Replace
                 </Button>
               </div>
-              <input
-                ref={replaceInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                data-testid="replace-image-input"
-                onChange={handleReplacePicked}
-              />
+              {replace.input}
             </div>
           )}
 

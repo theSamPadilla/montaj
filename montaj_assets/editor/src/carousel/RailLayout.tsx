@@ -40,6 +40,8 @@ export interface RailLayoutProps {
   canRedo: boolean
   /** The canvas area (centred, scrolls on its own). */
   canvas: ReactNode
+  /** The selected element's toolbar, centred along the top of the canvas area (§587 M3). */
+  canvasToolbar?: ReactNode
   /** Panel content per item; a missing one shows the placeholder. */
   panels: Partial<Record<CarouselRailItemId, ReactNode>>
   /** Called before any panel opens or closes (the editor applies a pending crop). */
@@ -52,7 +54,7 @@ export interface RailLayoutProps {
 
 /** The rail layout's shell: top bar, rail + side panel, canvas, right panel, bottom bar. */
 export default function RailLayout({
-  topLeft, topRight, size, onUndo, onRedo, canUndo, canRedo, canvas, panels, onBeforeToggle,
+  topLeft, topRight, size, onUndo, onRedo, canUndo, canRedo, canvas, canvasToolbar, panels, onBeforeToggle,
   slideIds, selectedSlideId, onSelectSlide, onOpenControls,
 }: RailLayoutProps) {
   const [side, setSide] = useState<Exclude<CarouselRailItemId, 'notes'> | null>(null)
@@ -130,7 +132,15 @@ export default function RailLayout({
           </section>
         )}
 
-        <div className="flex-1 min-w-0 min-h-0 flex flex-col">{canvas}</div>
+        {/* The top strip is the element toolbar's: it never covers the slide. */}
+        <div className="relative flex-1 min-w-0 min-h-0 flex flex-col pt-14">
+          {canvasToolbar && (
+            <div className="absolute inset-x-0 top-2 z-30 flex justify-center px-4 pointer-events-none">
+              <div className="pointer-events-auto max-w-full">{canvasToolbar}</div>
+            </div>
+          )}
+          {canvas}
+        </div>
 
         {notesOpen && (
           <aside

@@ -10,6 +10,7 @@ import SlideCanvas, { type CropExit, type SlideCanvasCropControl } from './Slide
 import SlidePropertyPanel from './SlidePropertyPanel'
 import AddElementMenu from './AddElementMenu'
 import RailLayout from './RailLayout'
+import ElementToolbar, { type ElementToolbarPopover } from './ElementToolbar'
 import CarouselRenderModal from './CarouselRenderModal'
 import ControlsInfoModal, { CAROUSEL_CONTROLS, LOCK_CONTROL, platformSections } from '../ControlsInfoModal'
 import { DARK_TEXT, NoteArmLayer, NotePinLayer, badgeColor, hasPoint } from './NoteLayers'
@@ -807,6 +808,15 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // own Esc handlers still run.
   const modalOpen = showControls || renderOpen || overlayPickerOpen
 
+  // The rail layout's element toolbar popover (§587 M3): Position or Effects.
+  // It closes when the selection empties and when crop mode starts (Esc there
+  // is the crop's).
+  const railLayout = layout === 'rail'
+  const [toolbarPopover, setToolbarPopover] = useState<ElementToolbarPopover | null>(null)
+  useEffect(() => {
+    if (liveSelectedIds.length === 0 || cropElementId) setToolbarPopover(null)
+  }, [liveSelectedIds.length, cropElementId])
+
   // Undo and redo, from the keys and the toolbar. An open nudge burst is
   // committed first, so Undo takes the nudge back (it is its own step) and Redo
   // finds a new edit that has ended redo. In crop mode undo cancels the crop
@@ -822,6 +832,16 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   }
 
   const bindings: KeyBinding[] = [
+    {
+      // Esc closes the element toolbar's open popover before anything else.
+      // A typed number takes its own Esc first (it gives the value up).
+      id: 'carousel.close-popover',
+      description: 'Close the toolbar popover',
+      matches: matchesEscape,
+      guard: () => railLayout && toolbarPopover !== null && !cropElementId,
+      action: () => setToolbarPopover(null),
+      paletteHidden: true,
+    },
     {
       // Esc adds the armed note about the whole slide.
       id: 'carousel.place-note',
@@ -1490,6 +1510,13 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     state.discardTransient()
   }
 
+  /** Before each element-toolbar action but Crop: an open nudge burst ends and
+   *  a pending crop is applied, each its own undo step before the action's. */
+  function beforeToolbarAction() {
+    flushNudge()
+    if (cropElementIdRef.current) flushSync(applyCrop)
+  }
+
   function handleSlideChange(patch: Partial<Slide>) {
     if (selectedSlideId) void state.updateSlide(selectedSlideId, patch)
   }
@@ -1561,7 +1588,6 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   const availH = Math.max(0, canvasContainerSize.h - 2 * CANVAS_MARGIN - HINT_RESERVE)
   const canvasScale = Math.min(availW / w, availH / h, 1)
 
-  const railLayout = layout === 'rail'
   // The slide viewport's content, shared by both layouts.
   const canvasInner = (
     <>
@@ -1706,6 +1732,42 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       onRedo={redo}
       canUndo={state.canUndo || !!cropElementId}
       canRedo={state.canRedo && !cropElementId}
+      canvasToolbar={
+        selectedSlide && !showPendingSurface && selectedElements.length > 0 ? (
+          <ElementToolbar
+            slideId={selectedSlide.id}
+            selection={selectedElements}
+            resolution={[w, h]}
+            canEdit={canEdit}
+            cropping={!!cropElementId && cropElementId === selectedElementId}
+            popover={toolbarPopover}
+            onPopoverChange={setToolbarPopover}
+            beforeAction={beforeToolbarAction}
+            updateOverlayProp={updateOverlayProp}
+            onElementChange={handlePanelElementChange}
+            onElementPreview={handlePanelElementPreview}
+            onElementCommit={handlePanelElementCommit}
+            onElementCancel={handlePanelElementCancel}
+            onAlignSelection={handleAlignSelection}
+            onMoveInStack={moveSelectionInStack}
+            onToggleLock={toggleSelectionLock}
+            onDuplicate={() => {
+              // One element: the panel's Duplicate, which copies it as it is
+              // after the crop just applied. Several: Cmd+D's.
+              if (selectedElementId) handleDuplicateElement(selectedSlide.id, selectedElementId)
+              else duplicateSelection()
+            }}
+            onDelete={removeSelection}
+            onToggleCrop={() => {
+              if (!selectedElementId) return
+              if (cropElementIdRef.current === selectedElementId) applyCrop()
+              else enterCrop(selectedElementId)
+            }}
+            onReplaceImage={state.isEditingAllowed ? handleReplaceImage : undefined}
+            mode={mode}
+          />
+        ) : undefined
+      }
       canvas={
         <div ref={canvasContainerRef} className="relative flex-1 flex flex-col items-center justify-center gap-4 overflow-y-auto min-h-0 p-4">
           {canvasInner}
