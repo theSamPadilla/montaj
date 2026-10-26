@@ -54,6 +54,7 @@ from lib.caption_profile_look import resolve_style_and_look
 from lib.caption_script import script_of, spell_from_script
 from lib.caption_translation import TranslationError, apply_show, apply_translation, show_new_language, finish_regenerated_track, is_translation, merge_caption_theme as _lib_merge_caption_theme, record_source_language
 from lib.project_tracks import normalize_tracks, track_items
+from lib.path_match import spaced_twins
 from lib.project_migrate import converge
 from lib.item_ids import id_suffix
 from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allowed_hosts
@@ -4268,6 +4269,10 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
         body = {key: value for key, value in body.items() if key not in _SAVE_REPORT_KEYS}
         merged = _merged_for_save(existing, body,
                                   drop_nulls=save_guard.sync_origin_of(headers) == save_guard.SYNC_ORIGIN)
+        # PL89i: a new or changed item src naming no file, whose name differs from one file's only in its spaces (a
+        # typed space for the U+202F in a screen recording's name) or Unicode form, saves that file's real name.
+        # Before every check, so they see the document as it will be written. Stat calls only.
+        src_warnings = _match_item_srcs(merged, existing, project_dir) if "tracks" in body else []
         # §482: a field in an open Studio sync clash refuses the whole save, from anyone but a person, before
         # the revisions are compared. Every field the write really changes counts, not only the body's: a
         # normalisation of a legacy `tracks` the body never named is still a write of `tracks` (review 40, 1).
@@ -4375,7 +4380,31 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
         asyncio.create_task(_run_carousel_render_detached(project_id, project_dir))
     response.headers["Server-Timing"] = f"save;dur={int(round((time.perf_counter() - save_started) * 1000.0))}"
     # The report rides on the answer only, never in project.json.
+    if src_warnings:
+        media_report = {**media_report, "warnings": src_warnings + list(media_report.get("warnings") or [])}
     return {**current, **media_report} if media_report else current
+
+
+def _match_item_srcs(merged: dict, existing: dict, project_dir: Path) -> list:
+    """Point each new or changed item whose `src` names no file at its one twin (lib/path_match.py), in place,
+    keeping a relative src relative. Answers the save's warnings: one per src changed, and one per src left as
+    written because several files match, naming them."""
+    before = {(it.get("id"), it.get("src")) for t in normalize_tracks(existing).get("tracks") or [] if isinstance(t, dict)
+              for it in t.get("items") or [] if isinstance(it, dict)}
+    warnings = []
+    for track in normalize_tracks(merged).get("tracks") or []:
+        for item in (track.get("items") or []) if isinstance(track, dict) else []:
+            src = item.get("src") if isinstance(item, dict) else None
+            if not isinstance(src, str) or not src.strip() or (item.get("id"), src) in before or "://" in src or src.startswith("/api/"):
+                continue
+            hits = spaced_twins(src if os.path.isabs(src) else os.path.join(str(project_dir), src))
+            if len(hits) == 1:
+                item["src"] = hits[0] if os.path.isabs(src) else os.path.relpath(hits[0], str(project_dir))
+                warnings.append(f"{item.get('id')}: no file at {src}; saved the file it names, {item['src']}")
+            elif hits:
+                warnings.append(f"{item.get('id')}: no file at {src}, and several match once spaces are read alike ("
+                                + ", ".join(os.path.basename(h) for h in hits) + "); saved as written, so set it to one")
+    return warnings
 
 
 @router.get("/projects/{project_id}/generated")
