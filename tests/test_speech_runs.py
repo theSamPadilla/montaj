@@ -1,5 +1,5 @@
 """PL89 A1 T1: lib/speech_runs, a take transcribed by voiced run (one whisper call, a clip a run), the transcribe
-step's `by-runs` param and cut's redo of an old full-file transcript. Synthetic only: tones and silence written here,
+step's `whole-file` param (off: by runs) and cut's redo of an old full-file transcript. Synthetic only: tones and silence written here,
 a fake whisper that writes `<wav>.json` per `-f`, invented words."""
 import json
 import math
@@ -291,12 +291,12 @@ def test_step_by_runs_is_the_default(step, tmp_path, fake):
     assert res["word_count"] == 1 and Path(res["srt"]).exists() and res["words"] == str(tmp_path / "out.json")
 
 
-def test_step_by_runs_false_keeps_the_full_file_path(step, tmp_path, fake, monkeypatch):
+def test_step_whole_file_keeps_the_full_file_path(step, tmp_path, fake, monkeypatch):
     f = fake()
     calls = []
     full_file_whisper(monkeypatch, step, calls)
     media = make_wav(tmp_path / "a.wav", [(0.5, 1.5)], 3.0)
-    step.transcribe(media, str(tmp_path / "out"), "base.en", "en", by_runs=False)
+    step.transcribe(media, str(tmp_path / "out"), "base.en", "en", whole_file=True)
     assert f.calls == [] and len(calls) == 1 and "--output-file" in calls[0] and "-f" in calls[0]
     assert load(tmp_path / "out")["montaj"] == {"input": "file", "offsets": "source", "timestamps": "source", "srt": "source"}
 
@@ -311,6 +311,16 @@ def test_step_trim_spec_keeps_the_full_file_path(step, tmp_path, fake, monkeypat
     step.transcribe(str(spec), str(tmp_path / "out"), "base.en", "en")
     assert f.calls == [] and len(calls) == 1
     assert load(tmp_path / "out")["montaj"]["input"] == "spec"
+
+
+def test_step_cli_flag_whole_file(step, tmp_path, fake, monkeypatch):
+    f = fake()
+    calls = []
+    full_file_whisper(monkeypatch, step, calls)
+    media = make_wav(tmp_path / "a.wav", [(0.5, 1.5)], 3.0)
+    monkeypatch.setattr(sys, "argv", ["transcribe.py", "--input", media, "--out", str(tmp_path / "out"), "--whole-file"])
+    step.main()
+    assert f.calls == [] and len(calls) == 1
 
 
 def test_step_max_context_is_ignored_by_runs(step, tmp_path, fake):

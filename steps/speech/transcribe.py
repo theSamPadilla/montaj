@@ -39,13 +39,13 @@ def _write_srt(entries, path):
 
 
 def transcribe(input_path, out=None, model=DEFAULT_WHISPER_MODEL, language="en", max_context=None, fit_pauses=False,
-               by_runs=True):
+               whole_file=False):
     """Transcribe one file (or trim spec) and write `<out>.srt` and `<out>.json` (default: beside the
     input). Returns {srt, words} plus the speech stats. cut calls this for an untranscribed clip.
 
-    by_runs (PL89 A1, the default): a plain file is transcribed run by run of voice, all of a take's clips in one
-    whisper call (lib/speech_runs), because over a whole take whisper loses words and times. A trim spec, by_runs
-    False, and a file with no voiced run keep the full-file run. max_context is ignored by runs (always 0)."""
+    By default (PL89 A1) a plain file is transcribed run by run of voice, all of a take's clips in one whisper call
+    (lib/speech_runs), because over a whole take whisper loses words and times. A trim spec, whole_file True, and a
+    file with no voiced run keep the full-file run. max_context is ignored by runs (always 0)."""
 
     require_file(input_path)
 
@@ -84,7 +84,7 @@ def transcribe(input_path, out=None, model=DEFAULT_WHISPER_MODEL, language="en",
     pauses = heard_s = None
     by_runs_done = False
     try:
-        if by_runs and trim_spec_data is None:
+        if not whole_file and trim_spec_data is None:
             from lib import speech_runs
             by_runs_done = not speech_runs.transcribe_runs(audio_input, output_prefix, model_path, language).get("fell_back")
         if not by_runs_done:
@@ -165,13 +165,13 @@ def main():
     parser.add_argument("--fit-pauses", action="store_true",
                         help="For captions: fit word times to the pauses measured in the audio, so a word "
                              "after a pause starts on the voice. Leave it off for anything that cuts on word times.")
-    parser.add_argument("--by-runs", nargs="?", const="true", default="true", choices=["true", "false"],
-                        help="Transcribe each run of voice as its own clip, all in one whisper call (default). "
-                             "'false' transcribes the whole file in one pass. A trim spec always does. "
-                             "--max-context is ignored when on.")
+    parser.add_argument("--whole-file", action="store_true",
+                        help="Transcribe the whole file in one pass. By default each run of voice is its own clip, "
+                             "all in one whisper call. A trim spec always goes whole. --max-context is ignored "
+                             "by runs.")
     args = parser.parse_args()
     result = transcribe(args.input, args.out, args.model, args.language, args.max_context, args.fit_pauses,
-                        args.by_runs == "true")
+                        args.whole_file)
     print(json.dumps(result))
 
 if __name__ == "__main__":
