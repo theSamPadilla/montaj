@@ -372,3 +372,11 @@ def test_sample_frame_real_schema_takes_a_list_of_times():
     assert args.count("--at") == 3 and args[args.index("--at") + 1] == "0.5"
     one = build_cli_args(schema, {"project": "/p/project.json", "at": 2})
     assert one.count("--at") == 1
+
+
+def test_a_list_of_objects_on_a_repeated_param_goes_as_json_one_flag_each():
+    """PL89b: place's items is a list of placements; each object must reach the step as JSON, never Python's repr."""
+    from serve.routes.steps import build_cli_args
+    schema = {"params": [{"name": "items", "type": "string"}]}
+    flags = build_cli_args(schema, {"items": [{"at": 2, "overlay": "overlays/a.jsx"}, {"preset": "callout", "at": 5}]})
+    assert flags == ["--items", '{"at": 2, "overlay": "overlays/a.jsx"}', "--items", '{"preset": "callout", "at": 5}']

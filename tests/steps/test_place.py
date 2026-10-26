@@ -571,3 +571,118 @@ def test_a_malformed_language_is_refused(tmp_path, capsys, bad):
 def test_a_language_code_passes_the_check(tmp_path, ok):
     d = make_project(tmp_path)
     run(d, at="2", preset="callout", language=ok)
+
+
+# ── PL89b: what the paid ucla run (final-ucla-pl89b, calls 56-78) did twice ──────────────────────────────────────
+
+def test_an_id_not_on_the_timeline_names_a_new_item_when_there_is_something_to_place(tmp_path, capsys):
+    """Run calls 56-60 each passed an id for a new overlay, were refused ("No item ov-specs on the timeline"), then sent
+    again without it (61-65). An id that is new and comes with an overlay or a preset is the new item's id."""
+    d = make_project(tmp_path)
+    out = run(d, item_id="ov-specs", at="2", for_s=3, preset="callout", props='{"text": "19 in"}')
+    assert out["id"] == "ov-specs"
+    assert [it["id"] for it in tracks(d)[1]["items"]] == ["ov-specs"]
+    # an id with nothing to place is still an update of an item that is not there
+    assert refused(capsys, run, d, item_id="ov-nope", at="1")["error"] == "item_not_found"
+    # an id taken by a non-overlay item, or not a plain name, is refused
+    assert refused(capsys, run, d, item_id="clip-0", at="1", preset="callout")["error"] == "not_an_overlay"
+    assert refused(capsys, run, d, item_id="a b/c", at="1", preset="callout")["error"] == "invalid_id"
+
+
+def fake_sheet():
+    calls = []
+
+    def fn(project_path, times, out):
+        calls.append(list(times))
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_bytes(b"png")
+        return out
+    fn.calls = calls
+    return fn
+
+
+def test_items_places_every_overlay_in_one_call_with_one_sheet(tmp_path):
+    """Run calls 56-65 placed five overlays one call each (ten with the refusals). items places them all, checked
+    before any is written, and answers one sheet of the middle of each."""
+    d = make_project(tmp_path)
+    (d / "overlays" / "specs.jsx").write_text("export default function S() { return <div>19 in</div> }")
+    sheet = fake_sheet()
+    out = place.run_many(str(d / "project.json"), json.dumps([
+        {"overlay": "overlays/specs.jsx", "at": 2, "for": 3, "id": "ov-specs"},
+        {"preset": "lower_third", "at": 10, "for": 2, "props": {"text": "PhoneBot paper", "subtitle": "UCLA"}},
+        {"preset": "callout", "at": 20, "until": 22, "props": {"text": "4 lb"}},
+    ]), measure_fn=fake_measure(), transcribe=no_transcribe, sampler=sheet)
+    assert [p["id"] for p in out["placed"]][0] == "ov-specs" and len(out["placed"]) == 3
+    assert [(p["start"], p["end"]) for p in out["placed"]] == [(2.0, 5.0), (10.0, 12.0), (20.0, 22.0)]
+    assert sheet.calls == [[3.5, 11.0, 21.0]], "one sheet, each overlay at its middle"
+    assert out["path"] == out["sheet"] and out["sheet"].endswith(".png")
+    assert sum(len(t["items"]) for t in tracks(d)[1:]) == 3
+
+
+def test_items_checks_every_placement_before_writing_any(tmp_path, capsys):
+    d = make_project(tmp_path)
+    before = tracks(d)
+    err = refused(capsys, place.run_many, str(d / "project.json"), json.dumps([
+        {"preset": "callout", "at": 1}, {"overlay": "overlays/nope.jsx", "at": 3}]),
+        measure_fn=fake_measure(), transcribe=no_transcribe, sampler=fake_sheet())
+    assert err["error"] == "overlay_not_found" and err["message"].startswith("items[1]: ")
+    assert tracks(d) == before, "nothing placed"
+    assert refused(capsys, place.run_many, str(d / "project.json"), "{}", sampler=fake_sheet())["error"] == "invalid_items"
+
+
+def vendored(tmp_path, monkeypatch, faces):
+    """The bundled font set the render serves from (MONTAJ_FONTS_DIR's families.json): {family: [normal weights]}."""
+    base = tmp_path / "fonts"
+    base.mkdir()
+    (base / "families.json").write_text(json.dumps({"families": sorted(faces), "faces": {f: {"normal": w} for f, w in faces.items()}}))
+    monkeypatch.setenv("MONTAJ_FONTS_DIR", str(base))
+
+
+def test_a_bundled_family_short_of_a_weight_keeps_its_bundled_faces_and_asks_google_for_the_rest(tmp_path, monkeypatch):
+    """The bundled JetBrains Mono has 400 and 700; the run's overlays used 500 and 800."""
+    vendored(tmp_path, monkeypatch, {"JetBrains Mono": [400, 700]})
+    d = make_project(tmp_path)
+    (d / "overlays" / "m.jsx").write_text("export default function M() { return <div style={{ fontFamily: '\"JetBrains Mono\", monospace', fontWeight: 800 }}><i style={{ fontWeight: 500 }}>x</i></div> }")
+    run(d, at="1", overlay="overlays/m.jsx")
+    assert tracks(d)[1]["items"][0]["googleFonts"] == ["JetBrains+Mono", "JetBrains+Mono:wght@500;800"]
+
+
+def test_a_placed_overlay_gets_its_google_fonts_from_its_own_font_stacks(tmp_path, monkeypatch):
+    """Run calls 72 and 78 were edit_timeline calls that only set googleFonts on overlays whose shared style named
+    "JetBrains Mono". place reads the overlay and its local imports: the first family of each font stack that is not a
+    system font, with the weights the files use: one spec when the bundled set has them all, else the family as it
+    surely loads plus a spec of the missing weights on its own (a weight Google lacks then fails that link alone)."""
+    vendored(tmp_path, monkeypatch, {"JetBrains Mono": [400, 500, 700, 800]})
+    d = make_project(tmp_path)
+    (d / "overlays" / "_shared").mkdir()
+    (d / "overlays" / "_shared" / "style.js").write_text(
+        "export const S = { mono: '\"JetBrains Mono\", ui-monospace, Menlo, monospace', body: 'Helvetica, Arial, sans-serif' }\nexport default S\n")
+    (d / "overlays" / "specs.jsx").write_text(
+        "import S from './_shared/style.js'\nexport default function P() {\n"
+        "  return <div style={{ fontFamily: S.mono, fontWeight: 800 }}><span style={{ fontWeight: 500 }}>in</span>"
+        "<b style={{ fontFamily: \"'Anton', sans-serif\" }}>19</b></div>\n}\n")
+    out = run(d, at="2", overlay="overlays/specs.jsx")
+    item = tracks(d)[1]["items"][0]
+    assert sorted(item["googleFonts"]) == ["Anton", "Anton:wght@500;800", "JetBrains+Mono:wght@500;800"]
+    assert out["fonts"] == item["googleFonts"] and "issues" not in out
+
+
+def test_an_overlay_s_own_googleFonts_export_wins_and_a_preset_or_system_font_gets_none(tmp_path):
+    d = make_project(tmp_path)
+    (d / "overlays" / "t.jsx").write_text(
+        "export const googleFonts = ['Playfair+Display:ital@1']\n"
+        "export default function T() { return <div style={{ fontFamily: '\"Inter\", sans-serif' }}>t</div> }\n")
+    run(d, at="1", overlay="overlays/t.jsx")
+    (d / "overlays" / "sys.jsx").write_text("export default function T() { return <div style={{ fontFamily: '-apple-system, Helvetica, sans-serif' }}>t</div> }\n")
+    run(d, at="5", overlay="overlays/sys.jsx")
+    run(d, at="9", preset="callout")
+    items = {it["src"]: it for it in tracks(d)[1]["items"]}
+    assert items["./overlays/t.jsx"]["googleFonts"] == ["Playfair+Display:ital@1"]
+    assert "googleFonts" not in items["./overlays/sys.jsx"] and "googleFonts" not in items["./overlays/callout.jsx"]
+
+
+def test_fonts_an_item_already_names_are_kept(tmp_path):
+    d = make_project(tmp_path, overlays=[{"id": "ov-a", "start": 1, "end": 3, "googleFonts": ["Syne:wght@800"]}])
+    (d / "overlays" / "ov-a.jsx").write_text("export default function A() { return <div style={{ fontFamily: '\"Anton\", sans-serif' }}>a</div> }")
+    run(d, item_id="ov-a", at="5")
+    assert tracks(d)[1]["items"][0]["googleFonts"] == ["Syne:wght@800"]
