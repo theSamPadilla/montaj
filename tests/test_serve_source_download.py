@@ -776,3 +776,20 @@ def test_retry_route_is_served(workspace, monkeypatch):
     resp = client.post(f"/api/projects/{pid}/source-download/retry")
     assert resp.status_code == 409, resp.text
     assert resp.json()["detail"]["error"] == "not_failed"
+
+
+def test_the_downloaded_videos_title_is_recorded_in_its_provenance(tmp_path, monkeypatch, finalize_stubs):
+    # PL89e: frame_broll's card credit reads the source's title from its provenance; the download saw the title and
+    # kept it only as the project's name.
+    from serve import provenance
+    pid = str(uuid.uuid4())
+    project_dir = tmp_path / "p"
+    _write_project(project_dir, pid, status="draft")
+    target = project_dir / f"youtube-{VID}.mp4"
+    code, out, err = _ok_output(project_dir)
+    _stub_spawn(monkeypatch, (code, '[montaj] title "PhoneBot: a phone that walks"\n' + out, err), writes=[target])
+
+    _download(pid, project_dir)
+
+    entry = provenance.read(project_dir)[target.name]
+    assert entry["title"] == "PhoneBot: a phone that walks" and entry["sourceUrl"] == URL

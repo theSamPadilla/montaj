@@ -100,15 +100,27 @@ ADD_FIRST = "add the clip to an upper track first, then pass its item id"
 PLATFORMS = {"youtube": "YouTube", "vimeo": "Vimeo", "tiktok": "TikTok", "instagram": "Instagram"}
 
 
-def default_credit(source):
-    """PL89e: the card's credit when no `source` is passed, from the clip's source record: its title or name, else its
-    URL's site, else a downloaded file's own name ("youtube-<slug>-<id>" gives "Footage: <Slug> · YouTube"); '' for the
-    person's own footage."""
+def provenance_of(project_dir, path):
+    """The file's entry in the project's provenance record (assets/.provenance.json, serve/provenance.py), or {}."""
+    if not project_dir or not path:
+        return {}
+    try:
+        from serve import provenance
+        return provenance.merged(project_dir).get(provenance.key_for(project_dir, path)) or {}
+    except Exception:  # noqa: BLE001  (no record, a path outside the project: no entry)
+        return {}
+
+
+def default_credit(source, project_dir=None):
+    """PL89e: the card's credit when no `source` is passed, from the clip's source: the title of its source record or
+    of its provenance (where it was downloaded from), else the site of its URL, else a downloaded file's own name
+    ("youtube-<slug>-<id>" gives "Footage: <Slug> · YouTube"); '' for the person's own footage."""
     source = source or {}
-    for k in ("title", "name", "sourceTitle"):
-        if isinstance(source.get(k), str) and source[k].strip():
-            return f"Footage: {source[k].strip()}"
-    url = source.get("url") or source.get("sourceUrl")
+    prov = provenance_of(project_dir, source.get("src"))
+    for v in (source.get("title"), source.get("name"), source.get("sourceTitle"), prov.get("title")):
+        if isinstance(v, str) and v.strip():
+            return f"Footage: {v.strip()}"
+    url = source.get("url") or source.get("sourceUrl") or prov.get("sourceUrl")
     if isinstance(url, str) and url.strip():
         from urllib.parse import urlparse
         host = urlparse(url.strip()).netloc.lower()
@@ -276,7 +288,7 @@ def analyse(project, on_disk, project_path, item_id, mode, matte=None):
     return {"id": item_id, "mode": mode, "why": why, "probed": probed, "crop_w": crop_w, "box": box, "start": start,
             "end": end, "W": W, "H": H, "track_keys": [(item_t(st), round(p["x"], 4)) for st, p in zip(times, path["points"])] if mode == "track" else None,
             "found_boxes": found, "found": path["found"], "n": n, "crossed": crossed, "zoom": zoom,
-            "default_credit": default_credit(source_of(project, item))}
+            "default_credit": default_credit(source_of(project, item), os.path.dirname(project_path))}
 
 
 def run(project_path, item_id, *, mode="auto", source=None, detail=False, sampler=None):

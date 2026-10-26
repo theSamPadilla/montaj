@@ -813,9 +813,12 @@ def _source_download_line_handler(project_id: str, project_dir: Path, job_id: st
             broadcaster.publish(project_id, _sse_data_frame(text))
 
     def name_it(title):
-        def change(project, _record):
+        def change(project, record):
+            # PL89e: the record keeps the title for the source's provenance (frame_broll's card credit reads it).
+            changed = record.get("title") != title
+            record["title"] = title
             if isinstance(project.get("name"), str) and project["name"].strip():
-                return False
+                return changed
             project["name"] = title
             return True
         _schedule_record_update(project_dir, job_id, change, publish)
@@ -940,6 +943,8 @@ async def _finalize_source_download(
             project = json.loads(raw)
         except (OSError, ValueError):
             return  # deleted meanwhile
+        seen = project.get("sourceDownload") if isinstance(project.get("sourceDownload"), dict) else {}
+        title = seen.get("title") if isinstance(seen.get("title"), str) and seen.get("title").strip() else None
         sources = project.get("sources")
         if not isinstance(sources, list):
             sources = project["sources"] = []
@@ -973,7 +978,7 @@ async def _finalize_source_download(
     # Where the file came from (serve/provenance.py). Best-effort, like the proxy below.
     try:
         await asyncio.to_thread(provenance.record_provenance, project_dir, clip["src"],
-                                {"kind": "web", "via": "youtube", "sourceUrl": url})
+                                {"kind": "web", "via": "youtube", "sourceUrl": url, **({"title": title} if title else {})})
     except Exception as e:
         logger.warning("source download: provenance not recorded for %s: %s", clip.get("src"), e)
 

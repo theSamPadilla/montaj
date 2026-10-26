@@ -506,3 +506,15 @@ def test_a_card_with_no_source_passed_gets_the_default_credit(tmp_path):
     out = fb.run(str(p), "br-1", mode="card", sampler=stub_sampler())
     card = next(it for t in json.loads(Path(p).read_text())["tracks"] for it in t["items"] if it.get("id") == out["card"])
     assert card["props"]["credit"] == "Footage: Phonebot · YouTube" and "note" not in out
+
+
+def test_the_credit_reads_the_title_from_the_files_provenance(tmp_path):
+    d = tmp_path / "proj"
+    (d / "assets").mkdir(parents=True)
+    video = d / "youtube-phonebot-o_Q4rFSNZuE.mp4"
+    video.write_bytes(b"x")
+    (d / "assets" / ".provenance.json").write_text(json.dumps({video.name: {
+        "kind": "web", "via": "fetch", "sourceUrl": "https://www.youtube.com/watch?v=o_Q4rFSNZuE", "title": "PhoneBot: a phone that walks"}}))
+    assert fb.default_credit({"src": str(video)}, str(d)) == "Footage: PhoneBot: a phone that walks"
+    (d / "assets" / ".provenance.json").write_text(json.dumps({video.name: {"kind": "web", "via": "url", "sourceUrl": "https://www.example.org/v.mp4"}}))
+    assert fb.default_credit({"src": str(video)}, str(d)) == "Footage: example.org"
