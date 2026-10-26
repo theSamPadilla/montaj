@@ -439,6 +439,17 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
             item["src"] = src
         new_props = dict(item.get("props") or {})
         new_props.update(extra_props)
+        if preset == "stat":   # round 9: a time on the timeline inside the item's span is made seconds into the item
+            stats = new_props.get("stats")
+            if isinstance(stats, list):
+                span, moved = end - start, []
+                for x in stats:
+                    t = x.get("at") if isinstance(x, dict) else None
+                    if isinstance(t, (int, float)) and not isinstance(t, bool) and t > span + 0.01 and start - 0.01 <= t <= end + 0.01:
+                        x["at"] = round(t - start, 3)
+                        moved.append(str(x["at"]))
+                if moved:
+                    issues.append({"t": lc.r2(start), "id": "stat", "text": f"stats' at read as timeline seconds, now {', '.join(moved)} s: at is seconds into the item"})
         if preset:
             new_props.setdefault("canvasW", str(width))
             new_props.setdefault("canvasH", str(height))

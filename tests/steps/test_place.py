@@ -454,6 +454,18 @@ def test_scene_labels_and_stat_render_inside_the_frame(tmp_path, monkeypatch):
     assert "4" in " ".join(out["text"]), out
 
 
+# Round 9: the agent gave stat's times as timeline seconds (10.3, 11.5 for an item at 10.2 for 2.4 s) and placed it three
+# times over. A time past the item's length that falls inside its span on the timeline is read as timeline seconds.
+def test_stat_times_given_on_the_timeline_are_made_seconds_into_the_item(tmp_path):
+    d = make_project(tmp_path)
+    out = run(d, at="10.2", for_s=2.4, preset="stat", props=json.dumps({"stats": [{"value": "4", "unit": "lb", "at": 10.3}, {"value": "$400", "at": 11.5}]}))
+    stats = tracks(d)[1]["items"][0]["props"]["stats"]
+    assert [x["at"] for x in stats] == [0.1, 1.3], stats
+    assert any("seconds into the item" in i for i in out.get("issues", [])), out
+    run(d, at="20", for_s=3, preset="stat", props=json.dumps({"stats": [{"value": "1", "at": 0.5}, {"value": "2", "at": 2}]}))
+    assert [x["at"] for x in tracks(d)[1]["items"][1]["props"]["stats"]] == [0.5, 2], "item seconds stay as given"
+
+
 # ── review 1 (write safety) ───────────────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("kw,err", [
