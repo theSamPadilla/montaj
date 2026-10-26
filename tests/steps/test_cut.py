@@ -55,6 +55,8 @@ def real_transcript():
     """The fixture's real transcript, less whisper's drift: its 30th and 38th words lay in the silence after their
     sound, and lie on that sound's tail here, as per-run transcripts put them."""
     real = json.loads((FIX / "speech.json").read_text())
+    # no `montaj` block: a transcript cut keeps as given (montaj's own full-file one it would transcribe again, PL89)
+    real.pop("montaj", None)
     words = [w for w in real["transcription"] if w["text"].strip()]
     for k, at, to in ((29, 16720, 16790), (37, 22240, 22290)):
         words[k - 1]["offsets"]["to"] = at

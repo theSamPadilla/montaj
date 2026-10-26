@@ -501,3 +501,27 @@ def test_without_redo_full_file_an_old_transcript_is_left_alone(tmp_path):
     done, _, _ = speech_units.transcribe_missing(
         project_for(src), "t", str(d / "project.json"), str(d), "m", "auto", transcribe)
     assert done == [] and json.loads(side.read_text()) == OLD
+
+
+def test_a_run_starts_at_the_voice_not_at_a_bump_of_no_voice_before_it(tmp_path):
+    """Real take D: a -47 dB bump 0.15 s before the voice opened the run on loudness alone, so the run's first word was
+    clamped onto the bump, on no voice, and cut removed it. The runs are read with cut's own voice check: the run starts
+    at the voice."""
+    import numpy as np
+    from tests.test_voice import band, scaled, vowel
+    rng = np.random.default_rng(3)
+    n = int(3.0 * RATE)
+    x = scaled(rng.standard_normal(n), -72)                         # the room
+    a, b = int(1.0 * RATE), int(2.0 * RATE)
+    x[a:b] += scaled(vowel(rng, b - a, 120), -20)                   # the voice
+    c = int(0.85 * RATE)
+    x[c:c + 160] += scaled(band(rng, 160, 1500, 7000), -40)         # a 10 ms bump of no voice, 0.15 s before it
+    path = tmp_path / "bump.wav"
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes((np.clip(x, -1, 1) * 32767).astype("<i2").tobytes())
+    runs = sr.voiced_runs(str(path))
+    assert len(runs) == 1
+    assert runs[0][0] == pytest.approx(1.0, abs=0.03)

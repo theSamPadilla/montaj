@@ -35,7 +35,7 @@ import wave
 from pathlib import Path
 
 from lib.common import fail, ff_path, ffmpeg_bin, find_whisper_bin, run, run_whisper
-from lib import speech_energy
+from lib import speech_energy, voice
 
 VERSION = "speech-runs v1"
 BLIP_S = 0.1                     # a run with less voice than this is a blip: no clip (whisper writes "Thank you." on it)
@@ -53,8 +53,11 @@ _FLAGS = ["--split-on-word", "--max-len", "1", "--output-json", "-mc", "0", "-np
 
 
 def voiced_runs(media, max_pause=speech_energy.DEFAULT_MAX_PAUSE_S):
-    """[(start, end)] seconds of the voiced runs of `media` (lib/speech_energy layer 1), without the blips."""
-    lay = speech_energy.layer1(media, speech_energy.envelope(media), max_pause)
+    """[(start, end)] seconds of the voiced runs of `media` (lib/speech_energy layer 1, read with cut's own voice check,
+    lib/voice), without the blips. By level alone a bump of no voice just before the voice opened the run, and the
+    run's first word was clamped onto it, on no voice (real take D: a -47 dB bump 0.15 s early)."""
+    env = speech_energy.envelope(media)
+    lay = speech_energy.layer1(media, env, max_pause, spectral=voice.flags(media, len(env)))
     return [(float(a), float(b)) for a, b in lay.voiced if b - a >= BLIP_S]
 
 

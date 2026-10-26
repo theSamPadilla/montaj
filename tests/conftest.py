@@ -243,3 +243,14 @@ def run_step_env(script: str, env_extra: dict, *args) -> subprocess.CompletedPro
         [sys.executable, str(path), *args],
         capture_output=True, text=True, env=env,
     )
+
+
+@pytest.fixture(autouse=True)
+def _cut_never_runs_whisper(monkeypatch):
+    """cut transcribes a clip with no transcript, or montaj's own older full-file one (PL89): with a whisper model in
+    HOME a test would reach the real whisper. A test that wants a transcription stubs cut's transcribe_file itself."""
+    cut = sys.modules.get("steps.edit.cut")
+    if cut is not None:
+        def refuse(*a, **k):
+            raise AssertionError("cut ran whisper in a test: stub steps.edit.cut.transcribe_file")
+        monkeypatch.setattr(cut, "transcribe_file", refuse)
