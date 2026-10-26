@@ -100,6 +100,11 @@ function findInteractiveWrapper(elementId: string): HTMLElement {
   return els[els.length - 1] as HTMLElement
 }
 
+/** The element's box in the canvas's chrome layer (§586 M4): its outline and handles; an empty box when it is not outlined. */
+function chromeOf(elementId: string): HTMLElement {
+  return (document.querySelector(`[data-chrome-for="${elementId}"]`) as HTMLElement | null) ?? document.createElement('div')
+}
+
 async function plainClick(id: string) {
   await act(async () => { fireEvent.click(findInteractiveWrapper(id)) })
 }
@@ -176,7 +181,7 @@ describe('Replace image: the editor', () => {
     // The canvas and the panel show the new file, the image still selected.
     expect(findInteractiveWrapper('el-img').querySelector('img')!.getAttribute('src')).toBe(NEW_SRC)
     expect(r.getByTitle(NEW_SRC).textContent).toBe('new.png')
-    expect(findInteractiveWrapper('el-img').querySelector('[data-testid="resize-handle-nw"]')).not.toBeNull()
+    expect(chromeOf('el-img').querySelector('[data-testid="resize-handle-nw"]')).not.toBeNull()
   })
 
   it('reads the new size through resolveImageSrc, never through the old media id', async () => {

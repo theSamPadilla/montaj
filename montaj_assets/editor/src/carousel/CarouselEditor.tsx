@@ -1334,10 +1334,16 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     obs.observe(el)
     return () => obs.disconnect()
   }, [])
-  const PADDING = 32
-  const HINT_RESERVE = 28
-  const availW = Math.max(0, canvasContainerSize.w - PADDING)
-  const availH = Math.max(0, canvasContainerSize.h - PADDING - HINT_RESERVE)
+  // The margin kept on every side of the slide (§586 M4): room for the handles
+  // of an element at its edge, and the rotate handle's 34 px reach above it.
+  // A press in it is a press on the empty canvas. Below the slide the column's
+  // 16 px gap is part of it.
+  const CANVAS_MARGIN = 40
+  const CANVAS_GAP = 16
+  // The hint under the slide: up to two lines.
+  const HINT_RESERVE = 32
+  const availW = Math.max(0, canvasContainerSize.w - 2 * CANVAS_MARGIN)
+  const availH = Math.max(0, canvasContainerSize.h - 2 * CANVAS_MARGIN - HINT_RESERVE)
   const canvasScale = Math.min(availW / w, availH / h, 1)
 
   return (
@@ -1489,7 +1495,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 instead, the same "tint with the foreground colour" idiom the rest
                 of the chrome uses, so it is a light ring on dark and a dark ring
                 on light at the same subtle strength. */}
-            <div className="flex-shrink-0 ring-1 ring-[color-mix(in_srgb,var(--editor-text)_10%,transparent)]">
+            <div className="flex-shrink-0 ring-1 ring-[color-mix(in_srgb,var(--editor-text)_10%,transparent)]" style={{ margin: CANVAS_MARGIN, marginBottom: CANVAS_MARGIN - CANVAS_GAP }}>
               <SlideCanvas
                 slide={selectedSlide}
                 slideId={selectedSlide.id}
@@ -1518,6 +1524,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 onDragEnter={handleCanvasDragOver}
                 onDragOver={handleCanvasDragOver}
                 onDrop={handleCanvasDrop}
+                margin={CANVAS_MARGIN}
               >
                 {canvasPins.length > 0 && <NotePinLayer pins={canvasPins} pinDisplay={pinDisplay} onPinClick={onPinClick} />}
                 {armedSlideId === selectedSlide.id && <NoteArmLayer layerRef={armLayerRef} onPlace={placeArmedNote} />}

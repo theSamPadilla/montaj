@@ -213,11 +213,16 @@ function mountCanvas(slide: Slide, extra: Partial<React.ComponentProps<typeof Sl
 function wrapperOf(id: string): HTMLElement {
   return document.querySelector(`[data-element-id="${id}"]`) as HTMLElement
 }
+
+/** The element's box in the canvas's chrome layer (§586 M4): its outline and handles; an empty box when it is not outlined. */
+function chromeOf(elementId: string): HTMLElement {
+  return (document.querySelector(`[data-chrome-for="${elementId}"]`) as HTMLElement | null) ?? document.createElement('div')
+}
 function cropSource(id = 'el-img'): HTMLImageElement | null {
   return wrapperOf(id).querySelector('img[alt="Crop source"]')
 }
 function cropWindow(id = 'el-img'): HTMLElement | null {
-  return wrapperOf(id).querySelector('[data-testid="crop-window"]')
+  return chromeOf(id).querySelector('[data-testid="crop-window"]')
 }
 function boxOf(el: HTMLElement | null) {
   if (!el) throw new Error('no crop window')
@@ -231,7 +236,7 @@ async function loadSource(w = 400, h = 200) {
 
 /** Drags the window's right edge 50 px in: the window becomes {0, 0, 0.75, 1}. */
 async function dragRightEdgeIn() {
-  const handle = wrapperOf('el-img').querySelector('[data-testid="crop-handle-e"]') as HTMLElement
+  const handle = chromeOf('el-img').querySelector('[data-testid="crop-handle-e"]') as HTMLElement
   await act(async () => {
     pointer(handle, 'pointerdown', { clientX: 200, clientY: 100 })
     pointer(handle, 'pointermove', { clientX: 150, clientY: 100 })
