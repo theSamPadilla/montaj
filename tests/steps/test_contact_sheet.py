@@ -134,3 +134,24 @@ def test_the_contact_sheet_answers_looks_issues_and_never_fails_for_them(tmp_pat
     assert "look" not in res and os.path.isfile(out), "the sheet stands without it"
     res = contact_sheet.build(_project(tmp_path), [0, 1], cols=2, tile_width=200, out=str(out), sampler=_stub_sampler)
     assert "look" not in res, "no look asked (a frame strip, a raw sheet)"
+
+
+# PL89j (cost): the closing sheets of 18 and 30 frames were 6 columns at 320 px, so the 768 px preview made each tile
+# about 128 px, and the agent asked for them full size (209 KB and 143 KB). Past 12 frames the sheet is several sheets
+# of at most 12, in 4 columns: each tile about 192 px in the preview, the times shared evenly.
+def test_more_than_12_frames_are_several_sheets_of_at_most_12_in_4_columns(tmp_path):
+    out = tmp_path / "contact_sheet.png"
+    times = [round(0.5 * k, 2) for k in range(30)]
+    res = contact_sheet.build(_project(tmp_path, end=20), times, cols=6, tile_width=320, out=str(out), sampler=_stub_sampler)
+    assert res["path"] == str(out)
+    assert len(res["sheets"]) == 3 and res["sheets"][0] == str(out)
+    assert all(os.path.isfile(p) for p in res["sheets"])
+    assert [len(t) for t in res["sheet_times"]] == [10, 10, 10] and sum(res["sheet_times"], []) == times
+    assert Image.open(res["sheets"][1]).size[0] == 4 * 320 + 5 * 4      # 4 columns
+    assert res["times"] == times
+
+
+def test_twelve_frames_or_fewer_stay_one_sheet(tmp_path):
+    out = tmp_path / "contact_sheet.png"
+    res = contact_sheet.build(_project(tmp_path), [0, 1, 2], cols=6, tile_width=200, out=str(out), sampler=_stub_sampler)
+    assert "sheets" not in res and os.path.isfile(out)

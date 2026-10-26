@@ -14,6 +14,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 from sample_frame import sample_frames  # noqa: E402
 
 MAX_TILES = 120
+# PL89j (cost): past this many frames a sheet is several, in at most SPLIT_COLS columns, so each tile stays readable in
+# the 768 px preview (6 columns of 30 frames made 128 px tiles, and the agent read them full size)
+SHEET_FRAMES = 12
+SPLIT_COLS = 4
 SAMPLE_FRAME = os.path.join(os.path.dirname(__file__), "sample_frame.py")
 
 
@@ -61,8 +65,21 @@ def build(project, times, cols, tile_width, out, sampler=_sample_frame, frames_d
                 p = os.path.join(work, f"f_{i:04d}.png")
                 sampler(project, t, p, raw=True) if raw else sampler(project, t, p)
                 frames.append(os.path.abspath(p))
-        tile_sheet(frames, times, cols, tile_width, out)
+        sheets, sheet_times = [], []
+        if len(times) > SHEET_FRAMES and not frames_dir:
+            n = -(-len(times) // SHEET_FRAMES)
+            size = -(-len(times) // n)
+            stem, ext = os.path.splitext(out)
+            for k, i in enumerate(range(0, len(times), size)):
+                dest = out if k == 0 else f"{stem}-{k + 1}{ext}"
+                tile_sheet(frames[i:i + size], times[i:i + size], min(cols, SPLIT_COLS), tile_width, dest)
+                sheets.append(os.path.abspath(dest))
+                sheet_times.append(list(times[i:i + size]))
+        else:
+            tile_sheet(frames, times, cols, tile_width, out)
     result = {"path": os.path.abspath(out), "times": list(times), "cols": cols, "tile_width": tile_width}
+    if sheets:
+        result.update(sheets=sheets, sheet_times=sheet_times, cols=min(cols, SPLIT_COLS))
     if frames_dir:
         result["frames"] = frames
     # Round 9: the closing sheet answers look's issues too (look never ran in the run that ended on this step); a look
