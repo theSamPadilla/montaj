@@ -119,3 +119,124 @@ def test_what_it_writes_passes_the_engine_validator(tmp_path):
     p = project(tmp_path)
     push.run(str(p))
     validate_project(str(p))
+
+
+# PL89i: Claude alone's kung fu edit gave each talking-head shot its own ramp, in then out, cut to cut, so the frame
+# drifts with him. style alternate is that, as keys; anchor face / follow put the point that stays put on his head.
+
+def heads(samples):
+    """A find_head stand-in: {item id: [(item seconds, x, y) or None]} in shares of the canvas."""
+    return lambda item, project, project_path: samples.get(item["id"], [])
+
+
+def test_alternate_pushes_in_then_out_shot_by_shot_and_every_cut_lands_on_a_new_scale(tmp_path):
+    p = project(tmp_path)
+    out = push.run(str(p), style="alternate")
+    assert out["pushed"] == 3
+    it = items_of(p)
+    want = {"c0": (1.0, 1.09), "c1": (1.135, 1.045), "c2": (1.0, 1.09)}     # zoom 0.09 by default for alternate
+    for cid, (s0, s1) in want.items():
+        assert [k["value"] for k in track(it[cid], "scale")] == [s0, s1], cid
+        assert [round(k["value"], 3) for k in track(it[cid], "offsetY")] == [round(15 * (s0 - 1), 3), round(15 * (s1 - 1), 3)], cid
+    ends = [track(it[c], "scale") for c in ("c0", "c1", "c2")]
+    for a, b in zip(ends, ends[1:]):
+        assert abs(a[-1]["value"] - b[0]["value"]) >= 0.04, "a cut changes the framing"
+
+
+def test_alternate_takes_the_zoom_given(tmp_path):
+    p = project(tmp_path)
+    push.run(str(p), style="alternate", zoom=0.06)
+    assert [k["value"] for k in track(items_of(p)["c1"], "scale")] == [1.09, 1.03]
+
+
+def test_anchor_face_keeps_each_shots_head_where_it_was(tmp_path, monkeypatch):
+    p = project(tmp_path)
+    monkeypatch.setattr(push, "find_head", heads({
+        "c0": [(0, 0.40, 0.30), (1, 0.42, 0.31), (2, 0.40, 0.29)],
+        "c1": [(0, 0.60, 0.25), (2, 0.60, 0.25)],
+        "c2": [(0, 0.50, 0.40)],
+    }))
+    out = push.run(str(p), anchor="face")
+    assert out["pushed"] == 3 and "noFace" not in out
+    it = items_of(p)
+    for cid, (ax, ay) in (("c0", (0.40, 0.30)), ("c1", (0.60, 0.25)), ("c2", (0.50, 0.40))):
+        s = [k["value"] for k in track(it[cid], "scale")]
+        ox, oy = track(it[cid], "offsetX"), track(it[cid], "offsetY")
+        assert [round(k["value"], 3) for k in oy] == [round((0.5 - ay) * 100 * (v - 1), 3) for v in s], cid
+        if ax == 0.5:
+            assert ox is None or all(k["value"] == 0 for k in ox), cid
+        else:
+            assert [round(k["value"], 3) for k in ox] == [round((0.5 - ax) * 100 * (v - 1), 3) for v in s], cid
+
+
+def test_anchor_follow_keys_the_anchor_along_the_head_smoothly(tmp_path, monkeypatch):
+    p = project(tmp_path, [{"id": "c0", "start": 0, "end": 4}])
+    path = [(t / 2, 0.40 + 0.02 * t, 0.30) for t in range(9)]          # the head drifts right, 2 samples a second
+    monkeypatch.setattr(push, "find_head", heads({"c0": path}))
+    push.run(str(p), anchor="follow")
+    it = items_of(p)["c0"]
+    s0, s1 = [k["value"] for k in track(it, "scale")]
+    ox = track(it, "offsetX")
+    assert len(ox) >= 3 and ox[0]["t"] == 0 and ox[-1]["t"] == 4
+    xs = []
+    for k in ox:
+        s = s0 + (s1 - s0) * k["t"] / 4
+        xs.append(0.5 - k["value"] / (100 * (s - 1)) if s > 1 else None)
+    known = [x for x in xs if x is not None]
+    assert all(b >= a - 1e-6 for a, b in zip(known, known[1:])), "the anchor moves with the head"
+    assert 0.40 <= known[0] <= 0.47 and 0.49 <= known[-1] <= 0.56, known
+    oy = track(it, "offsetY")
+    assert [k["t"] for k in oy] == [k["t"] for k in ox]
+
+
+def test_a_shot_with_no_face_keeps_the_default_anchor_and_is_named(tmp_path, monkeypatch):
+    p = project(tmp_path)
+    monkeypatch.setattr(push, "find_head", heads({"c0": [(0, 0.4, 0.3)], "c1": [None, None]}))
+    out = push.run(str(p), anchor="face")
+    assert out["pushed"] == 3 and out["noFace"] == ["c1", "c2"]
+    it = items_of(p)
+    assert track(it["c1"], "offsetX") is None
+    s = [k["value"] for k in track(it["c1"], "scale")]
+    assert [round(k["value"], 3) for k in track(it["c1"], "offsetY")] == [round(15 * (v - 1), 3) for v in s]
+
+
+def test_a_face_push_run_again_is_the_same_and_a_plain_run_takes_it_back(tmp_path, monkeypatch):
+    p = project(tmp_path)
+    monkeypatch.setattr(push, "find_head", heads({c: [(0, 0.4, 0.3)] for c in ("c0", "c1", "c2")}))
+    push.run(str(p), anchor="follow", style="alternate")
+    once = Path(p).read_text()
+    out = push.run(str(p), anchor="follow", style="alternate")
+    assert Path(p).read_text() == once and out["pushed"] == 3 and "kept" not in out
+    push.run(str(p))
+    it = items_of(p)
+    assert track(it["c0"], "offsetX") is None and [k["value"] for k in track(it["c1"], "scale")] == [1.04, 1.11]
+
+
+def test_bad_style_and_anchor_are_refused(tmp_path, capsys):
+    p = project(tmp_path)
+    for kw in ({"style": "zoom"}, {"anchor": "nose"}, {"anchor": "1.5"}):
+        with pytest.raises(SystemExit):
+            push.run(str(p), **kw)
+        assert "invalid_params" in capsys.readouterr().err
+
+
+def test_a_head_maps_through_the_items_crop_onto_the_canvas():
+    canvas = (1080, 1920)
+    # a source the canvas's own shape: shares carry over
+    assert push.to_canvas(0.4, 0.3, {"sourceWidth": 2160, "sourceHeight": 3840}, canvas) == (0.4, 0.3)
+    # a crop: the share inside it
+    crop = {"sourceWidth": 3840, "sourceHeight": 2160, "sourceCrop": {"x": 0.25, "y": 0, "w": 0.5, "h": 1}}
+    assert push.to_canvas(0.5, 0.5, crop, canvas) == (0.5, 0.5)
+    assert tuple(round(v, 6) for v in push.to_canvas(0.3, 0.2, crop, canvas)) == (0.1, 0.2)
+    # no crop and another shape: the centre the canvas covers
+    x, y = push.to_canvas(0.5, 0.25, {"sourceWidth": 3840, "sourceHeight": 2160}, canvas)
+    assert (round(x, 3), y) == (0.5, 0.25)
+
+
+def test_the_step_json_offers_style_and_anchor_face(tmp_path):
+    spec = json.loads((REPO_ROOT / "steps" / "edit" / "push_in.json").read_text())
+    params = {q["name"]: q for q in spec["params"]}
+    assert params["style"]["type"] == "enum" and params["style"]["options"] == ["push", "alternate"]
+    assert params["style"]["default"] == "push"
+    assert params["anchor"]["type"] == "string" and "face" in params["anchor"]["description"]
+    assert "follow" in params["anchor"]["description"]
