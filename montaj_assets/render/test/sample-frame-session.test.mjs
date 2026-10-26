@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { createSampleSession, scenesAlone } from '../sample-frame.js'
+import { createSampleSession, sampleInSessions, scenesAlone } from '../sample-frame.js'
 
 const SCRIPT = new URL('../sample-frame.js', import.meta.url).pathname
 const tick = () => new Promise((r) => setTimeout(r, 5))
@@ -19,12 +19,13 @@ function fakes() {
     return b
   }
   const opened = []
+  const front = { name: null }
   const open = (name) => async () => {
-    const ctx = { name, pageErrors: [], workDir: mkdtempSync(join(tmpdir(), 'session-bundle-')), page: { closed: false, close: async () => { ctx.page.closed = true } } }
+    const ctx = { name, pageErrors: [], workDir: mkdtempSync(join(tmpdir(), 'session-bundle-')), page: { closed: false, close: async () => { ctx.page.closed = true }, bringToFront: async () => { front.name = name } } }
     opened.push(ctx)
     return ctx
   }
-  return { launched, launch, opened, open }
+  return { launched, launch, opened, open, front }
 }
 
 test('a session launches one browser per kind of launch', async () => {
@@ -144,12 +145,135 @@ test('a page is closed for room only after its use in flight finishes', async ()
   let release
   const slow = s.sample('a', f.open('a'), () => new Promise((r) => { release = r }))
   await tick()
+  // b's page opens now; its capture waits its turn (captures take turns).
   const next = s.sample('b', f.open('b'), async () => 'b')
-  await next
+  await tick()
+  assert.equal(f.opened.length, 2, 'b opened while a captures')
   assert.equal(f.opened[0].page.closed, false, 'a is still capturing')
   release('a')
   assert.equal((await slow).shot, 'a')
+  assert.equal((await next).shot, 'b')
   await tick()
   assert.equal(f.opened[0].page.closed, true)
+  await s.close()
+})
+
+// PL89 round 1 on a real project: a page reused after another page opened in the same browser was not the front tab,
+// got no animation frames, and its capture waited out the 300 s protocolTimeout.
+test('every use brings its page to the front before it captures', async () => {
+  const f = fakes()
+  const s = createSampleSession()
+  const fronts = []
+  const capture = async () => { fronts.push(f.front.name) }
+  await s.sample('stage', f.open('stage'), capture)
+  await s.sample('specs', f.open('specs'), capture)
+  await s.sample('stage', f.open('stage'), capture)
+  assert.deepEqual(fronts, ['stage', 'specs', 'stage'])
+  await s.close()
+})
+
+/** A fake session for sampleInSessions: records which session each frame ran in, and whether it was aborted. */
+function sessions() {
+  const made = []
+  const newSession = () => {
+    const s = { id: made.length, aborted: false, closed: false, abort: async () => { s.aborted = true }, close: async () => { s.closed = true } }
+    made.push(s)
+    return s
+  }
+  return { made, newSession }
+}
+
+test('sampleInSessions: a frame slower than the timeout is sampled alone, its session aborted, the rest in a new one', async () => {
+  const z = sessions()
+  const ran = []
+  const sampleWith = (k, session) => {
+    ran.push([k, session ? session.id : null])
+    if (k === 1 && session) return new Promise(() => {}) // a capture that never returns
+    return Promise.resolve(`f${k}`)
+  }
+  const out = await sampleInSessions({ count: 4, sampleWith, newSession: z.newSession, frameTimeoutMs: 20 })
+  assert.deepEqual(out, ['f0', 'f1', 'f2', 'f3'])
+  assert.deepEqual(ran, [[0, 0], [1, 0], [1, null], [2, 1], [3, 1]])
+  assert.equal(z.made[0].aborted, true, 'the hung session is aborted, not closed politely')
+  assert.equal(z.made[1].closed, true)
+})
+
+test('sampleInSessions: a frame that fails in its session is sampled alone; failing alone too is the error, named by time', async () => {
+  const z = sessions()
+  const out = await sampleInSessions({ count: 2, sampleWith: (k, session) => (k === 0 && session ? Promise.reject(new Error('blank')) : Promise.resolve(`f${k}`)), newSession: z.newSession })
+  assert.deepEqual(out, ['f0', 'f1'])
+  const y = sessions()
+  await assert.rejects(
+    sampleInSessions({ count: 2, order: [1, 0], label: (k) => [4, 9][k], sampleWith: (k) => (k === 1 ? Promise.reject(new Error('no bundle')) : Promise.resolve('ok')), newSession: y.newSession }),
+    /^Error: at 9s: no bundle$/,
+  )
+  assert.ok(y.made.every((s) => s.closed || s.aborted), 'every session ends closed')
+})
+
+test('sampleInSessions: frames run in the order given and come back by index', async () => {
+  const z = sessions()
+  const ran = []
+  const out = await sampleInSessions({ count: 3, order: [2, 0, 1], sampleWith: async (k) => { ran.push(k); return k * 10 }, newSession: z.newSession })
+  assert.deepEqual(ran, [2, 0, 1])
+  assert.deepEqual(out, [0, 10, 20])
+})
+
+test('abort closes the browsers at once, even while a capture is stuck', async () => {
+  const f = fakes()
+  const s = createSampleSession()
+  const browser = await s.browserFor('plain', () => f.launch('plain'))
+  s.sample('stuck', f.open('stuck'), () => new Promise(() => {})).catch(() => {})
+  await tick()
+  await s.abort()
+  assert.equal(browser.closed, true)
+})
+
+// Two overlays live at two times: at the second time the first overlay's page is no longer the newest tab.
+const two = (() => {
+  const dir = mkdtempSync(join(tmpdir(), 'session-two-'))
+  const a = join(dir, 'a.jsx')
+  const b = join(dir, 'b.jsx')
+  writeFileSync(a, 'export default function A() { return <div style={{ position: "absolute", left: frame * 3, top: 20, width: 40, height: 40, background: "#00b4d8" }} /> }\n')
+  writeFileSync(b, 'export default function B() { return <div style={{ position: "absolute", left: 10, top: 100 + frame, width: 40, height: 40, background: "#ff5a36" }} /> }\n')
+  const file = join(dir, 'project.json')
+  writeFileSync(file, JSON.stringify({
+    settings: { resolution: [320, 240], fps: 10 },
+    tracks: [[{ id: 'o1', type: 'overlay', src: a, start: 0, end: 5, props: {} }], [{ id: 'o2', type: 'overlay', src: b, start: 0, end: 5, props: {} }]],
+  }))
+  return { dir, file }
+})()
+
+test('two overlays at several times: each page is captured in front, quickly, matching each time alone', { skip: !canSample && 'no browser' }, () => {
+  const go = (args) => spawnSync('node', [SCRIPT, '--mode', 'frame', '--project', two.file, ...args], { encoding: 'utf8', timeout: 60_000, env: { ...process.env, TMPDIR: mkdtempSync(join(tmpdir(), 'session-tmp-')) } })
+  const times = ['0.5', '1.5', '2.5']
+  const t0 = Date.now()
+  const many = go([...times.flatMap((t) => ['--at', t]), '--frames-dir', join(two.dir, 'many')])
+  assert.equal(many.status, 0, `took ${Date.now() - t0} ms: ${many.stderr.slice(-300)}`)
+  assert.ok(Date.now() - t0 < 30_000, `took ${Date.now() - t0} ms`)
+  const paths = many.stdout.trim().split('\n')
+  times.forEach((t, k) => {
+    const one = go(['--at', t, '--out', join(two.dir, `one-${t}.png`)])
+    assert.equal(one.status, 0, one.stderr)
+    assert.ok(readFileSync(paths[k]).equals(readFileSync(join(two.dir, `one-${t}.png`))), `at ${t}s`)
+  })
+})
+
+// One frame's overlays are sampled several at once (OVERLAY_CONCURRENCY), and only one page of a browser is in front.
+test('captures in a session never overlap, even of different pages; their pages still open at once', async () => {
+  const f = fakes()
+  const s = createSampleSession()
+  let busy = 0
+  const order = []
+  const capture = (k) => async () => {
+    busy++
+    assert.equal(busy, 1, 'one capture at a time in a session')
+    assert.equal(f.front.name, k, 'and its own page is the one in front')
+    await tick()
+    order.push(k)
+    busy--
+  }
+  await Promise.all(['a', 'b', 'c'].map((k) => s.sample(k, f.open(k), capture(k))))
+  assert.deepEqual(order.sort(), ['a', 'b', 'c'])
+  assert.equal(f.opened.length, 3)
   await s.close()
 })

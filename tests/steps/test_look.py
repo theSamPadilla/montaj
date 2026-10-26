@@ -85,6 +85,13 @@ def test_data_issues_past_the_footage_missing_file_black_and_hidden(tmp_path):
     assert ("ov-gone", "hidden by img-full 1.0-2.0s") in found
 
 
+def test_a_3d_scene_item_is_drawn_by_the_engine_and_has_no_overlay_file(tmp_path):
+    # PL89 round 1: look answered "overlay file missing" for each 3D scene item (src engine:scene3d).
+    scene = {"id": "sc-walk", "type": "overlay", "src": "engine:scene3d", "start": 1, "end": 3, "props": {"scene": "walk"}}
+    path, p = _project(tmp_path, overlays=[{"id": "ov-a", "start": 2, "end": 4}], extra_tracks=[{"id": "t3d", "items": [scene]}])
+    assert [i for i in lc.data_issues(p, str(path.parent)) if i["id"] == "sc-walk"] == []
+
+
 def test_a_clean_project_has_no_data_issues(tmp_path):
     path, p = _project(tmp_path, overlays=[{"id": "ov-a", "start": 2, "end": 4}], captions=[(0, 2)])
     assert lc.data_issues(p, str(path.parent)) == []
