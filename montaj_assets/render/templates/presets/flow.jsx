@@ -43,12 +43,20 @@ export default function Flow() {
   const slot = (W * 0.9) / n
   const fit = (room) => Math.min(...labels.map((l) => room / Math.max(1, l.length * 0.58)))
   const column = !custom && (p.layout === 'column' || (p.layout !== 'row' && Math.min(want, fit(slot - 28)) < 48))
-  const size = Math.max(36, Math.round(Math.min(want, custom ? fit(W * 0.4) : column ? fit(W * 0.9) : fit(slot - 28))))
+  // its own points: each pair of neighbours keeps at least 90 px of line between their labels
+  const gapFit = custom ? Math.min(...given.slice(1).map((q, i) => {
+    const d = Math.hypot(q[0] - given[i][0], q[1] - given[i][1])
+    return (d - 90) / Math.max(1, ((labels[i].length + labels[i + 1].length) / 2) * 0.62)
+  })) : Infinity
+  const size = Math.max(36, Math.round(Math.min(want, gapFit, custom ? fit(W * 0.4) : column ? fit(W * 0.9) : fit(slot - 28))))
   const gap = size + 170   // a column: each label, then an arrow of about 140 px down to the next
   const top = Number(p.top) > 0 && Number(p.top) < 1 ? Number(p.top) : column ? 0.12 : 0.3
   const pts = custom ? given : column ? labels.map((_, i) => [W / 2, H * top + size * 0.55 + i * gap]) : labels.map((_, i) => [W * 0.05 + slot * (i + 0.5), H * top])
   const lines = labels.map((s) => [s])
-  const halfW = labels.map((l) => (column ? size * 0.5 : l.length * size * 0.29))   // what a line stops short of
+  // each label's box from its middle (about 0.31 em a character each way, a line's height up and down, a little room):
+  // a line leaves it where it crosses the box's edge, so the line, its arrowhead and the dot stay in the gaps
+  const half = labels.map((l) => [l.length * size * 0.31 + 10, size * 0.6 + 8])
+  const exit = (i, ux, uy) => Math.min(Math.abs(ux) > 1e-6 ? half[i][0] / Math.abs(ux) : Infinity, Math.abs(uy) > 1e-6 ? half[i][1] / Math.abs(uy) : Infinity) + 12
   // timing: one label after another, every one in by the middle; each line arrives as its label lands
   const dur = (duration || fps * 3) / fps
   const step = n > 1 ? Math.min(0.7, (0.45 * dur) / (n - 1)) : 0
@@ -57,7 +65,7 @@ export default function Flow() {
     const a = pts[i]
     const dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy) || 1
     const ux = dx / len, uy = dy / len
-    const cut0 = custom ? 60 : halfW[i] + (column ? 10 : 18), cut1 = custom ? 60 : halfW[i + 1] + (column ? 10 : 18)
+    const cut0 = exit(i, ux, uy), cut1 = exit(i + 1, ux, uy)
     return { a: [a[0] + ux * cut0, a[1] + uy * cut0], b: [b[0] - ux * cut1, b[1] - uy * cut1], ux, uy }
   }).filter((s) => (s.b[0] - s.a[0]) * s.ux + (s.b[1] - s.a[1]) * s.uy > 8)
   const lerp = (s, k) => [s.a[0] + (s.b[0] - s.a[0]) * k, s.a[1] + (s.b[1] - s.a[1]) * k]

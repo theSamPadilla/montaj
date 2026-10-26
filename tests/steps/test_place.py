@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -856,3 +857,30 @@ def test_the_default_track_is_the_highest_free_graphics_track_with_nothing_drawn
     doc = _tracks_doc(low, beat)
     assert place.choose_track(doc, 9, 12) == (None, None), "the beat draws over it: a new track, not g-low under it"
     assert place.choose_track(doc, 3, 5) == (1, None), "the beat draws nothing then: g-low"
+
+
+# Round 9 (52's PL89h notes, section 05): with its own points (`at`), flow's line and travelling dot ran straight
+# through its labels ("phone—computer—motors"). The line stays in the gaps between labels.
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+@pytest.mark.parametrize("props", [
+    {"points": "phone > computer > motors", "at": [[190, 1530], [500, 1530], [800, 1530]], "fontSize": 44, "accent": "#ff0000"},
+    {"points": "phone > small computer > motors", "accent": "#ff0000"},
+    {"points": "camera > phone > cloud", "at": [[540, 400], [540, 700], [540, 1000]], "accent": "#ff0000"},
+])
+def test_flows_line_and_dot_stay_out_of_its_labels(tmp_path, props):
+    from PIL import Image
+    src = Path(place.PRESETS_DIR) / "flow.jsx"
+    for frame in (75, 108):   # the chain drawn, then the dot travelling it
+        png = tmp_path / f"f{frame}.png"
+        res = subprocess.run([sys.executable, str(REPO_ROOT / "steps" / "render" / "sample_overlay.py"), "--overlay", str(src),
+                              "--frame", str(frame), "--duration", "120", "--fps", "30", "--props", json.dumps(props),
+                              "--measure", "--out", str(png)], capture_output=True, text=True, timeout=180)
+        assert res.returncode == 0, res.stderr[-400:]
+        m = json.loads(res.stdout)["measurements"]
+        img = Image.open(png).convert("RGBA")
+        for t in m["texts"]:
+            b = t.get("glyphs") or t["bbox"]
+            x0, y0, x1, y1 = int(b["x"]) + 2, int(b["y"]) + 2, int(b["x"] + b["w"]) - 2, int(b["y"] + b["h"]) - 2
+            red = sum(1 for x in range(max(0, x0), min(img.width, x1)) for y in range(max(0, y0), min(img.height, y1))
+                      if (lambda p: p[3] > 128 and p[0] > 200 and p[1] < 80 and p[2] < 80)(img.getpixel((x, y))))
+            assert red == 0, f"frame {frame}: {red} line pixels inside {t['text']!r}"
