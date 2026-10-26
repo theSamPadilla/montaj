@@ -17,11 +17,40 @@ Point-in-time (--at <seconds>):
     for chained scene continuity (pass frame N's last frame as frame N+1's
     first_frame to Kling) and draft-phase regeneration (preserve stitching
     with neighboring clips).
+
+Times (--at repeated, 2 to 36):
+    One sheet of the source at those times, each tile labelled with its time,
+    in the order given; --cols sets the columns (default up to 6). For finding
+    the moments of a source video (b-roll) in one call.
 """
-import math, os, sys, argparse, glob
+import math, os, sys, argparse, glob, tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, check_output, run, get_duration, ffmpeg_bin, ff_seconds, ff_input
+from sheet import tile_sheet
+
+# PL89: the most times one sheet takes, and how many ffmpeg seeks run at once.
+MAX_SHEET_TIMES = 36
+SEEKS_AT_ONCE = 4
+SHEET_TILE_WIDTH = 320
+# The sheet comes back as a 768 px preview, so the label is drawn big enough to read there.
+SHEET_LABEL_PX = 30
+
+
+def times_sheet(src, times, cols, out):
+    """One labelled sheet of `src` at `times`: each frame by a fast seek, then tiled (lib/sheet.tile_sheet)."""
+    with tempfile.TemporaryDirectory() as work:
+        paths = [os.path.join(work, f"f_{i:04d}.png") for i in range(len(times))]
+
+        def grab(i):
+            run([ffmpeg_bin(), "-y", "-ss", ff_seconds(times[i]), "-i", ff_input(src),
+                 "-frames:v", "1", "-vf", f"scale={SHEET_TILE_WIDTH * 2}:-2", paths[i]])
+            check_output(paths[i])
+
+        with ThreadPoolExecutor(SEEKS_AT_ONCE) as pool:
+            list(pool.map(grab, range(len(times))))
+        tile_sheet(paths, times, cols, SHEET_TILE_WIDTH, out, label_px=SHEET_LABEL_PX)
 
 
 def main():
@@ -33,9 +62,10 @@ def main():
     parser.add_argument("--end",     type=float, default=None, help="Window end in seconds (default: full video)")
     parser.add_argument("--frames",  default=None,
                         help="Number of frames to sample, or 'all' to extract every frame in the window")
-    parser.add_argument("--at",      type=float, default=None,
+    parser.add_argument("--at",      type=float, default=None, action="append",
                         help="Extract a single full-resolution frame at this timestamp (seconds). "
-                             "Mutually exclusive with --frames, --cols, --rows, --start, --end.")
+                             "Repeat it (2 to 36) for one labelled sheet of those times. "
+                             "Mutually exclusive with --frames, --rows, --start, --end (and --cols for one time).")
     parser.add_argument("--out",     help="Output file path (grid and --at modes) or directory (all-frames mode)")
     args = parser.parse_args()
 
@@ -46,27 +76,41 @@ def main():
     # Point-in-time mode — mutually exclusive with grid / all-frames.     #
     # ------------------------------------------------------------------ #
     if args.at is not None:
+        times = args.at
+        several = len(times) > 1
         # Reject combinations that don't make sense together.
         conflicts = []
         if args.frames is not None: conflicts.append("--frames")
-        if "--cols" in sys.argv:    conflicts.append("--cols")
+        if "--cols" in sys.argv and not several: conflicts.append("--cols")
         if "--rows" in sys.argv:    conflicts.append("--rows")
         if "--start" in sys.argv:   conflicts.append("--start")
         if "--end" in sys.argv:     conflicts.append("--end")
         if conflicts:
             fail("invalid_args",
                  f"--at is mutually exclusive with {', '.join(conflicts)}")
+        if len(times) > MAX_SHEET_TIMES:
+            fail("invalid_args", f"{len(times)} times > {MAX_SHEET_TIMES}; split them over two calls.")
 
-        if args.at < 0 or args.at > duration:
-            fail("invalid_at",
-                 f"--at {args.at} is outside the video duration [0, {duration}]")
+        for t in times:
+            if t < 0 or t > duration:
+                fail("invalid_at",
+                     f"--at {t} is outside the video duration [0, {duration}]")
 
-        out = args.out or f"{os.path.splitext(args.input)[0]}_at_{args.at:.2f}.jpg"
+        if several:
+            out = args.out or f"{os.path.splitext(args.input)[0]}_at_{times[0]:.2f}-{times[-1]:.2f}.jpg"
+            cols = args.cols if "--cols" in sys.argv else min(6, len(times))
+            times_sheet(args.input, times, cols, out)
+            check_output(out)
+            print(out)
+            return
+
+        at = times[0]
+        out = args.out or f"{os.path.splitext(args.input)[0]}_at_{at:.2f}.jpg"
         os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
         # Full-resolution single-frame extraction. Using -ss BEFORE -i for
         # fast seek; accuracy is sufficient for our boundary-frame use case.
         run([ffmpeg_bin(), "-y",
-             "-ss", ff_seconds(args.at),
+             "-ss", ff_seconds(at),
              "-i", ff_input(args.input),
              "-frames:v", "1",
              "-q:v", "2",  # high-quality JPEG (scale: 1=best..31=worst)
