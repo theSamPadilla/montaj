@@ -961,11 +961,11 @@ describe('Images on the canvas: files from the OS', () => {
       expect(outlined(els[1].id)).toBe(false)
       expect(handlesOn(els[1].id)).toBe(false)
 
-      // Esc applies the window picked: 3:2 of the 200 wide box is 133 tall.
+      // Esc applies the window picked; the box shrinks to the kept part at the picture's scale (§586 M3a).
       await key('Escape')
       await waitFor(() => expect((elementsOf(lastSave(adapter))[0] as ImageElement).crop).toBeDefined())
       const cropped = elementsOf(lastSave(adapter))[0] as ImageElement
-      expect([cropped.x, cropped.y, cropped.w, cropped.h]).toEqual([100, 100, 200, 133])
+      expect([cropped.x, cropped.y, cropped.w, cropped.h]).toEqual([100, 150, 150, 100])
       expect(cropped.crop!.w).toBeCloseTo(0.75, 9)
       expect(inCrop()).toBe(false)
       expect(outlined('el-img')).toBe(true)
