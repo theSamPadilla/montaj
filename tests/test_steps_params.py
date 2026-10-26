@@ -359,3 +359,16 @@ def test_a_non_finite_number_in_a_repeatable_list_is_refused():
 @pytest.mark.parametrize("value", [0, -2.5, "3", "1e3", 1e300])
 def test_finite_numbers_still_pass(value):
     validate_params(_schema([{"name": "x", "type": "float"}]), {"x": value})
+
+
+def test_sample_frame_real_schema_takes_a_list_of_times():
+    import json
+    from pathlib import Path
+    path = Path(__file__).resolve().parent.parent / "steps" / "render" / "sample_frame.json"
+    schema = json.loads(path.read_text())
+    body = {"project": "/p/project.json", "at": [0.5, 1.0, 2.5]}
+    validate_params(schema, body)
+    args = build_cli_args(schema, body)
+    assert args.count("--at") == 3 and args[args.index("--at") + 1] == "0.5"
+    one = build_cli_args(schema, {"project": "/p/project.json", "at": 2})
+    assert one.count("--at") == 1

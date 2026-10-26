@@ -237,3 +237,89 @@ def test_schema_declares_scene():
     schema = json.loads((REPO_ROOT / "steps" / "render" / "sample_frame.json").read_text())
     scene = next(p for p in schema["params"] if p["name"] == "scene")
     assert scene["type"] == "string" and scene.get("required") is False
+
+
+# ── several times: one node call, one labelled sheet ─────────────────────────
+
+@pytest.fixture(scope="module")
+def frames_node_env(tmp_path_factory) -> dict:
+    """A fake `node` that logs its argv (one JSON line per call) and, given
+    --frames-dir, writes a solid PNG per --at and prints each path."""
+    d = tmp_path_factory.mktemp("framesnode")
+    log = d / "calls.jsonl"
+    node = d / "node"
+    node.write_text(textwrap.dedent(f"""\
+        #!{__import__('sys').executable}
+        import sys, json, os
+        from PIL import Image
+        a = sys.argv[1:]
+        open({str(log)!r}, "a").write(json.dumps(a) + "\\n")
+        if "--frames-dir" in a:
+            fd = a[a.index("--frames-dir") + 1]
+            os.makedirs(fd, exist_ok=True)
+            n = a.count("--at")
+            for i in range(n):
+                p = os.path.join(fd, "f_%04d.png" % i)
+                Image.new("RGB", (640, 360), (i * 20, 0, 0)).save(p)
+                print(p)
+    """))
+    node.chmod(0o755)
+    return {"PATH": f"{d}:{os.environ.get('PATH', '')}", "FAKE_LOG": str(log)}
+
+
+def _calls(env):
+    p = Path(env["FAKE_LOG"])
+    return [json.loads(l) for l in p.read_text().splitlines()] if p.exists() else []
+
+
+def test_several_times_make_one_node_call_and_one_sheet(frames_node_env, tmp_path):
+    from PIL import Image
+    project = _write_project(tmp_path, None)
+    before = len(_calls(frames_node_env))
+    proc = run_step_env(STEP, frames_node_env, "--project", str(project),
+                        "--at", "1", "--at", "2.5", "--at", "4")
+    assert proc.returncode == 0, proc.stderr
+    calls = _calls(frames_node_env)[before:]
+    assert len(calls) == 1
+    argv = calls[0]
+    assert [argv[i + 1] for i, a in enumerate(argv) if a == "--at"] == ["1.0", "2.5", "4.0"]
+    assert "--frames-dir" in argv and "--out" not in argv
+    out = proc.stdout.strip()
+    assert out == str(tmp_path / "render" / "samples" / "sheet-1.0-4.0s.png")
+    img = Image.open(out)
+    assert img.size[0] == 3 * 360 + 4 * 4  # cols = min(n, 4), tile width 360
+
+
+def test_several_times_name_raw_and_scene_sheets(frames_node_env, tmp_path):
+    project = _write_project(tmp_path, None)
+    raw = run_step_env(STEP, frames_node_env, "--project", str(project), "--raw", "--at", "1", "--at", "2")
+    assert raw.stdout.strip().endswith("sheet-1.0-2.0s-raw.png"), raw.stderr
+    s = run_step_env(STEP, frames_node_env, "--project", str(project), "--scene", "rig", "--at", "1", "--at", "2")
+    assert s.stdout.strip().endswith("3d-rig-sheet-1.0-2.0s.png"), s.stderr
+    own = run_step_env(STEP, frames_node_env, "--project", str(project), "--scene", "", "--at", "1", "--at", "2")
+    assert own.stdout.strip().endswith("3d-sheet-1.0-2.0s.png"), own.stderr
+
+
+def test_several_times_go_to_out_when_given(frames_node_env, tmp_path):
+    project = _write_project(tmp_path, None)
+    out = tmp_path / "mine.png"
+    proc = run_step_env(STEP, frames_node_env, "--project", str(project),
+                        "--at", "1", "--at", "2", "--out", str(out))
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == str(out) and out.is_file()
+
+
+def test_more_than_twelve_times_point_to_contact_sheet(frames_node_env, tmp_path):
+    project = _write_project(tmp_path, None)
+    args = [x for i in range(13) for x in ("--at", str(i))]
+    proc = run_step_env(STEP, frames_node_env, "--project", str(project), *args)
+    assert proc.returncode != 0
+    assert "invalid_args" in proc.stderr and "contact_sheet" in proc.stderr
+
+
+def test_every_time_is_validated_with_a_scene(tmp_path):
+    project = _write_project(tmp_path, None)
+    proc = run_step_env(STEP, {}, "--project", str(project), "--scene", "rig", "--at", "1", "--at", "-2")
+    assert proc.returncode != 0 and "invalid_at" in proc.stderr
+    proc = run_step_env(STEP, {}, "--project", str(project), "--raw", "--scene", "rig", "--at", "1", "--at", "2")
+    assert proc.returncode != 0 and "invalid_args" in proc.stderr

@@ -6,11 +6,13 @@ list of consecutive frame times gives a frame strip."""
 import argparse, json, os, subprocess, sys, tempfile
 from contextlib import nullcontext
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file  # noqa: E402
+from sheet import tile_sheet  # noqa: E402
+sys.path.insert(0, os.path.dirname(__file__))
+from sample_frame import sample_frames  # noqa: E402
 
-GUTTER = 4
-LABEL_H = 18
 MAX_TILES = 120
 SAMPLE_FRAME = os.path.join(os.path.dirname(__file__), "sample_frame.py")
 
@@ -47,32 +49,19 @@ def _sample_frame(project, t, out, raw=False):
 
 
 def build(project, times, cols, tile_width, out, sampler=_sample_frame, frames_dir=None, raw=False):
-    from PIL import Image, ImageDraw
     if frames_dir:
         os.makedirs(frames_dir, exist_ok=True)
     with (nullcontext(frames_dir) if frames_dir else tempfile.TemporaryDirectory()) as work:
-        tiles = []
-        frames = []
-        for i, t in enumerate(times):
-            p = os.path.join(work, f"f_{i:04d}.png")
-            sampler(project, t, p, raw=True) if raw else sampler(project, t, p)
-            frames.append(os.path.abspath(p))
-            im = Image.open(p).convert("RGB")
-            h = int(im.size[1] * tile_width / im.size[0] + 0.5)  # round half up
-            tiles.append(im.resize((tile_width, h)))
-        tile_h = tiles[0].size[1]
-        rows = (len(tiles) + cols - 1) // cols
-        sheet = Image.new("RGB", (cols * tile_width + (cols + 1) * GUTTER,
-                                  rows * (tile_h + LABEL_H) + (rows + 1) * GUTTER), (255, 255, 255))
-        draw = ImageDraw.Draw(sheet)
-        for i, (t, tile) in enumerate(zip(times, tiles)):
-            r, c = divmod(i, cols)
-            x = GUTTER + c * (tile_width + GUTTER)
-            y = GUTTER + r * (tile_h + LABEL_H + GUTTER)
-            sheet.paste(tile, (x, y))
-            draw.text((x + 2, y + tile_h + 3), f"{t:.2f}s", fill=(0, 0, 0))
-        os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
-        sheet.save(out)
+        if sampler is _sample_frame:
+            # Default path: every time in ONE node process.
+            frames = [os.path.abspath(p) for p in sample_frames(project, times, work, raw=raw)]
+        else:
+            frames = []
+            for i, t in enumerate(times):
+                p = os.path.join(work, f"f_{i:04d}.png")
+                sampler(project, t, p, raw=True) if raw else sampler(project, t, p)
+                frames.append(os.path.abspath(p))
+        tile_sheet(frames, times, cols, tile_width, out)
     result = {"path": os.path.abspath(out), "times": list(times), "cols": cols, "tile_width": tile_width}
     if frames_dir:
         result["frames"] = frames

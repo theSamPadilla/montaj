@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Added (steps): `sample_frame` takes several times and returns one labelled sheet.** `--at` repeats (up to 12; `contact_sheet` for more); `sample-frame.js` renders every time in one node process (`--frames-dir`) and the step tiles the frames, each labelled with its time, into `sheet-<first>-<last>s.png` (or `--out`). One time is unchanged. `contact_sheet` now renders all its frames in one node call too, and shares the tiling (`lib/sheet.py`).
+
 ## v5.36.2
 
 - **Fixed (steps): `cut` finds words whisper left in silence under a later saying's words (§577).** After a stretch is transcribed again, words can still sit in silence while their sound lies past it, labelled by the first run with another saying's words (on ucla, "It can follow a person, get", whose sound a clear retake's row stood on, so the retake removed it). Once per repaired stretch, `cut` looks for those words in one more whisper run over the voiced sound up to 20 s past the repaired window, up to the first three words heard where the first run put them (or over that whole stretch of sound, when the first run's times are off by seconds there and the second run hears three or more of its words after them, in order), and re-times the first run's words on what it hears: none dropped, matches of two words or more, and no word only that run heard is added (a loop in it would add a copy of words said once, and a retake rule would then remove the real saying). The words take their own sound, and the retake removes only its own. The plan's answer names the search, found or not.

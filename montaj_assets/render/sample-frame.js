@@ -20,6 +20,8 @@
  *   node sample-frame.js --mode frame --project <path> --at <seconds> --out <path>
  *     [--clamp-to-end]  past the end: sample the last frame, write <out>.clamped.json
  *     [--scene <id>]    one 3D alone, --at seconds into it ('' is the project's own)
+ *   --at may repeat (2+) with --frames-dir <dir> instead of --out: one process renders every
+ *   time in order to <dir>/f_0000.png, f_0001.png, ... and prints one path per line.
  *
  * stdout: absolute PNG path (or JSON with measurements if --mode overlay --measure)
  * stderr: progress lines prefixed [montaj sample]
@@ -305,7 +307,8 @@ if (isMain) {
       '  sample-frame.js --mode frame --project <path> --at <seconds> [--sdr-curve <id>]\n' +
       '    --out <path> [--clamp-to-end]\n' +
       '  sample-frame.js --mode frame --project <path> --scene <id> --at <seconds into it>\n' +
-      '    --out <path>   one 3D alone; --scene \'\' is the project\'s own\n'
+      '    --out <path>   one 3D alone; --scene \'\' is the project\'s own\n' +
+      '  sample-frame.js --mode frame --project <path> --at <s> --at <s> ... --frames-dir <dir>\n'
     )
     process.exit(1)
   }
@@ -324,6 +327,8 @@ if (isMain) {
   // frame args
   let projectArg    = null
   let atArg         = null
+  const atArgs      = []
+  let framesDirArg  = null
   let sdrCurveArg   = null
   let preferProxyArg = false
   let rawArg        = false
@@ -345,7 +350,8 @@ if (isMain) {
     if (a === '--google-fonts') { googleFontsArg.push(argv[++i]); continue }
     if (a === '--measure')      { measureArg    = true; continue }
     if (a === '--project')      { projectArg    = argv[++i]; continue }
-    if (a === '--at')           { atArg         = parseFloat(argv[++i]); continue }
+    if (a === '--at')           { atArg         = parseFloat(argv[++i]); atArgs.push(atArg); continue }
+    if (a === '--frames-dir')   { framesDirArg  = argv[++i]; continue }
     if (a === '--sdr-curve')    { sdrCurveArg   = argv[++i]; continue }
     if (a === '--clamp-to-end') { clampToEndArg = true; continue }
     if (a === '--prefer-proxy') { preferProxyArg = true; continue }
@@ -355,7 +361,9 @@ if (isMain) {
   }
 
   if (!mode) fail('missing_argument', '--mode overlay|frame is required')
-  if (!outArg) fail('missing_argument', '--out <path> is required')
+  const manyTimes = mode === 'frame' && atArgs.length > 1
+  if (manyTimes && !framesDirArg) fail('missing_argument', '--frames-dir <dir> is required with several --at')
+  if (!outArg && !manyTimes) fail('missing_argument', '--out <path> is required')
 
   // Validate against the manifest here rather than letting look.js throw deep
   // inside the extract: a typo'd curve id should be a clean CLI error, not a
@@ -396,22 +404,39 @@ if (isMain) {
   } else if (mode === 'frame') {
     if (!projectArg) fail('missing_argument', '--project <path> is required for --mode frame')
     if (atArg == null) fail('missing_argument', '--at <seconds> is required for --mode frame')
-    const sampled = sceneArg !== null
+    const sampleAt = (at, outPath) => sceneArg !== null
       ? sampleScene({
         projectJson: resolve(projectArg),
         scene: sceneArg,
-        atSeconds: atArg,
-        outPath: resolve(outArg),
+        atSeconds: at,
+        outPath,
         sdrCurve: sdrCurveArg,
       })
       : (rawArg ? sampleRawFrame : sampleFrame)({
         projectJson: resolve(projectArg),
-        atSeconds: atArg,
-        outPath: resolve(outArg),
+        atSeconds: at,
+        outPath,
         sdrCurve: sdrCurveArg,
         preferProxy: preferProxyArg,
         clampToEnd: clampToEndArg,
       })
+    // Several times: one process, one frame file per time in the order given, one path per line.
+    const sampled = manyTimes
+      ? (async () => {
+        const dir = resolve(framesDirArg)
+        mkdirSync(dir, { recursive: true })
+        const paths = []
+        for (let k = 0; k < atArgs.length; k++) {
+          try {
+            paths.push((await sampleAt(atArgs[k], join(dir, `f_${String(k).padStart(4, '0')}.png`))).pngPath)
+          } catch (err) {
+            err.message = `at ${atArgs[k]}s: ${err.message}`
+            throw err
+          }
+        }
+        return { pngPath: paths.join('\n') }
+      })()
+      : sampleAt(atArg, resolve(outArg))
     sampled.then(result => {
       process.stdout.write(result.pngPath + '\n')
     }).catch(err => {

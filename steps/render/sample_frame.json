@@ -1,13 +1,13 @@
 {
   "name": "sample_frame",
-  "description": "Render a fully composited project frame at a given timestamp to PNG (video + image items + active overlay JSXs + the captions, drawn as the export draws them; no audio). With scene, render one 3D alone over the project's whole frame, at seconds into it.",
+  "description": "Render a fully composited project frame at a given timestamp to PNG, or at several timestamps to one labelled sheet (video + image items + active overlay JSXs + the captions, drawn as the export draws them; no audio). With scene, render one 3D alone over the project's whole frame, at seconds into it.",
   "input": {
     "type": "project",
     "description": "The project id, its folder, or the absolute path of its project.json"
   },
   "output": {
     "type": "image",
-    "description": "PNG file at the requested output path (defaults to <project_dir>/render/samples/frame-<at>s.png)"
+    "description": "PNG file at the requested output path (defaults to <project_dir>/render/samples/frame-<at>s.png, or sheet-<first>-<last>s.png for several times)"
   },
   "params": [
     {
@@ -20,7 +20,8 @@
       "name": "at",
       "type": "float",
       "required": true,
-      "description": "Timestamp in seconds to sample: timeline seconds, or with scene, seconds into that 3D"
+      "repeatable": true,
+      "description": "Timestamp in seconds to sample: timeline seconds, or with scene, seconds into that 3D. Several times give one sheet of labelled tiles, rendered in one pass (at most 12; use contact_sheet for more)."
     },
     {
       "name": "scene",
@@ -51,7 +52,7 @@
       "name": "out",
       "type": "path",
       "required": false,
-      "description": "Output PNG path. Defaults to <project_dir>/render/samples/frame-<at>s.png"
+      "description": "Output PNG path (with several times, the sheet). Defaults to <project_dir>/render/samples/frame-<at>s.png, or sheet-<first>-<last>s.png for several times"
     }
   ]
 }

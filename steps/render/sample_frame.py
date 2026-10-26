@@ -8,13 +8,14 @@ them at project resolution, and writes a PNG.
 With --scene, it renders one 3D alone instead, over the project's whole frame,
 --at seconds into that 3D: a 3D no timeline item shows can be checked too.
 """
-import os, re, sys, argparse, subprocess, json
+import os, re, sys, argparse, subprocess, json, tempfile
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
 from cli.deps import render_runtime_dir
 from lib.common import node_child_env, fail, require_file
 from lib.look import curve_ids
+from lib.sheet import tile_sheet
 from lib.types.colorspace import is_hdr, DEFAULT_COLOR_SPACE
 
 # Resolve the render bundle at its runtime location, not the site-packages
@@ -26,6 +27,36 @@ SAMPLE_FRAME_JS = os.path.join(render_runtime_dir(), "sample-frame.js")
 # A 3D's id, the rule save_model and render/scene3d.js use.
 SCENE_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 
+# Most times one call tiles into a sheet; more is contact_sheet's job.
+MAX_SHEET_TIMES = 12
+SHEET_COLS = 4
+SHEET_TILE_WIDTH = 360
+
+
+def sample_frames(project, times, frames_dir, raw=False, scene=None, sdr_curve=None, prefer_proxy=False):
+    """Render every time in ONE node process into frames_dir (f_0000.png...); return the paths in order."""
+    cmd = ["node", SAMPLE_FRAME_JS, "--mode", "frame", "--project", project]
+    for t in times:
+        cmd += ["--at", str(t)]
+    # One time takes the single-frame form (--out), which node insists on.
+    cmd += ["--out", os.path.join(frames_dir, "f_0000.png")] if len(times) == 1 else ["--frames-dir", frames_dir]
+    if prefer_proxy:
+        cmd.append("--prefer-proxy")
+    if raw:
+        cmd.append("--raw")
+    if scene is not None:
+        cmd += ["--scene", scene]
+    if sdr_curve is not None:
+        cmd += ["--sdr-curve", sdr_curve]
+    try:
+        proc = subprocess.run(cmd, check=False, capture_output=True, env=node_child_env(), timeout=120 * len(times))
+    except subprocess.TimeoutExpired:
+        fail("sample_failed", f"sample_frame over {len(times)} times exceeded {120 * len(times)}s")
+    paths = proc.stdout.decode("utf-8", errors="replace").split()
+    if proc.returncode != 0 or len(paths) != len(times) or not all(os.path.isfile(p) for p in paths):
+        fail("sample_failed", f"sample_frame failed: {proc.stderr.decode('utf-8', errors='replace').strip()[-400:]}")
+    return paths
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -33,9 +64,10 @@ def main():
     )
     parser.add_argument("--project", required=True,
                         help="Absolute path to project.json")
-    parser.add_argument("--at", type=float, required=True,
+    parser.add_argument("--at", type=float, required=True, action="append",
                         help="Timestamp in seconds to sample: timeline seconds, or with --scene, "
-                             "seconds into that 3D")
+                             "seconds into that 3D. Repeat for several (up to 12): one sheet of "
+                             "labelled tiles.")
     parser.add_argument("--scene", default=None,
                         help="Sample one 3D alone over the project's whole frame instead of the "
                              "timeline: the id of a 3D saved under models/scenes/<id>/, or '' for the "
@@ -55,8 +87,12 @@ def main():
                              "there, decoded straight from its file, with no crop, zoom, fit, grade, "
                              "image items, overlays or captions. For reading the footage itself.")
     parser.add_argument("--out", default=None,
-                        help="Output PNG path (default: <project_dir>/render/samples/frame-<at>s.png)")
+                        help="Output PNG path (default: <project_dir>/render/samples/frame-<at>s.png; "
+                             "with several --at, the sheet: sheet-<first>-<last>s.png)")
     args = parser.parse_args()
+    times = args.at
+    if len(times) > MAX_SHEET_TIMES:
+        fail("invalid_args", f"{len(times)} times > {MAX_SHEET_TIMES}; use contact_sheet for more.")
 
     if args.raw and args.scene is not None:
         fail("invalid_args", "--raw samples the timeline's source; it cannot combine with --scene.")
@@ -66,8 +102,9 @@ def main():
             fail("invalid_scene",
                  f"--scene must be a 3D id of lowercase letters, digits and -, or '' for the "
                  f"project's own (got {args.scene!r}).")
-        if args.at < 0:
-            fail("invalid_at", f"--at must be 0 or more seconds into the 3D (got {args.at}).")
+        for t in times:
+            if t < 0:
+                fail("invalid_at", f"--at must be 0 or more seconds into the 3D (got {t}).")
 
     # The project must exist BEFORE any makedirs: the default-output branch below creates
     # <project_dir>/render/samples, so a bogus --project would otherwise plant folders next to an
@@ -81,19 +118,24 @@ def main():
         project_dir = os.path.dirname(os.path.abspath(args.project))
         samples_dir = os.path.join(project_dir, "render", "samples")
         os.makedirs(samples_dir, exist_ok=True)
-        if args.scene is None:
-            name = f"frame-{args.at}s-raw.png" if args.raw else f"frame-{args.at}s.png"
+        if len(times) > 1:
+            span = f"{times[0]}-{times[-1]}s"
+            if args.scene is None:
+                name = f"sheet-{span}-raw.png" if args.raw else f"sheet-{span}.png"
+            else:
+                name = f"3d-{args.scene}-sheet-{span}.png" if args.scene else f"3d-sheet-{span}.png"
+        elif args.scene is None:
+            name = f"frame-{times[0]}s-raw.png" if args.raw else f"frame-{times[0]}s.png"
         else:
-            name = f"3d-{args.scene}-{args.at}s.png" if args.scene else f"3d-{args.at}s.png"
+            name = f"3d-{args.scene}-{times[0]}s.png" if args.scene else f"3d-{times[0]}s.png"
         out = os.path.join(samples_dir, name)
 
-    cmd = [
-        "node", SAMPLE_FRAME_JS,
-        "--mode", "frame",
-        "--project", args.project,
-        "--at", str(args.at),
-        "--out", out,
-    ]
+    cmd = ["node", SAMPLE_FRAME_JS, "--mode", "frame", "--project", args.project]
+    if len(times) == 1:
+        cmd += ["--at", str(times[0]), "--out", out]
+    else:
+        for t in times:
+            cmd += ["--at", str(t)]
 
     if args.prefer_proxy:
         cmd.append("--prefer-proxy")
@@ -134,6 +176,20 @@ def main():
             }) + "\n")
 
     env = node_child_env()
+
+    if len(times) > 1:
+        with tempfile.TemporaryDirectory() as work:
+            cmd += ["--frames-dir", work]
+            result = subprocess.run(cmd, check=False, capture_output=True, env=env)
+            sys.stderr.write(result.stderr.decode("utf-8", errors="replace"))
+            sys.stderr.flush()
+            paths = result.stdout.decode("utf-8", errors="replace").split()
+            if result.returncode != 0 or len(paths) != len(times):
+                sys.exit(result.returncode or 1)
+            os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
+            tile_sheet(paths, times, min(len(times), SHEET_COLS), SHEET_TILE_WIDTH, out)
+        print(os.path.abspath(out))
+        return
 
     result = subprocess.run(cmd, check=False, capture_output=True, env=env)
     sys.stdout.write(result.stdout.decode("utf-8", errors="replace"))
