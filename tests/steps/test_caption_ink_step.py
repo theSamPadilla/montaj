@@ -49,7 +49,8 @@ def test_the_step_writes_ink_on_the_captions_over_the_card_and_nothing_else(tmp_
     assert out == {"dark": 1, "light": 0, "cleared": 0, "kept": 0, "changed": True}
     doc = _read(p)
     segs = doc["captions"]["segments"]
-    assert segs[0]["ink"] == "dark" and segs[0]["inkAuto"] == {"card": "card", "ink": "dark"}
+    assert segs[0]["ink"] == "dark" and segs[0]["inkAuto"]["card"] == "card" and segs[0]["inkAuto"]["ink"] == "dark"
+    assert segs[0]["inkAuto"]["backdrop"] == pytest.approx(0.83, abs=0.01)
     assert "ink" not in segs[1], "over footage: untouched"
     assert doc["name"] == "orig"
 

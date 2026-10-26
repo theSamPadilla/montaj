@@ -2,8 +2,8 @@
 
 Over a full-screen light card (a 3D scene's paper backdrop, a JSX paper card, both `opaque: true`) white captions with
 a black outline barely read. The project data says what to draw, so the editor preview, sample_frame and the export
-all draw the same thing: `captions.segments[i].ink` is "dark" or "light", and `inkAuto` ({card, ink}: the card measured
-under the caption and the ink written for it) records what this module wrote. An `ink` is this module's only when
+all draw the same thing: `captions.segments[i].ink` is "dark" or "light", and `inkAuto` ({card, ink, backdrop}: the card
+measured under the caption, the ink written for it and the band's luminance) records what this module wrote. An `ink` is this module's only when
 `inkAuto` is there and names the same ink; any other combination is a person's choice: never changed.
 
 - `card_under`: the full-frame opaque overlay on top at a time.
@@ -193,7 +193,7 @@ def frame_renderer(project_path, out_dir, deadline=None):
 
 
 def plan(project, render_fn, width, height, deadline=None):
-    """(changes, counts, warnings). changes: {segment key: {"ink", "inkAuto": {"card", "ink"}} or None to clear}, keyed
+    """(changes, counts, warnings). changes: {segment key: {"ink", "inkAuto": {"card", "ink", "backdrop"}} or None to clear}, keyed
     by `_key` over the raw segment list. render_fn(t) -> a PNG path of the backdrop at `t`; one render per distinct
     caption middle, three at a time. A frame not started by `deadline` (time.monotonic) counts as failed."""
     counts = {"dark": 0, "light": 0, "cleared": 0, "kept": 0}
@@ -240,12 +240,12 @@ def plan(project, render_fn, width, height, deadline=None):
         if png is None:
             continue
         try:
-            light = luminance(png, box, (width, height)) >= LIGHT_L
+            lum = luminance(png, box, (width, height))
         except Exception as e:  # noqa: BLE001
             warnings.append(f"frame at {lc.r2(mid)}s unreadable ({str(e)[:60]})")
             continue
-        ink = "dark" if light else "light"
-        changes[key] = {"ink": ink, "inkAuto": {"card": card_id, "ink": ink}}
+        ink = "dark" if lum >= LIGHT_L else "light"
+        changes[key] = {"ink": ink, "inkAuto": {"card": card_id, "ink": ink, "backdrop": round(lum, 3)}}
         counts[ink] += 1
     return changes, counts, warnings
 

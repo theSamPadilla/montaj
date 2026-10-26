@@ -121,8 +121,11 @@ def _plan(project, tmp_path, light=("c-light",), dark=("c-dark",), calls=None, f
 def test_plan_marks_ink_dark_over_a_light_card_and_light_over_a_dark_one(tmp_path):
     p = _project([_card("c-light", 0, 4), _card("c-dark", 4, 8)], [_seg("a", 1, 2), _seg("b", 5, 6)])
     changes, counts, warnings = _plan(p, tmp_path)
-    assert changes == {("id", "a"): {"ink": "dark", "inkAuto": _auto("c-light", "dark")},
-                       ("id", "b"): {"ink": "light", "inkAuto": _auto("c-dark", "light")}}
+    assert {k: (c["ink"], c["inkAuto"]["card"], c["inkAuto"]["ink"]) for k, c in changes.items()} == {
+        ("id", "a"): ("dark", "c-light", "dark"), ("id", "b"): ("light", "c-dark", "light")}
+    assert changes[("id", "a")]["inkAuto"]["backdrop"] == pytest.approx(0.83, abs=0.01)
+    assert changes[("id", "b")]["inkAuto"]["backdrop"] == pytest.approx(0.007, abs=0.01)
+    assert round(changes[("id", "a")]["inkAuto"]["backdrop"], 3) == changes[("id", "a")]["inkAuto"]["backdrop"]
     assert (counts["dark"], counts["light"], counts["cleared"], counts["kept"]) == (1, 1, 0, 0)
     assert warnings == []
 
@@ -189,7 +192,14 @@ def test_segments_without_ids_are_keyed_by_index(tmp_path):
     del s["id"]
     p = _project([_card("c-light", 0, 4)], [s])
     changes, _, _ = _plan(p, tmp_path)
-    assert changes == {("i", 0): {"ink": "dark", "inkAuto": _auto("c-light", "dark")}}
+    assert changes == {("i", 0): {"ink": "dark", "inkAuto": {**_auto("c-light", "dark"),
+                                                              "backdrop": changes[("i", 0)]["inkAuto"]["backdrop"]}}}
+    assert changes[("i", 0)]["inkAuto"]["backdrop"] == pytest.approx(0.83, abs=0.01)
+
+
+def test_a_stored_backdrop_changes_nothing_about_who_owns_the_ink():
+    seg = _seg("a", 1, 2, ink="dark", inkAuto={"card": "c", "ink": "dark", "backdrop": 0.83})
+    assert ci.ours(seg) and not ci.ours({**seg, "ink": "light"})
 
 
 def test_the_index_is_the_raw_lists_when_it_holds_entries_that_are_not_captions(tmp_path):

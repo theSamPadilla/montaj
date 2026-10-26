@@ -566,7 +566,7 @@ def test_ink_pass_runs_for_a_project_with_a_card(tmp_path, monkeypatch, capsys):
         return str(p)
     doc, printed = _run_step_with_ink(tmp_path, monkeypatch, capsys, True, light)
     seg = doc["captions"]["segments"][0]
-    assert seg["ink"] == "dark" and seg["inkAuto"] == {"card": "card", "ink": "dark"}
+    assert seg["ink"] == "dark" and seg["inkAuto"]["card"] == "card" and seg["inkAuto"]["ink"] == "dark"
     assert "warnings" not in printed
 
 
