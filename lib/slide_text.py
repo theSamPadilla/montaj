@@ -488,6 +488,7 @@ def apply(slides, *, headlines=None, edit=None, order=None, style=None, width=10
     out = copy.deepcopy(slides)
     changed, counts, kept = [s.get("id") for s in out] if made else [], {"added": 0, "replaced": 0, "restyled": 0}, []
     tally = []   # (slide index, count key) of each headline change, to take back one a lock reverted
+    locked = []  # ids of locked elements the call left as they were (named in the answer)
     if isinstance(heads, dict):
         by_slide = [None] * len(out)
         for ref, h in heads.items():
@@ -504,7 +505,14 @@ def apply(slides, *, headlines=None, edit=None, order=None, style=None, width=10
             what = _set_headline(out[i], t, style=style, width=width, height=height, runtime_dir=runtime_dir,
                                  project_dir=project_dir)
             if what == "edited":
-                kept.append(f"slide {i + 1}: kept your edited headline (use edit to change it)")
+                el = out[i]["elements"][_headlines(out[i])[0]]
+                if el.get("locked") is True:
+                    # an edit would be reverted by the lock, so do not suggest one
+                    kept.append(f"slide {i + 1}: headline is locked; it stays as it is")
+                    if el.get("id") not in locked:
+                        locked.append(el.get("id"))
+                else:
+                    kept.append(f"slide {i + 1}: kept your edited headline (use edit to change it)")
             elif what == "twice":
                 kept.append(f"slide {i + 1}: two headlines are marked as the step's (a duplicate): kept both")
             elif what:
@@ -539,7 +547,6 @@ def apply(slides, *, headlines=None, edit=None, order=None, style=None, width=10
             _edit(out[i], edit, width=width, height=height, runtime_dir=runtime_dir, project_dir=project_dir, n=i + 1)
             if out[i] != before and out[i].get("id") not in changed:
                 changed.append(out[i].get("id"))
-    locked = []
     if not made:
         for i, sl in enumerate(out):
             locked += [k for k in _keep_locked(slides[i], sl) if k not in locked]
