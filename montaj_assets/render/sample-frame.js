@@ -186,6 +186,9 @@ const SHORT_EDGE_TARGET = 1080
  * 21: PL89f, each text also holds `glyphs` (its own text's extent, apart from
  *    its box) and `fellBack` (its face did not load). 20's entries hold
  *    neither, so a full-width centred title reads as inside the margin.
+ * 22: PL89g, each text also holds `color` and `plate` (an opaque background
+ *    behind it in the overlay), which look reads its contrast against. 21's
+ *    entries hold neither, so every label would go unchecked.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -193,7 +196,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 21
+const SAMPLE_CACHE_VERSION = 22
 
 // PL89: the most overlay pages a sampling session keeps open (createSampleSession).
 export const SESSION_MAX_PAGES = 4
@@ -364,6 +367,7 @@ if (isMain) {
   // shared
   let outArg        = null
   let jobsArg       = null
+  let projectDirArg = null
   let lanesArg      = null
 
   for (let i = 0; i < argv.length; i++) {
@@ -390,6 +394,7 @@ if (isMain) {
     if (a === '--scene')        { sceneArg      = argv[++i] ?? null; if (sceneArg === null) fail('missing_argument', '--scene needs a 3D id, or \'\' for the project\'s own'); continue }
     if (a === '--out')          { outArg        = argv[++i]; continue }
     if (a === '--jobs')         { jobsArg       = argv[++i]; continue }
+    if (a === '--project-dir')  { projectDirArg = argv[++i]; continue }
     if (a === '--lanes')        { lanesArg      = parseInt(argv[++i], 10); continue }
   }
 
@@ -453,6 +458,7 @@ if (isMain) {
         preferProxy: preferProxyArg,
         noCaptions: noCaptionsArg,
         clampToEnd: clampToEndArg,
+        ...(projectDirArg ? { projectDir: resolve(projectDirArg) } : {}),
         ...(rawArg ? {} : { session, maxShortEdge: maxShortEdgeArg }),
       })
     // Several times: one process, one frame file per time in the order given, one path per line.
@@ -912,9 +918,22 @@ async function captureOverlay({ page, guard, pageErrors, fontFailures, component
             const missing = (f) => width(`40px "${f}", monospace`) === width('40px monospace') && width(`40px "${f}", serif`) === width('40px serif')
             const fellBack = !generic && faces.length > 0 && faces.every(missing)
 
+            // PL89g: what look reads a text against: an opaque background behind it inside the overlay (its plate),
+            // else the picture under the overlay. Transparent and translucent fills are not a plate.
+            let plate = null
+            for (let p = el; p && p !== document.documentElement; p = p.parentElement) {
+              const bg = window.getComputedStyle(p).backgroundColor
+              const m = /rgba?\(([^)]+)\)/.exec(bg || '')
+              const parts = m ? m[1].split(/[,\s/]+/).filter(Boolean) : []
+              const alpha = parts.length > 3 ? parseFloat(parts[3]) : (m ? 1 : 0)
+              if (alpha >= 0.8) { plate = `rgb(${parts.slice(0, 3).join(', ')})`; break }
+            }
+
             texts.push({
               text: text.slice(0, 200),
               tag: el.tagName,
+              color: style.color,
+              plate,
               fontFamily: style.fontFamily,
               fellBack,
               fontSize: style.fontSize,
@@ -1227,7 +1246,8 @@ export async function sampleFrame({
   }
   // §239: a scene item (src `engine:scene3d`) becomes the plain overlay of the host's stage before the cache key reads
   // the overlay sources, so an edited stage or scene misses. Needs the project's folder, so only a project given by path.
-  materializeScene3d(project, projectPath ? dirname(projectPath) : projectDirOpt)
+  // PL89g: a projectDir given wins over the file's folder (look's backdrop project is kept in the samples folder).
+  materializeScene3d(project, projectDirOpt || (projectPath ? dirname(projectPath) : null))
 
   // Opt-in: a time at or past the end samples the last frame instead of
   // failing. Done before the cache key so the clamped time is what is cached.
@@ -1256,7 +1276,7 @@ export async function sampleFrame({
   }
 
   // Resolve relative paths in project
-  const projectDir = projectPath ? dirname(projectPath) : projectDirOpt
+  const projectDir = projectDirOpt || (projectPath ? dirname(projectPath) : null)
   const resolvedProject = deepClone(project)
   if (projectDir) {
     resolveProjectPaths(resolvedProject, projectDir)

@@ -477,6 +477,9 @@ def text_boxes(measurement, item, frame_w, frame_h):
         g = t.get("glyphs")
         if isinstance(g, dict) and _num(g.get("w")) > 0 and _num(g.get("h")) > 0:
             b["glyphs"] = placed_box(g, item, frame_w, frame_h)   # PL89f: the text's own extent (glyphs_of)
+        for k in ("color", "plate"):   # PL89g: what contrast_issues reads
+            if isinstance(t.get(k), str):
+                b[k] = t[k]
         out.append((str(t.get("text") or "")[:24], b, clipped, t.get("spills") is True))
     return out
 
@@ -621,6 +624,72 @@ def measured_issues(item, measurement, frame_w, frame_h, t, label, bands=()):
         if tall and gx1 > frame_w - RIGHT_UI_PX + k and gy0 < frame_h * RIGHT_UI_Y[1] and gy1 > frame_h * RIGHT_UI_Y[0]:
             zone("right", "under the apps' right-side buttons")
     return out
+
+
+# ── PL89g: a label's fill against the picture behind it ──────────────────────────────────────────────────────────
+# White and pale-blue labels over Sam's light shirt read poorly. A text whose fill is under CONTRAST_MIN : 1 (WCAG)
+# against what is behind it, its plate inside the overlay or else the picture under the overlay's track read over its
+# glyphs, is an issue.
+CONTRAST_MIN = 3.0
+_RGB = re.compile(r"rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+%?))?\s*\)")
+
+
+def _css_rgb(value):
+    """(r, g, b, alpha) from a computed CSS colour ("rgb(…)" / "rgba(…)"), or None."""
+    m = _RGB.search(value or "")
+    if not m:
+        return None
+    a = m.group(4)
+    alpha = 1.0 if a is None else (float(a[:-1]) / 100 if a.endswith("%") else float(a))
+    return float(m.group(1)), float(m.group(2)), float(m.group(3)), alpha
+
+
+def backdrop_project(project, track_index):
+    """The project as drawn under the overlay on drawn track `track_index` (layer_positions: every track holding video
+    stacks below the rest): the tracks below it kept, the rest emptied (their slots kept), no captions. What a label on
+    that track is read against."""
+    import copy
+    out = copy.deepcopy(project)
+    out.pop("captions", None)
+    rows = drawn_tracks(project)
+    pos = layer_positions(rows)
+    mine = pos[track_index] if track_index < len(pos) else len(rows)
+    for k, t in enumerate(out.get("tracks") or []):
+        if isinstance(t, dict) and (k >= len(pos) or pos[k] >= mine):
+            t["items"] = []
+    return out
+
+
+def contrast_issues(item, measurement, frame_w, frame_h, t, label, backdrop_png):
+    """[{t, id, text}]: the first text of the overlay whose fill is under CONTRAST_MIN : 1 against its plate, or against
+    `backdrop_png` (the picture under the overlay's track at `t`, at the design size) over its glyphs. A text with no
+    measured colour, or no picture and no plate, says nothing."""
+    from lib.caption_ink import luminance as picture_luminance
+    from lib.slide_text import contrast, luminance
+    for text, b, _, _ in text_boxes(measurement, item, frame_w, frame_h):
+        fill = _css_rgb(b.get("color"))
+        if not fill or fill[3] < 0.5:
+            continue
+        plate = _css_rgb(b.get("plate"))
+        if plate:
+            behind = luminance(plate[:3])
+        elif backdrop_png:
+            g = glyphs_of(b)
+            try:
+                behind = picture_luminance(backdrop_png, (g["x"], g["y"], g["x"] + g["w"], g["y"] + g["h"]), (frame_w, frame_h))
+            except (OSError, ValueError):
+                continue
+        else:
+            continue
+        mine = luminance(fill[:3])
+        r = contrast(mine, behind)
+        if r < CONTRAST_MIN:
+            quote = f' "{text}"' if text else ""
+            way = "lighter" if behind < 0.179 else "darker"   # the side with room: white and black tie at 0.179
+            against = "its plate" if plate else "the picture behind it"
+            return [{"t": r2(t), "id": label, "text": f"text{quote} is {r:.1f} : 1 against {against} "
+                                                       f"(under {CONTRAST_MIN:g} : 1): give it a plate, or a {way} fill"}]
+    return []
 
 
 def _cross(a, b):

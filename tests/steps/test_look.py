@@ -242,6 +242,69 @@ def test_a_failed_batch_falls_back_to_one_measure_each(tmp_path, monkeypatch):
     assert look.run(str(path), detail=True)["overlays"] == 2
 
 
+# PL89g: white and pale-blue labels over Sam's light shirt read poorly. look measures each text's fill against the
+# picture behind it (the frame of everything under the overlay's track, read over the glyphs; or the text's own plate)
+# and calls anything under CONTRAST_MIN : 1 an issue, with the fix.
+def _backdrop(tmp_path, rgb):
+    from PIL import Image
+    path = tmp_path / f"bg-{'-'.join(map(str, rgb))}.png"
+    Image.new("RGB", (1080, 1920), rgb).save(path)
+    return str(path)
+
+
+def _coloured(text, box, color, plate=None):
+    t = _texts((text, *box))
+    t["texts"][0]["color"] = color
+    if plate:
+        t["texts"][0]["plate"] = plate
+    return t
+
+
+def test_a_label_with_too_little_contrast_against_the_picture_behind_it_is_an_issue(tmp_path):
+    shirt, room = _backdrop(tmp_path, (182, 194, 191)), _backdrop(tmp_path, (32, 22, 20))
+    white = _coloured("computer", (400, 900, 280, 50), "rgb(255, 255, 255)")
+    got = [i["text"] for i in lc.contrast_issues({}, white, 1080, 1920, 22.0, "ov-chain", shirt)]
+    assert len(got) == 1 and got[0].startswith('text "computer" is 1.8 : 1 against the picture behind it'), got
+    assert got[0].endswith("give it a plate, or a darker fill"), got
+    assert lc.contrast_issues({}, white, 1080, 1920, 22.0, "ov-chain", room) == []
+    ink = _coloured("camera", (400, 900, 200, 50), "rgb(40, 40, 46)")
+    assert lc.contrast_issues({}, ink, 1080, 1920, 1, "ov", room)[0]["text"].endswith("or a lighter fill")
+    # a plate under the text is what it is read against, not the picture
+    plated = _coloured("computer", (400, 900, 280, 50), "rgb(255, 255, 255)", plate="rgb(20, 20, 24)")
+    assert lc.contrast_issues({}, plated, 1080, 1920, 1, "ov", shirt) == []
+    # no colour measured (an older measure), or no picture: nothing is said
+    assert lc.contrast_issues({}, _texts(("computer", 400, 900, 280, 50)), 1080, 1920, 1, "ov", shirt) == []
+    assert lc.contrast_issues({}, white, 1080, 1920, 1, "ov", None) == []
+
+
+def test_the_picture_behind_an_overlay_is_every_track_below_it_without_captions():
+    p = {"settings": {"fps": 30}, "captions": {"segments": [{"text": "hi", "start": 0, "end": 1}]},
+         "tracks": [{"id": "main", "items": [{"id": "v", "type": "video", "src": "/x.mp4", "start": 0, "end": 5}]},
+                    {"id": "card", "items": [{"id": "c", "type": "overlay", "src": "./c.jsx", "start": 0, "end": 5}]},
+                    {"id": "labels", "items": [{"id": "l", "type": "overlay", "src": "./l.jsx", "start": 0, "end": 5}]},
+                    {"id": "top", "items": [{"id": "t", "type": "overlay", "src": "./t.jsx", "start": 0, "end": 5}]}]}
+    b = lc.backdrop_project(p, 2)
+    assert "captions" not in b
+    assert [[it["id"] for it in t["items"]] for t in b["tracks"]] == [["v"], ["c"], [], []]
+
+
+def test_look_reports_a_label_hard_to_read_on_its_picture(tmp_path):
+    path, _ = _project(tmp_path, overlays=[{"id": "ov-chain", "start": 1, "end": 3}])
+    shirt = _backdrop(tmp_path, (182, 194, 191))
+
+    def measure(item, *a):
+        return _coloured("computer", (400, 600, 280, 50), "rgb(255, 255, 255)"), None
+    seen = []
+
+    def backdrops(project_path, project, entries):
+        seen.append([e["label"] for e in entries])
+        return {e["label"]: shirt for e in entries}
+    out = look.run(str(path), detail=True, measure_fn=measure, backdrops_fn=backdrops)
+    assert seen == [["ov-chain"]] and any("1.8 : 1 against the picture" in i for i in out["issues"]), out
+    out = look.run(str(path), detail=True, measure_fn=measure, backdrops_fn=lambda *a: {})
+    assert not any("against the picture" in i for i in out.get("issues", [])), out
+
+
 def test_look_at_given_times(tmp_path):
     path, _ = _project(tmp_path, overlays=[{"id": "ov-a", "start": 1, "end": 3}])
     out = look.run(str(path), at=[2.0, 7.5], detail=True, measure_fn=_fake_measure({}))

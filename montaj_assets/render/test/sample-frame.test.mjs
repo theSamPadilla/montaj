@@ -1861,3 +1861,24 @@ test('(pl89g) measureOverlays: several overlays in one call share one browser, a
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// PL89g: look reads a text's fill against the picture behind it, so the measure gives each text its `color`, and
+// `plate`: the colour of an opaque background behind it inside the overlay (it is read against that, not the picture).
+test('(pl89g) sampleOverlay --measure: each text has its color, and its plate when it sits on one', { timeout: 60_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-color-'))
+  try {
+    const jsxPath = join(dir, 'labels.jsx')
+    writeFileSync(jsxPath, "export default function T() { return <div>" +
+      "<div style={{ position: 'absolute', left: 100, top: 200, fontSize: 50, color: 'rgb(255, 255, 255)' }}>bare</div>" +
+      "<div style={{ position: 'absolute', left: 100, top: 600, padding: 20, background: 'rgb(20, 20, 24)' }}>" +
+      "<span style={{ fontSize: 50, color: 'rgb(250, 250, 250)' }}>plated</span></div></div> }\n")
+    const result = await sampleOverlay({ componentPath: jsxPath, frame: 0, fps: 30, width: 1080, height: 1920, outPath: join(dir, 'out.png'), measure: true })
+    const bare = result.measurements.texts.find((t) => t.text === 'bare')
+    const plated = result.measurements.texts.find((t) => t.text === 'plated')
+    assert.equal(bare.color, 'rgb(255, 255, 255)')
+    assert.equal(bare.plate, null)
+    assert.equal(plated.plate, 'rgb(20, 20, 24)')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

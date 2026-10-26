@@ -120,6 +120,43 @@ def measure_many(entries):
     return out
 
 
+BACKDROP_TIMEOUT_S = 60   # PL89g: per time, for the pictures behind the measured overlays
+
+
+def backdrops(project_path, project, entries):
+    """PL89g: the picture under each measured overlay at its measured time, at the design size: {label: png}. One
+    sample_frames call per track the overlays sit on (lc.backdrop_project: the tracks below it, no captions), from the
+    proxies; a later pass whose tracks below did not change reads them from the frame cache. A track that fails is left
+    out (its labels go unchecked), never an issue."""
+    from lib.common import node_child_env
+    from steps.render.sample_frame import SAMPLE_FRAME_JS
+    project_dir = os.path.dirname(project_path)
+    width, height = lc.design_size(project)
+    out = {}
+    by_track = {}
+    for e in entries:
+        by_track.setdefault(e["ti"], []).append(e)
+    for ti, group in by_track.items():
+        folder = os.path.join(project_dir, "render", "samples", "look", f"backdrop-{ti}")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, "project.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(lc.backdrop_project(project, ti), f)
+        cmd = ["node", SAMPLE_FRAME_JS, "--mode", "frame", "--project", path, "--prefer-proxy", "--no-captions",
+               "--max-short-edge", str(min(width, height)), "--project-dir", project_dir]
+        for e in group:
+            cmd += ["--at", str(e["mid"])]
+        # one time takes the single-frame form (--out), which node insists on
+        cmd += ["--out", os.path.join(folder, "f_0000.png")] if len(group) == 1 else ["--frames-dir", folder]
+        r = _run_group_env(cmd, BACKDROP_TIMEOUT_S * len(group), node_child_env())
+        if r is None or r[0] != 0:
+            continue   # a picture that cannot be had leaves its labels unchecked
+        pngs = [ln.strip() for ln in r[1].splitlines() if ln.strip().endswith(".png")]
+        if len(pngs) == len(group):
+            out.update({e["label"]: p for e, p in zip(group, pngs)})
+    return out
+
+
 def overlays_to_measure(project, project_dir, times):
     """[(track index, item, path)] of overlays to measure: those on screen at a looked-at time first, then the rest,
     in time order; at most MAX_MEASURES. The count of the rest is returned too."""
@@ -158,7 +195,7 @@ def sheet(project_path, project_dir, times):
 
 
 def run(project_path, at=None, image=False, detail=False, measure_fn=None, sheet_fn=sheet, clock=time.monotonic,
-        render_fn=None):
+        render_fn=None, backdrops_fn=None):
     t0 = clock()
     project_dir = os.path.dirname(project_path)
     try:
@@ -192,6 +229,11 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=None, sheet
                 "out": os.path.join(samples, f"{safe}-f{frame}.png")}
 
     entries = [prep(x) for x in to_measure]
+    # PL89g: the pictures behind the overlays (for their labels' contrast), sampled while the overlays are measured. A
+    # caller's own measure_fn (tests) checks contrast only with its own backdrops_fn.
+    pictures_fn = backdrops_fn or (backdrops if measure_fn is None else None)
+    picture_pool = ThreadPoolExecutor(max_workers=1) if pictures_fn and entries else None
+    pictures = picture_pool.submit(pictures_fn, project_path, project, entries) if picture_pool else None
     # PL89g: the whole pass in one call; a caller's own measure_fn (tests, or a failed call) measures one at a time
     got = measure_many(entries) if measure_fn is None else None
     if got is None:
@@ -202,6 +244,13 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=None, sheet
         with ThreadPoolExecutor(max_workers=MEASURE_WORKERS) as pool:
             got = list(pool.map(one, entries))
     results = [(x["ti"], x["item"], x["label"], x["s"], x["e"], x["mid"], m, why) for x, (m, why) in zip(entries, got)]
+    try:
+        behind = pictures.result() if pictures else {}
+    except Exception:  # noqa: BLE001 — no pictures: the labels' contrast goes unchecked
+        behind = {}
+    finally:
+        if picture_pool:
+            picture_pool.shutdown(wait=False)
     placed, checked, notes = [], [], []
     for ti, it, label, s, e, mid, m, why in results:
         if m is None:
@@ -211,6 +260,7 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=None, sheet
         issues += lc.measured_issues(it, m, width, height, mid, label, bands)
         issues += lc.type_floor_issues(it, m, width, height, mid, label)   # PL89b
         issues += lc.mark_cover_issues(project, project_dir, it, m, width, height, mid, label)   # PL89e
+        issues += lc.contrast_issues(it, m, width, height, mid, label, behind.get(label))   # PL89g
         placed.append((label, s, e, [lc.glyphs_of(b) for _, b, _, _ in lc.text_boxes(m, it, width, height)]))   # the text's own extent
         checked.append(label)
         if it.get("keyframes"):
