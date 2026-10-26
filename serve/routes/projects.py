@@ -51,6 +51,7 @@ from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, project_lock, 
 from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwargs
 from lib.overlay_validation import overlay_item_errors
 from lib.caption_profile_look import resolve_style_and_look
+from lib.caption_script import script_of, spell_from_script
 from lib.caption_translation import TranslationError, apply_show, apply_translation, show_new_language, finish_regenerated_track, is_translation, merge_caption_theme as _lib_merge_caption_theme, record_source_language
 from lib.project_tracks import normalize_tracks, track_items
 from lib.project_migrate import converge
@@ -6190,6 +6191,12 @@ async def _run_caption_pipeline(
     ]
 
     for label, args in steps:
+        if label == "caption":
+            # The words in the script's spelling, from the project's editing prompt (lib/caption_script.py), as the
+            # generate_captions step does.
+            script = script_of(project)
+            if script.strip():
+                spell_from_script(words_json_path, script)
         proc = await asyncio.create_subprocess_exec(
             sys.executable, *args,
             stdout=asyncio.subprocess.PIPE,
