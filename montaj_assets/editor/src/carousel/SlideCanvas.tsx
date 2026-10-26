@@ -18,6 +18,7 @@ import { croppedBox, shownCrop } from '../crop/crop-math'
 import { InlineTextEditor } from '../text/InlineTextEditor'
 import { ensureGoogleFontsLoaded } from '../lib/google-fonts'
 import { isLocked } from './lock'
+import { bandRect, bandTouches, type BandRect } from './bandSelect'
 import { groupDragMove, type GroupDragResult, type GroupMember } from './groupDrag'
 
 // Neutral fallback used only when no host `resolveImageSrc` is injected. The
@@ -157,6 +158,12 @@ interface Props {
    * Absent → just `selectedElementId`.
    */
   selectedElementIds?: string[]
+  /**
+   * Drag-select (§586 M6): the new selection, in order, so the last is the
+   * primary. The band's elements back-to-front, behind the prior selection's
+   * when shift was held at the press. Absent → no band is drawn.
+   */
+  onSelectMany?: (ids: string[]) => void
   /** Shift-click on an element: add it to the selection or take it out. Absent → shift-click selects as a plain click. */
   onToggleSelect?: (id: string) => void
   scale?: number
@@ -301,6 +308,7 @@ export default function SlideCanvas({
   onSelect,
   selectedElementIds,
   onToggleSelect,
+  onSelectMany,
   scale = 1,
   resolveImageSrc,
   compileOverlay,
@@ -573,7 +581,7 @@ export default function SlideCanvas({
   // ── Pointer wiring shared by drag/resize/rotate ──
   // We attach window-level move/up listeners while a gesture is active so the
   // gesture keeps tracking outside the element bounds.
-  const activeGesture = useRef<'drag' | 'resize' | 'rotate' | 'group' | null>(null)
+  const activeGesture = useRef<'drag' | 'resize' | 'rotate' | 'group' | 'band' | null>(null)
 
   // Set when a gesture ends (a resize, a rotate, a drag, or a group drag that
   // moved), so the click the browser sends after its release changes nothing:
@@ -635,6 +643,58 @@ export default function SlideCanvas({
     },
   }
 
+  // ── Drag-select (§586 M6): a press and move from the empty canvas, the margin
+  // or a locked element draws a band, in slide units. A press that never moves
+  // is a click and draws nothing.
+  const rootRef = useRef<HTMLDivElement>(null)
+  const bandRef = useRef<{
+    start: { x: number; y: number }
+    origin: { left: number; top: number }
+    add: boolean
+    rect: BandRect | null
+  } | null>(null)
+  const [band, setBand] = useState<BandRect | null>(null)
+  const BAND_THRESHOLD = 3
+  const startBand = (e: React.PointerEvent) => {
+    if (!interactive || !onSelectMany || e.button !== 0) return
+    const box = rootRef.current?.getBoundingClientRect()
+    bandRef.current = {
+      start: { x: e.clientX, y: e.clientY },
+      origin: { left: box?.left ?? 0, top: box?.top ?? 0 },
+      add: e.shiftKey,
+      rect: null,
+    }
+    activeGesture.current = 'band'
+  }
+  const bandHandlers = useRef({ move: (_c: { x: number; y: number }) => {}, up: (_commit: boolean) => {} })
+  bandHandlers.current = {
+    move: (cursor) => {
+      const b = bandRef.current
+      if (!b) return
+      if (!b.rect && Math.hypot(cursor.x - b.start.x, cursor.y - b.start.y) < BAND_THRESHOLD) return
+      // A crop in progress is applied as the band starts, as any other press away does.
+      if (!b.rect && cropRef.current) void leaveCropRef.current('apply')
+      const toSlide = (p: { x: number; y: number }) => ({
+        x: (p.x - b.origin.left) / scale,
+        y: (p.y - b.origin.top) / scale,
+      })
+      b.rect = bandRect(toSlide(b.start), toSlide(cursor))
+      setBand(b.rect)
+    },
+    up: (commitBand) => {
+      const b = bandRef.current
+      bandRef.current = null
+      setBand(null)
+      if (!b?.rect || !commitBand) return
+      swallowClickRef.current = true
+      const rect = b.rect
+      const ids = slide.elements
+        .filter((el) => !hiddenSet?.has(el.id) && bandTouches(el, rect))
+        .map((el) => el.id)
+      onSelectMany?.(b.add ? [...selectedIds.filter((id) => !ids.includes(id)), ...ids] : ids)
+    },
+  }
+
   useEffect(() => {
     // Ends the gesture in progress where it is, committing what it previewed.
     // A release is followed by a click, which `swallowClick` keeps from
@@ -646,6 +706,7 @@ export default function SlideCanvas({
       else if (gesture === 'resize') resize.onPointerUp()
       else if (gesture === 'rotate') rotate.onPointerUp()
       else if (gesture === 'group') groupHandlers.current.up()
+      else if (gesture === 'band') bandHandlers.current.up(swallowClick)
       // A group drag decides for itself: a press on a member that did not move
       // is a click, and collapses the selection to that member.
       if (swallowClick && (gesture === 'drag' || gesture === 'resize' || gesture === 'rotate')) swallowClickRef.current = true
@@ -666,6 +727,7 @@ export default function SlideCanvas({
       else if (activeGesture.current === 'resize') resize.onPointerMove(cursor, { shiftKey: e.shiftKey })
       else if (activeGesture.current === 'rotate') rotate.onPointerMove(cursor)
       else if (activeGesture.current === 'group') groupHandlers.current.move(cursor, skipSnap)
+      else if (activeGesture.current === 'band') bandHandlers.current.move(cursor)
     }
     const onUp = () => end(true)
     const onCancel = () => end(false)
@@ -694,6 +756,7 @@ export default function SlideCanvas({
 
   return (
     <div
+      ref={rootRef}
       data-interactive={interactive ? 'true' : undefined}
       role={interactive ? 'group' : 'presentation'}
       aria-label={interactive ? 'Slide canvas' : undefined}
@@ -707,9 +770,15 @@ export default function SlideCanvas({
         flexShrink: 0,
       }}
       onPointerDownCapture={interactive ? () => { swallowClickRef.current = false } : undefined}
+      onPointerDown={interactive ? (e) => {
+        // Only a press on the empty canvas starts a band: elements, handles
+        // and the host's layers take their own presses.
+        const t = e.target as HTMLElement
+        if (t === e.currentTarget || t.hasAttribute('data-canvas-margin') || t.hasAttribute('data-slide-base')) startBand(e)
+      } : undefined}
       // The empty canvas is the slide's background and the margin around it:
       // a click there deselects, and the host applies a crop in progress. A
-      // drag-select would start from a press on either.
+      // drag-select starts from a press on either.
       onClick={interactive ? () => {
         if (swallowClickRef.current) { swallowClickRef.current = false; return }
         onSelect?.(null)
@@ -727,6 +796,7 @@ export default function SlideCanvas({
           previews can mutate the same transform string. It clips at the slide
           edge, as the export does. */}
       <div
+        data-slide-base={interactive ? '' : undefined}
         style={{
           width: displayW,
           height: displayH,
@@ -770,10 +840,10 @@ export default function SlideCanvas({
               return
             }
             // A press on a locked element starts nothing (§586 M5): it is only
-            // selected, as a click does. HOOK: drag-select starts here, from a
-            // press-and-move on a locked element.
+            // selected, as a click does; a press-and-move on it draws a band.
             if (isLocked(element)) {
               if (!(selectedIds.length > 1 && selectedIds.includes(element.id))) onSelect?.(element.id)
+              startBand(e)
               return
             }
             // A press on a member of a multi-selection drags the whole group;
@@ -945,6 +1015,23 @@ export default function SlideCanvas({
                   style={{ ...GUIDE_STYLE, left: 0, top: g.at * scale - 1, width: displayW, height: 2 }}
                 />
               ),
+            )}
+            {/* The drag-select band (§586 M6), in the guides' thin look. */}
+            {band && (
+              <div
+                data-testid="selection-band"
+                style={{
+                  position: 'absolute',
+                  left: band.x * scale,
+                  top: band.y * scale,
+                  width: band.w * scale,
+                  height: band.h * scale,
+                  border: '1px solid var(--editor-selection)',
+                  background: 'color-mix(in srgb, var(--editor-selection) 12%, transparent)',
+                  pointerEvents: 'none',
+                  zIndex: 999,
+                }}
+              />
             )}
             {/* Equal gaps (§586 M7): each gap a short segment in the guide's look. */}
             {(groupSnap !== NO_SNAP ? groupSnap : drag).gaps.map((g: GapSegment, i) => (

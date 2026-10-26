@@ -154,7 +154,15 @@ describe('CarouselEditor: element lock (§586 M5)', () => {
     expect(adapter.saveCalls).toHaveLength(0)
     const p = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
     expect(byId(p, 'el-a')).toMatchObject({ x: 100, y: 100 })
-    // The press selects it, as a click does.
+  })
+
+  it('pressing a locked element without moving selects it, as a click does, and saves nothing', async () => {
+    const { adapter } = await mount()
+    await act(async () => {
+      pointer(wrapperOf('el-a'), 'pointerdown', { clientX: 100, clientY: 100 })
+      pointer(window, 'pointerup')
+    })
+    expect(adapter.saveCalls).toHaveLength(0)
     expect(outlined('el-a')).toBe(true)
   })
 

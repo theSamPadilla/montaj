@@ -1503,6 +1503,13 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     setSelectedElementIds(ids => (ids.includes(id) ? ids.filter(i => i !== id) : [...ids, id]))
   }, [])
 
+  // Drag-select (§586 M6): the canvas hands back the whole new selection and
+  // applies a crop in progress as the band starts.
+  const selectBand = useCallback((ids: string[]) => {
+    if (armedRef.current) return
+    setSelectedElementIds(ids)
+  }, [])
+
   // Align several selected elements to the box they cover: moves only, one save
   // and one undo step for the lot.
   function handleAlignSelection(patches: Array<{ id: string } & ({ x: number } | { y: number })>) {
@@ -1706,6 +1713,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 onSelect={id => { if (cropElementId && id !== cropElementId) applyCrop(); setSelectedElementId(id) }}
                 selectedElementIds={liveSelectedIds}
                 onToggleSelect={toggleSelect}
+                onSelectMany={selectBand}
                 scale={canvasScale}
                 resolveImageSrc={adapter.resolveImageSrc}
                 compileOverlay={(t) => adapter.compileOverlay(t)}
