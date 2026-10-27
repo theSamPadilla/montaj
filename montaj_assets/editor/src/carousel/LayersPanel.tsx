@@ -1,9 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 import { ArrowDown, ArrowUp, ChevronsDown, ChevronsUp, Eye, EyeOff, GripVertical, Lock, LockOpen, Shapes, Type } from 'lucide-react'
 import type { CarouselElement, ImageElement, OverlayElement } from '../types'
 import type { ReorderDirection } from '../state/project-reducer'
 import { isLocked } from './lock'
+import { moveToLayer } from './layerOrder'
 import { isTextOverlay } from './textStyle'
+
+/** How far a press moves before it is a drag and not a click, in px. */
+const DRAG_START_PX = 4
+
+type DropAt = { id: string; where: 'above' | 'below' }
 
 const iconBtn =
   'flex items-center justify-center h-7 w-7 rounded-md text-[var(--editor-text)] hover:bg-[var(--editor-surface)] disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)]'
@@ -48,9 +55,86 @@ export default function LayersPanel({
   const selected = new Set(selectedIds)
   const hidden = new Set(hiddenElementIds ?? [])
   const [dragId, setDragId] = useState<string | null>(null)
-  const [over, setOver] = useState<{ id: string; where: 'above' | 'below' } | null>(null)
-  const dragRef = useRef<string | null>(null)
+  const [over, setOver] = useState<DropAt | null>(null)
   const listRef = useRef<HTMLUListElement>(null)
+  // The click a finished drag leaves behind (on the row it began on, when it
+  // ends there) is not a select.
+  const swallowClickRef = useRef(false)
+  const endDragRef = useRef<(() => void) | null>(null)
+  useEffect(() => () => endDragRef.current?.(), [])
+
+  // Read when the pointer moves, which may be before the next render.
+  const live = useRef({ elements, selectedIds, onMove })
+  live.current = { elements, selectedIds, onMove }
+
+  /** The ids a drag of `from` moves: the whole selection when it is in it. */
+  const movingIds = (from: string) => {
+    const ids = live.current.selectedIds
+    return ids.includes(from) ? ids : [from]
+  }
+
+  /** Where a drop at `clientY` puts the rows, by the rows' places on screen:
+   *  above or below the row under the pointer by its halves, and past the
+   *  first or last row, at that end. Null when nothing would move. */
+  function dropAt(from: string, clientY: number): DropAt | null {
+    const rowEls = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-layer-id]') ?? [])
+    if (rowEls.length === 0) return null
+    let at: DropAt | null = null
+    for (const row of rowEls) {
+      const r = row.getBoundingClientRect()
+      if (clientY < r.bottom || row === rowEls[rowEls.length - 1]) {
+        at = { id: row.dataset.layerId!, where: clientY < r.top + r.height / 2 ? 'above' : 'below' }
+        break
+      }
+    }
+    if (!at) return null
+    const els = live.current.elements
+    return moveToLayer(els, movingIds(from), at.id, at.where) === els ? null : at
+  }
+
+  /** A press on a row: past `DRAG_START_PX` it drags the row (the selection
+   *  when the row is in it), and a release drops it where the line shows. A
+   *  press that does not move is left to the click, which selects. */
+  function onRowPointerDown(e: ReactPointerEvent<HTMLLIElement>, id: string) {
+    swallowClickRef.current = false
+    if (!canEdit || e.button !== 0 || endDragRef.current) return
+    // The row's own buttons (lock, eye) keep their press.
+    if ((e.target as Element).closest?.('[data-layer-action]')) return
+    const startX = e.clientX
+    const startY = e.clientY
+    let dragging = false
+    const move = (ev: PointerEvent) => {
+      if (!dragging) {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_START_PX) return
+        dragging = true
+        setDragId(id)
+      }
+      ev.preventDefault()
+      setOver(dropAt(id, ev.clientY))
+    }
+    const end = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', end)
+      endDragRef.current = null
+      setDragId(null)
+      setOver(null)
+    }
+    const up = (ev: PointerEvent) => {
+      if (dragging) {
+        // The click comes in this same task, if at all; a later one (a key) is a select again.
+        swallowClickRef.current = true
+        setTimeout(() => { swallowClickRef.current = false }, 0)
+        const target = dropAt(id, ev.clientY)
+        if (target) live.current.onMove(movingIds(id), target.id, target.where)
+      }
+      end()
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', end)
+    endDragRef.current = end
+  }
 
   // The newest selected row scrolls into view.
   const lastSelected = selectedIds[selectedIds.length - 1]
@@ -77,7 +161,18 @@ export default function LayersPanel({
           {header('Send to back', 'back', ChevronsDown)}
         </div>
       </div>
-      <ul ref={listRef} aria-label="Layers" className="flex flex-col gap-0.5 px-2 pb-2">
+      <ul
+        ref={listRef}
+        aria-label="Layers"
+        className="flex flex-col gap-0.5 px-2 pb-2"
+        style={dragId ? { cursor: 'grabbing' } : undefined}
+        onClickCapture={(e) => {
+          if (!swallowClickRef.current) return
+          swallowClickRef.current = false
+          e.stopPropagation()
+          e.preventDefault()
+        }}
+      >
         {rows.map((el) => {
           const on = selected.has(el.id)
           const locked = isLocked(el)
@@ -87,39 +182,26 @@ export default function LayersPanel({
             <li
               key={el.id}
               data-layer-id={el.id}
-              draggable={canEdit}
-              onDragStart={(e) => {
-                dragRef.current = el.id
-                setDragId(el.id)
-                if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', el.id) }
-              }}
-              onDragOver={(e) => {
-                if (!dragRef.current) return
-                e.preventDefault()
-                const r = e.currentTarget.getBoundingClientRect()
-                setOver({ id: el.id, where: e.clientY < r.top + r.height / 2 ? 'above' : 'below' })
-              }}
-              onDrop={(e) => {
-                e.preventDefault()
-                const r = e.currentTarget.getBoundingClientRect()
-                const where = e.clientY < r.top + r.height / 2 ? 'above' : 'below'
-                const from = dragRef.current
-                dragRef.current = null
-                setDragId(null)
-                setOver(null)
-                if (!from) return
-                onMove(selected.has(from) ? selectedIds : [from], el.id, where)
-              }}
-              onDragEnd={() => { dragRef.current = null; setDragId(null); setOver(null) }}
-              className={`flex items-center gap-1.5 h-10 pl-1 pr-1 rounded-md ${on ? 'bg-[var(--editor-surface)] ring-1 ring-[var(--editor-accent)]' : 'hover:bg-[var(--editor-surface)]'} ${dragId === el.id ? 'opacity-50' : ''} ${over?.id === el.id ? (over.where === 'above' ? 'border-t-2 border-[var(--editor-accent)]' : 'border-b-2 border-[var(--editor-accent)]') : ''}`}
+              onPointerDown={(e) => onRowPointerDown(e, el.id)}
+              // Inline, so a host's stylesheet cannot lose them: the row is a grab handle, the line its drop place.
+              style={{ position: 'relative', userSelect: 'none', WebkitUserSelect: 'none', cursor: canEdit ? (dragId ? 'grabbing' : 'grab') : undefined }}
+              className={`flex items-center gap-1.5 h-10 pl-1 pr-1 rounded-md ${on ? 'bg-[var(--editor-surface)] ring-1 ring-[var(--editor-accent)]' : 'hover:bg-[var(--editor-surface)]'} ${dragId && (dragId === el.id || (selected.has(dragId) && on)) ? 'opacity-50' : ''}`}
             >
-              <span aria-hidden="true" className="cursor-grab text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)]"><GripVertical size={14} /></span>
+              {over?.id === el.id && (
+                <span
+                  aria-hidden="true"
+                  data-layer-drop-line={over.where}
+                  style={{ position: 'absolute', left: 0, right: 0, height: 2, borderRadius: 1, pointerEvents: 'none', background: 'var(--editor-accent)', ...(over.where === 'above' ? { top: -2 } : { bottom: -2 }) }}
+                />
+              )}
+              <span aria-hidden="true" className="text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)]"><GripVertical size={14} /></span>
               <button
                 type="button"
                 aria-pressed={on}
                 aria-label={`Select ${name}`}
                 title={name}
                 onClick={(e) => onSelect(el.id, e.shiftKey || e.metaKey || e.ctrlKey)}
+                style={{ cursor: 'inherit' }}
                 className={`flex-1 min-w-0 flex items-center gap-2 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)] rounded ${isHidden ? 'opacity-50' : ''}`}
               >
                 <span className="flex-shrink-0 flex items-center justify-center h-7 w-7 rounded border border-[var(--editor-border)] bg-[var(--editor-bg)] overflow-hidden">
@@ -132,6 +214,7 @@ export default function LayersPanel({
               <button
                 type="button"
                 className={iconBtn}
+                data-layer-action
                 aria-label={locked ? `Unlock ${name}` : `Lock ${name}`}
                 title={locked ? 'Unlock' : 'Lock'}
                 disabled={!canEdit}
@@ -143,6 +226,7 @@ export default function LayersPanel({
                 <button
                   type="button"
                   className={iconBtn}
+                  data-layer-action
                   aria-label={isHidden ? `Show ${name}` : `Hide ${name}`}
                   title={isHidden ? 'Show' : 'Hide'}
                   onClick={() => onToggleElementVisibility(el.id)}

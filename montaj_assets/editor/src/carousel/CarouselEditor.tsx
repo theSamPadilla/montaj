@@ -34,7 +34,7 @@ import { useKeymap, matchesDelete, matchesEscape, matchesPlainKey, matchesRedo, 
 import type { ReorderDirection } from '../state/project-reducer'
 import { COPY_OFFSET, cloneElement, copyElements, duplicateCopies, insertCopies, pasteElements, withoutLock, type ElementClipboard } from './clipboard'
 import { isLocked, toggleLock } from './lock'
-import { reorderSelection } from './layerOrder'
+import { moveToLayer, reorderSelection } from './layerOrder'
 import { newTextElement } from './newText'
 import { applyTextStyle, isTextOverlay, pickTextStyle, type TextStyle } from './textStyle'
 import { Button, ColourPanelContext, type ColourRequest } from '../ui'
@@ -793,18 +793,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   function moveLayers(ids: string[], targetId: string, where: 'above' | 'below') {
     if (!selectedSlide || !canEdit) return
     if (cropElementId) flushSync(applyCrop)
-    const moving = new Set(ids)
-    if (moving.has(targetId)) return
-    void state.editElements(selectedSlide.id, (els) => {
-      const front = [...els].reverse()
-      const picked = front.filter((el) => moving.has(el.id))
-      const rest = front.filter((el) => !moving.has(el.id))
-      const at = rest.findIndex((el) => el.id === targetId)
-      if (at < 0 || picked.length === 0) return els
-      rest.splice(where === 'above' ? at : at + 1, 0, ...picked)
-      const next = rest.reverse()
-      return next.every((el, i) => el === els[i]) ? els : next
-    })
+    // A drop that would not change the order records nothing.
+    if (moveToLayer(selectedSlide.elements, ids, targetId, where) === selectedSlide.elements) return
+    void state.editElements(selectedSlide.id, (els) => moveToLayer(els, ids, targetId, where))
   }
   /** Set image as background (C4): covers the slide, goes to the back, locks; one editElements. The source's size is read first. */
   async function setAsBackground(elementId: string) {
