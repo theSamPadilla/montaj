@@ -47,11 +47,15 @@ workspace holding a `project.json`), in `.imports/` or in `_uploads/`. The
 workspace is checked first, so a path outside it costs no stat of its own, and
 the workspace and project folder are spelled (and stat'ed) once per save.
 
+One exception outside the workspace: an `audio.tracks[]` file (an existing,
+non-symlink file) is copied from anywhere, since the editor's preview serves
+the workspace only and a music bed left in ~/Downloads would be silent.
+
 What is never copied: a path inside this project's folder (judged by the
 literal path, so a Clips child's link to its parent's footage stays a link, and
 by identity, so a different spelling of this folder, by case or Unicode form,
 is still this folder), a symlink, anything under `.sources/` (shared Clips
-originals and proxies), anything outside the workspace (the user's own
+originals and proxies), anything outside the workspace that is not an audio track (the user's own
 footage), a missing file, a relative or non-string value.
 
 How it copies: an APFS clone where it can, at any size. Otherwise a plain copy,
@@ -286,6 +290,16 @@ def _borrowed(src, where: _Where) -> bool:
     return False
 
 
+def _outside_audio(src, where: _Where) -> bool:
+    """An audio track's file outside the workspace: the preview serves the
+    workspace only, so a sound saved from e.g. ~/Downloads would play nothing.
+    The same file rules as `_borrowed` (an existing, non-symlink file)."""
+    if not isinstance(src, str) or not src or not _p.isabs(src):
+        return False
+    path = _norm(src)
+    return where.root(path) is None and not _p.islink(path) and _p.isfile(path)
+
+
 def borrowed(src, project_dir, workspace) -> bool:
     """True when `src` is a file this project borrows from another project's
     folder, `.imports/` or `_uploads/` under `workspace`: media to copy in.
@@ -373,6 +387,7 @@ def plan_borrowed_media(previous: dict, project: dict, project_dir, workspace,
     entries = _changed_entries(previous, project)
     if pending:
         entries += _entries_holding(project, pending)
+    audio_ids = {id(entry) for family, entry in _refs(project) if family == "audio"}
     wanted: dict[str, str] = {}
     looked: set = set()
     for entry in entries:
@@ -381,7 +396,7 @@ def plan_borrowed_media(previous: dict, project: dict, project_dir, workspace,
         if key is None or key in looked:
             continue
         looked.add(key)
-        if _borrowed(src, where):
+        if _borrowed(src, where) or (id(entry) in audio_ids and _outside_audio(src, where)):
             wanted[key] = src
     return wanted
 
