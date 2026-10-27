@@ -252,6 +252,12 @@ type FontSizePickerProps = {
   min?: number
   max?: number
   className?: string
+  /** The steppers: the box's own up/down arrows (default), or a − and a + on
+   *  either side of it (the rail layout's element toolbar, §587 M3). Each
+   *  click is one write either way. */
+  steppers?: 'arrows' | 'plusMinus'
+  /** Class for the − and + buttons. */
+  stepperClassName?: string
 }
 
 // Extract the numeric portion of a stored fontSize. Tolerates "25", "25px",
@@ -263,7 +269,7 @@ function parseFontSizeNumeric(value: string): string {
   return m ? m[1] : ''
 }
 
-export function FontSizePicker({ value, onChange, disabled, min = 8, max = 9999, className }: FontSizePickerProps) {
+export function FontSizePicker({ value, onChange, disabled, min = 8, max = 9999, className, steppers = 'arrows', stepperClassName }: FontSizePickerProps) {
   // NumberField carries its own "what's on screen while typing" draft (see its
   // doc comment) — the bespoke `local` state and `isFocused` ref this used to
   // hand-roll did exactly that job, so converting drops them rather than
@@ -295,19 +301,31 @@ export function FontSizePicker({ value, onChange, disabled, min = 8, max = 9999,
     commit(stepValue(from, direction, { step: 1, min, max }))
   }
 
-  return (
+  const field = (
     <NumberField
       name="Font size"
       value={numericValue}
       onPreview={() => {}}
       onCommit={commit}
-      onStep={step}
+      onStep={steppers === 'arrows' ? step : undefined}
       disabled={disabled}
       min={min}
       max={max}
       placeholder="size"
-      unit="px"
+      unit={steppers === 'arrows' ? 'px' : undefined}
       className={className ?? 'w-14'}
     />
+  )
+  if (steppers === 'arrows') return field
+  return (
+    <div className="flex items-center">
+      <button type="button" aria-label="Decrease font size" title="Smaller" disabled={disabled} onClick={() => step(-1)} className={stepperClassName}>
+        −
+      </button>
+      {field}
+      <button type="button" aria-label="Increase font size" title="Larger" disabled={disabled} onClick={() => step(1)} className={stepperClassName}>
+        +
+      </button>
+    </div>
   )
 }

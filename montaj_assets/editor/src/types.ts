@@ -660,9 +660,10 @@ export interface NotesApi {
  *  undo step. Ids are `SlideNote.id`; points are fractions 0..1 of the slide's
  *  design width (`x`) and height (`y`), clamped. */
 export interface SlideNotesApi {
-  /** Adds an empty note on `slideId`, at `point` or about the whole slide,
-   *  and returns its id. Does not call `onNoteAdded`: the caller has the id. */
-  add: (slideId: string, point?: { x: number; y: number }) => string
+  /** Adds a note on `slideId`, at `point` or about the whole slide, with
+   *  `text` (default empty) in the same write, and returns its id. Does not
+   *  call `onNoteAdded`: the caller has the id. */
+  add: (slideId: string, point?: { x: number; y: number }, text?: string) => string
   setText: (id: string, text: string) => void
   setDone: (id: string, done: boolean) => void
   /** Moves the note to `point` on its slide, or with `null` makes it about
@@ -721,6 +722,13 @@ export interface CarouselApi {
    * project cannot be edited, and in crop mode.
    */
   addImage(src: string): Promise<void>
+  /**
+   * Makes image `elementId` on the selected slide its background: it covers the
+   * slide with a crop at the slide's aspect centred on the part it showed, goes
+   * to the back and is locked, in one undo step. Does nothing for a locked or
+   * missing image or a project that cannot be edited.
+   */
+  setAsBackground(elementId: string): Promise<void>
 }
 
 // ── Adapter ────────────────────────────────────────────────────────────────
@@ -1155,6 +1163,13 @@ export interface EditorTheme {
      * accent button. Optional; when absent, `applyTheme` falls back to `text`.
      */
     accentForeground?: string
+    /**
+     * The accent as small text on the surfaces (active rail item, selected
+     * slide). Optional; when absent, `applyTheme` keeps today's indigo-600 for
+     * the stock light theme, derives a darker shade of `accent` that reads at
+     * 4.5:1 on a custom light theme, and uses `accent` itself on dark themes.
+     */
+    accentText?: string
     /** Default text color. */
     text: string
     /** Hairline/divider color. */
@@ -1235,7 +1250,23 @@ export interface EditorSlots {
    * Versions), and N opens that page. Absent → nothing is rendered.
    */
   notesPanel?: ReactNode
+  /** `layout="rail"` only: the top bar's left side (file actions). */
+  carouselTopLeft?: ReactNode
+  /** `layout="rail"` only: the top bar's right side (title, Send for review, Export). */
+  carouselTopRight?: ReactNode
+  /** `layout="rail"` only: the Media rail item's side panel. */
+  carouselMediaPanel?: ReactNode
+  /** `layout="rail"` only: the Brand rail item's side panel. */
+  carouselBrandPanel?: ReactNode
+  /** `layout="rail"` only: the Notes rail item's right panel. */
+  carouselNotesPanel?: ReactNode
 }
+
+/** The carousel editor's layouts: today's (`classic`) or the rail layout. */
+export type CarouselLayout = 'classic' | 'rail'
+
+/** The rail layout's items, in order. `notes` opens the right panel; the others the side panel. */
+export type CarouselRailItemId = 'media' | 'elements' | 'text' | 'brand' | 'ai-image' | 'layers' | 'background' | 'notes'
 
 // ── Controls window ───────────────────────────────────────────────────────────
 // Declared here rather than in ControlsInfoModal (which re-exports the two
@@ -1314,12 +1345,30 @@ export interface CarouselRenderModalContext<P extends Project = Project> {
   onClose: () => void
 }
 
+/** The host's brand for the carousel editor (`layout="rail"`). */
+export interface CarouselBrand {
+  /** The brand palette: hex colours, shown in the colour panel. */
+  colors?: string[]
+  /** The brand fonts: the text presets use `heading` and `body` (CSS font-family values), with `googleFonts` to fetch. */
+  fonts?: { heading?: string; body?: string; googleFonts?: string[] }
+}
+
 /**
  * Props for the carousel editor component. Controlled shape: the host owns the
  * `project` and is notified of edits via `onProjectChange`. The adapter drives
  * transport; theme and slots are optional, and `readOnly` disables mutation.
  */
 export interface CarouselEditorProps<P extends Project = Project> {
+  /** `layout="rail"`: the brand's palette and fonts, from the host's profile. */
+  brand?: CarouselBrand
+  /**
+   * `'classic'` (default) is today's layout. `'rail'` swaps in the top bar, the
+   * icon rail with its side panel, the right panel and the bottom bar; the host
+   * fills them through the `carousel*` slots and `railPanels`.
+   */
+  layout?: CarouselLayout
+  /** `layout="rail"`: content for a rail item's panel, winning over its slot and the placeholder. */
+  railPanels?: Partial<Record<CarouselRailItemId, ReactNode>>
   project: P
   adapter: EditorAdapter<P>
   onProjectChange?: (p: P) => void

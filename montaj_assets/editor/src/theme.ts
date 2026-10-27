@@ -175,6 +175,39 @@ export function applyTheme(el: HTMLElement, theme: EditorTheme): void {
   }
 }
 
+const STOCK_ACCENT = '#6366f1'
+
+function parseHex(hex: string): [number, number, number] | null {
+  const m = /^#([0-9a-fA-F]{6})$/.exec(hex.trim())
+  if (!m) return null
+  const n = parseInt(m[1], 16)
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+}
+
+function luminance([r, g, b]: [number, number, number]): number {
+  const c = [r, g, b].map((v) => v / 255).map((x) => (x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4))
+  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+}
+
+/** The accent as small text: the theme's `accentText`, else indigo-600 for the
+ *  stock light accent, else (custom light accent) the accent darkened until it
+ *  reads 4.5:1 on the background, else the accent itself. */
+function accentTextFor(theme: EditorTheme): string {
+  const { accent, accentText, background } = theme.colors
+  if (accentText) return accentText
+  if (!isLightTheme(theme)) return accent
+  if (accent.trim().toLowerCase() === STOCK_ACCENT) return '#4f46e5'
+  const rgb = parseHex(accent)
+  const bg = parseHex(background)
+  if (!rgb || !bg) return accent
+  const bgL = luminance(bg)
+  let cur = rgb
+  for (let i = 0; i < 40 && (bgL + 0.05) / (luminance(cur) + 0.05) < 4.5; i++) {
+    cur = [Math.round(cur[0] * 0.95), Math.round(cur[1] * 0.95), Math.round(cur[2] * 0.95)]
+  }
+  return '#' + cur.map((v) => v.toString(16).padStart(2, '0')).join('')
+}
+
 function writeThemeVars(style: CSSStyleDeclaration, theme: EditorTheme): void {
   // Colors
   style.setProperty('--editor-bg', theme.colors.background)
@@ -188,7 +221,7 @@ function writeThemeVars(style: CSSStyleDeclaration, theme: EditorTheme): void {
   // text nudges to indigo-600 (#4f46e5) there. Dark mode (and any host theme)
   // keeps the accent unchanged. Fills, borders, rings and buttons keep
   // `--editor-accent`; ONLY small accent text should read this token.
-  style.setProperty('--editor-accent-text', isLightTheme(theme) ? '#4f46e5' : theme.colors.accent)
+  style.setProperty('--editor-accent-text', accentTextFor(theme))
   style.setProperty('--editor-text', theme.colors.text)
   style.setProperty('--editor-border', theme.colors.border)
   style.setProperty('--editor-selection', theme.colors.selection)

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Ban, Bold, Italic, AlignLeft, AlignCenter, AlignRight, Trash2 } from 'lucide-react'
 import type { OverlayElement } from '../types'
 import { FontFamilyPicker, FontSizePicker } from './FontPicker'
@@ -50,7 +50,7 @@ export function nonColorTextEntries(props: Record<string, unknown>): Array<[stri
   )
 }
 
-function caseLabel(current: unknown): string {
+export function caseLabel(current: unknown): string {
   if (current === 'uppercase') return 'AA'
   if (current === 'lowercase') return 'aa'
   if (current === 'capitalize') return 'Aa·'
@@ -83,13 +83,13 @@ function isTransparentBackground(raw: string): boolean {
 
 /** The text box's background: a swatch, and a button that clears it. Written
  *  as hex from the picker and as the literal `transparent` from the button. */
-function TextBackgroundControl({
+export function TextBackgroundControl({
   slideId,
   element,
   updateOverlayProp,
 }: Pick<TextFormattingToolbarProps, 'slideId' | 'element' | 'updateOverlayProp'>) {
   const raw = readPropAsString(element, 'bgColor')
-  const saved = HEX_PATTERN.test(raw) && raw.length === 7 ? raw : NEUTRAL_BG
+  const saved = HEX_PATTERN.test(raw) && (raw.length === 7 || raw.length === 9) ? raw : NEUTRAL_BG
 
   // Like the text effect color: the swatch previews a pick locally and the
   // overlay is written once, when the picker closes, so one pick is one undo step.
@@ -108,6 +108,7 @@ function TextBackgroundControl({
         title="Text background"
         showValue={false}
         size="sm"
+        alpha
       />
       {!isTransparentBackground(raw) && (
         <Button
@@ -126,6 +127,86 @@ function TextBackgroundControl({
   )
 }
 
+/**
+ * A text overlay's formatting state and its writes, one `updateOverlayProp`
+ * call (one save, one undo step) per action. The classic panel's toolbar and
+ * the rail layout's element toolbar (§587 M3) both drive these.
+ */
+export function textFormatting(
+  slideId: string,
+  element: OverlayElement,
+  updateOverlayProp: TextFormattingToolbarProps['updateOverlayProp'],
+) {
+  const props = element.overlay.props
+  const write = (key: string, value: string) => void updateOverlayProp(slideId, element.id, key, value)
+  const boldActive = isBold(props.fontWeight)
+  const italicActive = isItalic(props.fontStyle)
+  const rawColor = readPropAsString(element, 'color')
+  return {
+    supported: getSupportedProps(element),
+    boldActive,
+    italicActive,
+    caseActive: props.textTransform !== undefined && props.textTransform !== 'none',
+    textTransform: props.textTransform,
+    currentAlign: typeof props.textAlign === 'string' ? props.textAlign : undefined,
+    fontSizeValue: readPropAsString(element, 'fontSize'),
+    fontFamilyValue: readPropAsString(element, 'fontFamily'),
+    colorValue: HEX_PATTERN.test(rawColor) && (rawColor.length === 7 || rawColor.length === 9) ? rawColor : '#111111',
+    toggleBold: () => write('fontWeight', boldActive ? '400' : '700'),
+    toggleItalic: () => write('fontStyle', italicActive ? 'normal' : 'italic'),
+    cycleCase: () => write('textTransform', nextCase(props.textTransform)),
+    setAlign: (v: TextAlignValue) => write('textAlign', v),
+    setFontSize: (v: string) => write('fontSize', v),
+    setFontFamily: (v: string) => write('fontFamily', v),
+    setColor: (v: string) => write('color', v),
+  }
+}
+
+export type TextAlignValue = 'left' | 'center' | 'right'
+
+/** The text alignments, in the order the rail toolbar's one button cycles them. */
+export const TEXT_ALIGNS: ReadonlyArray<{ value: TextAlignValue; Icon: typeof AlignLeft; label: string }> = [
+  { value: 'left', Icon: AlignLeft, label: 'Align left' },
+  { value: 'center', Icon: AlignCenter, label: 'Align center' },
+  { value: 'right', Icon: AlignRight, label: 'Align right' },
+]
+
+/** The text colour: a native colour input over `children` (the swatch the caller draws). */
+export function TextColorControl({
+  value,
+  onChange,
+  onOpenPanel,
+  className,
+  children,
+}: {
+  value: string
+  onChange: (v: string) => void
+  /** The rail layout: the control opens the colour panel instead of the OS picker. */
+  onOpenPanel?: () => void
+  className?: string
+  children: ReactNode
+}) {
+  if (onOpenPanel) {
+    return (
+      <button type="button" className={className} title="Text color" aria-label="Text color" onClick={onOpenPanel}>
+        {children}
+      </button>
+    )
+  }
+  return (
+    <label className={`${className ?? ''} relative cursor-pointer`} title="Text color">
+      {children}
+      <input
+        type="color"
+        value={value.length === 9 ? value.slice(0, 7) : value}
+        onChange={(e) => onChange(e.target.value)}
+        className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+        aria-label="Text color"
+      />
+    </label>
+  )
+}
+
 export function TextFormattingToolbar({
   slideId,
   element,
@@ -133,33 +214,16 @@ export function TextFormattingToolbar({
   onDelete,
   mode = 'dark',
 }: TextFormattingToolbarProps) {
+  const fmt = textFormatting(slideId, element, updateOverlayProp)
+  const { supported, boldActive, italicActive, caseActive, currentAlign, fontSizeValue, fontFamilyValue, colorValue } = fmt
   const props = element.overlay.props
 
-  const supported = getSupportedProps(element)
   // `text` is content, not a toolbar control — it's edited inline. A non-compliant
   // overlay that happens to carry a `text` key (sometimes with a garbage value
   // like a color hex left over from legacy naming) would otherwise hide the
   // fallback hint and leave the operator staring at an empty toolbar.
   const hasAnyControlProp = [...supported].some((k) => k !== 'text')
-
-  const boldActive = isBold(props.fontWeight)
-  const italicActive = isItalic(props.fontStyle)
-  const caseActive = props.textTransform !== undefined && props.textTransform !== 'none'
-  const currentAlign = typeof props.textAlign === 'string' ? props.textAlign : undefined
   const textTransformDisplay = typeof props.textTransform === 'string' ? props.textTransform : 'none'
-
-  const handleBoldClick = () => void updateOverlayProp(slideId, element.id, 'fontWeight', boldActive ? '400' : '700')
-  const handleItalicClick = () => void updateOverlayProp(slideId, element.id, 'fontStyle', italicActive ? 'normal' : 'italic')
-  const handleCaseClick = () => void updateOverlayProp(slideId, element.id, 'textTransform', nextCase(props.textTransform))
-  const handleAlignClick = (v: 'left' | 'center' | 'right') => void updateOverlayProp(slideId, element.id, 'textAlign', v)
-  const handleFontSizeChange = (v: string) => void updateOverlayProp(slideId, element.id, 'fontSize', v)
-  const handleFontFamilyChange = (v: string) => void updateOverlayProp(slideId, element.id, 'fontFamily', v)
-  const handleColorChange = (v: string) => void updateOverlayProp(slideId, element.id, 'color', v)
-
-  const fontSizeValue = readPropAsString(element, 'fontSize')
-  const fontFamilyValue = readPropAsString(element, 'fontFamily')
-  const rawColor = readPropAsString(element, 'color')
-  const colorValue = HEX_PATTERN.test(rawColor) && rawColor.length === 7 ? rawColor : '#111111'
 
   // Themed toggle styles: consistent square buttons. Active = solid accent fill
   // with accent-foreground text; inactive = themed surface + border that hovers
@@ -193,7 +257,7 @@ export function TextFormattingToolbar({
                 type="button"
                 aria-label="Bold"
                 aria-pressed={boldActive}
-                onClick={handleBoldClick}
+                onClick={fmt.toggleBold}
                 className={`${toolbarBtnBase} ${boldActive ? toolbarBtnActive : toolbarBtnInactive}`}
               >
                 <Bold className="h-3.5 w-3.5" />
@@ -205,7 +269,7 @@ export function TextFormattingToolbar({
                 type="button"
                 aria-label="Italic"
                 aria-pressed={italicActive}
-                onClick={handleItalicClick}
+                onClick={fmt.toggleItalic}
                 className={`${toolbarBtnBase} ${italicActive ? toolbarBtnActive : toolbarBtnInactive}`}
               >
                 <Italic className="h-3.5 w-3.5" />
@@ -216,7 +280,7 @@ export function TextFormattingToolbar({
               <button
                 type="button"
                 aria-label={`Text case (currently ${textTransformDisplay})`}
-                onClick={handleCaseClick}
+                onClick={fmt.cycleCase}
                 className={`${toolbarBtnBase} font-mono text-xs ${caseActive ? toolbarBtnActive : toolbarBtnInactive}`}
               >
                 {caseLabel(props.textTransform)}
@@ -224,23 +288,13 @@ export function TextFormattingToolbar({
             )}
 
             {supported.has('color') && (
-              <label
-                className={`${toolbarBtnBase} ${toolbarBtnInactive} relative cursor-pointer`}
-                title="Text color"
-              >
+              <TextColorControl value={colorValue} onChange={fmt.setColor} className={`${toolbarBtnBase} ${toolbarBtnInactive}`}>
                 <span
                   className="block h-4 w-4 rounded-sm border border-[var(--editor-border)]"
                   style={{ backgroundColor: colorValue }}
                   aria-hidden
                 />
-                <input
-                  type="color"
-                  value={colorValue}
-                  onChange={(e) => handleColorChange(e.target.value)}
-                  className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                  aria-label="Text color"
-                />
-              </label>
+              </TextColorControl>
             )}
 
             {supported.has('bgColor') && (
@@ -259,14 +313,14 @@ export function TextFormattingToolbar({
             {supported.has('fontSize') && (
               <FontSizePicker
                 value={fontSizeValue}
-                onChange={handleFontSizeChange}
+                onChange={fmt.setFontSize}
               />
             )}
 
             {supported.has('fontFamily') && (
               <FontFamilyPicker
                 value={fontFamilyValue}
-                onChange={handleFontFamilyChange}
+                onChange={fmt.setFontFamily}
                 className="w-32"
               />
             )}
@@ -276,13 +330,7 @@ export function TextFormattingToolbar({
         {/* Segment 3: alignment */}
         {supported.has('textAlign') && (
           <div role="radiogroup" aria-label="Text alignment" className="flex items-center gap-1">
-            {(
-              [
-                { value: 'left', Icon: AlignLeft, label: 'Align left' },
-                { value: 'center', Icon: AlignCenter, label: 'Align center' },
-                { value: 'right', Icon: AlignRight, label: 'Align right' },
-              ] as const
-            ).map(({ value, Icon, label }) => {
+            {TEXT_ALIGNS.map(({ value, Icon, label }) => {
               const checked = currentAlign === value
               return (
                 <button
@@ -291,7 +339,7 @@ export function TextFormattingToolbar({
                   role="radio"
                   aria-checked={checked}
                   aria-label={label}
-                  onClick={() => handleAlignClick(value)}
+                  onClick={() => fmt.setAlign(value)}
                   className={`${toolbarBtnBase} ${checked ? toolbarBtnActive : toolbarBtnInactive}`}
                 >
                   <Icon className="h-3.5 w-3.5" />

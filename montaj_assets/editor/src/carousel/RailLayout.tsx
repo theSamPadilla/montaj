@@ -1,0 +1,346 @@
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { Images, Shapes, Type, Palette, Sparkles, Layers, PaintBucket, StickyNote, LayoutGrid, Undo2, Redo2, X, CircleHelp, type LucideIcon } from 'lucide-react'
+import type { CarouselRailItemId } from '../types'
+import { ZOOM_MAX, ZOOM_MIN, type ZoomAction } from './zoom'
+import { shortcutText } from '../ui/modifierKeys'
+
+/** The rail's items, in order. Later tasks fill panels through `CarouselEditorProps.railPanels`. */
+export const CAROUSEL_RAIL_ITEMS: ReadonlyArray<{ id: CarouselRailItemId; label: string; icon: LucideIcon }> = [
+  { id: 'media', label: 'Media', icon: Images },
+  { id: 'elements', label: 'Elements', icon: Shapes },
+  { id: 'text', label: 'Text', icon: Type },
+  { id: 'brand', label: 'Brand', icon: Palette },
+  { id: 'ai-image', label: 'AI image', icon: Sparkles },
+  { id: 'layers', label: 'Layers', icon: Layers },
+  { id: 'background', label: 'Background', icon: PaintBucket },
+  { id: 'notes', label: 'Notes', icon: StickyNote },
+]
+
+/** A panel nothing fills yet: its title. */
+export function RailPanelPlaceholder({ title }: { title: string }) {
+  return <div className="p-4 text-sm font-semibold text-[var(--editor-text)]">{title}</div>
+}
+
+const barBtn =
+  'flex items-center justify-center h-8 min-w-8 px-2 rounded-md text-xs text-[var(--editor-text)] hover:bg-[var(--editor-surface)] disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)]'
+
+function gcd(a: number, b: number): number { return b ? gcd(b, a % b) : a }
+
+/** "1080 × 1350" for the top bar's read-only size label. */
+export function sizeLabel(w: number, h: number): string {
+  return `${w} × ${h}`
+}
+
+export interface RailLayoutProps {
+  topLeft?: ReactNode
+  topRight?: ReactNode
+  size: [number, number]
+  onUndo: () => void
+  onRedo: () => void
+  canUndo: boolean
+  canRedo: boolean
+  /** The canvas area (centred, scrolls on its own). */
+  canvas: ReactNode
+  /** The selected element's toolbar, centred along the top of the canvas area (§587 M3). */
+  canvasToolbar?: ReactNode
+  /** The colour panel (§587 M5): while set it takes the side panel; closing it returns to the item that was open. */
+  colourPanel?: ReactNode
+  /** Panel content per item; a missing one shows the placeholder. */
+  panels: Partial<Record<CarouselRailItemId, ReactNode>>
+  /** Called before any panel opens or closes (the editor applies a pending crop). */
+  onBeforeToggle: () => void
+  /** The Notes item: 'panel' opens the right panel, 'locked' calls `onNotesLocked` and opens nothing, 'hidden' removes the item. */
+  notesMode?: 'panel' | 'locked' | 'hidden'
+  onNotesLocked?: () => void
+  /** Each increase opens the Notes panel (a note was just added), closing the side panel. */
+  openNotesSeq?: number
+  /** Called when a rail item is pressed (the colour panel, if open, closes). */
+  onRailItem?: () => void
+  slideIds: string[]
+  selectedSlideId: string | null
+  onSelectSlide: (id: string) => void
+  onOpenControls: () => void
+  /** Whether the canvas shows the grid of every slide instead of the stack (§587 M2). */
+  gridOpen: boolean
+  onToggleGrid: () => void
+  /** The % button's text ("Fit", "Fill", "NN%") and the slider's value (the scale in effect, percent). */
+  zoomLabel: string
+  zoomPercent: number
+  onZoomPercent: (pct: number) => void
+  onZoomAction: (action: ZoomAction) => void
+}
+
+const ZOOM_MENU: ReadonlyArray<{ action: ZoomAction; label: string; keys?: string[] }> = [
+  { action: 'in', label: 'Zoom in', keys: ['⌘', '+'] },
+  { action: 'out', label: 'Zoom out', keys: ['⌘', '−'] },
+  { action: 'fit', label: 'Fit', keys: ['⌘', '0'] },
+  { action: 'fill', label: 'Fill' },
+  { action: '100', label: '100%', keys: ['⌘', '1'] },
+  { action: '200', label: '200%' },
+]
+
+/** The rail layout's shell: top bar, rail + side panel, canvas, right panel, bottom bar. */
+export default function RailLayout({
+  topLeft, topRight, size, onUndo, onRedo, canUndo, canRedo, canvas, canvasToolbar, colourPanel, panels, onBeforeToggle, onRailItem, notesMode = 'panel', onNotesLocked, openNotesSeq = 0,
+  slideIds, selectedSlideId, onSelectSlide, onOpenControls, gridOpen, onToggleGrid,
+  zoomLabel, zoomPercent, onZoomPercent, onZoomAction,
+}: RailLayoutProps) {
+  const [side, setSide] = useState<Exclude<CarouselRailItemId, 'notes'> | null>(null)
+  const [notesOpen, setNotesOpen] = useState(false)
+  const [slidesOpen, setSlidesOpen] = useState(false)
+  const [zoomOpen, setZoomOpen] = useState(false)
+
+  // The slide list closes on Esc (which it takes, so the canvas keeps its
+  // selection) and on a press outside it and its button.
+  const slidesBtnRef = useRef<HTMLButtonElement>(null)
+  const slidesListRef = useRef<HTMLUListElement>(null)
+  useEffect(() => {
+    if (!slidesOpen) return
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.stopPropagation()
+      e.preventDefault()
+      setSlidesOpen(false)
+    }
+    const onDown = (e: Event) => {
+      const t = e.target
+      if (t instanceof Node && (slidesListRef.current?.contains(t) || slidesBtnRef.current?.contains(t))) return
+      setSlidesOpen(false)
+    }
+    window.addEventListener('keydown', onKey, true)
+    document.addEventListener('pointerdown', onDown, true)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      document.removeEventListener('pointerdown', onDown, true)
+    }
+  }, [slidesOpen])
+
+  const zoomBtnRef = useRef<HTMLButtonElement>(null)
+  const zoomMenuRef = useRef<HTMLUListElement>(null)
+  useEffect(() => {
+    if (!zoomOpen) return
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.stopPropagation()
+      e.preventDefault()
+      setZoomOpen(false)
+    }
+    const onDown = (e: Event) => {
+      const t = e.target
+      if (t instanceof Node && (zoomMenuRef.current?.contains(t) || zoomBtnRef.current?.contains(t))) return
+      setZoomOpen(false)
+    }
+    window.addEventListener('keydown', onKey, true)
+    document.addEventListener('pointerdown', onDown, true)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      document.removeEventListener('pointerdown', onDown, true)
+    }
+  }, [zoomOpen])
+
+  const seenSeq = useRef(openNotesSeq)
+  useEffect(() => {
+    if (openNotesSeq === seenSeq.current) return
+    seenSeq.current = openNotesSeq
+    if (notesMode !== 'panel') return
+    onBeforeToggle()
+    onRailItem?.()
+    setNotesOpen(true)
+    setSide(null)
+  }, [openNotesSeq, notesMode, onBeforeToggle, onRailItem])
+
+  function toggle(id: CarouselRailItemId) {
+    if (id === 'notes' && notesMode === 'locked') {
+      onNotesLocked?.()
+      return
+    }
+    onBeforeToggle()
+    onRailItem?.()
+    // Notes and the side panel are one "active rail item": opening either closes the other.
+    if (id === 'notes') {
+      setNotesOpen((o) => !o)
+      setSide(null)
+    } else {
+      setSide((s) => (s === id ? null : id))
+      setNotesOpen(false)
+    }
+  }
+  function closeNotes() {
+    onBeforeToggle()
+    setNotesOpen(false)
+  }
+  function onPanelKey(e: KeyboardEvent, close: () => void) {
+    if (e.key !== 'Escape') return
+    e.stopPropagation()
+    close()
+  }
+
+  const sideItem = CAROUSEL_RAIL_ITEMS.find((i) => i.id === side)
+  const notesItem = CAROUSEL_RAIL_ITEMS.find((i) => i.id === 'notes')!
+  const idx = Math.max(0, slideIds.indexOf(selectedSlideId ?? ''))
+  const g = gcd(size[0], size[1]) || 1
+  const ratio = `${size[0] / g}:${size[1] / g}`
+
+  return (
+    <div className="flex flex-col flex-1 min-h-0">
+      <header aria-label="Top bar" className="flex-shrink-0 flex items-center justify-between gap-3 h-12 px-3 border-b border-[var(--editor-border)] bg-[var(--editor-bg)]">
+        <div className="flex items-center gap-2 min-w-0">
+          {topLeft}
+          <span className="text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] whitespace-nowrap" title={`Aspect ${ratio}`}>{sizeLabel(size[0], size[1])}</span>
+          <button type="button" className={barBtn} onClick={onUndo} disabled={!canUndo} aria-label="Undo" title={`Undo (${shortcutText(['⌘', 'Z'])})`}><Undo2 size={16} /></button>
+          <button type="button" className={barBtn} onClick={onRedo} disabled={!canRedo} aria-label="Redo" title={`Redo (${shortcutText(['⌘', '⇧', 'Z'])})`}><Redo2 size={16} /></button>
+        </div>
+        <div className="flex items-center gap-2 min-w-0">{topRight}</div>
+      </header>
+
+      <div className="flex flex-1 min-h-0">
+        <nav aria-label="Editor rail" className="flex-shrink-0 w-[72px] flex flex-col items-stretch gap-1 py-2 border-r border-[var(--editor-border)] bg-[var(--editor-bg)] overflow-y-auto">
+          {CAROUSEL_RAIL_ITEMS.filter((i) => i.id !== 'notes' || notesMode !== 'hidden').map(({ id, label, icon: Icon }) => {
+            const on = id === 'notes' ? notesOpen : side === id
+            return (
+              <button
+                key={id}
+                type="button"
+                aria-pressed={on}
+                onClick={() => toggle(id)}
+                className={`mx-1 flex flex-col items-center justify-center gap-1 py-2 rounded-md text-[11px] leading-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)] ${
+                  on ? 'bg-[var(--editor-surface)] text-[var(--editor-accent-text,var(--editor-accent))]' : 'text-[var(--editor-text)] hover:bg-[var(--editor-surface)]'
+                }`}
+              >
+                <Icon size={20} aria-hidden="true" />
+                <span>{label}</span>
+              </button>
+            )
+          })}
+        </nav>
+
+        {colourPanel ? (
+          <div className="flex-shrink-0 w-[320px] overflow-y-auto border-r border-[var(--editor-border)] bg-[var(--editor-bg)] text-[var(--editor-text)]">
+            {colourPanel}
+          </div>
+        ) : sideItem && (
+          <section
+            aria-label={`${sideItem.label} panel`}
+            tabIndex={-1}
+            onKeyDown={(e) => onPanelKey(e, () => { onBeforeToggle(); setSide(null) })}
+            className="flex-shrink-0 w-[320px] overflow-y-auto border-r border-[var(--editor-border)] bg-[var(--editor-bg)] text-[var(--editor-text)]"
+          >
+            {panels[sideItem.id] ?? <RailPanelPlaceholder title={sideItem.label} />}
+          </section>
+        )}
+
+        {/* The top strip is the element toolbar's: it never covers the slide. */}
+        <div className="relative flex-1 min-w-0 min-h-0 flex flex-col pt-14">
+          {canvasToolbar && (
+            <div className="absolute inset-x-0 top-2 z-30 flex justify-center px-4 pointer-events-none">
+              <div className="pointer-events-auto max-w-full">{canvasToolbar}</div>
+            </div>
+          )}
+          {canvas}
+        </div>
+
+        {notesOpen && notesMode === 'panel' && (
+          <aside
+            aria-label={`${notesItem.label} panel`}
+            tabIndex={-1}
+            onKeyDown={(e) => onPanelKey(e, closeNotes)}
+            className="flex-shrink-0 w-[360px] flex flex-col min-h-0 border-l border-[var(--editor-border)] bg-[var(--editor-bg)] text-[var(--editor-text)]"
+          >
+            <div className="flex-shrink-0 flex items-center justify-between px-3 h-10 border-b border-[var(--editor-border)]">
+              <span className="text-sm font-semibold">{notesItem.label}</span>
+              <button type="button" className={barBtn} onClick={closeNotes} aria-label="Close"><X size={16} /></button>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto">{panels.notes ?? <RailPanelPlaceholder title={notesItem.label} />}</div>
+          </aside>
+        )}
+      </div>
+
+      <footer aria-label="Bottom bar" className="relative flex-shrink-0 flex items-center justify-end gap-2 h-11 px-3 border-t border-[var(--editor-border)] bg-[var(--editor-bg)]">
+        <input
+          type="range"
+          aria-label="Zoom"
+          className="w-28 accent-[var(--editor-accent)]"
+          min={ZOOM_MIN}
+          max={ZOOM_MAX}
+          step={1}
+          value={Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(zoomPercent)))}
+          disabled={gridOpen}
+          onChange={(e) => onZoomPercent(Number(e.target.value))}
+          // A slider counts as a typing surface to the keymap: let go of it
+          // after a drag so the zoom and editor keys keep working.
+          onPointerUp={(e) => e.currentTarget.blur()}
+          onPointerCancel={(e) => e.currentTarget.blur()}
+        />
+        <button
+          ref={zoomBtnRef}
+          type="button"
+          className={`${barBtn} min-w-12`}
+          aria-haspopup="menu"
+          aria-expanded={zoomOpen}
+          aria-label={`Zoom level ${zoomLabel}`}
+          disabled={gridOpen}
+          onClick={() => { onBeforeToggle(); setSlidesOpen(false); setZoomOpen((o) => !o) }}
+        >
+          {zoomLabel}
+        </button>
+        <button
+          ref={slidesBtnRef}
+          type="button"
+          className={barBtn}
+          aria-expanded={slidesOpen}
+          aria-haspopup="listbox"
+          aria-label={`Slides ${idx + 1} / ${slideIds.length}`}
+          onClick={() => { onBeforeToggle(); setZoomOpen(false); setSlidesOpen((o) => !o) }}
+        >
+          Slides {idx + 1} / {slideIds.length}
+        </button>
+        <button
+          type="button"
+          className={`${barBtn} ${gridOpen ? 'bg-[var(--editor-surface)] text-[var(--editor-accent-text,var(--editor-accent))]' : ''}`}
+          aria-label="Grid view"
+          aria-pressed={gridOpen}
+          title="Grid view"
+          onClick={() => { onBeforeToggle(); setSlidesOpen(false); onToggleGrid() }}
+        >
+          <LayoutGrid size={16} />
+        </button>
+        <button type="button" className={barBtn} onClick={onOpenControls} aria-label="Controls" title="Editor controls & shortcuts"><CircleHelp size={16} aria-hidden="true" /></button>
+        {zoomOpen && (
+          <ul ref={zoomMenuRef} role="menu" aria-label="Zoom" className="absolute bottom-12 right-44 min-w-44 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] py-1 shadow-lg z-40">
+            {ZOOM_MENU.map(({ action, label, keys }) => (
+              <li key={action} role="presentation">
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full flex items-center justify-between gap-4 text-left px-3 py-1.5 text-xs text-[var(--editor-text)] hover:bg-[var(--editor-bg)]"
+                  onClick={() => { onZoomAction(action); setZoomOpen(false) }}
+                >
+                  <span>{label}</span>
+                  {keys && <span className="text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">{shortcutText(keys)}</span>}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {slidesOpen && (
+          <ul ref={slidesListRef} role="listbox" aria-label="Slides" className="absolute bottom-12 right-24 max-h-64 overflow-y-auto min-w-32 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] py-1 shadow-lg z-40">
+            {slideIds.map((id, i) => (
+              <li key={id} role="presentation">
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={id === selectedSlideId}
+                  aria-label={`Slide ${i + 1}`}
+                  className={`w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--editor-bg)] ${id === selectedSlideId ? 'font-semibold text-[var(--editor-accent-text,var(--editor-accent))]' : 'text-[var(--editor-text)]'}`}
+                  onClick={() => { onSelectSlide(id); setSlidesOpen(false) }}
+                >
+                  Slide {i + 1}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </footer>
+    </div>
+  )
+}
