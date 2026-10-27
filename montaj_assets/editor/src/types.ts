@@ -733,9 +733,12 @@ export interface CarouselApi {
    * selects it. Resolves when its save settles; a save that fails is shown by
    * the editor, not rejected. Does nothing when no slide is selected, when the
    * project cannot be edited, in crop mode and in the slide grid; resolves
-   * `true` when it added the image, `false` when it did nothing.
+   * `true` when it wrote the image, `false` when it did nothing (or the image
+   * could not be read, or the slide went meanwhile). With `options.asset` the
+   * image also joins `project.assets` (named `name`, a path already there is
+   * skipped) in the same save, so one undo takes both back.
    */
-  addImage(src: string): Promise<boolean>
+  addImage(src: string, options?: { asset?: { name?: string } }): Promise<boolean>
   /**
    * Whether `addImage` would add now, by the same conditions, and if not why:
    * `crop` (crop mode), `no-slide` (no slide on show), `grid` (the slide grid

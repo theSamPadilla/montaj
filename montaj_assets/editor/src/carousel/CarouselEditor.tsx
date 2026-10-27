@@ -1447,7 +1447,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
    *  further down and right. The new images become the selection, unless the
    *  person has gone to another slide or into crop mode meanwhile. One that
    *  cannot be uploaded is reported once and the rest are still added. */
-  async function addImages(slideId: string, sources: Array<() => Promise<string>>, at?: { x: number; y: number }, files?: File[]) {
+  async function addImages(slideId: string, sources: Array<() => Promise<string>>, at?: { x: number; y: number }, files?: File[], options?: { asset?: { name?: string } }): Promise<boolean> {
     const resolution = project.settings.resolution as [number, number]
     const settled = await Promise.allSettled(
       sources.map(async (source) => newImageElement(adapter, resolution, await source(), at)),
@@ -1459,13 +1459,13 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     // The uploads and size reads took time. Write only if the editor is still
     // up and the slide still there, onto the elements it has now.
     const slide = slidesRef.current.find((s) => s.id === slideId)
-    if (!mountedRef.current || !slide || added.length === 0) return
+    if (!mountedRef.current || !slide || added.length === 0) return false
     // An arrow-key nudge still open would fold into this edit's undo step.
     flushNudge()
     const placed = added.map((el, i) => ({ ...el, x: el.x + i * COPY_OFFSET, y: el.y + i * COPY_OFFSET }))
     // A new file also joins `project.assets`, in the same step (one save, one undo); a path already there is skipped.
-    const assets: Asset[] | undefined = files
-      ? placed.map((el): Asset => ({ id: crypto.randomUUID(), src: (el as ImageElement).src, type: 'image', name: (el as ImageElement).src.split(/[\\/]/).pop() }))
+    const assets: Asset[] | undefined = files || options?.asset
+      ? placed.map((el): Asset => ({ id: crypto.randomUUID(), src: (el as ImageElement).src, type: 'image', name: options?.asset?.name ?? (el as ImageElement).src.split(/[\\/]/).pop() }))
       : undefined
     const saved = state.editElements(slideId, (els) => [...els, ...placed], assets)
     // Selected, unless the user has gone to another slide meanwhile, or into
@@ -1474,13 +1474,13 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (selectedSlideIdRef.current === slideId && !cropElementIdRef.current) setSelectedElementIds(placed.map((el) => el.id))
     // A save that fails is rolled back and shown by `state.lastError`.
     await saved.catch(() => {})
+    return true
   }
 
-  /** The host's `addImage`: the image goes to the slide selected now, at its centre. */
-  async function addImage(src: string): Promise<boolean> {
+  /** The host's `addImage`: the image goes to the slide selected now, at its centre. `options.asset` also lists it in `project.assets`, in the same step. Resolves whether it wrote. */
+  async function addImage(src: string, options?: { asset?: { name?: string } }): Promise<boolean> {
     if (!selectedSlide || !canAddImages) return false
-    await addImages(selectedSlide.id, [() => Promise.resolve(src)])
-    return true
+    return addImages(selectedSlide.id, [() => Promise.resolve(src)], undefined, undefined, options)
   }
 
   /** Why `addImage` would do nothing now, or ok. Checks the same conditions as `canAddImages`, one at a time, so the reason can name the first that fails. */
@@ -1521,7 +1521,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   const canAddImageRef = useRef(canAddImage)
   canAddImageRef.current = canAddImage
   const carouselApi = useMemo<CarouselApi>(() => ({
-    addImage: (src) => addImageRef.current(src),
+    addImage: (src, options) => addImageRef.current(src, options),
     canAddImage: () => canAddImageRef.current(),
     setAsBackground: (elementId) => setAsBackgroundRef.current(elementId),
     setBackgroundImage: (src, options) => setBackgroundImageRef.current(src, options),
