@@ -15,7 +15,7 @@ sys.path.insert(0, MONTAJ_ROOT)
 from cli.deps import render_runtime_dir
 from lib.common import node_child_env, fail, require_file, run_stopping
 from lib.look import curve_ids
-from lib.sheet import tile_sheet
+from lib.sheet import look_sheet
 from lib.types.colorspace import is_hdr, DEFAULT_COLOR_SPACE
 
 # Resolve the render bundle at its runtime location, not the site-packages
@@ -28,7 +28,11 @@ SAMPLE_FRAME_JS = os.path.join(render_runtime_dir(), "sample-frame.js")
 SCENE_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 
 # Most times one call tiles into a sheet; more is contact_sheet's job.
-MAX_SHEET_TIMES = 12
+# The one timeline look (orientation plan, 2026-10-26): any number of times up to MAX_TIMES, or --every, drawn on the
+# shared 1280 px look layout (lib/sheet.look_sheet), SHEET_TIMES a sheet so every tile stays legible.
+MAX_TIMES = 120
+SHEET_TIMES = 24
+MAX_SHEET_TIMES = SHEET_TIMES   # kept for callers that read it
 SHEET_COLS = 4
 SHEET_TILE_WIDTH = 360
 
@@ -83,10 +87,10 @@ def main():
     )
     parser.add_argument("--project", required=True,
                         help="Absolute path to project.json")
-    parser.add_argument("--at", type=float, required=True, action="append",
+    parser.add_argument("--at", type=float, required=False, action="append",
                         help="Timestamp in seconds to sample: timeline seconds, or with --scene, "
-                             "seconds into that 3D. Repeat for several (up to 12): one sheet of "
-                             "labelled tiles.")
+                             "seconds into that 3D. Repeat for several (up to 120): labelled sheets, "
+                             "24 a sheet. Or --every for the whole project.")
     parser.add_argument("--scene", default=None,
                         help="Sample one 3D alone over the project's whole frame instead of the "
                              "timeline: the id of a 3D saved under models/scenes/<id>/, or '' for the "
@@ -111,10 +115,24 @@ def main():
     parser.add_argument("--out", default=None,
                         help="Output PNG path (default: <project_dir>/render/samples/frame-<at>s.png; "
                              "with several --at, the sheet: sheet-<first>-<last>s.png)")
+    parser.add_argument("--every", type=float, default=None,
+                        help="A sheet of the whole project, a frame every N seconds (not with --at)")
     args = parser.parse_args()
-    times = args.at
-    if len(times) > MAX_SHEET_TIMES:
-        fail("invalid_args", f"{len(times)} times > {MAX_SHEET_TIMES}; use contact_sheet for more.")
+    if args.every is not None:
+        if args.at:
+            fail("invalid_args", "--every grids the whole project; leave --at out, or --every.")
+        if not args.every > 0:
+            fail("invalid_args", "--every is a number of seconds above 0.")
+        require_file(args.project)
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from contact_sheet import grid_times, project_duration
+        times = grid_times(project_duration(args.project), args.every)
+    else:
+        times = args.at or []
+    if not times:
+        fail("invalid_args", "Pass --at (one or more times) or --every.")
+    if len(times) > MAX_TIMES:
+        fail("invalid_args", f"{len(times)} times > {MAX_TIMES}; raise --every or pick fewer times.")
 
     if args.raw and args.scene is not None:
         fail("invalid_args", "--raw samples the timeline's source; it cannot combine with --scene.")
@@ -189,8 +207,13 @@ def main():
                                   sdr_curve=sdr_forward, prefer_proxy=args.prefer_proxy,
                                   no_captions=args.no_captions)
             os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
-            tile_sheet(paths, times, min(len(times), SHEET_COLS), SHEET_TILE_WIDTH, out)
-        print(os.path.abspath(out))
+            stem, ext = os.path.splitext(out)
+            outs = []
+            for k, i in enumerate(range(0, len(times), SHEET_TIMES)):
+                dest = out if k == 0 else f"{stem}-{k + 1}{ext}"
+                look_sheet(paths[i:i + SHEET_TIMES], times[i:i + SHEET_TIMES], dest)
+                outs.append(os.path.abspath(dest))
+        print("\n".join(outs))
         return
 
     cmd = ["node", SAMPLE_FRAME_JS, "--mode", "frame", "--project", args.project,

@@ -19,9 +19,15 @@
     {
       "name": "at",
       "type": "float",
-      "required": true,
+      "required": false,
       "repeatable": true,
-      "description": "Timestamp in seconds to sample: timeline seconds, or with scene, seconds into that 3D. Several times give one sheet of labelled tiles, rendered in one pass (at most 12; use contact_sheet for more)."
+      "description": "Seconds on the timeline (with scene, into that 3D). One: a full frame. Several (up to 120): labelled sheets on the 1280 px look layout, 24 a sheet. Not with every."
+    },
+    {
+      "name": "every",
+      "type": "float",
+      "required": false,
+      "description": "A sheet of the whole project: a frame every N seconds (not with at). The timeline's one look; the closing check is look."
     },
     {
       "name": "scene",

@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, check_output, run, get_duration, ffmpeg_bin, ff_seconds, ff_input
-from sheet import tile_sheet
+from sheet import look_sheet, tile_sheet  # noqa: F401
 
 # PL89: the most times one sheet takes, and how many ffmpeg seeks run at once.
 MAX_SHEET_TIMES = 36
@@ -38,7 +38,7 @@ SHEET_TILE_WIDTH = 320
 SHEET_LABEL_PX = 30
 
 
-def times_sheet(src, times, cols, out):
+def times_sheet(src, times, cols, out, explicit_cols=False):
     """One labelled sheet of `src` at `times`: each frame by a fast seek, then tiled (lib/sheet.tile_sheet)."""
     with tempfile.TemporaryDirectory() as work:
         paths = [os.path.join(work, f"f_{i:04d}.png") for i in range(len(times))]
@@ -50,7 +50,7 @@ def times_sheet(src, times, cols, out):
 
         with ThreadPoolExecutor(SEEKS_AT_ONCE) as pool:
             list(pool.map(grab, range(len(times))))
-        tile_sheet(paths, times, cols, SHEET_TILE_WIDTH, out, label_px=SHEET_LABEL_PX)
+        look_sheet(paths, times, out, cols=cols if explicit_cols else None)
 
 
 MAX_CLIPS = 12
@@ -78,7 +78,7 @@ def clips_sheet(inputs, names, cols, out):
 
         with ThreadPoolExecutor(SEEKS_AT_ONCE) as pool:
             list(pool.map(grab, range(len(times))))
-        tile_sheet(paths, labels, cols, SHEET_TILE_WIDTH, out, label_px=SHEET_LABEL_PX, box_height=SHEET_TILE_WIDTH)
+        look_sheet(paths, labels, out, cols=cols, box=True)
 
 
 def main():
@@ -145,7 +145,7 @@ def main():
         if several:
             out = args.out or f"{os.path.splitext(args.input)[0]}_at_{times[0]:.2f}-{times[-1]:.2f}.jpg"
             cols = args.cols if "--cols" in sys.argv else min(6, len(times))
-            times_sheet(args.input, times, cols, out)
+            times_sheet(args.input, times, cols, out, explicit_cols="--cols" in sys.argv)
             check_output(out)
             print(out)
             return
