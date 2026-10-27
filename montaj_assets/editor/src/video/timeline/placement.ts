@@ -12,10 +12,10 @@
 // future THIRD drop entry point (there will be one) has nothing to
 // reimplement either.
 
-import type { Project } from '../../types'
-import type { VisualTrack } from '../../schema'
+import type { Project, AudioDropPayload } from '../../types'
+import type { AudioTrack, VisualTrack } from '../../schema'
 import { insertClipAt, overlapsAny, type NewClipInput } from '../cuts'
-import { normalizeTracks, nextVisualTrackId } from './timeline-model'
+import { normalizeTracks, nextVisualTrackId, normalizeAudioTracks, groupAudioLanes, computeDerivedTiming } from './timeline-model'
 
 /** What a drop needs to tell `placeDroppedClip` about ITSELF — the pointer's
  *  drop time, which row (if any) it released over, and the magnet/snap state
@@ -279,4 +279,63 @@ export function placeDroppedClip<P extends Project>(
   // row fits ⇒ a new track is created.
   if (targetIdx >= tracks.length) return placeOnNewTrack(project, tracks, clip, dropAt, ripple)
   return placeOnTrack(project, tracks[targetIdx].id, clip, dropAt, ripple, false)
+}
+
+
+// ── A sound dropped from the Media bin ────────────────────────────────────────
+
+const EPSILON = 0.001
+
+export interface DroppedAudioPlacement {
+  /** Timeline time (seconds) the pointer released at. Clamped to >= 0. */
+  atTime: number
+  /** The audio lane (`AudioLane.laneIndex`) the pointer released over, or -1 for "no lane under the pointer". */
+  preferredLane: number
+  audio: AudioDropPayload
+  snapTimes?: readonly number[]
+  snapToleranceSec?: number
+}
+
+function nextAudioTrackId(tracks: readonly AudioTrack[]): string {
+  const taken = new Set(tracks.map(t => t.id))
+  let n = tracks.length
+  while (taken.has(`aud-${n}`)) n++
+  return `aud-${n}`
+}
+
+/**
+ * Where a sound dropped from the Media bin lands: a new `audio.tracks` entry (never a video track) starting at the
+ * drop time and running the sound's whole length. On the lane under the pointer when there is one and the sound fits
+ * there without overlapping a track; otherwise on a NEW lane under the last. Tracks that carried no `lane` are given
+ * the lane they are drawn on first, because an explicit `lane` on the new track would otherwise renumber the
+ * auto-assigned ones and move their rows. Returns `project` itself, by reference, when nothing was placed.
+ */
+export function placeDroppedAudio<P extends Project>(project: P, placement: DroppedAudioPlacement): P {
+  const { audio, preferredLane } = placement
+  if (!(Number.isFinite(audio.sourceDuration) && audio.sourceDuration > 0)) return project
+
+  const dropAt = Math.max(0, resolveDropPoint(placement))
+  const end = dropAt + audio.sourceDuration
+  const withIds = normalizeAudioTracks(project)
+  const existing = withIds.audio?.tracks ?? []
+  const lanes = groupAudioLanes(existing, computeDerivedTiming(withIds).contentDuration)
+  const laneOfId = new Map<string, number>()
+  for (const lane of lanes) for (const t of lane.tracks) laneOfId.set(t.id, lane.laneIndex)
+
+  const target = lanes.find(l => l.laneIndex === preferredLane)
+  const fits = !!target && !target.tracks.some(t => dropAt < t.end - EPSILON && end > t.start + EPSILON)
+  const lane = fits ? preferredLane : (lanes.length ? Math.max(...lanes.map(l => l.laneIndex)) + 1 : 0)
+
+  const track: AudioTrack = {
+    id: nextAudioTrackId(existing),
+    ...(audio.type ? { type: audio.type } : {}),
+    src: audio.src,
+    start: dropAt,
+    end,
+    sourceDuration: audio.sourceDuration,
+    lane,
+    ...(audio.name ? { label: audio.name } : {}),
+  }
+  const stamped = existing.map(t => (t.lane == null ? { ...t, lane: laneOfId.get(t.id) } : t))
+  return { ...withIds, audio: { ...withIds.audio, tracks: [...stamped, track] } } as P
 }

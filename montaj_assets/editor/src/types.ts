@@ -511,6 +511,20 @@ export interface FootageDropPayload {
  */
 export const FOOTAGE_DND_MIME = 'application/x-montaj-footage'
 
+/**
+ * The drag payload for dropping a sound from the Media bin (a music bed, a sound effect, an audio source) onto the
+ * timeline. It lands in `audio.tracks`, never on a video track. `sourceDuration` is the sound's length in seconds.
+ */
+export interface AudioDropPayload {
+  src: string
+  sourceDuration: number
+  name?: string
+  type?: 'voiceover' | 'music' | 'sfx' | 'audio'
+}
+
+/** The drag-and-drop MIME type carrying an `AudioDropPayload` JSON string from the Media bin to the timeline. */
+export const AUDIO_DND_MIME = 'application/x-montaj-audio'
+
 // ── Filesystem drops onto the timeline (optional capability) ──────────────────
 // The SECOND way footage reaches the timeline by drag: real files from the OS,
 // dropped straight onto the track surface. Unlike a bin drag (above) the
