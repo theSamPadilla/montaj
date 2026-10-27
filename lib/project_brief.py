@@ -11,6 +11,7 @@ the ids cut's plan uses.
 """
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -20,7 +21,7 @@ from lib import transcripts
 from lib.common import ffprobe_bin, ff_path
 from lib.speech_lines import norm, sidecar_for
 
-BRIEF_VERSION = 4
+BRIEF_VERSION = 5     # 5: the canvas line, caption by default, sound effects (CV)
 LONG_BROLL_S = 20.0          # b-roll at least this long gets its shots listed and a sheet
 PROFILE_SECTIONS = ("Titles & overlays", "Format")
 LOOKED = ("probe", "snapshot")   # steps whose answer the brief already holds   # the style profile's sections that bear on the edit
@@ -93,6 +94,7 @@ def _stamp(project, project_dir, montaj_root):
     and mtime."""
     parts = {"v": BRIEF_VERSION, "prompt": project.get("editingPrompt"), "workflow": project.get("workflow"),
              "profile": project.get("profileSnapshot"), "status": project.get("status"),
+             "canvas": [((project.get("settings") or {}).get(k)) for k in ("resolution", "resolutionSource", "aspectSource")],
              "items": sum(len(t.get("items") or []) for t in project.get("tracks") or [] if isinstance(t, dict))}
     for s in _sources(project, project_dir):
         sc = sidecar_for(s)
@@ -153,7 +155,8 @@ def _profile_text(project):
             f"palette {', '.join(pref['palette'])}" if pref.get("palette") else None,
             *(f"{k} {pref[k]}" for k in ("primaryColor", "secondaryColor", "accentColor") if pref.get(k))]
     if pref.get("name") or any(bits):
-        out.append(f"{pref.get('name') or snap.get('name') or 'Profile'}: " + ", ".join(b for b in bits if b) + ".")
+        out.append(f"{pref.get('name') or snap.get('name') or 'Profile'}: " + ", ".join(b for b in bits if b) + "."
+                   + (" Caption in it unless the prompt says no." if pref.get("captionStyle") else ""))
     path = snap.get("styleProfilePath")
     try:
         text = open(path, encoding="utf-8").read() if path else ""
@@ -167,6 +170,20 @@ def _profile_text(project):
         if m and m.group(1).strip():
             out += ["", f"**{name}** (the profile's notes)", m.group(1).strip()]
     return out
+
+
+def _canvas_line(project):
+    """CV (Sam): a canvas taken from the footage is a default, never the AI's choice; it picks the aspect itself."""
+    st = project.get("settings") or {}
+    res = st.get("resolution")
+    if st.get("resolutionSource") not in ("footage", "default") or st.get("aspectSource") == "explicit" \
+            or not (isinstance(res, list) and len(res) == 2 and all(isinstance(v, int) and v > 0 for v in res)):
+        return None
+    g = math.gcd(*res)
+    return (f"Canvas {res[0]}x{res[1]} ({res[0] // g}:{res[1] // g}), taken from the footage: a default, not a choice. "
+            "Pick the aspect from the prompt and profile (short-form social is 9:16, 1080x1920), set it before building "
+            "(save_project settings, all of them with resolution changed: the field is replaced whole), and say so in one "
+            "line.")
 
 
 def _status_line(project):
@@ -189,6 +206,8 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
     W = []
     W.append(f"# {project.get('name') or project.get('id') or 'Project'}")
     W.append(_status_line(project))
+    if _canvas_line(project):
+        W.append(_canvas_line(project))
     W.append("This brief is everything the first decisions need, in full: no other read is needed to start.")
     W.append("")
 
@@ -327,6 +346,9 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
     prof = _profile_text(project)
     if prof:
         W += ["## Profile", *prof, ""]
+    # CV (Sam): sound effects are made, never bought, and what the prompt asks for needs no second yes
+    W += ["Sound effects: `synth_audio`, free (whoosh, hit, click, riser, in one call; no credits, no question). "
+          "Paid music or a voice the prompt asks for is a yes to spend on it.", ""]
     return {"text": "\n".join(W).rstrip() + "\n", "sheets": sheets, "skills": skills}
 
 

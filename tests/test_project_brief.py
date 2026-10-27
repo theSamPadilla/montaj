@@ -206,3 +206,27 @@ def test_the_talking_head_sheet_is_the_one_look_sheet_layout(tmp_path, monkeypat
     assert seen == [(2, ["A  clip-0", "B  clip-1"], False)]
     pb._heads_sheet([(str(clip), 1.0)], ["A  clip-0"], out, box=True)
     assert seen[-1][2] is True
+
+
+# CV (Sam, after final-cv-pl89p): three defaults Claude alone got right and the AI did not.
+def test_a_canvas_taken_from_the_footage_is_said_to_be_an_open_choice(proj):
+    p, d = proj
+    p["settings"] = {"resolution": [1920, 1080], "resolutionSource": "footage", "aspectSource": "default"}
+    text = pb.build(p, str(d), str(ROOT), **Fns().kw())["text"]
+    assert "Canvas 1920x1080 (16:9), taken from the footage: a default, not a choice." in text, text
+    assert "short-form social is 9:16, 1080x1920" in text and "save_project settings, all of them with resolution changed" in text
+    p["settings"] = {"resolution": [1920, 1080], "resolutionSource": "explicit", "aspectSource": "explicit"}
+    assert "a default, not a choice" not in pb.build(p, str(d), str(ROOT), **Fns().kw())["text"]
+
+
+def test_a_profile_caption_style_is_captioned_by_default(proj):
+    p, d = proj
+    text = pb.build(p, str(d), str(ROOT), **Fns().kw())["text"]
+    assert "captions `outline`" in text and "Caption in it unless the prompt says no." in text
+
+
+def test_sound_effects_are_synth_audio_and_an_ask_is_consent(proj):
+    p, d = proj
+    text = pb.build(p, str(d), str(ROOT), **Fns().kw())["text"]
+    assert "Sound effects: `synth_audio`, free" in text
+    assert "music or a voice the prompt asks for is a yes to spend on it" in text
