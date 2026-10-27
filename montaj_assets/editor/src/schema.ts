@@ -458,6 +458,12 @@ export interface Slide {
   id: string
   base_color: string
   elements: CarouselElement[]
+  /**
+   * Optional: the slide's title, typed in its header in the editor (§587).
+   * Editor-only: saved with the project, the renderer ignores it. Absent = no
+   * title.
+   */
+  title?: string
 }
 
 /**

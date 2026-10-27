@@ -73,7 +73,8 @@ describe('CarouselEditor layout="rail" shell', () => {
     const bottom = r.getByRole('contentinfo', { name: 'Bottom bar' })
     expect(within(bottom).getByText('Fit')).toBeTruthy()
     expect(within(bottom).getByRole('button', { name: /Slides 1 \/ 2/ })).toBeTruthy()
-    expect((within(bottom).getByRole('button', { name: 'Grid view' }) as HTMLButtonElement).disabled).toBe(true)
+    // The grid view is real since §587 M2 (RailStack.test.tsx).
+    expect(within(bottom).getByRole('button', { name: 'Grid view' }).getAttribute('aria-pressed')).toBe('false')
     expect(r.getByText('1080 × 1350')).toBeTruthy()
     // The old left slide rail and the right property panel are not shown.
     expect(r.queryByText('Add element')).toBeNull()

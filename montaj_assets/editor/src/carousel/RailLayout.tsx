@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Images, Shapes, Type, Palette, Sparkles, Layers, PaintBucket, StickyNote, LayoutGrid, Undo2, Redo2, X, type LucideIcon } from 'lucide-react'
 import type { CarouselRailItemId } from '../types'
 import { shortcutText } from '../ui/modifierKeys'
@@ -50,16 +50,44 @@ export interface RailLayoutProps {
   selectedSlideId: string | null
   onSelectSlide: (id: string) => void
   onOpenControls: () => void
+  /** Whether the canvas shows the grid of every slide instead of the stack (§587 M2). */
+  gridOpen: boolean
+  onToggleGrid: () => void
 }
 
 /** The rail layout's shell: top bar, rail + side panel, canvas, right panel, bottom bar. */
 export default function RailLayout({
   topLeft, topRight, size, onUndo, onRedo, canUndo, canRedo, canvas, canvasToolbar, panels, onBeforeToggle,
-  slideIds, selectedSlideId, onSelectSlide, onOpenControls,
+  slideIds, selectedSlideId, onSelectSlide, onOpenControls, gridOpen, onToggleGrid,
 }: RailLayoutProps) {
   const [side, setSide] = useState<Exclude<CarouselRailItemId, 'notes'> | null>(null)
   const [notesOpen, setNotesOpen] = useState(false)
   const [slidesOpen, setSlidesOpen] = useState(false)
+
+  // The slide list closes on Esc (which it takes, so the canvas keeps its
+  // selection) and on a press outside it and its button.
+  const slidesBtnRef = useRef<HTMLButtonElement>(null)
+  const slidesListRef = useRef<HTMLUListElement>(null)
+  useEffect(() => {
+    if (!slidesOpen) return
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.stopPropagation()
+      e.preventDefault()
+      setSlidesOpen(false)
+    }
+    const onDown = (e: Event) => {
+      const t = e.target
+      if (t instanceof Node && (slidesListRef.current?.contains(t) || slidesBtnRef.current?.contains(t))) return
+      setSlidesOpen(false)
+    }
+    window.addEventListener('keydown', onKey, true)
+    document.addEventListener('pointerdown', onDown, true)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      document.removeEventListener('pointerdown', onDown, true)
+    }
+  }, [slidesOpen])
 
   function toggle(id: CarouselRailItemId) {
     onBeforeToggle()
@@ -161,6 +189,7 @@ export default function RailLayout({
       <footer aria-label="Bottom bar" className="relative flex-shrink-0 flex items-center justify-end gap-2 h-11 px-3 border-t border-[var(--editor-border)] bg-[var(--editor-bg)]">
         <button type="button" className={barBtn} disabled aria-label="Zoom">Fit</button>
         <button
+          ref={slidesBtnRef}
           type="button"
           className={barBtn}
           aria-expanded={slidesOpen}
@@ -170,10 +199,19 @@ export default function RailLayout({
         >
           Slides {idx + 1} / {slideIds.length}
         </button>
-        <button type="button" className={barBtn} disabled aria-label="Grid view"><LayoutGrid size={16} /></button>
+        <button
+          type="button"
+          className={`${barBtn} ${gridOpen ? 'bg-[var(--editor-surface)] text-[var(--editor-accent-text,var(--editor-accent))]' : ''}`}
+          aria-label="Grid view"
+          aria-pressed={gridOpen}
+          title="Grid view"
+          onClick={() => { onBeforeToggle(); setSlidesOpen(false); onToggleGrid() }}
+        >
+          <LayoutGrid size={16} />
+        </button>
         <button type="button" className={barBtn} onClick={onOpenControls} aria-label="Controls" title="Editor controls & shortcuts">?</button>
         {slidesOpen && (
-          <ul role="listbox" aria-label="Slides" className="absolute bottom-12 right-24 max-h-64 overflow-y-auto min-w-32 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] py-1 shadow-lg z-40">
+          <ul ref={slidesListRef} role="listbox" aria-label="Slides" className="absolute bottom-12 right-24 max-h-64 overflow-y-auto min-w-32 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] py-1 shadow-lg z-40">
             {slideIds.map((id, i) => (
               <li key={id} role="presentation">
                 <button

@@ -489,3 +489,49 @@ describe('Element toolbar: Edit, hide and popover closing (§587 M3)', () => {
     expect(onToggleElementVisibility).toHaveBeenCalledWith('el-ov')
   })
 })
+
+describe('Element toolbar with stacked slides (§587 M2 + M3)', () => {
+  function twoSlides(): Project {
+    const p = makeProject()
+    p.slides!.push({ id: 'slide-1', base_color: '#ffffff', elements: [{ id: 'el-z', type: 'image', src: 'z.png', x: 50, y: 50, w: 100, h: 100, rotation: 0 }] } as never)
+    return p
+  }
+  async function pressClick(id: string) {
+    const el = document.querySelector<HTMLElement>(`[data-element-id="${id}"]`)!
+    await act(async () => {
+      pointer(el, 'pointerdown', { clientX: 10, clientY: 10 })
+      pointer(window, 'pointerup', { clientX: 10, clientY: 10 })
+      fireEvent.click(el)
+    })
+  }
+
+  it('acts on the active slide selection, and sits outside the scrolling stack', async () => {
+    const { adapter, r } = await mount('rail', {}, twoSlides())
+    await pressClick('el-z')
+    expect(within(r.getByRole('contentinfo', { name: 'Bottom bar' })).getByRole('button', { name: /^Slides / }).textContent).toContain('2 / 2')
+    const stack = document.querySelector('[data-slide-stack]')!
+    expect(stack.contains(toolbar(r))).toBe(false)
+    await press(tb(r, 'Lock'))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(last(adapter).slides![1].elements[0]).toMatchObject({ id: 'el-z', locked: true })
+    expect(last(adapter).slides![0].elements.some((e) => e.locked)).toBe(false)
+  })
+
+  it('a Crop from the toolbar on another slide crops there, and a toolbar action applies it', async () => {
+    const { adapter, r } = await mount('rail', {}, twoSlides())
+    await pressClick('el-z')
+    await press(tb(r, 'Crop'))
+    expect(document.querySelector('img[alt="Crop source"]')).not.toBeNull()
+    await press(tb(r, 'Duplicate'))
+    await waitFor(() => expect(document.querySelector('img[alt="Crop source"]')).toBeNull())
+    await waitFor(() => expect(last(adapter).slides![1].elements).toHaveLength(2))
+  })
+
+  it('the grid view hides the toolbar', async () => {
+    const { r } = await mount()
+    await click('el-img')
+    expect(toolbar(r)).toBeTruthy()
+    await press(within(r.getByRole('contentinfo', { name: 'Bottom bar' })).getByRole('button', { name: 'Grid view' }))
+    expect(r.queryByRole('toolbar', { name: 'Element' })).toBeNull()
+  })
+})
