@@ -152,10 +152,11 @@ describe('PreviewPlayer engine branch', () => {
     const root = transformContainer.parentElement!
     expect(root.style.isolation).toBe('isolate')
 
-    // The play-toggle (z 10) and the paused play-button (z 100) still render
-    // over it, unchanged.
+    // The play-toggle (z 10) still renders over it in the frame; the paused
+    // play glyph (z 100) is in the stage around the frame, over a social
+    // preview's chrome too.
     expect(root.querySelectorAll('div.absolute.inset-0.cursor-pointer')).toHaveLength(1)
-    expect(root.querySelectorAll('svg')).toHaveLength(1)
+    expect(root.closest('[data-montaj-preview-stage]')!.querySelectorAll('svg')).toHaveLength(1)
   })
 })
 

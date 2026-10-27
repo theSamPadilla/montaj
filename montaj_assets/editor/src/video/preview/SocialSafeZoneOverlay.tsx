@@ -37,12 +37,24 @@
  * below. The scaled canvas is centered in its parent (not pinned top-left)
  * so any leftover space is distributed evenly on both sides.
  *
- * Vertical-video assumption
- * --------------------------
- * This chrome is designed for 9:16. A non-vertical preview box does not
- * break or overflow it — contain-fit just letterboxes/pillarboxes the
- * scaled canvas within the box — but no attempt is made to relayout the
- * chrome to look "correct" for landscape.
+ * The phone stage
+ * ---------------
+ * The chrome belongs to the phone, not the video: with a platform picked, the
+ * preview shows a 9:16 stage (`socialStageSize`) and the project's frame sits
+ * in it the way the platform shows an upload of that aspect, with the chrome
+ * over the whole stage. All three show a 1:1, 4:5 or 16:9 upload whole,
+ * centred, with black above and below; none crops it to fill. Per platform:
+ *   - TikTok: black bars; a landscape video is reported to get a "Full screen" button
+ *     that turns it sideways (not drawn).
+ *   - YouTube Shorts: black bars for square and 4:5. A 16:9 upload is not a
+ *     Short at all (it plays as a regular video); the stage shows how the
+ *     Shorts player would letterbox it.
+ *   - Instagram Reels: black bars. Reports differ on 4:5 (some see the sides
+ *     kept and black top and bottom, a few a slight crop); the stage shows it
+ *     whole.
+ * The export and the project's aspect never change: this is the preview only.
+ * PreviewPlayer lays out the stage and frame; VideoEditor sizes its host box
+ * to the stage.
  *
  * Legibility
  * ----------
@@ -123,6 +135,15 @@ const DESIGN_H = 1920
  */
 const SHADOW_FILTER = 'drop-shadow(0 1px 2px rgba(0,0,0,0.85)) drop-shadow(0 4px 10px rgba(0,0,0,0.6))'
 
+/**
+ * The box the preview shows: the phone's 9:16 for a recognized platform, the
+ * project's own `w`:`h` otherwise. The frame is contain-fitted in it, so a
+ * wider video sits centred with black above and below.
+ */
+export function socialStageSize(platform: SocialPreviewPlatform | string | null | undefined, w: number, h: number): [number, number] {
+  return platform && PLATFORM_CHROME[platform] ? [DESIGN_W, DESIGN_H] : [w, h]
+}
+
 /** One platform's chrome, as a data entry — adding another platform is
  *  adding a render function here, not restructuring this component. */
 const PLATFORM_CHROME: Partial<Record<string, typeof TikTokChrome>> = {
@@ -164,26 +185,19 @@ export default function SocialSafeZoneOverlay({ platform }: SocialSafeZoneOverla
       ref={wrapRef}
       data-testid="social-safe-zone-overlay"
       className="absolute inset-0 pointer-events-none overflow-hidden"
-      // z 48. This component is mounted by PreviewPlayer's `PreviewSurface`
-      // (video path) or directly by `PreviewPlayer` (carousel path) as a
-      // SIBLING of the video/overlay/caption layers, inside the same
-      // `isolation: isolate` container — see the `socialPreview` prop doc and
-      // its render site in preview/PreviewPlayer.tsx. That placement is load-
-      // bearing: z-index only orders siblings within the SAME stacking
-      // context, so mounting this anywhere else (e.g. as a sibling of
-      // `PreviewPlayer` itself, outside its isolated container) makes this
-      // z-index compare against that whole container's z-index instead —
-      // which is `auto`, so a positive value here would paint above the
-      // ENTIRE player, play button included, no matter what it's set to.
+      // z 48. On the video path PreviewPlayer's `PreviewSurface` mounts this
+      // in the stage (the phone, `socialStageSize`) as a sibling of the frame,
+      // inside the stage's `isolation: isolate` context; on the carousel path
+      // `PreviewPlayer` mounts it beside the slide. z-index only orders
+      // siblings within the SAME stacking context, so mounted anywhere else
+      // (outside the stage) it would compare against the whole player instead.
       //
-      // Within this container, 48 sits above the video (z 1), the
-      // play-toggle click layer (z 10), the base-video transform handles
-      // (z 11), overlay items (z ~12–20) and captions (z 45) — a viewing aid
-      // over the fully-composited frame has to sit above everything that
-      // composites into the picture, or it wouldn't show what actually gets
-      // covered. It sits below the paused play glyph (z 100), which is
-      // editor chrome, not content, and must stay legible on top of a
-      // chrome preview that is itself just a viewing aid.
+      // In the stage, the frame is one isolated layer (the video, the play
+      // toggle, the transform handles, overlays and captions all composite
+      // inside it), so 48 draws the chrome over the whole composited picture
+      // and the black around it, which is what the platform's UI covers. It
+      // sits below the paused play glyph (z 100), editor chrome that must
+      // stay legible over a viewing aid.
       style={{ zIndex: 48 }}
     >
       {scale !== null && (

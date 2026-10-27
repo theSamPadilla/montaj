@@ -23,7 +23,7 @@ import { gateTimeSink, handOverToHover, useHoverScrubTime, type HoverScrub } fro
 import { sourceCropVideoStyle } from './sourceCropStyle'
 import { FIT_PARENT_STYLE, fitBoxStyle } from './fitBox'
 import CarouselPreview from './CarouselPreview'
-import SocialSafeZoneOverlay, { type SocialPreviewPlatform } from './SocialSafeZoneOverlay'
+import SocialSafeZoneOverlay, { socialStageSize, type SocialPreviewPlatform } from './SocialSafeZoneOverlay'
 
 // ---------------------------------------------------------------------------
 
@@ -444,7 +444,7 @@ function VideoPreviewPlayer(props: PreviewPlayerProps) {
         <div
           data-montaj-preview-frame=""
           className="relative bg-black overflow-hidden rounded"
-          style={{ ...fitBoxStyle(RENDER_W, RENDER_H), isolation: 'isolate' }}
+          style={{ ...fitBoxStyle(...socialStageSize(props.socialPreview, RENDER_W, RENDER_H)), isolation: 'isolate' }}
         />
       </div>
     )
@@ -510,6 +510,7 @@ function PreviewSurface({
   muted,
 }: SurfaceProps & { playback: PlaybackBinding }) {
   const [RENDER_W, RENDER_H] = getOverlayDesignCanvas(project.settings?.resolution)
+  const [STAGE_W, STAGE_H] = socialStageSize(socialPreview, RENDER_W, RENDER_H)
 
   // Play from the yellow line, and bring the red one with it — see
   // `handOverToHover`. No-op on every ordinary press of play.
@@ -762,8 +763,14 @@ function PreviewSurface({
   return (
     // The frame is contain-fitted in its own size container, so it stays
     // RENDER_W:RENDER_H in a parent of any shape. See `fitBox.ts`.
+    // The stage is what the viewer's screen shows: the frame itself, or with a
+    // social preview on, the platform's 9:16 phone with the frame letterboxed
+    // in it (`socialStageSize`). The frame is contain-fitted in it either way,
+    // so toggling a preview never remounts the picture.
     <div style={FIT_PARENT_STYLE}>
-    <div ref={containerRef} data-montaj-preview-frame="" className="relative bg-black overflow-hidden rounded" style={{ ...fitBoxStyle(RENDER_W, RENDER_H), isolation: 'isolate' }}>
+    <div data-montaj-preview-stage="" className="relative bg-black overflow-hidden rounded" style={{ ...fitBoxStyle(STAGE_W, STAGE_H), isolation: 'isolate' }}>
+    <div className="absolute inset-0" style={FIT_PARENT_STYLE}>
+    <div ref={containerRef} data-montaj-preview-frame="" className="relative bg-black overflow-hidden" style={{ ...fitBoxStyle(RENDER_W, RENDER_H), isolation: 'isolate' }}>
       {isCanvasProject ? (
         <div className="absolute inset-0 cursor-pointer" style={{ zIndex: 10 }} role="button" aria-label="Play or pause" data-montaj-play-target="" onClick={guardedTogglePlay} />
       ) : clips.length === 0 ? (
@@ -908,18 +915,6 @@ function PreviewSurface({
         />
       )}
 
-      {/* Play glyph: paused, and only where a click lands on a play target
-          (see `useGlyphClickPlays`). */}
-      {!isPlaying && glyphClickPlays && (clips.length > 0 || isCanvasProject) && (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none" style={{ zIndex: 100 }}>
-          <div className="w-14 h-14 rounded-full bg-black/50 flex items-center justify-center">
-            <svg className="w-6 h-6 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M8 5v14l11-7z" />
-            </svg>
-          </div>
-        </div>
-      )}
-
       <OverlayItemsLayer
         project={project}
         currentTime={currentTime}
@@ -968,16 +963,6 @@ function PreviewSurface({
         />
       )}
 
-      {/* Social-preview chrome — see `SocialSafeZoneOverlay` and the
-          `socialPreview` prop doc above. Rendered HERE, inside this same
-          `isolation: isolate` container as the video/overlays/captions above
-          and the play glyph below, so its z-index (48) is compared directly
-          against theirs rather than being evaluated one stacking context up
-          (where a positive z-index sibling of an isolated box paints over
-          the ENTIRE box, glyph included, regardless of that box's own
-          internal ordering). No-ops on an absent/unrecognized platform, so
-          this is unconditional. */}
-      <SocialSafeZoneOverlay platform={socialPreview} />
 
       {/* A heavy overlay at the playhead that has not drawn yet (a 3D scene loading) covers the picture with
           "Loading 3D scene…" until its first frame, so captions never show alone on a black frame. See
@@ -1008,6 +993,26 @@ function PreviewSurface({
         >
           <div className="mb-2 rounded bg-black/70 px-3 py-1.5 text-center text-xs text-white/90">
             Crossfades will not appear in this preview. They will render in the export.
+          </div>
+        </div>
+      )}
+    </div>
+    </div>
+
+      {/* Social-preview chrome over the stage (the phone), not the frame:
+          the platform's UI sits on the screen, whatever the video's aspect.
+          Its z 48 is compared within the stage's stacking context, so it
+          paints over the whole frame; the play glyph (z 100) stays above it. */}
+      <SocialSafeZoneOverlay platform={socialPreview} />
+
+      {/* Play glyph: paused, and only where a click lands on a play target
+          (see `useGlyphClickPlays`). */}
+      {!isPlaying && glyphClickPlays && (clips.length > 0 || isCanvasProject) && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none" style={{ zIndex: 100 }}>
+          <div className="w-14 h-14 rounded-full bg-black/50 flex items-center justify-center">
+            <svg className="w-6 h-6 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M8 5v14l11-7z" />
+            </svg>
           </div>
         </div>
       )}

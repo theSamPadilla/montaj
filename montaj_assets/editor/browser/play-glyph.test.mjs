@@ -115,7 +115,7 @@ const frames = (page) => page.evaluate(() => new Promise((r) => requestAnimation
 /** The play glyph: whether it is on screen, its centre, and what a click there lands on. */
 function glyph(page) {
   return page.evaluate(() => {
-    const path = document.querySelector('[data-montaj-preview-frame] svg path[d="M8 5v14l11-7z"]')
+    const path = document.querySelector('[data-montaj-preview-stage] svg path[d="M8 5v14l11-7z"]')
     if (!path) return { visible: false }
     const b = path.closest('svg').parentElement.getBoundingClientRect()
     const x = b.left + b.width / 2
