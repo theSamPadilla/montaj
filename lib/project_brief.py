@@ -16,9 +16,9 @@ import re
 import subprocess
 
 from lib import shots as shots_lib
+from lib import transcripts
 from lib.common import ffprobe_bin, ff_path
-from lib.speech_lines import load_words, norm, refine, sidecar_for, split_lines
-from lib.speech_units import hardly_speech, made_up
+from lib.speech_lines import norm, sidecar_for
 
 BRIEF_VERSION = 4
 LONG_BROLL_S = 20.0          # b-roll at least this long gets its shots listed and a sheet
@@ -193,25 +193,21 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
     W.append("")
 
     # sources and their roles (cut's own speech test)
-    heads, rolls, rows = [], [], []
+    # the one transcript reader (lib/transcripts.py): the same lettering, refinement and cache as the transcripts step
+    heads = transcripts.talking_heads(project, project_dir, silences_fn=silences_fn)
+    letter_of = {s["src"]: letter for s, letter, _ in heads}
+    rolls, rows = [], []
     for s in _sources(project, project_dir):
         sc = sidecar_for(s)
-        words = load_words(sc) if sc else []
         dur = float(s.get("sourceDuration") or 0)
-        raw = [{"text": w.text, "start": w.start, "end": w.end} for w in words]
-        talk = bool(words) and not hardly_speech(raw, dur or (words[-1].end if words else 0)) and not made_up(raw)
         fps, trc = probe_fn(s["src"])
         pic = (f"{s['sourceWidth']}x{s['sourceHeight']}" if s.get("sourceWidth") else "")
         pic += " HDR" if trc in _HDR else ""
-        if talk:
-            letter = chr(ord("A") + len(heads)) if len(heads) < 26 else f"S{len(heads)}"
-            media = s.get("proxySrc") or s["src"]
-            refined, _ = refine(words, silences_fn(media))
-            heads.append((s, letter, split_lines(letter, refined)))
-            role = f"talking head {letter}"
+        if s["src"] in letter_of:
+            role = f"talking head {letter_of[s['src']]}"
         else:
             rolls.append(s)
-            role = "b-roll" + (" (no speech)" if words else "")
+            role = "b-roll" + (" (no speech)" if sc else "")
         rows.append(f"| {s.get('id', '')} | {os.path.basename(s['src'])} | {role} | {dur:.1f} s | {fps or '?'} | {pic.strip()} |")
     W += ["## Sources", "| id | file | role | length | fps | picture |", "|---|---|---|---|---|---|", *rows]
     sheets = []
@@ -243,7 +239,7 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
               "Each script line, then every take line that says it in recording order: id (cut's plan uses it), seconds "
               "in its source, the words Whisper heard. Retakes and partial sayings are all listed, so the last one is "
               "usually the last full saying. Caption and spell by the script's words, not Whisper's. \"not recorded as "
-              "written\": look for it by meaning in cut's plan. The takes are yours to pick.", ""]
+              "written\": look for it by meaning with run_step transcripts (every take's lines). The takes are yours to pick.", ""]
         k = 0
         for kind, text in script:
             if kind == "section":
@@ -290,14 +286,15 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
                 seen = ""
             W.append(f"**{s.get('id', '')} {os.path.basename(s['src'])}**, {dur:.1f} s, {len(shots)} shots (seconds in "
                      f"the source).{seen}")
+            bare = sum(1 for sh in shots if not sh.get("label"))
+            if bare:   # run 4 (#50-56): b-roll added by unlabelled number swapped the mannequin and the lift
+                W.append(f"Label the shots first, from the sheet, before adding any: run_step shots {{clip: \"{s.get('id', '')}\", "
+                         f"labels: {{\"1\": \"a few words\", ...}}}} names each by what happens in it; {bare} of {len(shots)} "
+                         "have no label yet. Every later read shows them.")
             W += [f"- {sh['n']}: {sh['start']:.1f}-{sh['end']:.1f}" + (f" {sh['label']}" if sh.get("label") else "")
                   for sh in shots]
-            W.append(f"Add b-roll by shot: edit_timeline {{op: \"add\", item: {{source: \"{s.get('id', '')}\", shot: n, "
+            W.append(f"Then add b-roll by shot: edit_timeline {{op: \"add\", item: {{source: \"{s.get('id', '')}\", shot: n, "
                      "start}}, which takes the shot's span; for a closer look at a moment, snapshot the clip.")
-            bare = sum(1 for sh in shots if not sh.get("label"))
-            if bare:
-                W.append(f"{bare} of its shots have no label yet: name them once with `shots` (labels) and every later "
-                         "read shows them.")
         W.append("")
 
     # steps
