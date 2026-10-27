@@ -24,9 +24,9 @@ export interface ColourPanelProps {
   onClose: () => void
 }
 
-/** The header: the control's label in the panel's spelling ("Text color" is "Text colour"). */
+/** The header: the control's label, in the editor's spelling ("color"). */
 export function colourTitle(label: string): string {
-  return label.replace(/color/g, 'colour').replace(/Color/g, 'Colour')
+  return label
 }
 
 const swatchBtn =
@@ -45,6 +45,7 @@ export default function ColourPanel({
   const [hexText, setHexText] = useState(request.value)
   const [everywhere, setEverywhere] = useState(false)
   const dirty = useRef(false)
+  const rootRef = useRef<HTMLElement>(null)
   const live = useRef({ current, everywhere })
   live.current = { current, everywhere }
   // The latest props, for the unmount cleanup below.
@@ -102,6 +103,13 @@ export default function ColourPanel({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
+      // Esc in a field outside the panel stays that field's.
+      const t = e.target
+      if (
+        t instanceof HTMLElement &&
+        !rootRef.current?.contains(t) &&
+        (t.isContentEditable || t.closest('input, textarea, select, [contenteditable="true"]'))
+      ) return
       e.stopPropagation()
       e.preventDefault()
       closeRef.current()
@@ -152,7 +160,7 @@ export default function ColourPanel({
   )
 
   return (
-    <section aria-label="Colour panel" className="flex min-h-0 flex-col">
+    <section ref={rootRef} aria-label="Colour panel" className="flex min-h-0 flex-col">
       <div className="flex h-10 flex-shrink-0 items-center justify-between border-b border-[var(--editor-border)] px-3">
         <h2 className="text-sm font-semibold">{colourTitle(request.label)}</h2>
         <button
@@ -228,7 +236,7 @@ export default function ColourPanel({
           type="button"
           aria-pressed={everywhere}
           disabled={disabled}
-          onClick={() => setEverywhere((e) => !e)}
+          onClick={() => { revert(); setEverywhere((e) => !e) }}
           className={`h-8 rounded-md border px-3 text-[13px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)] disabled:cursor-not-allowed disabled:opacity-40 ${
             everywhere
               ? 'border-[var(--editor-accent)] bg-[color-mix(in_srgb,var(--editor-accent)_15%,transparent)] text-[var(--editor-accent-text,var(--editor-accent))]'
