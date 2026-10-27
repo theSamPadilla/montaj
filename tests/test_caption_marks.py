@@ -116,10 +116,10 @@ def test_a_new_lines_id_never_takes_a_kept_lines():
     assert sorted(s["id"] for s in out) == ["cap-0", "cap-5"] and out[0]["text"] == "other" and out[0]["id"] == "cap-0"
 
 
-def test_another_lane_is_not_in_the_way():
+def test_a_kept_line_on_another_lane_still_takes_its_place_from_the_new_lines():
     persons = {"id": "mine", "text": "top", "start": 0, "end": 3, "lane": 1}
     out, kept = keep_persons([PREV[0], persons], [dict(s) for s in NEW])
-    assert len(out) == 4 and kept == [persons]
+    assert out == [persons] and kept == [persons]
 
 
 def test_a_kept_lines_translation_is_kept_with_it():
@@ -201,3 +201,172 @@ def test_caption_inks_split_restamps_an_ai_lines_pieces_and_leaves_a_persons_the
     assert all(is_persons(p) for p in pieces)
     unstamped = {k: v for k, v in ai.items() if k != "auto"}
     assert all("auto" not in p for p in ci.split_pieces(unstamped, [None, None, "card", "card"]))
+
+
+# -- review fixes ---------------------------------------------------------------------------------------------------
+
+def test_stamp_vectors_are_shared_with_the_app():
+    vectors = json.loads((ROOT / "tests" / "fixtures" / "caption_stamp_vectors.json").read_text())
+    assert len(vectors) >= 13
+    for v in vectors:
+        assert stamp(v["text"]) == v["stamp"], v["name"]
+
+
+def test_carry_stamp_keeps_a_line_the_ais_only_when_every_source_was():
+    from lib.caption_marks import carry_stamp
+    ai = seg("a", ("one", 0, 1), ("two", 1, 2))
+    mine = {**ai, "text": "ONE two"}
+    part = {"text": "one", "auto": ai["auto"]}
+    carry_stamp(part, [ai])
+    assert part["auto"] == stamp("one") and not is_persons(part)
+    part = {"text": "one two three", "auto": ai["auto"]}
+    carry_stamp(part, [ai, mine])
+    assert is_persons(part)
+    part = {"text": "one"}
+    carry_stamp(part, [{k: v for k, v in ai.items() if k != "auto"}])
+    assert "auto" not in part
+
+
+def _captions(*segs):
+    return {"style": "pop", "segments": list(segs)}
+
+
+def test_a_translation_that_merges_or_splits_ai_lines_leaves_them_the_ais():
+    from lib.caption_translation import apply_translation
+    a = seg("cap-0", ("hello", 0, 0.5), ("there", 0.5, 1))
+    b = seg("cap-1", ("how", 1, 1.3), ("are", 1.3, 1.6), ("you", 1.6, 2))
+    out = apply_translation(_captions(a, b), "es", [{"source": "hello there how", "text": "hola"},
+                                                    {"source": "are you", "text": "tu"}])
+    src = [s for s in out["segments"] if "lang" not in s]
+    assert [s["text"] for s in src] == ["hello there how", "are you"]
+    assert not any(is_persons(s) for s in src) and all(s["auto"] == stamp(s["text"]) for s in src)
+    one = seg("cap-0", ("a", 0, 1), ("b", 1, 2), ("c", 2, 3), ("d", 3, 4))
+    out = apply_translation(_captions(one), "es", [{"source": "a b", "text": "x"}, {"source": "c d", "text": "y"}])
+    src = [s for s in out["segments"] if "lang" not in s]
+    assert [s["text"] for s in src] == ["a b", "c d"] and not any(is_persons(s) for s in src)
+
+
+def test_a_line_merged_from_an_ai_line_and_a_persons_stays_the_persons():
+    from lib.caption_translation import apply_translation
+    a = seg("cap-0", ("hello", 0, 1), ("there", 1, 2))
+    b = {**seg("cap-1", ("how", 2, 3), ("are", 3, 4)), "text": "HOW are"}
+    out = apply_translation(_captions(a, b), "es", [{"source": "hello there how", "text": "hola"},
+                                                    {"source": "are", "text": "x"}])
+    src = [s for s in out["segments"] if "lang" not in s]
+    assert is_persons(src[0]) and src[0]["text"] == "hello there how"
+    assert is_persons(src[1]), "cut from the person's line alone"
+
+
+def test_a_word_that_spans_a_kept_line_is_not_turned_inside_out():
+    persons = {"id": "mine", "text": "hey", "start": 0.2, "end": 0.5, "words": W(("hey", 0.2, 0.5))}
+    new = [seg("cap-0", ("long", 0, 3), ("tail", 3, 4))]
+    out, _ = keep_persons([PREV[0], persons], new)
+    for s in out:
+        assert s["end"] > s["start"], s
+        for w in s.get("words") or []:
+            assert w["end"] > w["start"], w
+    assert [s["id"] for s in out] == ["mine", "cap-0"] or "mine" in [s["id"] for s in out]
+
+
+def test_a_trimmed_or_dropped_new_lines_translation_does_not_outlive_the_trim():
+    persons = {"id": "mine", "text": "my words", "start": 1.4, "end": 2.6,
+               "words": W(("my", 1.4, 2.0), ("words", 2.0, 2.6))}
+    new = [seg("cap-0", ("a", 0, 0.5), ("b", 0.5, 1.0), ("c", 1.0, 1.3), ("d", 1.3, 1.6)),
+           seg("cap-1", ("e", 1.6, 2.0), ("f", 2.0, 2.4)),
+           {"id": "cap-0-es", "text": "uno", "lang": "es", "translationOf": ["cap-0"], "start": 0, "end": 1.6, "lane": 1},
+           {"id": "cap-1-es", "text": "dos", "lang": "es", "translationOf": ["cap-1"], "start": 1.6, "end": 2.4, "lane": 1}]
+    kept_tr = {"id": "mine-es", "text": "mis", "lang": "es", "translationOf": ["mine"], "start": 1.4, "end": 2.6, "lane": 1}
+    out, _ = keep_persons([PREV[0], persons, kept_tr], new)
+    ids = {s["id"] for s in out}
+    trs = [t for t in out if "translationOf" in t]
+    assert [t["id"] for t in trs] == ["mine-es"], trs
+    assert all(set(t["translationOf"]) <= ids for t in trs)
+
+
+def test_a_kept_line_on_another_lane_leaves_a_translation_row_alone():
+    persons = {"id": "mine", "text": "top", "start": 0, "end": 3, "lane": 1}
+    tr = {"id": "cap-9", "text": "uno", "lang": "es", "translationOf": ["cap-7"], "start": 0, "end": 3, "lane": 2}
+    out, _ = keep_persons([PREV[0], persons], [dict(PREV[0]), tr])
+    assert tr in out and [s["id"] for s in out if "translationOf" not in s] == ["mine"]
+
+
+def test_a_translation_row_never_counts_as_a_kept_line():
+    tr = {"id": "t", "text": "uno", "lang": "es", "translationOf": ["cap-0"], "start": 0, "end": 1, "lane": 1}
+    out, kept = keep_persons([*PREV, tr], [dict(s) for s in NEW])
+    assert kept == [] and [s["text"] for s in out if "translationOf" not in s] == [s["text"] for s in NEW]
+
+
+# -- the step, on the real finish ------------------------------------------------------------------------------------
+
+def _run_with_track(tmp_path, monkeypatch, capsys, captions, track_segments, argv=()):
+    spec = importlib.util.spec_from_file_location("generate_captions_marks2", STEP_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    pdir = tmp_path / "proj"
+    pdir.mkdir()
+    path = pdir / "project.json"
+    path.write_text(json.dumps({
+        "id": "p1", "name": "t", "settings": {"colorSpace": "sdr"}, "captions": captions,
+        "tracks": [{"id": "trk-0", "items": [{"id": "c1", "type": "video", "src": str(pdir / "a.mp4"),
+                                              "start": 0.0, "end": 4.0, "inPoint": 0.0, "outPoint": 4.0}]}]}))
+    monkeypatch.setattr(mod, "get_project_dir", lambda pid: pdir)
+    monkeypatch.setattr(mod, "require_whisper_model", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "whisper_runaway_timeout_for", lambda p: 1)
+    monkeypatch.setattr(mod, "ink_pass", lambda p: [])
+    versions = []
+    monkeypatch.setattr(mod, "commit_version", lambda d, m: versions.append(m) or True, raising=False)
+
+    def fake_run(cmd, **kw):
+        joined = " ".join(cmd)
+        if "transcribe.py" in joined:
+            (pdir / "_caption_words.json").write_text(json.dumps({"transcription": []}))
+        if "caption.py" in joined:
+            (pdir / "_caption_track.json").write_text(json.dumps({"style": "pop", "segments": track_segments}))
+    monkeypatch.setattr(mod, "run", fake_run)
+    monkeypatch.setattr(sys, "argv", ["generate_captions.py", "--project-id", "p1", "--script", "", *argv])
+    mod.main()
+    return json.loads(capsys.readouterr().out.strip().splitlines()[-1]), json.loads(path.read_text())["captions"], versions
+
+
+def _bare(*segs):
+    return [{k: v for k, v in s.items() if k not in ("id", "auto")} for s in segs]
+
+
+def test_a_kept_translated_line_goes_through_the_real_finish(tmp_path, monkeypatch, capsys):
+    prev = [dict(s) for s in PREV]
+    prev[1] = {**prev[1], "text": "seen UNITREE"}
+    tr = {"id": "cap-1-es", "text": "visto", "lang": "es", "translationOf": ["cap-1"], "start": 1.0, "end": 2.0, "lane": 1}
+    answer, cap, _ = _run_with_track(tmp_path, monkeypatch, capsys, {"style": "pop", "segments": [*prev, tr]}, _bare(*NEW))
+    trs = [s for s in cap["segments"] if "translationOf" in s]
+    ids = {s["id"] for s in cap["segments"]}
+    assert [(t["text"], t["start"], t["end"]) for t in trs] == [("visto", 1.0, 2.0)]
+    assert all(set(t["translationOf"]) <= ids for t in trs)
+
+
+def test_a_translated_new_line_trimmed_by_a_kept_one_leaves_one_translation_row(tmp_path, monkeypatch, capsys):
+    persons = {"id": "mine", "text": "my words", "start": 1.4, "end": 2.6,
+               "words": W(("my", 1.4, 2.0), ("words", 2.0, 2.6))}
+    old = seg("cap-0", ("a", 0, 0.5), ("b", 0.5, 1.0), ("c", 1.0, 1.5), ("d", 1.5, 2.0))
+    prev = [old, persons,
+            {"id": "t0", "text": "uno", "lang": "es", "translationOf": ["cap-0"], "start": 0, "end": 2, "lane": 1},
+            {"id": "t1", "text": "mis", "lang": "es", "translationOf": ["mine"], "start": 1.4, "end": 2.6, "lane": 1}]
+    answer, cap, _ = _run_with_track(tmp_path, monkeypatch, capsys, {"style": "pop", "segments": prev},
+                                     _bare(old, seg("n", ("e", 2.0, 2.5), ("f", 2.5, 3.0))))
+    trs = [s for s in cap["segments"] if "translationOf" in s]
+    ids = {s["id"] for s in cap["segments"]}
+    assert len(trs) == 1 and trs[0]["translationOf"] == ["mine"], trs
+    assert all(set(t["translationOf"]) <= ids for t in trs)
+
+
+def test_an_unstamped_track_saves_a_version_and_says_it_was_unguarded(tmp_path, monkeypatch, capsys):
+    prev = [{k: v for k, v in s.items() if k != "auto"} for s in PREV]
+    answer, cap, versions = _run_with_track(tmp_path, monkeypatch, capsys, {"style": "pop", "segments": prev}, _bare(*NEW))
+    assert versions == ["version: before captions"] and answer["unguarded"] is True
+
+
+def test_a_stamped_or_empty_track_saves_no_version_and_has_no_unguarded_key(tmp_path, monkeypatch, capsys):
+    answer, cap, versions = _run_with_track(tmp_path, monkeypatch, capsys, {"style": "pop", "segments": [dict(s) for s in PREV]}, _bare(*NEW))
+    assert versions == [] and "unguarded" not in answer
+    (tmp_path / "b").mkdir()
+    answer, cap, versions = _run_with_track(tmp_path / "b", monkeypatch, capsys, None, _bare(*NEW))
+    assert versions == [] and "unguarded" not in answer

@@ -258,6 +258,7 @@ def apply_translation(captions, lang, phrases) -> dict:
     # Re-cut the source row: one segment per phrase, keeping the id and the
     # styling of the source segment each phrase starts in (a later phrase
     # starting in the same segment gets a new id).
+    from lib.caption_marks import carry_stamp   # here: caption_marks imports this module
     recut = []
     claimed = set()
     for run in runs:
@@ -265,7 +266,9 @@ def apply_translation(captions, lang, phrases) -> dict:
         seg_id = first["id"] if first["id"] not in claimed else None
         if seg_id:
             claimed.add(seg_id)
-        recut.append(_segment_from_words(run, _carried_fields(first), seg_id))
+        piece = _segment_from_words(run, _carried_fields(first), seg_id)
+        carry_stamp(piece, [source[i] for i in sorted({w["_seg"] for w in run})])
+        recut.append(piece)
     # A phrase that starts inside an already-claimed segment gets a new id that
     # no caption had before, so an old id never comes to name different text.
     recut = mint_ids(recut, _ids(kept) | _ids(source))
