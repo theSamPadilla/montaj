@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+- Fixed: the selection chrome of an element far off the slide is no longer cut off at the canvas margin (§586). With a `margin`, `SlideCanvas` draws the outlines, handles, guides, crop handles and lock badge over the visible part of the scroll area holding the canvas, so they show and take the press wherever that area shows them, above a slide that follows, and never make it scroll. The elements still clip at the slide edge.
 - Changed: `FontSizePicker` (public export) writes once, on Enter or blur, not on every keystroke.
 - Added: smart-guide snapping (§586). `snapToSlideAndElements` (from `gestures`, with the `SnapBox`, `GapSegment`, `SmartSnapResult`, `SmartSnapOptions` and `DragModifiers` types) snaps a moving box to the slide and to other elements' edges and centres and shows equal gaps; holding Cmd/Ctrl during a drag skips snapping.
 - Added: `SlideCanvas` takes `margin` (px of canvas drawn around the page, so handles, guides and crop handles show past the slide edge). `CanvasCropHandles` and `CanvasCropHandlesProps` are exported, and `CanvasCropOverlay` takes `fit` (`'contain'`, the default, or `'current'` to show the picture at its current scale). Applying a crop keeps the picture's scale: the box resizes to the kept part.
