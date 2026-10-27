@@ -199,3 +199,61 @@ test('the lock button still works on a row', async () => {
   assert.ok(await page.$('[data-layer-id="a"] button[aria-label^="Unlock"]'))
   assert.deepEqual(await rowIds(), ['c', 'b', 'a'])
 })
+
+test('a window blur mid-drag ends the drag with no save, and the next press drags again', async () => {
+  const a = await rowBox('a')
+  await drag('c', a.bottom - 3, { hold: true })
+  assert.ok(await dropLine(), 'no drop line while dragging')
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')))
+  await frames()
+  assert.equal(await dropLine(), null, 'the drop line stays after a blur')
+  await page.mouse.up()
+  await frames()
+  assert.deepEqual(await saves(), [])
+  assert.deepEqual(await rowIds(), ['c', 'b', 'a'])
+  // Not stuck: a new drag works.
+  const before = (await saves()).length
+  const a2 = await rowBox('a')
+  await drag('c', a2.bottom - 3)
+  await savedPast(before)
+  assert.deepEqual((await saves()).at(-1), ['c', 'a', 'b'])
+})
+
+test('a lost release (a move with no button down) ends the drag with no save', async () => {
+  const a = await rowBox('a')
+  await drag('c', a.bottom - 3, { hold: true })
+  await page.evaluate((y) => window.dispatchEvent(new PointerEvent('pointermove', { clientX: 100, clientY: y, buttons: 0, bubbles: true })), a.bottom - 3)
+  await frames()
+  assert.equal(await dropLine(), null, 'the drop line stays after a move with no button')
+  await page.mouse.up()
+  await frames()
+  assert.deepEqual(await saves(), [])
+  assert.deepEqual(await rowIds(), ['c', 'b', 'a'])
+  // The next press is not ignored.
+  const before = (await saves()).length
+  const a2 = await rowBox('a')
+  await drag('c', a2.bottom - 3)
+  await savedPast(before)
+  assert.deepEqual((await saves()).at(-1), ['c', 'a', 'b'])
+})
+
+test('dragging a row of a multi-selection moves the whole selection in one save', async () => {
+  const c = await rowBox('c')
+  await page.mouse.click(c.x, c.y)
+  const a = await rowBox('a')
+  await page.keyboard.down('Shift')
+  await page.mouse.click(a.x, a.y)
+  await page.keyboard.up('Shift')
+  await frames()
+  assert.equal(await page.$eval('[data-layer-id="a"] button[aria-pressed]', (el) => el.getAttribute('aria-pressed')), 'true')
+  assert.equal(await page.$eval('[data-layer-id="c"] button[aria-pressed]', (el) => el.getAttribute('aria-pressed')), 'true')
+  const before = (await saves()).length
+  const b = await rowBox('b')
+  await drag('c', b.bottom - 3)
+  await savedPast(before)
+  const after = await saves()
+  assert.equal(after.length, before + 1, `saves: ${JSON.stringify(after)}`)
+  // b (not selected) is now in front of both; c and a keep their order.
+  assert.equal(after.at(-1).at(-1), 'b')
+  assert.deepEqual(after.at(-1).slice().sort(), ['a', 'b', 'c'])
+})

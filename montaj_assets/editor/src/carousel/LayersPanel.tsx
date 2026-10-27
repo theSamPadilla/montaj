@@ -77,7 +77,7 @@ export default function LayersPanel({
   /** Where a drop at `clientY` puts the rows, by the rows' places on screen:
    *  above or below the row under the pointer by its halves, and past the
    *  first or last row, at that end. Null when nothing would move. */
-  function dropAt(from: string, clientY: number): DropAt | null {
+  function dropAt(ids: string[], clientY: number): DropAt | null {
     const rowEls = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-layer-id]') ?? [])
     if (rowEls.length === 0) return null
     let at: DropAt | null = null
@@ -90,7 +90,7 @@ export default function LayersPanel({
     }
     if (!at) return null
     const els = live.current.elements
-    return moveToLayer(els, movingIds(from), at.id, at.where) === els ? null : at
+    return moveToLayer(els, ids, at.id, at.where) === els ? null : at
   }
 
   /** A press on a row: past `DRAG_START_PX` it drags the row (the selection
@@ -104,19 +104,24 @@ export default function LayersPanel({
     const startX = e.clientX
     const startY = e.clientY
     let dragging = false
+    // Frozen at the press: the selection can change under a long drag.
+    const ids = movingIds(id)
     const move = (ev: PointerEvent) => {
+      // A release the page never saw (outside the window, over a menu).
+      if (ev.buttons === 0) { end(); return }
       if (!dragging) {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_START_PX) return
         dragging = true
         setDragId(id)
       }
       ev.preventDefault()
-      setOver(dropAt(id, ev.clientY))
+      setOver(dropAt(ids, ev.clientY))
     }
     const end = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
       window.removeEventListener('pointercancel', end)
+      window.removeEventListener('blur', end)
       endDragRef.current = null
       setDragId(null)
       setOver(null)
@@ -126,14 +131,15 @@ export default function LayersPanel({
         // The click comes in this same task, if at all; a later one (a key) is a select again.
         swallowClickRef.current = true
         setTimeout(() => { swallowClickRef.current = false }, 0)
-        const target = dropAt(id, ev.clientY)
-        if (target) live.current.onMove(movingIds(id), target.id, target.where)
+        const target = dropAt(ids, ev.clientY)
+        if (target) live.current.onMove(ids, target.id, target.where)
       }
       end()
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
     window.addEventListener('pointercancel', end)
+    window.addEventListener('blur', end)
     endDragRef.current = end
   }
 
