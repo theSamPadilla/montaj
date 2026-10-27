@@ -799,6 +799,29 @@ describe('CarouselEditor — N adds a note (PL70)', () => {
     expect(armLayer()).toBeNull()
   })
 
+  it('api.add(slideId, undefined, text) is one save and one undo step that removes the whole note', async () => {
+    const adapter = makeFakeAdapter()
+    const provided: Array<SlideNotesApi | null> = []
+    render(
+      <CarouselEditor
+        project={twoSlides()}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        notes={{ enabled: true }}
+        onProvideNotesApi={(api) => { provided.push(api) }}
+      />,
+    )
+    await waitFor(() => findInteractiveWrapper('el-img'))
+
+    await act(async () => { provided[provided.length - 1]!.add('slide-0', undefined, 'fix logo') })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(lastSave(adapter).notes).toEqual([expect.objectContaining({ slideId: 'slide-0', text: 'fix logo' })])
+
+    await key('z', { ctrlKey: true })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(lastSave(adapter).notes ?? []).toEqual([])
+  })
+
   it('a press anywhere else disarms without adding, and so does selecting another slide', async () => {
     const adapter = makeFakeAdapter()
     const provided: Array<SlideNotesApi | null> = []

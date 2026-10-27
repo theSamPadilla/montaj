@@ -660,9 +660,10 @@ export interface NotesApi {
  *  undo step. Ids are `SlideNote.id`; points are fractions 0..1 of the slide's
  *  design width (`x`) and height (`y`), clamped. */
 export interface SlideNotesApi {
-  /** Adds an empty note on `slideId`, at `point` or about the whole slide,
-   *  and returns its id. Does not call `onNoteAdded`: the caller has the id. */
-  add: (slideId: string, point?: { x: number; y: number }) => string
+  /** Adds a note on `slideId`, at `point` or about the whole slide, with
+   *  `text` (default empty) in the same write, and returns its id. Does not
+   *  call `onNoteAdded`: the caller has the id. */
+  add: (slideId: string, point?: { x: number; y: number }, text?: string) => string
   setText: (id: string, text: string) => void
   setDone: (id: string, done: boolean) => void
   /** Moves the note to `point` on its slide, or with `null` makes it about
