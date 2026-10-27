@@ -105,15 +105,20 @@ describe('PreviewPlayer: a 3D scene loading at the playhead', () => {
   })
   afterEach(() => { vi.restoreAllMocks(); stage.mark = 'loading' })
 
-  it('covers the captions and the overlays with the label until the scene draws, inside the preview frame', async () => {
+  it('covers the captions and the overlays with the label until the scene draws, over the preview frame', async () => {
     stage.mark = 'loading'
     const { container, rerender } = render(player())
     const cover = await screen.findByTestId('preview-loading-cover')
     const frame = container.querySelector('[data-montaj-preview-frame]')!
-    expect(frame.contains(cover)).toBe(true)
+    // In the stage around the frame, above it: the frame (captions and
+    // overlays inside it) is one isolated layer under the cover, and the
+    // cover is above the play glyph (z 100) and a social preview's chrome.
+    const stageEl = container.querySelector('[data-montaj-preview-stage]')!
+    expect(stageEl.contains(cover)).toBe(true)
+    expect(frame.contains(cover)).toBe(false)
+    expect(frame.style.isolation).toBe('isolate')
     expect(Number(cover.style.zIndex)).toBe(LOADING_COVER_Z)
-    expect(Number(cover.style.zIndex)).toBeGreaterThan(Number(screen.getByTestId('caption').style.zIndex))
-    expect(Number(cover.style.zIndex)).toBeGreaterThan(Number(screen.getByTestId('overlay-3d').style.zIndex))
+    expect(Number(cover.style.zIndex)).toBeGreaterThan(100)
     // The 3D overlay stays mounted underneath, so it keeps loading.
     expect(frame.contains(screen.getByTestId('overlay-3d'))).toBe(true)
 

@@ -962,14 +962,13 @@ function PreviewSurface({
           designCanvas={[RENDER_W, RENDER_H]}
         />
       )}
+    </div>
+    </div>
 
+      {/* In the stage, not the frame, so it stays above the chrome (z 48) and
+          below the glyph (z 100), as before.
 
-      {/* A heavy overlay at the playhead that has not drawn yet (a 3D scene loading) covers the picture with
-          "Loading 3D scene…" until its first frame, so captions never show alone on a black frame. See
-          LoadingCover for the attributes an overlay sets. */}
-      <LoadingCover containerRef={containerRef} />
-
-      {/* Task 10b — legacy has no compositing stage (one <video> element per
+          Task 10b — legacy has no compositing stage (one <video> element per
           clip), so it cannot blend a clip crossfade the way render does. v4's
           rule is against a preview that SILENTLY disagrees with the export;
           a visible, persistent notice satisfies that without blocking
@@ -996,8 +995,6 @@ function PreviewSurface({
           </div>
         </div>
       )}
-    </div>
-    </div>
 
       {/* Social-preview chrome over the stage (the phone), not the frame:
           the platform's UI sits on the screen, whatever the video's aspect.
@@ -1016,6 +1013,14 @@ function PreviewSurface({
           </div>
         </div>
       )}
+
+      {/* In the stage, over the chrome and the glyph (z 200), as it was over the
+          glyph in the frame. `containerRef` is still the frame.
+
+          A heavy overlay at the playhead that has not drawn yet (a 3D scene loading) covers the picture with
+          "Loading 3D scene…" until its first frame, so captions never show alone on a black frame. See
+          LoadingCover for the attributes an overlay sets. */}
+      <LoadingCover containerRef={containerRef} />
     </div>
     </div>
   )
