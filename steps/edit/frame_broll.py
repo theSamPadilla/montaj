@@ -7,7 +7,9 @@
 - `card`: the whole frame, scaled into the upper middle of the canvas (above the captions), under a footage-card
   overlay (montaj_assets/render/templates/presets/footage-card.jsx): paper round it, corner brackets on the
   tracked subject (or the footage's corners) and `Footage: <source>` under it.
-- `auto` (the default): `track` when one subject is found in most of the range, else `card`, saying why.
+- `auto` (the default, Sam 2026-10-26): `card` for landscape action across the frame (its whole width shows; the card
+  zooms to the subject and leaves burned-in text out where it can), `track` only for a subject a 9:16 crop holds with
+  room to move and the captions clear of it; the answer says why.
 - A clip already as tall as the canvas needs nothing, and nothing is written.
 - The write: tracks only, through lib/project_lock.update_project_or_fail, refused (`project_changed`) when the
   tracks changed since the step read them; a version of the project first, as place's update takes one.
@@ -42,6 +44,8 @@ STEP_LOCK_TIMEOUT = 30.0
 CARD_ZOOM_MIN = 0.45      # a card zooms to at most this share of the frame (the subject at a readable size)
 CARD_ZOOM_MAX = 0.85      # and only when it keeps under this share: a subject that roams the frame is not zoomed
 CARD_ZOOM_MARGIN = 0.06   # room round everywhere the subject goes, a share of the frame
+TRACK_ROOM = 0.8          # auto tracks only motion this share of the crop's width at most (room to move); wider is carded
+TEXT_TRIM_ZOOMS = (0.9, 0.85)   # an unzoomed card zooms in this far to leave burned-in text out, when the subject allows
 DEFAULT_MATTE = "#F5F3EB"   # a warm cream, when a profile asks for mattes but names no colour
 MAX_ITEMS = 48          # items in one call: a sanity bound (they are read MAX_PARALLEL at a time, then one write)
 MAX_PARALLEL = 4        # clips read and tracked at once
@@ -140,6 +144,58 @@ def _clip_file(src, project_dir):
     return full if os.path.exists(full) else (spaced_twin(full) or full)
 
 
+def _subject_bounds(found):
+    """(u0, v0, u1, v1): everywhere the subject goes, with CARD_ZOOM_MARGIN round it, clamped to the frame."""
+    u0 = min(p["box"][0] for _, p in found) - CARD_ZOOM_MARGIN
+    v0 = min(p["box"][1] for _, p in found) - CARD_ZOOM_MARGIN
+    u1 = max(p["box"][0] + p["box"][2] for _, p in found) + CARD_ZOOM_MARGIN
+    v1 = max(p["box"][1] + p["box"][3] for _, p in found) + CARD_ZOOM_MARGIN
+    return max(u0, 0.0), max(v0, 0.0), min(u1, 1.0), min(v1, 1.0)
+
+
+def _centred(bounds, z):
+    u0, v0, u1, v1 = bounds
+    return min(max((u0 + u1) / 2 - z / 2, 0.0), 1 - z), min(max((v0 + v1) / 2 - z / 2, 0.0), 1 - z)
+
+
+def text_inside(grid, zx, zy, z):
+    """How much of the still-text map's cells (subject_track.static_text) a zoom window [zx, zx+z] x [zy, zy+z] holds:
+    the summed area of the overlap, in cells."""
+    rows, cols = len(grid), len(grid[0]) if grid else 0
+    total = 0.0
+    for r in range(rows):
+        for c in range(cols):
+            if not grid[r][c]:
+                continue
+            ox = max(0.0, min(zx + z, (c + 1) / cols) - max(zx, c / cols)) * cols
+            oy = max(0.0, min(zy + z, (r + 1) / rows) - max(zy, r / rows)) * rows
+            total += ox * oy
+    return round(total, 6)
+
+
+def place_zoom(bounds, z, grid, step=0.01):
+    """Where a z-sized zoom window sits: holding `bounds` (u0, v0, u1, v1) whole where it fits, with the least burned-in
+    text inside, and nearest the subject's centre among those (centred on it when there is no text)."""
+    u0, v0, u1, v1 = bounds
+    cx, cy = _centred(bounds, z)
+    if not grid or not any(any(r) for r in grid):
+        return cx, cy
+
+    def span(lo, hi):
+        a, b = max(0.0, hi - z), min(lo, 1 - z)
+        if a > b:
+            return [min(max((lo + hi) / 2 - z / 2, 0.0), 1 - z)]
+        k = max(1, int(round((b - a) / step)))
+        return [a + (b - a) * i / k for i in range(k + 1)]
+    best = None
+    for x in span(u0, u1):
+        for y in span(v0, v1):
+            key = (text_inside(grid, x, y, z), abs(x - cx) + abs(y - cy))
+            if best is None or key < best[0]:
+                best = (key, x, y)
+    return best[1], best[2]
+
+
 def analyse(project, on_disk, project_path, item_id, mode, matte=None):
     """What framing `item_id` takes, computed from the project as read (nothing is written): a plan for write_plans,
     or {"id", "mode": "none", "why"} for a clip that needs nothing. Raises ItemRefused."""
@@ -180,6 +236,7 @@ def analyse(project, on_disk, project_path, item_id, mode, matte=None):
     frames = gray_frames(src, t_in, t_out, TRACK_FPS)
     bg = gray_frames(src, max(0.0, t_in - BG_MARGIN_S), min(duration, t_out + BG_MARGIN_S), BG_FPS)
     path = subject_track.track(frames, bg, crop_w)
+    text = subject_track.static_text(bg)
     n = max(1, len(path["points"]))
     times = [min(t_in + k / TRACK_FPS, t_out) for k in range(len(path["points"]))]
 
@@ -193,14 +250,17 @@ def analyse(project, on_disk, project_path, item_id, mode, matte=None):
     seen = f"the subject is in {path['found']}/{n} frames"
     if mode == "auto":
         if matte:
-            mode, why = "card", (f"card: the profile asks for mattes for wide footage ({matte['paper']}), a default: "
-                                 'mode "track" keeps an action or the hook full screen')
+            mode, why = "card", f"card: the profile asks for mattes for wide footage ({matte['paper']})"
         elif path["cluttered"] > 0.3 * n:
             mode, why = "card", "card: the camera moves, so there is no one subject to follow"
         elif path["found"] < 0.6 * n:
             mode, why = "card", "card: no moving subject was found in most of the clip"
         elif path["capture"] < 0.5:
             mode, why = "card", "card: what moves is wider than the crop"
+        elif path.get("span") and path["span"][1] - path["span"][0] > TRACK_ROOM * crop_w:
+            # run 5 (Sam): a 9:16 slice of 16:9 action hides the action; the card shows its full width
+            mode, why = "card", (f"card: the action spans {round((path['span'][1] - path['span'][0]) * 100)}% of the frame's "
+                                 f"width, more than a 9:16 crop ({round(crop_w * 100)}%) shows with room to move")
         elif crossed > UNDER_CAPTIONS:
             mode = "card"
             why = ("card: a crop that follows the subject puts the captions across it; the card keeps it above them"
@@ -227,12 +287,27 @@ def analyse(project, on_disk, project_path, item_id, mode, matte=None):
         v1 = max(p["box"][1] + p["box"][3] for _, p in found) + CARD_ZOOM_MARGIN
         z = max(u1 - u0, v1 - v0, CARD_ZOOM_MIN)
         if z < CARD_ZOOM_MAX:
-            zx = min(max((u0 + u1) / 2 - z / 2, 0.0), 1 - z)
-            zy = min(max((v0 + v1) / 2 - z / 2, 0.0), 1 - z)
+            zx, zy = place_zoom((u0, v0, u1, v1), z, text)
             zoom = {"x": round(float(zx), 4), "y": round(float(zy), 4), "w": round(float(z), 4), "h": round(float(z), 4)}
-            found = [(t, {**p, "box": [(p["box"][0] - zx) / z, (p["box"][1] - zy) / z, p["box"][2] / z, p["box"][3] / z]})
-                     for t, p in found]
             why += f"; zoomed to the subject ({round(z * 100)}% of the frame)"
+            if any(any(r) for r in text) and text_inside(text, zx, zy, z) < text_inside(text, *_centred((u0, v0, u1, v1), z), z):
+                why += ", the burned-in text left out"
+    if mode == "card" and zoom is None and any(any(r) for r in text):
+        # run 5: a card shows the whole frame, so burned-in text at its edge shows too; zoom in a little when that leaves
+        # it out and keeps everywhere the subject goes
+        bounds = _subject_bounds(found) if found else (0.5, 0.5, 0.5, 0.5)
+        for z in TEXT_TRIM_ZOOMS:
+            if bounds[2] - bounds[0] > z or bounds[3] - bounds[1] > z:
+                continue
+            zx, zy = place_zoom(bounds, z, text)
+            if text_inside(text, zx, zy, z) == 0:
+                zoom = {"x": round(float(zx), 4), "y": round(float(zy), 4), "w": round(float(z), 4), "h": round(float(z), 4)}
+                why += f"; zoomed to {round(z * 100)}% of the frame to leave the burned-in text out"
+                break
+    if zoom is not None:
+        zx, zy, z = zoom["x"], zoom["y"], zoom["w"]
+        found = [(t, {**p, "box": [(p["box"][0] - zx) / z, (p["box"][1] - zy) / z, p["box"][2] / z, p["box"][3] / z]})
+                 for t, p in found]
     width_ratio = sw / sh
     card_h = CARD_SCALE * (W / H) / width_ratio            # the footage's height on screen, a share of the canvas
     box = [round((1 - CARD_SCALE) / 2, 4), round(CARD_CENTER_Y - card_h / 2, 4), CARD_SCALE, round(card_h, 4)]

@@ -22,19 +22,19 @@ from lib.common import ffmpeg_bin  # noqa: E402
 import steps.edit.frame_broll as fb  # noqa: E402
 
 
-def clip(path, moving=True, size="640x360", seconds=4, y=60):
+def clip(path, moving=True, size="640x360", seconds=4, y=60, x=None):
     room = f"color=c=0xd8d2c4:s={size}:d={seconds}:r=30"
     box = "color=c=0x151515:s=50x90:d=%d:r=30" % seconds
-    x = "40+130*t" if moving else "295"
+    x = x or ("40+130*t" if moving else "295")
     subprocess.run([ffmpeg_bin(), "-v", "error", "-y", "-f", "lavfi", "-i", room, "-f", "lavfi", "-i", box,
                     "-filter_complex", f"[0][1]overlay=x='{x}':y={y}", "-pix_fmt", "yuv420p", str(path)], check=True)
     return path
 
 
-def project(tmp_path, moving=True, size="640x360", y=60):
+def project(tmp_path, moving=True, size="640x360", y=60, x=None):
     d = tmp_path / "proj"
     d.mkdir()
-    src = clip(d / "broll.mp4", moving, size, y=y)
+    src = clip(d / "broll.mp4", moving, size, y=y, x=x)
     w, h = (int(v) for v in size.split("x"))
     proj = {"version": "0.2", "id": "fb-fixture", "name": "Frame", "status": "draft", "workflow": "overlays",
             "editingPrompt": "", "settings": {"fps": 30, "resolution": [1080, 1920]},
@@ -127,10 +127,15 @@ def test_card_insets_the_whole_frame_with_a_credit_overlay(tmp_path):
     assert out["id"] == "br-1" and out["card"] == card["id"]
 
 
-def test_auto_tracks_a_moving_subject_and_cards_a_still_one(tmp_path):
+# Run 5 (Sam, kung fu run 4): "it's impossible to see the action" when 16:9 action is a 9:16 slice. Horizontal footage
+# shows its full width as a card; track only a subject that fits a 9:16 crop with room to move.
+NARROW = "270+20*t"   # a box that moves 80 px of 640 in 4 s: it fits the 202 px crop with room
+
+
+def test_auto_tracks_a_subject_that_fits_the_crop_and_cards_a_still_one(tmp_path):
     a = tmp_path / "a"
     a.mkdir()
-    assert fb.run(str(project(a)), "br-1", sampler=stub_sampler())["mode"] == "track"
+    assert fb.run(str(project(a, x=NARROW)), "br-1", sampler=stub_sampler())["mode"] == "track"
     b = tmp_path / "b"
     b.mkdir()
     out = fb.run(str(project(b, moving=False)), "br-1", sampler=stub_sampler())
@@ -206,17 +211,17 @@ def test_a_subject_under_the_captions_is_carded_by_auto_and_said_by_track(tmp_pa
     # the box low in the frame (y 220-310 of 360): a full-height crop puts it in the caption band (56-76% of the height)
     a = tmp_path / "a"
     a.mkdir()
-    out = fb.run(str(project(a, y=220)), "br-1", sampler=stub_sampler())
+    out = fb.run(str(project(a, y=220, x=NARROW)), "br-1", sampler=stub_sampler())
     assert out["mode"] == "card" and "captions" in out["why"]
     b = tmp_path / "b"
     b.mkdir()
-    out = fb.run(str(project(b, y=220)), "br-1", mode="track", sampler=stub_sampler())
+    out = fb.run(str(project(b, y=220, x=NARROW)), "br-1", mode="track", sampler=stub_sampler())
     assert out["mode"] == "track" and any("captions" in i for i in out["issues"])
 
 
 def test_auto_cards_a_subject_the_captions_only_cross(tmp_path):
     # the box at y 120-210 of 360 (33-58%): a full-height crop has the caption band (56-76%) crossing its foot
-    out = fb.run(str(project(tmp_path, y=120)), "br-1", sampler=stub_sampler())
+    out = fb.run(str(project(tmp_path, y=120, x=NARROW)), "br-1", sampler=stub_sampler())
     assert out["mode"] == "card" and "captions" in out["why"]
 
 
@@ -291,7 +296,7 @@ def test_every_answer_says_why_it_chose_and_that_the_clip_is_done(tmp_path):
     # auto's choice holds: PL89b redid four auto cards by hand (about 8 calls) because the answer did not say plainly
     a = tmp_path / "a"
     a.mkdir()
-    out = fb.run(str(project(a)), "br-1", sampler=stub_sampler())
+    out = fb.run(str(project(a, x=NARROW)), "br-1", sampler=stub_sampler())
     assert out["mode"] == "track" and "frames" in out["why"] and out["why"].endswith(fb.DONE)
     b = tmp_path / "b"
     b.mkdir()
@@ -301,7 +306,7 @@ def test_every_answer_says_why_it_chose_and_that_the_clip_is_done(tmp_path):
 
 def test_a_card_made_for_captions_still_to_come_says_so_and_does_not_invite_a_track(tmp_path):
     # captions are a default step of every edit workflow (2b, 10-25): they are always coming, so the card holds
-    out = fb.run(str(project(tmp_path, y=220)), "br-1", sampler=stub_sampler())
+    out = fb.run(str(project(tmp_path, y=220, x=NARROW)), "br-1", sampler=stub_sampler())
     assert out["mode"] == "card"
     assert "captions still to come" in out["why"] and "mode track" not in out["why"]
 
@@ -350,11 +355,11 @@ def test_profile_matte_is_read_from_the_titles_and_overlays_notes(tmp_path):
 
 
 def test_a_profile_that_asks_for_mattes_makes_auto_card_a_trackable_clip_on_its_matte(tmp_path):
-    p = with_profile(project(tmp_path))   # a moving subject auto would otherwise track
+    p = with_profile(project(tmp_path, x=NARROW))   # a moving subject auto would otherwise track
     out = fb.run(str(p), "br-1", source="the lab", sampler=stub_sampler())
     assert out["mode"] == "card" and "profile" in out["why"] and "#F5F3EB" in out["why"]
-    # the profile's mattes are a default: the answer says how to keep an action clip full screen (kung fu pl89j)
-    assert 'mode "track"' in out["why"] and "action" in out["why"]
+    # run 5 (Sam): action is never pushed to a 9:16 track; the answer no longer invites one
+    assert 'mode "track"' not in out["why"]
     doc = json.loads(Path(p).read_text())
     card = next(it for t in doc["tracks"] for it in t["items"] if it.get("id") == out["card"])
     assert card["props"]["paper"] == "#F5F3EB" and card["props"]["brackets"] == "off"
@@ -590,3 +595,56 @@ def test_seventeen_items_are_framed_in_one_call_and_the_sheet_spans_them_all(tmp
     assert len(versions) == 1 and len(s.calls) == 1
     times = s.calls[0]
     assert len(times) <= fb.MAX_SHEET_TIMES and min(times) < 2 and max(times) > 30, times
+
+
+def test_auto_cards_action_wider_than_the_crop_and_says_so(tmp_path):
+    p = project(tmp_path)   # a box crossing the room left to right: most of the frame's width
+    out = fb.run(str(p), "br-1", sampler=stub_sampler())
+    assert out["mode"] == "card"
+    assert "width" in out["why"] and "9:16" in out["why"]
+
+
+def test_tracker_says_how_wide_the_motion_is():
+    bg = np.full((54, 96), 210.0)
+    frames = []
+    for i in range(12):
+        f = bg.copy()
+        x = 5 + i * 6
+        f[20:40, x:x + 8] = 20
+        frames.append(f)
+    path = subject_track.track(np.stack(frames), np.stack([bg] * 5), crop_w=0.3164)
+    lo, hi = path["span"]
+    assert lo < 0.15 and hi > 0.7 and hi - lo > 0.55, path["span"]
+    still = subject_track.track(np.stack([bg] * 8), np.stack([bg] * 5), crop_w=0.3164)
+    assert still["span"] is None
+
+
+def text_bg(h=54, w=96):
+    """A plain room with a burned-in label in its top-left corner: rows of sharp black and white strokes."""
+    bg = np.full((h, w), 210.0)
+    for r in range(3, 11, 2):
+        bg[r, 3:30:2] = 10.0
+    return bg
+
+
+def test_static_text_finds_a_burned_in_label_and_not_a_plain_room():
+    grid = subject_track.static_text(np.stack([text_bg()] * 5))
+    rows, cols = len(grid), len(grid[0])
+    assert any(grid[r][c] for r in range(rows // 3) for c in range(cols // 3)), "the label's cells"
+    assert not any(grid[r][c] for r in range(rows // 2, rows) for c in range(cols)), "the rest of the room"
+    plain = subject_track.static_text(np.stack([np.full((54, 96), 210.0)] * 5))
+    assert not any(any(row) for row in plain)
+
+
+def test_the_card_zoom_keeps_a_burned_in_label_out_where_the_subject_allows():
+    grid = [[False] * 16 for _ in range(9)]
+    for r in range(0, 2):
+        for c in range(0, 5):
+            grid[r][c] = True        # a label in the top-left corner
+    # the subject sits right of centre: a 0.6 window can hold it with or without the corner; it must leave the corner out
+    zx, zy = fb.place_zoom((0.45, 0.35, 0.75, 0.65), 0.6, grid)
+    assert zx + 0.6 >= 0.75 and zx <= 0.45 and zy <= 0.35 and zy + 0.6 >= 0.65, "the subject stays in"
+    assert fb.text_inside(grid, zx, zy, 0.6) == 0
+    # with no label it centres on the subject, as before
+    zx2, zy2 = fb.place_zoom((0.45, 0.35, 0.75, 0.65), 0.6, [[False] * 16 for _ in range(9)])
+    assert abs((zx2 + 0.3) - 0.6) < 0.03 and abs((zy2 + 0.3) - 0.5) < 0.03
