@@ -3,7 +3,7 @@ import { Search, X } from 'lucide-react'
 import type { ColourRequest } from '../ui'
 import { cn } from '../ui'
 import { fieldLabelClass } from './ElementControls'
-import { railBrandRow, railFaint, railField, railIconBtn, railSecondaryBtn, railSwatch, railTitle } from './railStyles'
+import { railBrandRow, railFaint, railField, railIconBtn, railInvalid, railSecondaryBtn, railSwatch, railTitle } from './railStyles'
 import { DEFAULT_SOLIDS, normalizeHex, resolveColourQuery, splitAlpha, withAlphaHex } from './colours'
 import { namedColour } from './colourNames'
 
@@ -213,7 +213,7 @@ export default function ColourPanel({
             disabled={disabled}
             value={query}
             spellCheck={false}
-            className={cn(fieldClass, 'pl-9', queryBad && 'ring-2 ring-red-500/60')}
+            className={cn(fieldClass, 'pl-9', queryBad && railInvalid)}
             onChange={(e) => { setQuery(e.target.value); setQueryBad(false) }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') { e.stopPropagation(); applyQuery() }
@@ -258,7 +258,7 @@ export default function ColourPanel({
                   step={1}
                   disabled={disabled}
                   value={pct}
-                  className="min-w-0 flex-1 accent-[#0e7490]"
+                  className="min-w-0 flex-1 accent-[var(--editor-accent)]"
                   onChange={(e) => setTransparency(Number(e.target.value))}
                   onPointerUp={releaseSlider}
                   onMouseUp={releaseSlider}

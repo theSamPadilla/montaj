@@ -41,9 +41,6 @@ export interface ElementToolbarProps {
   updateOverlayProp: UpdateOverlayProp
   /** The single element's typed transform and align: the classic panel's handlers. */
   onElementChange: (patch: Partial<CarouselElement>) => void
-  onElementPreview: (patch: Partial<CarouselElement>) => void
-  onElementCommit: () => void
-  onElementCancel: () => void
   /** Align or distribute several: one undo step. */
   onAlignSelection: (patches: Array<{ id: string } & AlignPatch>) => void
   onMoveInStack: (direction: ReorderDirection) => void
@@ -78,6 +75,8 @@ export interface ElementToolbarProps {
    *  then saves what was previewed as one step. Absent: the weight writes on each change. */
   onPreviewOverlayProp?: (slideId: string, elementId: string, key: string, value: string) => void
   onCommitPropPreview?: () => void
+  /** Escape in the weight field: drop the preview, write nothing. */
+  onCancelPropPreview?: () => void
 }
 
 // Montaj's tools: 10px squares, muted at rest, ink on hover; on = the brand tint.
@@ -240,7 +239,7 @@ function StrokeWeightIcon() {
 const TILE_DASH: Record<StrokeStyle, string | undefined> = { solid: undefined, 'long-dash': '9 6', 'short-dash': '4.5 3', dotted: '0 6' }
 
 /** The props the stroke popover writes: the Edit popover leaves them out. */
-const STROKE_CONTROL_PROPS: ReadonlySet<string> = new Set(['strokeStyle', 'roundCaps', 'roundJoins'])
+const STROKE_CONTROL_PROPS: ReadonlySet<string> = new Set(['strokeStyle', 'roundCaps', 'roundJoins', 'strokeWidth', 'arrowhead'])
 
 /** The Stroke popover: style tiles, rounded ends or corners, and the weight. */
 function StrokeContent({
@@ -250,6 +249,7 @@ function StrokeContent({
   set,
   previewWidth,
   commitWidth,
+  cancelWidth,
 }: {
   stroke: StrokeState
   disabled: boolean
@@ -259,6 +259,8 @@ function StrokeContent({
   /** The weight live, then once on release or Enter. */
   previewWidth: (value: number) => void
   commitWidth: (value: number) => void
+  /** Escape in the weight field: drop the live weight. */
+  cancelWidth?: () => void
 }) {
   const roundLabel = stroke.kind === 'line' ? 'Rounded end points' : 'Rounded corners'
   const min = stroke.kind === 'line' ? 1 : 0
@@ -322,6 +324,7 @@ function StrokeContent({
             step={1}
             onPreview={(v) => previewWidth(Math.max(min, Math.round(v)))}
             onCommit={(v) => commitWidth(Math.max(min, Math.round(v)))}
+            onCancel={cancelWidth}
             disabled={disabled}
             className={cn('h-8 w-14', railFieldShape)}
           />
@@ -390,6 +393,7 @@ export default function ElementToolbar({
   onSetFont,
   onPreviewOverlayProp,
   onCommitPropPreview,
+  onCancelPropPreview,
 }: ElementToolbarProps) {
   const element = selection.length === 1 ? selection[0] : undefined
   const image = element?.type === 'image' ? element : undefined
@@ -451,7 +455,7 @@ export default function ElementToolbar({
       >
         {text && (
           <>
-            <TextGroup slideId={slideId} element={text} update={update} disabled={locked || !canEdit} effectsOpen={popover === 'effects'} onToggleEffects={toggle('effects')} onOpenTextColour={onOpenTextColour && run(onOpenTextColour)} brandFont={brandFont} brandGoogleFonts={brandGoogleFonts} onSetFont={onSetFont && ((family, specs) => { beforeAction(); onSetFont(slideId, text.id, family, specs) })} swatch={swatch} />
+            <TextGroup slideId={slideId} element={text} update={update} disabled={locked || !canEdit} effectsOpen={popover === 'effects'} onToggleEffects={toggle('effects')} onOpenTextColour={onOpenTextColour && (colourOpen ? () => onCloseColour?.() : run(onOpenTextColour))} brandFont={brandFont} brandGoogleFonts={brandGoogleFonts} onSetFont={onSetFont && ((family, specs) => { beforeAction(); onSetFont(slideId, text.id, family, specs) })} swatch={swatch} />
             <Sep />
           </>
         )}
@@ -585,6 +589,7 @@ export default function ElementToolbar({
             mode={mode}
             set={(key, value) => void update(slideId, element.id, key, value)}
             previewWidth={(v) => (onPreviewOverlayProp ? onPreviewOverlayProp(slideId, element.id, 'strokeWidth', String(v)) : void update(slideId, element.id, 'strokeWidth', String(v)))}
+            cancelWidth={onCancelPropPreview}
             commitWidth={(v) => (onCommitPropPreview ? onCommitPropPreview() : void update(slideId, element.id, 'strokeWidth', String(v)))}
           />
         </Popover>

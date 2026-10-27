@@ -64,6 +64,9 @@ export const railField = `w-full rounded-[10px] border border-[var(--editor-bord
 /** Laid over `inspectorInputClass` (through `cn`) where the carousel uses the shared field. */
 export const railFieldShape = 'rounded-[10px] focus:border-[var(--editor-border)] focus:ring-2 disabled:opacity-40'
 
+/** A field whose text did not resolve: a danger ring (the host's `--editor-danger`, red by default). */
+export const railInvalid = 'ring-2 ring-[color-mix(in_srgb,var(--editor-danger,#dc2626)_60%,transparent)]'
+
 /** A keyboard shortcut chip. */
 export const railKeycap = 'inline-flex h-6 min-w-6 items-center justify-center rounded-md border border-b-2 border-[var(--editor-border)] bg-[var(--editor-surface)] px-[7px] font-mono text-[11px] font-semibold text-[var(--editor-text)]'
 

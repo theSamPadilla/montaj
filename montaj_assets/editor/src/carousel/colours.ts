@@ -157,11 +157,11 @@ export function elementColourTarget(el: CarouselElement): ElementColourTarget | 
   const kind = shapeKind(el.overlay.template)
   if (isTextOverlay(el)) return { key: 'color', label: 'Text color', alpha: true, value: normalizeHex(String(props.color ?? '')) ?? '#111111' }
   if (!kind) return null
-  const stroke = { key: 'stroke', label: 'Stroke color', alpha: false, value: drawnHex(props.stroke) ?? '#111111' }
+  const stroke = { key: 'stroke', label: 'Stroke color', alpha: true, value: drawnHex(props.stroke) ?? '#111111' }
   if (kind !== 'shape') return stroke
   const fill = drawnHex(props.fill)
-  if (fill) return { key: 'fill', label: 'Fill color', alpha: false, value: fill }
-  return 'stroke' in props ? stroke : { key: 'fill', label: 'Fill color', alpha: false, value: '#bdbdbd' }
+  if (fill) return { key: 'fill', label: 'Fill color', alpha: true, value: fill }
+  return 'stroke' in props ? stroke : { key: 'fill', label: 'Fill color', alpha: true, value: '#bdbdbd' }
 }
 
 /** The element's own colours (its hex props), distinct, in prop order. */

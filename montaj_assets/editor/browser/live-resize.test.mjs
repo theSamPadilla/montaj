@@ -307,3 +307,66 @@ test('text on a side handle: the text box follows on every move, the font stays'
     assert.ok(Math.abs(m.drawnFont - 80 * scale) <= 0.6, `text, move ${i + 1}: drawn at ${m.drawnFont.toFixed(2)} px`)
   }
 })
+
+// A resize that ends any way but a plain release behind a move leaves the
+// overlay drawn at the committed box, with no live box held over it (liveBox.ts).
+async function assertSettled(kind, id, scale) {
+  await frames()
+  const done = await committedBox(id)
+  const m = await measure(id)
+  // Tight: a live box held over the element is the unrounded preview, a fraction of a slide px off.
+  near(m.wrapper, { width: done.w * scale, height: done.h * scale }, `${kind}: the wrapper`, 0.05)
+  near(m.inner, { width: done.w * scale, height: done.h * scale }, `${kind}: the overlay's layer is at element.w x element.h`, 0.05)
+  assert.ok(Math.abs(m.viewBox.w - done.w) <= 0.01 && Math.abs(m.viewBox.h - done.h) <= 0.01,
+    `${kind}: the SVG is drawn for ${m.viewBox.w} x ${m.viewBox.h}, the element is ${done.w} x ${done.h}`)
+  assert.deepEqual(errors, [])
+  return done
+}
+
+async function beginResize(id, which = 'e') {
+  await select(id)
+  const start = await committedBox(id)
+  const m = await measure(id)
+  const scale = m.wrapper.width / start.w
+  const h = await handle(id, which)
+  await page.mouse.move(h.x, h.y)
+  await page.mouse.down()
+  return { start, scale, h }
+}
+
+test('a resize released back at its start leaves the overlay at element.w x element.h', async () => {
+  const { start, scale, h } = await beginResize('rect')
+  await page.mouse.move(h.x - 60, h.y)
+  await page.mouse.move(h.x - 120, h.y)
+  const mid = await measure('rect')
+  assert.ok(Math.abs(mid.chrome.width - start.w * scale) > 4, 'the box moved while held')
+  // Back to within rounding of the start: the preview is a fraction of a slide px off, the commit is the start.
+  await page.mouse.move(h.x + 0.3 * scale, h.y)
+  await page.mouse.up()
+  const done = await assertSettled('released at the start', 'rect', scale)
+  assert.deepEqual({ w: done.w, h: done.h }, { w: start.w, h: start.h })
+})
+
+test('a pointercancel mid-resize ends it with no live box left', async () => {
+  const { start, scale, h } = await beginResize('rect')
+  await page.mouse.move(h.x - 60.3, h.y)
+  await page.mouse.move(h.x - 120.3, h.y)
+  await page.evaluate(() => window.dispatchEvent(new PointerEvent('pointercancel', { pointerType: 'mouse' })))
+  const done = await assertSettled('after pointercancel', 'rect', scale)
+  // The gesture ended where it was: the committed box is the last preview.
+  assert.ok(done.w < start.w, 'the box kept the preview')
+  // The next move changes nothing: the gesture is over.
+  await page.mouse.move(h.x - 200, h.y)
+  await assertSettled('a move after the cancel', 'rect', scale)
+  await page.mouse.up()
+})
+
+test('a lost release (a move with no button held) ends the resize with no live box left', async () => {
+  const { start, scale, h } = await beginResize('rect')
+  await page.mouse.move(h.x - 60.3, h.y)
+  await page.mouse.move(h.x - 120.3, h.y)
+  await page.evaluate((x, y) => window.dispatchEvent(new PointerEvent('pointermove', { pointerType: 'mouse', buttons: 0, clientX: x, clientY: y })), h.x - 120.3, h.y)
+  const done = await assertSettled('after a lost release', 'rect', scale)
+  assert.ok(done.w < start.w, 'the box kept the preview')
+  await page.mouse.up()
+})

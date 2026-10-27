@@ -1681,6 +1681,12 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     propPreviewOpen.current = false
     void state.commit()
   }
+  // Escape in the weight field: the preview is given up, nothing is saved.
+  const cancelPropPreview = () => {
+    if (!propPreviewOpen.current) return
+    propPreviewOpen.current = false
+    state.discardTransient()
+  }
 
   // Property-panel transform/frame edits → committed mutators.
   function handlePanelElementChange(patch: Partial<CarouselElement>) {
@@ -2389,9 +2395,6 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             beforeAction={beforeToolbarAction}
             updateOverlayProp={updateOverlayProp}
             onElementChange={handlePanelElementChange}
-            onElementPreview={handlePanelElementPreview}
-            onElementCommit={handlePanelElementCommit}
-            onElementCancel={handlePanelElementCancel}
             onAlignSelection={handleAlignSelection}
             onMoveInStack={moveSelectionInStack}
             onToggleLock={toggleSelectionLock}
@@ -2422,6 +2425,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             onSetFont={setTextFont}
             onPreviewOverlayProp={previewOverlayProp}
             onCommitPropPreview={commitPropPreview}
+            onCancelPropPreview={cancelPropPreview}
           />
         ) : undefined
       }

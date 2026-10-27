@@ -26,6 +26,13 @@ describe('elementColourTarget', () => {
     expect(elementColourTarget(overlay('/o/badge.jsx', { accent: '#ff0000' }))).toBeNull()
     expect(elementColourTarget({ id: 'i', type: 'image', src: 'a.png', x: 0, y: 0, w: 1, h: 1, rotation: 0 } as CarouselElement)).toBeNull()
   })
+  it('a shape\'s fill and stroke, a line\'s and a frame\'s stroke take transparency, and keep an 8-digit value', () => {
+    const t = '/o/shape-rect/shape-rect.jsx'
+    expect(elementColourTarget(overlay(t, { fill: '#bdbdbd80', stroke: '#111111' }))).toEqual({ key: 'fill', label: 'Fill color', alpha: true, value: '#bdbdbd80' })
+    expect(elementColourTarget(overlay(t, { fill: 'none', stroke: '#33669980' }))).toEqual({ key: 'stroke', label: 'Stroke color', alpha: true, value: '#33669980' })
+    expect(elementColourTarget(overlay('/o/line-arrow/line-arrow.jsx', { stroke: '#aa0000' }))?.alpha).toBe(true)
+    expect(elementColourTarget(overlay('/o/frame-border/frame-border.jsx', { stroke: '#00aa00' }))?.alpha).toBe(true)
+  })
   it('shapeKind reads the template file name', () => {
     expect(shapeKind('/rt/templates/overlays/shape-ellipse/shape-ellipse.jsx')).toBe('shape')
     expect(shapeKind('/x/my-shape-rect.jsx')).toBeNull()

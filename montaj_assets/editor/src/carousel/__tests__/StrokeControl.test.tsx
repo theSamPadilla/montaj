@@ -199,6 +199,24 @@ describe('Stroke control (§587 round 2, F-F)', () => {
     expect(propsOf(last(adapter), 'el-rect').strokeWidth).toBe(4)
   })
 
+  it('Escape in the weight field reverts the typed weight, keeps the selection and saves nothing', async () => {
+    const { adapter, r } = await mount()
+    await openStroke(r, 'el-rect')
+    const input = weightField(r)
+    input.focus()
+    await act(async () => { fireEvent.change(input, { target: { value: '1' } }) })
+    await act(async () => { fireEvent.change(input, { target: { value: '12' } }) })
+    expect(drawnWidth('el-rect')).toBe('12')
+    await act(async () => { fireEvent.keyDown(input, { key: 'Escape' }) })
+    await settle()
+    expect(drawnWidth('el-rect')).toBe('4')
+    expect(weightField(r).value).toBe('4')
+    expect(adapter.saveCalls).toHaveLength(0)
+    // Still selected: the toolbar and the popover stay.
+    expect(toolbar(r)).toBeTruthy()
+    expect(strokePop(r)).toBeTruthy()
+  })
+
   it('the weight slider previews live and saves once on release', async () => {
     const { adapter, r } = await mount()
     await openStroke(r, 'el-line')
