@@ -3,8 +3,9 @@ import { ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, Eye, EyeOff, type L
 import type { CarouselElement, EditorAdapter, GlobalOverlay, GlobalOverlayProp, ImageElement, OverlayElement, Project, Slide } from '../types'
 import type { ReorderDirection } from '../state/project-reducer'
 import { STANDARD_TEXT_PROPS } from '../overlays/contract'
-import { cn, inspectorInputClass, NumberField, stepValue, SwatchInput } from '../ui'
+import { cn, inspectorInputClass, NumberField, Select, stepValue, SwatchInput } from '../ui'
 import { Loader } from '../ui/Loader'
+import { elementCategory } from './overlayElement'
 
 // The element controls the classic SlidePropertyPanel and the rail layout's
 // element toolbar (§587 M3) share: the typed transform fields, the image's
@@ -203,8 +204,8 @@ export function SlideBackgroundField({ slide, onSlideChange }: { slide: Slide; o
 }
 
 /**
- * The overlay prop schemas, by template path (`jsxPath`): the global ones and
- * the project profile's. `enabled` false loads nothing (a layout that has
+ * The overlay prop schemas, by template path (`jsxPath`): the shipped shapes,
+ * lines and frames, the global ones and the project profile's. `enabled` false loads nothing (a layout that has
  * another loader).
  */
 export function useOverlaySchemas(
@@ -217,7 +218,14 @@ export function useOverlaySchemas(
   useEffect(() => {
     if (!enabled) return
     setLoading(true)
-    const promises: Promise<GlobalOverlay[]>[] = [adapter.listGlobalOverlays()]
+    const promises: Promise<GlobalOverlay[]>[] = [
+      // The shipped shapes, lines and frames (§587). The shipped text template
+      // is left out: the text controls write its props.
+      Promise.resolve(adapter.listSystemOverlays?.())
+        .then(list => (list ?? []).filter(o => elementCategory(o) !== null))
+        .catch(() => []),
+      adapter.listGlobalOverlays(),
+    ]
     if (profile) {
       promises.push(adapter.listProfileOverlays?.(profile) ?? Promise.resolve([]))
     }
@@ -269,7 +277,7 @@ function PropEditor({
     )
   }
 
-  if (type === 'color') {
+  if (type === 'color' || prop.format === 'color') {
     return (
       <div className="flex flex-col gap-1" title={description}>
         <span className={fieldLabelClass}>{name}</span>
@@ -277,8 +285,21 @@ function PropEditor({
           value={String(value ?? '#000000')}
           onChange={v => onChange(v)}
           ariaLabel={name}
+          // A string colour can be see-through (an 8-digit hex): a shape with no fill.
+          alpha={prop.format === 'color' ? true : undefined}
         />
       </div>
+    )
+  }
+
+  if (prop.enum && prop.enum.length > 0) {
+    const current = String(value ?? prop.default ?? '')
+    const options = (prop.enum.includes(current) ? prop.enum : [current, ...prop.enum]).map(v => ({ value: v, label: v }))
+    return (
+      <label className="flex flex-col gap-1" title={description}>
+        <span className={fieldLabelClass}>{name}</span>
+        <Select value={current} options={options} onChange={e => onChange(e.target.value)} className={inspectorInputClass} />
+      </label>
     )
   }
 

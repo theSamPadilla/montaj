@@ -36,6 +36,7 @@ import { COPY_OFFSET, cloneElement, copyElements, duplicateCopies, insertCopies,
 import { isLocked, toggleLock } from './lock'
 import { reorderSelection } from './layerOrder'
 import { newTextElement } from './newText'
+import { newOverlayElement, TEMPLATE_DND_MIME } from './overlayElement'
 import { applyTextStyle, isTextOverlay, pickTextStyle, type TextStyle } from './textStyle'
 import { Button, ColourPanelContext, type ColourRequest } from '../ui'
 import { shortcutText } from '../ui/modifierKeys'
@@ -370,7 +371,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 // ── CarouselEditor ────────────────────────────────────────────────────────────
 
-export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, onProvideRenderTrigger, onProvideCarouselApi, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default', onError, renderSaveTimeoutMs = RENDER_SAVE_TIMEOUT_MS, lockKey = false, layout = 'classic', railPanels, brand }: Props<P>) {
+export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, onProvideRenderTrigger, onProvideCarouselApi, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default', onError, renderSaveTimeoutMs = RENDER_SAVE_TIMEOUT_MS, lockKey = false, layout = 'classic', railPanels, brand, onAskAi }: Props<P>) {
   const state = useProjectState(adapter, initialProject.id, initialProject)
   const project = state.project
   const slides = project.slides ?? []
@@ -1552,6 +1553,50 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     void addImages(slideId, sources, at)
   }
 
+  // ── Shapes onto the canvas (§587) ──
+  // A tile of the Elements panel hands its template over on dragstart and takes
+  // it back on dragend. Only that drag adds a shape: the type on a drag from
+  // another page or app adds nothing, and any other drag goes on to the image
+  // drop above.
+  const templateDragRef = useRef<GlobalOverlay | null>(null)
+  const onTemplateDrag = useCallback((overlay: GlobalOverlay | null) => { templateDragRef.current = overlay }, [])
+  const isTemplateDrag = (types: ArrayLike<string> | undefined) =>
+    templateDragRef.current !== null && !!types && Array.from(types).includes(TEMPLATE_DND_MIME)
+
+  function handleSlideDragOver(e: React.DragEvent<HTMLDivElement>, slideId: string) {
+    if (!isTemplateDrag(e.dataTransfer?.types)) return handleCanvasDragOver(e, slideId)
+    if (!canDropOn(slideId)) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+  }
+
+  /** A tile dropped on a slide: the shape is added there, centred on the drop point, one undo step. */
+  function handleSlideDrop(e: React.DragEvent<HTMLDivElement>, slideId: string) {
+    const overlay = templateDragRef.current
+    if (!overlay || !isTemplateDrag(e.dataTransfer?.types)) return handleCanvasDrop(e, slideId)
+    e.preventDefault()
+    templateDragRef.current = null
+    if (!canDropOn(slideId)) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const at = slideScale > 0
+      ? { x: (e.clientX - rect.left) / slideScale, y: (e.clientY - rect.top) / slideScale }
+      : undefined
+    const element = newOverlayElement(overlay, project.settings.resolution, at)
+    if (slideId !== selectedSlideIdRef.current) {
+      // A drop on another stacked slide makes it the active one, the shape selected.
+      activateSlide(slideId)
+      void state.addElement(slideId, element)
+      setSelectedElementId(element.id)
+      return
+    }
+    handleAddElement(slideId, element)
+  }
+
+  // "Ask your AI for a custom shape": the host's, kept stable for the memoised panel.
+  const onAskAiRef = useRef(onAskAi)
+  onAskAiRef.current = onAskAi
+  const askAiStable = useCallback((request: Parameters<NonNullable<typeof onAskAi>>[0]) => onAskAiRef.current?.(request), [])
+
   // A locked element's props and crop are not written, whoever asks (the canvas'
   // inline editor, the panel's text controls, a host slot).
   const lockedNow = (slideId: string, elementId: string) =>
@@ -2023,8 +2068,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     exitCrop: () => setCropElementId(null),
     enterCrop,
     unlockElement,
-    dragOver: handleCanvasDragOver,
-    drop: handleCanvasDrop,
+    dragOver: handleSlideDragOver,
+    drop: handleSlideDrop,
     contextMenu: openContextMenu,
     placeArmedNote,
   }
@@ -2310,7 +2355,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         background: backgroundPanel || undefined,
         // The editor's own panels; a host's `railPanels` entry wins.
         text: <TextPanel project={project} slideId={panelSlideId} onAddElement={handleAddElement} textTemplate={textTemplate} fonts={brand?.fonts} />,
-        elements: <ElementsPanel projectId={project.id} profile={project.profile} width={w} height={h} adapter={adapter} slideId={panelSlideId} onAddElement={addElementStable} />,
+        elements: <ElementsPanel projectId={project.id} profile={project.profile} width={w} height={h} adapter={adapter} slideId={panelSlideId} onAddElement={addElementStable} onTemplateDrag={onTemplateDrag} onAskAi={onAskAi ? askAiStable : undefined} />,
         'ai-image': <AiImagePanel adapter={adapter} slideId={panelSlideId} state={aiImage} onChange={(patch) => setAiImage((s) => ({ ...s, ...patch }))} onGenerate={generateAiImage} />,
         ...railPanels,
       }}

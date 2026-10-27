@@ -79,7 +79,9 @@ function OverlayElementView({
   compileOverlay?: (template: string) => Promise<OverlayFactory>
 }) {
   const duration = (element.overlay.props.duration as number | undefined) ?? 60
-  const mergedProps = { ...element.overlay.props, offsetX: 0, offsetY: 0, scale: 1 }
+  // The box in slide px, as the renderer's slide.jsx passes it: a template that
+  // draws to its box (the shipped shapes, the charts) matches the export.
+  const mergedProps = { ...element.overlay.props, offsetX: 0, offsetY: 0, scale: 1, boxWidth: element.w, boxHeight: element.h }
   // Inject any Google Fonts the overlay declares so the carousel preview renders
   // with the same glyphs/metrics as the renderer. Resilient: the helper only
   // appends a <link>; a font-fetch failure never breaks the overlay render.

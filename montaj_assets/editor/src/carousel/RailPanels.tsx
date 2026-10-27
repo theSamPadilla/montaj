@@ -1,12 +1,12 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import type { CarouselBrand, EditorAdapter, GlobalOverlay, CarouselElement, Project, Slide } from '../types'
+import type { AskAiRequest, CarouselBrand, EditorAdapter, GlobalOverlay, CarouselElement, Project, Slide } from '../types'
 import { Button } from '../ui'
 import { Loader } from '../ui/Loader'
 import ReadOnlySlide from './ReadOnlySlide'
 import OverlayErrorBoundary from './OverlayErrorBoundary'
 import { ensureGoogleFontsLoaded } from '../lib/google-fonts'
 import { TEXT_PRESETS, newTextElement, type TextPresetId } from './newText'
-import { loadOverlays, newOverlayElement, OVERLAY_BOX } from './overlayElement'
+import { ELEMENT_CATEGORIES, elementCategory, loadOverlays, newOverlayElement, OVERLAY_BOX, TEMPLATE_DND_MIME, type ElementCategory } from './overlayElement'
 
 // §587 M4b: the Text, Elements and AI image rail panels. Each adds to the slide
 // it was opened for through `onAddElement` (the editor's own add, which applies
@@ -106,6 +106,35 @@ function PreviewSlot({ shown, ...thumb }: { shown: boolean; overlay: GlobalOverl
   return <div aria-hidden="true" className="rounded bg-[var(--editor-bg)]" style={{ width: OVERLAY_BOX.w * PREVIEW_SCALE, height: OVERLAY_BOX.h * PREVIEW_SCALE }} />
 }
 
+// §587: the shipped shapes, lines and frames, drawn small in their own tiles.
+const SHAPE_TILE = 48
+const SHAPE_SECTIONS: Record<ElementCategory, { title: string; preview: { w: number; h: number } }> = {
+  shape: { title: 'Shapes', preview: { w: 100, h: 100 } },
+  line: { title: 'Lines', preview: { w: 200, h: 40 } },
+  frame: { title: 'Frames', preview: { w: 100, h: 100 } },
+}
+
+/** A shipped shape's thumbnail: the template itself at its defaults, in a small box of its kind's shape. */
+const ShapeThumb = memo(function ShapeThumb({ overlay, projectId, adapter }: { overlay: GlobalOverlay; projectId: string; adapter: EditorAdapter<Project> }) {
+  const { w, h } = SHAPE_SECTIONS[elementCategory(overlay) ?? 'shape'].preview
+  const scale = Math.min(SHAPE_TILE / w, SHAPE_TILE / h)
+  const slide = useMemo<Slide>(() => {
+    const el = newOverlayElement({ ...overlay, category: undefined }, [w, h])
+    return { id: 'preview', base_color: 'transparent', elements: [{ ...el, id: `preview:${overlay.jsxPath}`, x: 0, y: 0, w, h }] }
+  }, [overlay, w, h])
+  const compileOverlay = useMemo(() => (template: string) => adapter.compileOverlay(template, projectId), [adapter, projectId])
+  return (
+    <div aria-hidden="true" className="overflow-hidden" style={{ width: w * scale, height: h * scale }}>
+      <OverlayErrorBoundary label={overlay.name} resetKey={overlay.jsxPath}>
+        <ReadOnlySlide slide={slide} width={w} height={h} scale={scale} resolveImageSrc={adapter.resolveImageSrc} compileOverlay={compileOverlay} watchFile={adapter.watchFile} />
+      </OverlayErrorBoundary>
+    </div>
+  )
+})
+
+/** What a shipped template is called on its tile: its sidecar's description, else its folder name. */
+const shapeLabel = (overlay: GlobalOverlay) => overlay.description?.trim() || overlay.name
+
 export interface ElementsPanelProps {
   projectId: string
   profile: Project['profile']
@@ -117,11 +146,18 @@ export interface ElementsPanelProps {
   slideId: string | null
   /** Keep it stable: the panel is memoised on plain props, so it renders again only when one of them changes. */
   onAddElement: (slideId: string, element: CarouselElement) => void
+  /** A shipped shape's tile drag starts (its template) and ends (null). Keep it stable. */
+  onTemplateDrag?: (overlay: GlobalOverlay | null) => void
+  /** The "Ask your AI for a custom shape" field; absent, no field. Keep it stable. */
+  onAskAi?: (request: AskAiRequest) => void
 }
 
-export const ElementsPanel = memo(function ElementsPanel({ projectId, profile, width, height, adapter, slideId, onAddElement }: ElementsPanelProps) {
+export const ElementsPanel = memo(function ElementsPanel({ projectId, profile, width, height, adapter, slideId, onAddElement, onTemplateDrag, onAskAi }: ElementsPanelProps) {
   const [overlays, setOverlays] = useState<GlobalOverlay[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // The shipped shapes, lines and frames (§587), for every user, signed in or not.
+  const [shapes, setShapes] = useState<GlobalOverlay[]>([])
+  const [ask, setAsk] = useState('')
   // Tiles that have been near view: set once, kept, so scrolling back never recompiles.
   const [seen, setSeen] = useState<ReadonlySet<string>>(() => new Set())
   const rootRef = useRef<HTMLDivElement>(null)
@@ -135,7 +171,14 @@ export const ElementsPanel = memo(function ElementsPanel({ projectId, profile, w
     }, { root: rootRef.current?.closest('section') ?? null, rootMargin: '200px' })
     for (const el of tileRefs.current.values()) io.observe(el)
     return () => io.disconnect()
-  }, [overlays, hasIO])
+  }, [overlays, shapes, hasIO])
+  useEffect(() => {
+    let live = true
+    Promise.resolve(adapter.listSystemOverlays?.())
+      .then((list) => { if (live) setShapes((list ?? []).filter((o) => !o.empty && elementCategory(o) !== null)) })
+      .catch(() => { if (live) setShapes([]) })
+    return () => { live = false }
+  }, [adapter])
   useEffect(() => {
     let live = true
     setOverlays(null)
@@ -145,19 +188,63 @@ export const ElementsPanel = memo(function ElementsPanel({ projectId, profile, w
       .catch((e) => { if (live) setError(e instanceof Error ? e.message : String(e)) })
     return () => { live = false }
   }, [adapter, profile])
+  const tileRef = (key: string) => (el: HTMLElement | null) => { if (el) tileRefs.current.set(key, el); else tileRefs.current.delete(key) }
+  // With shapes to show, an empty list of the person's own graphics says nothing.
+  const showGraphics = !(overlays && overlays.length === 0 && shapes.length > 0)
+  const askText = ask.trim()
+  const submitAsk = () => {
+    if (!onAskAi || !askText) return
+    onAskAi({ kind: 'shape', slideId, text: askText })
+    setAsk('')
+  }
   return (
     <div ref={rootRef} className="flex flex-col gap-3 p-4">
-      <PanelTitle>Graphics</PanelTitle>
+      {ELEMENT_CATEGORIES.map((category) => {
+        const list = shapes.filter((o) => elementCategory(o) === category)
+        if (list.length === 0) return null
+        return (
+          <section key={category} className="flex flex-col gap-2">
+            <PanelTitle>{SHAPE_SECTIONS[category].title}</PanelTitle>
+            <div className="grid grid-cols-4 gap-2">
+              {list.map((overlay) => (
+                <button
+                  key={overlay.jsxPath}
+                  data-tile={overlay.jsxPath}
+                  ref={tileRef(overlay.jsxPath)}
+                  type="button"
+                  disabled={!slideId}
+                  draggable={!!slideId}
+                  aria-label={shapeLabel(overlay)}
+                  title={shapeLabel(overlay)}
+                  onClick={() => slideId && onAddElement(slideId, newOverlayElement(overlay, [width, height]))}
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData(TEMPLATE_DND_MIME, overlay.jsxPath)
+                    e.dataTransfer.effectAllowed = 'copy'
+                    onTemplateDrag?.(overlay)
+                  }}
+                  onDragEnd={() => onTemplateDrag?.(null)}
+                  className="flex aspect-square items-center justify-center rounded-lg border border-[var(--editor-border)] bg-[var(--editor-surface)] p-1 hover:border-[var(--editor-accent)] disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)]"
+                >
+                  {!hasIO || seen.has(overlay.jsxPath)
+                    ? <ShapeThumb overlay={overlay} projectId={projectId} adapter={adapter} />
+                    : <div aria-hidden="true" style={{ width: SHAPE_TILE, height: SHAPE_TILE }} />}
+                </button>
+              ))}
+            </div>
+          </section>
+        )
+      })}
+      {showGraphics && <PanelTitle>Graphics</PanelTitle>}
       {!overlays && !error && <div className="flex justify-center py-6"><Loader size="md" label="Loading graphics" /></div>}
       {error && <div className="text-sm text-red-600">{error}</div>}
-      {overlays && overlays.length === 0 && <div className={`text-sm ${muted}`}>No graphics available</div>}
+      {overlays && overlays.length === 0 && showGraphics && <div className={`text-sm ${muted}`}>No graphics available</div>}
       {overlays && overlays.length > 0 && (
         <div className="grid grid-cols-2 gap-2">
           {overlays.map((overlay) => (
             <button
               key={overlay.jsxPath}
               data-tile={overlay.jsxPath}
-              ref={(el) => { if (el) tileRefs.current.set(overlay.jsxPath, el); else tileRefs.current.delete(overlay.jsxPath) }}
+              ref={tileRef(overlay.jsxPath)}
               type="button"
               disabled={!slideId}
               title={overlay.description || undefined}
@@ -168,6 +255,20 @@ export const ElementsPanel = memo(function ElementsPanel({ projectId, profile, w
               <span className="truncate text-xs text-[var(--editor-text)]">{overlay.name}</span>
             </button>
           ))}
+        </div>
+      )}
+      {onAskAi && (
+        <div className="flex gap-2 pt-1">
+          <input
+            type="text"
+            aria-label="Ask your AI for a custom shape"
+            placeholder="Ask your AI for a custom shape"
+            value={ask}
+            onChange={(e) => setAsk(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); submitAsk() } }}
+            className="min-w-0 flex-1 rounded border border-[var(--editor-border)] bg-[var(--editor-surface)] px-2 py-1.5 text-xs text-[var(--editor-text)] placeholder-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] focus:border-[var(--editor-accent)] focus:outline-none"
+          />
+          <Button size="sm" disabled={!askText} onClick={submitAsk}>Ask</Button>
         </div>
       )}
     </div>
