@@ -1109,3 +1109,38 @@ def type_floor_issues(item, measurement, frame_w, frame_h, t, label):
     if big[1] >= small[1] * TITLE_RATIO and big[1] < TITLE_FLOOR_PX - 0.5:
         out.append({"t": r2(t), "id": label, "text": f'title "{big[0]}" is {round(big[1])} px: a title is at least {TITLE_FLOOR_PX} px'})
     return out
+
+
+WIDE_ASPECT = 1.5      # a b-roll this much wider than tall ...
+WIDE_SHOWN = 0.8       # ... shown at least this share of its frame, on a vertical canvas, is a small picture of everything
+
+
+def wide_broll_issues(project):
+    """1.5.0 (CV pl89r): a wide b-roll on a vertical canvas shown nearly whole (no crop to what its line is about), not
+    tracked (crop keys) and not carded by frame_broll (an overlay paired with it, props.for): the action its line names
+    is a small part of a small picture. One issue per item, at its start."""
+    w, h = design_size(project)
+    if not h > w:
+        return []
+    sizes = {s.get("src"): (s.get("sourceWidth"), s.get("sourceHeight")) for s in project.get("sources") or []
+             if isinstance(s, dict)}
+    tracks = drawn_tracks(project)
+    carded = {(it.get("props") or {}).get("for") for row in tracks for it in row if isinstance(it, dict)}
+    out = []
+    for ti, row in enumerate(tracks):
+        if ti == 0:
+            continue
+        for it in row:
+            if not isinstance(it, dict) or it.get("type") != "video" or it.get("keyframes") or it.get("id") in carded:
+                continue
+            sw, sh = it.get("sourceWidth") or sizes.get(it.get("src"), (None, None))[0], \
+                it.get("sourceHeight") or sizes.get(it.get("src"), (None, None))[1]
+            if not (sw and sh):
+                continue
+            c = it.get("sourceCrop") if isinstance(it.get("sourceCrop"), dict) else {"w": 1, "h": 1}
+            cw, ch = _num(c.get("w"), 1), _num(c.get("h"), 1)
+            if cw * ch >= WIDE_SHOWN and (cw * sw) / max(ch * sh, 1e-6) >= WIDE_ASPECT:
+                out.append({"t": r2(_num(it.get("start"), 0)), "id": _label(it, ti),
+                            "text": "shows its whole wide frame in a small part of the screen: crop it to what its line is "
+                                    "about (sourceCrop on the hand, the screen it moves), or frame_broll it"})
+    return out
