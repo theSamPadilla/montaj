@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { EditorAdapter, GlobalOverlay, CarouselElement, Project, Slide } from '../types'
 import { Button } from '../ui'
 import { Loader } from '../ui/Loader'
@@ -6,7 +6,6 @@ import ReadOnlySlide from './ReadOnlySlide'
 import OverlayErrorBoundary from './OverlayErrorBoundary'
 import { TEXT_PRESETS, newTextElement, type TextPresetId } from './newText'
 import { loadOverlays, newOverlayElement, OVERLAY_BOX } from './overlayElement'
-import { generateImageElement } from './newImage'
 
 // §587 M4b: the Text, Elements and AI image rail panels. Each adds to the slide
 // it was opened for through `onAddElement` (the editor's own add, which applies
@@ -41,6 +40,7 @@ export function TextPanel({ project, slideId, onAddElement, textTemplate }: Omit
   return (
     <div className="flex flex-col gap-4 p-4">
       <PanelTitle>Text</PanelTitle>
+      {!textTemplate && <div className={`text-xs ${muted}`}>No text template available</div>}
       <Button disabled={disabled} onClick={() => add()} className="w-full justify-between">
         <span>Add a text box</span>
         <kbd className="rounded border border-current px-1.5 text-[11px] leading-5 opacity-80">T</kbd>
@@ -91,9 +91,29 @@ function OverlayThumb({ overlay, project, adapter }: { overlay: GlobalOverlay; p
   )
 }
 
+/** A tile's thumbnail slot: a plain box until the tile has been near view, then the live thumb for good. */
+function PreviewSlot({ shown, ...thumb }: { shown: boolean; overlay: GlobalOverlay; project: Project; adapter: EditorAdapter<Project> }) {
+  if (shown) return <OverlayThumb {...thumb} />
+  return <div aria-hidden="true" className="rounded bg-[var(--editor-bg)]" style={{ width: OVERLAY_BOX.w * PREVIEW_SCALE, height: OVERLAY_BOX.h * PREVIEW_SCALE }} />
+}
+
 export function ElementsPanel({ project, adapter, slideId, onAddElement }: PanelProps) {
   const [overlays, setOverlays] = useState<GlobalOverlay[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Tiles that have been near view: set once, kept, so scrolling back never recompiles.
+  const [seen, setSeen] = useState<ReadonlySet<string>>(() => new Set())
+  const rootRef = useRef<HTMLDivElement>(null)
+  const tileRefs = useRef(new Map<string, HTMLElement>())
+  const hasIO = typeof IntersectionObserver !== 'undefined'
+  useEffect(() => {
+    if (!overlays || !hasIO) return
+    const io = new IntersectionObserver((entries) => {
+      const fresh = entries.filter((e) => e.isIntersecting).map((e) => (e.target as HTMLElement).dataset.tile!)
+      if (fresh.length) setSeen((prev) => (fresh.every((k) => prev.has(k)) ? prev : new Set([...prev, ...fresh])))
+    }, { root: rootRef.current?.closest('section') ?? null, rootMargin: '200px' })
+    for (const el of tileRefs.current.values()) io.observe(el)
+    return () => io.disconnect()
+  }, [overlays, hasIO])
   useEffect(() => {
     let live = true
     setOverlays(null)
@@ -104,7 +124,7 @@ export function ElementsPanel({ project, adapter, slideId, onAddElement }: Panel
     return () => { live = false }
   }, [adapter, project.profile])
   return (
-    <div className="flex flex-col gap-3 p-4">
+    <div ref={rootRef} className="flex flex-col gap-3 p-4">
       <PanelTitle>Graphics</PanelTitle>
       {!overlays && !error && <div className="flex justify-center py-6"><Loader size="md" label="Loading graphics" /></div>}
       {error && <div className="text-sm text-red-600">{error}</div>}
@@ -114,13 +134,15 @@ export function ElementsPanel({ project, adapter, slideId, onAddElement }: Panel
           {overlays.map((overlay) => (
             <button
               key={overlay.jsxPath}
+              data-tile={overlay.jsxPath}
+              ref={(el) => { if (el) tileRefs.current.set(overlay.jsxPath, el); else tileRefs.current.delete(overlay.jsxPath) }}
               type="button"
               disabled={!slideId}
               title={overlay.description || undefined}
               onClick={() => slideId && onAddElement(slideId, newOverlayElement(overlay, project.settings.resolution))}
               className="flex flex-col items-stretch gap-1.5 rounded-lg border border-[var(--editor-border)] bg-[var(--editor-surface)] p-2 text-left hover:border-[var(--editor-accent)] disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)]"
             >
-              <OverlayThumb overlay={overlay} project={project} adapter={adapter} />
+              <PreviewSlot shown={!hasIO || seen.has(overlay.jsxPath)} overlay={overlay} project={project} adapter={adapter} />
               <span className="truncate text-xs text-[var(--editor-text)]">{overlay.name}</span>
             </button>
           ))}
@@ -130,27 +152,21 @@ export function ElementsPanel({ project, adapter, slideId, onAddElement }: Panel
   )
 }
 
-export function AiImagePanel({ project, adapter, slideId, onAddElement }: PanelProps) {
-  const [prompt, setPrompt] = useState('')
-  const [generating, setGenerating] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+export interface AiImageState { prompt: string; generating: boolean; error: string | null }
+
+/** The editor owns the state, so a close and reopen of the panel neither loses a prompt nor starts a second run. */
+export function AiImagePanel({ adapter, slideId, state, onChange, onGenerate }: {
+  adapter: EditorAdapter<Project>
+  slideId: string | null
+  state: AiImageState
+  onChange: (patch: Partial<AiImageState>) => void
+  onGenerate: (slideId: string, prompt: string) => void
+}) {
+  const { prompt, generating, error } = state
   if (!adapter.generateImage) {
     return <div className="flex flex-col gap-2 p-4"><PanelTitle>AI image</PanelTitle><div className={`text-sm ${muted}`}>Not available</div></div>
   }
-  async function generate() {
-    // The slide it was asked on: the image lands there even if the person moves on meanwhile.
-    if (!slideId || !prompt.trim()) return
-    setGenerating(true)
-    setError(null)
-    try {
-      onAddElement(slideId, await generateImageElement(adapter, project, prompt.trim()))
-      setPrompt('')
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setGenerating(false)
-    }
-  }
+  const generate = () => { if (slideId && prompt.trim() && !generating) onGenerate(slideId, prompt.trim()) }
   return (
     <div className="flex flex-col gap-3 p-4">
       <PanelTitle>AI image</PanelTitle>
@@ -161,11 +177,11 @@ export function AiImagePanel({ project, adapter, slideId, onAddElement }: PanelP
         placeholder="Describe the image to generate…"
         value={prompt}
         disabled={generating}
-        onChange={(e) => setPrompt(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void generate() }}
+        onChange={(e) => onChange({ prompt: e.target.value })}
+        onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) generate() }}
       />
       {error && <div className="text-xs text-red-600">{error}</div>}
-      <Button onClick={() => void generate()} disabled={generating || !slideId || !prompt.trim()}>
+      <Button onClick={generate} disabled={generating || !slideId || !prompt.trim()}>
         {generating ? 'Generating…' : 'Generate'}
       </Button>
     </div>

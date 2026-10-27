@@ -52,14 +52,17 @@ const OVERLAYS: GlobalOverlay[] = [
 ]
 
 class MockIO {
-  constructor(public cb: IntersectionObserverCallback) {}
-  observe() {}
-  unobserve() {}
-  disconnect() {}
+  static instances: MockIO[] = []
+  observed = new Set<Element>()
+  constructor(public cb: IntersectionObserverCallback, public options?: IntersectionObserverInit) { MockIO.instances.push(this) }
+  observe(el: Element) { this.observed.add(el) }
+  unobserve(el: Element) { this.observed.delete(el) }
+  disconnect() { this.observed.clear() }
   takeRecords() { return [] }
 }
 const realIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver
 beforeEach(() => {
+  MockIO.instances = []
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class { observe() {} unobserve() {} disconnect() {} }
   ;(globalThis as unknown as { IntersectionObserver: unknown }).IntersectionObserver = MockIO
@@ -96,6 +99,13 @@ const openRail = async (name: string) => { await act(async () => { fireEvent.cli
 const added = (p: Project, slide: number) => p.slides![slide].elements.filter((e) => e.type === 'overlay') as OverlayElement[]
 
 describe('Text panel', () => {
+  it('says why its buttons are disabled when there is no text template', async () => {
+    await mount(three(), { getDefaultTextOverlay: vi.fn(async () => null) })
+    await openRail('Text')
+    expect(screen.getByText('No text template available')).toBeTruthy()
+    expect((screen.getByRole('button', { name: /Add a text box/ }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
   it('Add a text box adds one centred text box, one undo step, to the active slide', async () => {
     const adapter = await mount(three())
     await pickSlideOf('el-1')
@@ -145,7 +155,66 @@ describe('Elements panel', () => {
   })
 })
 
+describe('Elements panel previews', () => {
+  it('compiles a thumbnail only once its tile has been visible, and keeps it', async () => {
+    const many: GlobalOverlay[] = Array.from({ length: 30 }, (_, i) => ({ name: `T${i}`, description: '', jsxPath: `t${i}.jsx`, props: [] }))
+    const compileOverlay = vi.fn(async () => () => null)
+    const adapter = await mount(three(), { listGlobalOverlays: vi.fn(async () => many), compileOverlay })
+    await openRail('Elements')
+    await screen.findByRole('button', { name: /T0/ })
+    expect(compileOverlay).not.toHaveBeenCalled()
+    const io = MockIO.instances.find((o) => o.options?.rootMargin === '200px')!
+    expect(io).toBeTruthy()
+    const tiles = [...io.observed]
+    expect(tiles).toHaveLength(30)
+    const report = async (els: Element[], isIntersecting: boolean) => {
+      await act(async () => { io.cb(els.map((target) => ({ target, isIntersecting, intersectionRatio: isIntersecting ? 1 : 0 }) as unknown as IntersectionObserverEntry), io as unknown as IntersectionObserver) })
+    }
+    await report(tiles.slice(0, 6), true)
+    await waitFor(() => expect(compileOverlay).toHaveBeenCalledTimes(6))
+    await report(tiles.slice(0, 6), false)
+    await report(tiles.slice(0, 6), true)
+    expect(compileOverlay).toHaveBeenCalledTimes(6)
+    expect(adapter.compileOverlay).toBe(compileOverlay)
+  })
+})
+
 describe('AI image panel', () => {
+  it('adds nothing and says so when the slide was removed mid-generation', async () => {
+    let resolve!: (v: { path: string }) => void
+    const generateImage = vi.fn(() => new Promise<{ path: string }>((r) => { resolve = r }))
+    const adapter = await mount(three(), { generateImage })
+    await pickSlideOf('el-1')
+    await openRail('AI image')
+    await act(async () => { fireEvent.change(screen.getByLabelText('Describe the image to generate'), { target: { value: 'fox' } }) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Generate' })) })
+    const hdr = document.querySelector<HTMLElement>('[data-slide-section="s1"] [data-slide-header]')!
+    await act(async () => { fireEvent.click(hdr.querySelector('button[aria-label="Delete slide"]')!) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    await act(async () => { resolve({ path: '/gen.png' }) })
+    expect(await screen.findByText('That slide was removed')).toBeTruthy()
+    expect(adapter.saveCalls.every((c) => !JSON.stringify(c.project).includes('/gen.png'))).toBe(true)
+  })
+
+  it('stays busy across a close and reopen, and the first result lands once', async () => {
+    let resolve!: (v: { path: string }) => void
+    const generateImage = vi.fn(() => new Promise<{ path: string }>((r) => { resolve = r }))
+    const adapter = await mount(three(), { generateImage })
+    await pickSlideOf('el-1')
+    await openRail('AI image')
+    await act(async () => { fireEvent.change(screen.getByLabelText('Describe the image to generate'), { target: { value: 'fox' } }) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Generate' })) })
+    await openRail('AI image')
+    await openRail('AI image')
+    const btn = screen.getByRole('button', { name: 'Generating…' }) as HTMLButtonElement
+    expect(btn.disabled).toBe(true)
+    await act(async () => { fireEvent.click(btn) })
+    expect(generateImage).toHaveBeenCalledTimes(1)
+    await act(async () => { resolve({ path: '/gen.png' }) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(lastSave(adapter).slides![1].elements.filter((e) => e.type === 'image' && (e as ImageElement).src === '/gen.png')).toHaveLength(1)
+  })
+
   it('Generate calls the same adapter call as classic and adds the image to the active slide', async () => {
     const generateImage = vi.fn(async () => ({ path: '/gen.png' }))
     const adapter = await mount(three(), { generateImage })
