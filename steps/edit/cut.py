@@ -482,14 +482,17 @@ def _plan(d, title, units, trailing, labels, gone, at, of_source, language, max_
 def _restart(row, nxt, words=None, ahead=None):
     """A row that starts the line over right away (PL89i: "But in In" before "but in all seriousness"; "And if you And"
     before "you move or get scared"): ("row", None) when its first two words open the very next row of its clip,
-    ("words", k) when it ends by saying its own first word again (its first k words are the false start), else None."""
+    ("words", k) when it ends by saying its own first word again and the next row of its clip goes on with a word of
+    the false start (its first k words), else None. A row that only ends on the word it began with is a real line
+    broken at a pause ("We built this so we" / "could test it", 52's review S3)."""
     mine = row.words if words is None else words              # the words the plan keeps of each row
     norms = [w.norm for w in mine if w.norm]
-    if nxt is not None and _line_key(nxt.line)[0] == _line_key(row.line)[0] and len(norms) >= 2:
-        next_norms = [w.norm for w in (nxt.words if ahead is None else ahead) if w.norm]
-        if len(next_norms) > 2 and next_norms[:2] == norms[:2]:
-            return ("row", None)
-    if len(norms) >= 3 and norms[-1] == norms[0]:
+    if nxt is None or _line_key(nxt.line)[0] != _line_key(row.line)[0] or len(norms) < 2:
+        return None
+    next_norms = [w.norm for w in (nxt.words if ahead is None else ahead) if w.norm]
+    if len(next_norms) > 2 and next_norms[:2] == norms[:2]:
+        return ("row", None)
+    if len(norms) >= 3 and norms[-1] == norms[0] and next_norms and next_norms[0] in norms[1:-1]:
         return ("words", len(mine) - 1)
     return None
 

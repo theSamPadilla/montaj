@@ -49,3 +49,12 @@ def test_a_row_that_opens_like_the_next_row_of_its_clip_is_its_restart():
     assert cut._restart(_Row("E1", "But in In"), _Row("F1", "but in all")) is None
     assert cut._restart(_Row("E1", "But"), _Row("E1", "but in all")) is None
     assert cut._restart(_Row("D5", "Yeah, I don't think that kid would have been"), _Row("D6", "car was also going like really slow.")) is None
+
+
+def test_a_row_ending_on_its_first_word_is_a_restart_only_when_the_next_row_says_it_again():
+    """52's PL89 review S3: rows break at pauses, so a real line can end on the word it began with ("We built this so
+    we" / "could test it"); tagged repeat?, an agent following the labels dropped it. A restart re-says the false start."""
+    assert cut._restart(_Row("E2", "We built this so we"), _Row("E2", "could test it")) is None
+    assert cut._restart(_Row("E2", "We built this so we"), None) is None
+    assert cut._restart(_Row("E2", "We built this so we"), _Row("F1", "built this so we could")) is None
+    assert cut._restart(_Row("E6", "And if you And"), _Row("E6", "you move or get scared,")) == ("words", 3)
