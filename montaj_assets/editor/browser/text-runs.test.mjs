@@ -156,3 +156,82 @@ test('one word selected with the keyboard turns bold and red while editing, and 
   assert.equal((await saves()).length, 2, 'closing the edit wrote again')
   assert.deepEqual(errors, [])
 })
+
+/** Selects the text box, then double-clicks it to edit, as a person does. */
+async function openEditor() {
+  const box = await page.$eval('[data-element-wrapper][data-element-id="t"]', (el) => {
+    const r = el.getBoundingClientRect()
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+  })
+  await page.mouse.click(box.x, box.y)
+  await page.mouse.click(box.x, box.y, { clickCount: 2 })
+  await page.waitForSelector(EDITOR_SEL)
+  return page.$eval(EDITOR_SEL, (el) => el.textContent)
+}
+const editorText = () => page.$eval(EDITOR_SEL, (el) => el.textContent)
+const savedText = async () => (await saves()).at(-1)[0].elements.find((e) => e.id === 't').overlay.props.text
+
+test('the Enter that confirms an IME composition keeps the edit open, and the composed text is saved', async () => {
+  const before = await openEditor()
+  await page.keyboard.press('End')
+  // The page's own session: a second one does not drive the same input. With
+  // focus emulation on, a synthetic IME key does not blur the headless window.
+  const cdp = page._client()
+  await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true })
+  await cdp.send('Input.imeSetComposition', { text: 'に', selectionStart: 1, selectionEnd: 1 })
+  // The IME's own Enter (keyCode 229, during the composition) confirms it.
+  await cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 229, nativeVirtualKeyCode: 229 })
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 229, nativeVirtualKeyCode: 229 })
+  assert.ok(await page.$(EDITOR_SEL), 'the IME\'s Enter closed the edit')
+  assert.equal(await editorText(), `${before}に`)
+  const n = (await saves()).length
+  await page.keyboard.press('Enter')
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, EDITOR_SEL)
+  await page.waitForFunction((k) => window.__saves.length > k, {}, n)
+  assert.equal(await savedText(), `${before}に`)
+  assert.deepEqual(errors, [])
+})
+
+test('Cmd+Z inside the edit takes back an underlined word, then the typing; Cmd+Shift+Z puts the underline back', async () => {
+  const before = await openEditor()
+  await page.keyboard.press('End')
+  await page.keyboard.type(' now')
+  assert.equal(await editorText(), `${before} now`)
+  for (let i = 0; i < 3; i++) {
+    await page.keyboard.down('Shift')
+    await page.keyboard.press('ArrowLeft')
+    await page.keyboard.up('Shift')
+  }
+  const chord = async (key, shift = false) => {
+    await page.keyboard.down('Meta')
+    if (shift) await page.keyboard.down('Shift')
+    await page.keyboard.press(key)
+    if (shift) await page.keyboard.up('Shift')
+    await page.keyboard.up('Meta')
+  }
+  // Underline: nothing before this test underlines, so the word starts without it.
+  const underlined = () => page.$$eval(`${EDITOR_SEL} span`, (spans) =>
+    spans.filter((s) => getComputedStyle(s).textDecorationLine === 'underline').map((s) => s.textContent))
+  assert.deepEqual(await underlined(), [])
+  await chord('u')
+  assert.deepEqual(await underlined(), ['now'], 'Cmd+U did not underline the word')
+
+  await chord('z')
+  assert.ok(await page.$(EDITOR_SEL), 'Cmd+Z closed the edit')
+  assert.deepEqual(await underlined(), [], 'Cmd+Z did not take back the underline')
+  assert.equal(await editorText(), `${before} now`)
+
+  await chord('z', true)
+  assert.deepEqual(await underlined(), ['now'], 'Cmd+Shift+Z did not put the underline back')
+
+  await chord('z')
+  await chord('z')
+  assert.equal(await editorText(), before, 'Cmd+Z did not take back the typing')
+
+  const n = (await saves()).length
+  await page.keyboard.press('Escape')
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, EDITOR_SEL)
+  await page.waitForFunction((k) => window.__saves.length > k, {}, n)
+  assert.equal(await savedText(), before, 'the undone edit was not what closed')
+  assert.deepEqual(errors, [])
+})

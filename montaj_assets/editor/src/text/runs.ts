@@ -51,6 +51,15 @@ function cleanStyle(s: RunStyle): RunStyle {
 
 const sameStyle = (a: RunStyle, b: RunStyle) => KEYS.every((k) => a[k] === b[k])
 
+// UTF-16 surrogate halves: an emoji is two units, and no run boundary may fall between them.
+const isHigh = (s: string, i: number) => { const c = s.charCodeAt(i); return c >= 0xd800 && c <= 0xdbff }
+const isLow = (s: string, i: number) => { const c = s.charCodeAt(i); return c >= 0xdc00 && c <= 0xdfff }
+/** Whether index `i` of `s` falls between the two halves of a pair. */
+const splitsPair = (s: string, i: number) => i > 0 && i < s.length && isHigh(s, i - 1) && isLow(s, i)
+
+/** Whether `c` is a colour a run may carry (hex only). */
+const isRunColour = (c: unknown): c is string => typeof c === 'string' && HEX.test(c)
+
 /** Drops empty runs and joins neighbours that look the same. */
 export function mergeRuns(runs: readonly Run[]): Run[] {
   const out: Run[] = []
@@ -83,6 +92,12 @@ export function decodeRuns(raw: unknown, text: unknown): Run[] | null {
     runs.push(run)
   }
   if (runs.map((r) => r.t).join('') !== text) return null
+  // A boundary between an emoji's two halves would draw each half alone.
+  let at = 0
+  for (const r of runs.slice(0, -1)) {
+    at += r.t.length
+    if (splitsPair(text, at)) return null
+  }
   return mergeRuns(runs)
 }
 
@@ -99,9 +114,14 @@ export function runsOf(props: Record<string, unknown>): Run[] {
   return decodeRuns(props.runs, text) ?? (text ? [{ t: text }] : [])
 }
 
-/** The element's own style, from its props. */
+/**
+ * The element's own style, from its props. A colour that is not hex (`white`,
+ * `rgb(...)`) is kept as written, so a run in any hex colour, the default one
+ * included, still differs from it.
+ */
 export function baseTextStyle(props: Record<string, unknown>): BaseTextStyle {
-  const color = typeof props.color === 'string' && HEX.test(props.color.trim()) ? props.color.trim().toLowerCase() : '#111111'
+  const raw = typeof props.color === 'string' ? props.color.trim() : ''
+  const color = raw === '' ? '#111111' : HEX.test(raw) ? raw.toLowerCase() : raw
   return { bold: isBold(props.fontWeight), italic: props.fontStyle === 'italic', underline: false, color }
 }
 
@@ -129,7 +149,8 @@ function explode(runs: readonly Run[]): { text: string; styles: RunStyle[] } {
 
 function implode(text: string, styles: readonly RunStyle[]): Run[] {
   const runs: Run[] = []
-  for (let i = 0; i < text.length; i++) runs.push({ t: text[i], ...styles[i] })
+  // A pair's low half always takes its high half's style.
+  for (let i = 0; i < text.length; i++) runs.push({ t: text[i], ...(splitsPair(text, i) ? styles[i - 1] : styles[i]) })
   return mergeRuns(runs)
 }
 
@@ -148,6 +169,14 @@ export function spliceRuns(runs: readonly Run[], start: number, end: number, ins
   )
 }
 
+/** `patch` without what a run cannot carry: a colour that is not hex, a flag that is not 0 or 1. */
+export function cleanPatch(patch: RunPatch): RunPatch {
+  const out: RunPatch = {}
+  if ('c' in patch && (patch.c === null || isRunColour(patch.c))) out.c = patch.c === null ? null : patch.c.toLowerCase()
+  for (const k of FLAGS) if (k in patch && (patch[k] === null || patch[k] === 0 || patch[k] === 1)) out[k] = patch[k]
+  return out
+}
+
 function patchStyle(s: RunStyle, patch: RunPatch): RunStyle {
   const out: RunStyle = { ...s }
   for (const k of KEYS) {
@@ -159,10 +188,13 @@ function patchStyle(s: RunStyle, patch: RunPatch): RunStyle {
   return out
 }
 
-/** `runs` with `patch` applied to [start, end). */
+/** `runs` with `patch` applied to [start, end), widened to whole emoji. */
 export function styleRange(runs: readonly Run[], start: number, end: number, patch: RunPatch): Run[] {
   const { text, styles } = explode(runs)
-  return implode(text, styles.map((s, i) => (i >= start && i < end ? patchStyle(s, patch) : s)))
+  const clean = cleanPatch(patch)
+  const from = splitsPair(text, start) ? start - 1 : start
+  const to = splitsPair(text, end) ? end + 1 : end
+  return implode(text, styles.map((s, i) => (i >= from && i < to ? patchStyle(s, clean) : s)))
 }
 
 /** What [start, end) shows: bold, italic or underline only when every char is; its first char's colour. */
@@ -219,40 +251,68 @@ export function styleWholeText(props: Record<string, unknown>, patch: RunPatch):
   return out
 }
 
-/**
- * The prop writes for an edit's text and runs (`runs` relative to `base`, the
- * element's style when the edit began). A style every char shares moves onto
- * the element (select all, Bold: `fontWeight`), so runs carry only what
- * differs. `runs: undefined` removes the prop.
- */
-export function runsPatch(props: Record<string, unknown>, text: string, runs: readonly Run[], base: BaseTextStyle): Record<string, string | undefined> {
-  const { styles } = explode(runs)
+// What each char shows, every key filled in from `base`.
+function shownStyles(runs: readonly Run[], base: BaseTextStyle): Required<RunStyle>[] {
   const flag = (v: 0 | 1 | undefined, own: boolean): 0 | 1 => (v === undefined ? (own ? 1 : 0) : v)
-  const shown = styles.map((s): RunStyle => ({
+  return explode(runs).styles.map((s) => ({
     c: (s.c ?? base.color).toLowerCase(),
     b: flag(s.b, base.bold),
     i: flag(s.i, base.italic),
     u: flag(s.u, base.underline),
   }))
-  const out: Record<string, string | undefined> = { text }
-  const target = baseTextStyle(props)
+}
+
+/** `runs` (relative to `from`) relative to `to` instead: every char shows what it showed. */
+export function rebaseRuns(runs: readonly Run[], from: BaseTextStyle, to: BaseTextStyle): Run[] {
+  const text = runs.map((r) => r.t).join('')
+  return normalizeRuns(implode(text, shownStyles(runs, from)), to)
+}
+
+/**
+ * A bold, italic or colour every char shows and `base` does not, moved onto
+ * the base (select all, Bold: the element's `fontWeight`); the runs relative
+ * to the new base. Underline stays on the runs: the element has no prop for it.
+ */
+export function liftShared(runs: readonly Run[], base: BaseTextStyle): { base: BaseTextStyle; runs: Run[] } {
+  const shown = shownStyles(runs, base)
   const first = shown[0]
-  const shared = (k: keyof RunStyle) => !!first && shown.every((s) => s[k] === first[k])
-  if (shared('b')) {
-    const on = first.b === 1
-    if (on !== target.bold) out.fontWeight = on ? '700' : '400'
-    target.bold = on
+  const next = { ...base }
+  if (first) {
+    const shared = (k: 'b' | 'i' | 'c') => shown.every((s) => s[k] === first[k])
+    if (shared('b')) next.bold = first.b === 1
+    if (shared('i')) next.italic = first.i === 1
+    if (shared('c') && first.c !== base.color.toLowerCase()) next.color = first.c
   }
-  if (shared('i')) {
-    const on = first.i === 1
-    if (on !== target.italic) out.fontStyle = on ? 'italic' : 'normal'
-    target.italic = on
+  return { base: next, runs: rebaseRuns(runs, base, next) }
+}
+
+/**
+ * The prop writes for an edit's text and runs, `runs` relative to `base` (the
+ * element's style as the edit last wrote it, or as it was when the edit
+ * began). A style the edit gave every char moves onto the element; every
+ * other key stays as the live element has it, so a colour or weight saved
+ * while the person typed (by their AI) is not put back. `runs: undefined`
+ * removes the prop.
+ */
+export function runsPatch(props: Record<string, unknown>, text: string, runs: readonly Run[], base: BaseTextStyle): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = { text }
+  const lifted = liftShared(runs, base)
+  const live = baseTextStyle(props)
+  const target = { ...live }
+  if (lifted.base.bold !== base.bold) {
+    if (lifted.base.bold !== live.bold) out.fontWeight = lifted.base.bold ? '700' : '400'
+    target.bold = lifted.base.bold
   }
-  if (shared('c') && first.c !== target.color) {
-    out.color = first.c
-    target.color = first.c!
+  if (lifted.base.italic !== base.italic) {
+    if (lifted.base.italic !== live.italic) out.fontStyle = lifted.base.italic ? 'italic' : 'normal'
+    target.italic = lifted.base.italic
   }
-  const enc = encodeRuns(normalizeRuns(implode(text, shown), target))
+  if (lifted.base.color !== base.color) {
+    if (lifted.base.color !== live.color.toLowerCase()) out.color = lifted.base.color
+    target.color = lifted.base.color
+  }
+  // The runs carry only their own overrides; what they leave out is the live element's.
+  const enc = encodeRuns(normalizeRuns(lifted.runs, target))
   if (enc !== '') out.runs = enc
   else if (props.runs !== undefined) out.runs = undefined
   return out
