@@ -540,11 +540,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
 
   /** Adds an empty note on `slideId` (at `point`, or about the whole slide)
    *  and returns it as stored: the core of the N flow and `api.add`. */
-  const addNoteOn = useCallback((slideId: string, point?: { x: number; y: number }): SlideNote => {
+  const addNoteOn = useCallback((slideId: string, point?: { x: number; y: number }, text?: string): SlideNote => {
     const id = noteId()
     let added: SlideNote | undefined
     void editNotes((n) => {
-      const next = addSlideNote(n, { slideId, x: point?.x, y: point?.y, id }).notes
+      const next = addSlideNote(n, { slideId, x: point?.x, y: point?.y, id, text }).notes
       added = next[next.length - 1] as SlideNote
       return next
     })
@@ -568,7 +568,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // Host notes api: handed up once (it is stable) and withdrawn with null on
   // unmount, so the host never writes through an editor that is gone.
   const notesApi = useMemo<SlideNotesApi>(() => ({
-    add: (slideId, point) => addNoteOn(slideId, point).id,
+    add: (slideId, point, text) => addNoteOn(slideId, point, text).id,
     setText: (id, text) => editNote((n) => setSlideNoteText(n, id, text)),
     setDone: (id, done) => editNote((n) => setSlideNoteDone(n, id, done)),
     setPoint: (id, point) => editNote((n) => setSlideNotePoint(n, id, point)),
