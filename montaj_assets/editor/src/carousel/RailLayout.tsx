@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { Images, Shapes, Type, Palette, Sparkles, Layers, PaintBucket, StickyNote, LayoutGrid, Undo2, Redo2, X, type LucideIcon } from 'lucide-react'
+import { Images, Shapes, Type, Palette, Sparkles, Layers, PaintBucket, StickyNote, LayoutGrid, Undo2, Redo2, X, CircleHelp, type LucideIcon } from 'lucide-react'
 import type { CarouselRailItemId } from '../types'
 import { ZOOM_MAX, ZOOM_MIN, type ZoomAction } from './zoom'
 import { shortcutText } from '../ui/modifierKeys'
@@ -304,7 +304,7 @@ export default function RailLayout({
         >
           <LayoutGrid size={16} />
         </button>
-        <button type="button" className={barBtn} onClick={onOpenControls} aria-label="Controls" title="Editor controls & shortcuts">?</button>
+        <button type="button" className={barBtn} onClick={onOpenControls} aria-label="Controls" title="Editor controls & shortcuts"><CircleHelp size={16} aria-hidden="true" /></button>
         {zoomOpen && (
           <ul ref={zoomMenuRef} role="menu" aria-label="Zoom" className="absolute bottom-12 right-44 min-w-44 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] py-1 shadow-lg z-40">
             {ZOOM_MENU.map(({ action, label, keys }) => (
