@@ -19,7 +19,8 @@ import ColourPanel from './ColourPanel'
 import { collectColours, normalizeHex, replaceColour, setOverlayPropIn } from './colours'
 import ElementToolbar, { type ElementToolbarPopover } from './ElementToolbar'
 import { useOverlaySchemas } from './ElementControls'
-import StackedSlides, { SlideHeader } from './StackedSlides'
+import StackedSlides, { SlideHeader, type StackSlideMode } from './StackedSlides'
+import RailSlide, { type RailSlideHandlers } from './RailSlide'
 import SlideGridView from './SlideGridView'
 import { useSlideReorderDrag } from './slideReorderDrag'
 import CarouselRenderModal from './CarouselRenderModal'
@@ -77,6 +78,8 @@ const BUBBLE_TONES = [
 ] as const
 
 const stopEvent = (e: React.SyntheticEvent) => e.stopPropagation()
+/** The selection handed to a stacked slide that is not active: the same array every render, so its memo holds. */
+const NO_IDS: string[] = []
 
 /**
  * A tone's notes on a slide thumbnail (§149): a small speech bubble in the
@@ -1995,57 +1998,61 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     )
   }
 
-  function renderRailSlide(slide: Slide, _i: number, live: boolean) {
+  // Each stacked slide is a memoised RailSlide: its handlers come through this
+  // ref, current as of this render, so they never change its props.
+  const railHandlersRef = useRef<RailSlideHandlers>(null!)
+  railHandlersRef.current = {
+    activateSlide,
+    applyCrop,
+    setSelectedElementId,
+    toggleSelect,
+    selectBand,
+    moveElement,
+    resizeElement,
+    rotateElement,
+    commit: state.commit,
+    updateOverlayProp,
+    updateImageCrop,
+    exitCrop: () => setCropElementId(null),
+    enterCrop,
+    unlockElement,
+    dragOver: handleCanvasDragOver,
+    drop: handleCanvasDrop,
+    contextMenu: openContextMenu,
+    placeArmedNote,
+  }
+  const compileRailOverlay = useCallback((t: string) => adapter.compileOverlay(t), [adapter])
+  const onPinClickRef = useRef(onPinClick)
+  onPinClickRef.current = onPinClick
+  const railPinClick = useCallback((pinId: string) => onPinClickRef.current?.(pinId), [])
+
+  function renderRailSlide(slide: Slide, _i: number, mode: StackSlideMode) {
     const id = slide.id
     const active = id === selectedSlideId
-    const slidePins = pinsBySlide.get(id)
     return (
-      <div
-        className="ring-1 ring-[color-mix(in_srgb,var(--editor-text)_10%,transparent)]"
-        // A slide drawn as its thumbnail is picked by a click.
-        onClick={live ? undefined : () => activateSlide(id)}
-      >
-        <SlideCanvas
-          slide={slide}
-          slideId={id}
-          width={w}
-          height={h}
-          interactive={live}
-          selectedElementId={active ? selectedElementId : null}
-          selectedElementIds={active ? liveSelectedIds : []}
-          onSelect={active
-            ? (elId) => { if (cropElementId && elId !== cropElementId) applyCrop(); setSelectedElementId(elId) }
-            : (elId) => { activateSlide(id); if (elId) setSelectedElementId(elId) }}
-          onToggleSelect={active ? toggleSelect : (elId) => { activateSlide(id); toggleSelect(elId) }}
-          onSelectMany={active ? selectBand : (ids) => { activateSlide(id); selectBand(ids) }}
-          scale={railScale}
-          pickList
-          resolveImageSrc={adapter.resolveImageSrc}
-          compileOverlay={(t) => adapter.compileOverlay(t)}
-          watchFile={adapter.watchFile}
-          moveElement={moveElement}
-          resizeElement={resizeElement}
-          rotateElement={rotateElement}
-          commit={state.commit}
-          updateOverlayProp={updateOverlayProp}
-          updateImageCrop={updateImageCrop}
-          // Crop mode is the active slide's alone.
-          cropElementId={active ? cropElementId : null}
-          onExitCrop={active ? () => setCropElementId(null) : undefined}
-          onEnterCrop={active ? enterCrop : (elId) => { activateSlide(id); enterCrop(elId, id) }}
-          onUnlock={unlockElement}
-          cropControlRef={active ? cropControlRef : undefined}
-          hiddenElementIds={hiddenElementIds}
-          onDragEnter={(e) => handleCanvasDragOver(e, id)}
-          onDragOver={(e) => handleCanvasDragOver(e, id)}
-          onDrop={(e) => handleCanvasDrop(e, id)}
-          margin={CANVAS_MARGIN}
-          onContextMenu={live ? (info) => openContextMenu(id, info) : undefined}
-        >
-          {slidePins && <NotePinLayer pins={slidePins} pinDisplay={pinDisplay} onPinClick={onPinClick} />}
-          {armedSlideId === id && <NoteArmLayer layerRef={armLayerRef} onPlace={placeArmedNote} />}
-        </SlideCanvas>
-      </div>
+      <RailSlide
+        slide={slide}
+        width={w}
+        height={h}
+        scale={railScale}
+        margin={CANVAS_MARGIN}
+        mode={mode}
+        active={active}
+        selectedElementId={active ? selectedElementId : null}
+        selectedElementIds={active ? liveSelectedIds : NO_IDS}
+        cropElementId={active ? cropElementId : null}
+        pins={pinsBySlide.get(id)}
+        pinDisplay={pinDisplay}
+        onPinClick={onPinClick ? railPinClick : undefined}
+        armed={armedSlideId === id}
+        hiddenElementIds={hiddenElementIds}
+        resolveImageSrc={adapter.resolveImageSrc}
+        compileOverlay={compileRailOverlay}
+        watchFile={adapter.watchFile}
+        handlers={railHandlersRef}
+        cropControlRef={cropControlRef}
+        armLayerRef={armLayerRef}
+      />
     )
   }
 

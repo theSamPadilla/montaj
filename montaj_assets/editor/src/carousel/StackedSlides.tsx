@@ -8,13 +8,17 @@ import { Button } from '../ui'
 // The ACTIVE slide is the editor's selected slide: the one last clicked, else
 // the one most in view while scrolling. This component reports the second; the
 // editor owns the first. Slides near the viewport (in view, one either side,
-// and the active one) are live, interactive canvases; the rest draw as their
-// static thumbnail, so a long carousel does not mount a live canvas per slide.
-// The same SlideCanvas instance flips between the two, so a slide coming into
-// view keeps what it has drawn and does not flicker.
+// and the active one) are live, interactive canvases; two away they draw as
+// their static thumbnail; further still as a placeholder the slide's size and
+// colour, so a long carousel mounts neither a canvas nor its overlays per slide.
+// The same SlideCanvas instance flips between live and thumbnail, so a slide
+// coming into view keeps what it has drawn and does not flicker.
 
 /** The share of a slide in view is reported at every tenth. */
 const THRESHOLDS = Array.from({ length: 11 }, (_, i) => i / 10)
+
+/** How a slide in the stack is drawn: the interactive canvas, its static thumbnail, or a placeholder its size. */
+export type StackSlideMode = 'live' | 'thumb' | 'placeholder'
 
 /** The header's height above each slide, px. It sits in the slide's top margin. */
 export const SLIDE_HEADER_H = 32
@@ -33,8 +37,8 @@ export interface StackedSlidesProps {
   /** The slide scale in effect: when it changes, the view stays centred on the same point of the active slide. */
   scale: number
   renderHeader: (slide: Slide, index: number) => ReactNode
-  /** A slide's canvas: `live` asks for the interactive one, else the static thumbnail. */
-  renderSlide: (slide: Slide, index: number, live: boolean) => ReactNode
+  /** A slide's canvas, drawn as `mode` says. Return an element whose props stay the same for an unchanged slide (a memoised component), so a render of the stack renders only what changed. */
+  renderSlide: (slide: Slide, index: number, mode: StackSlideMode) => ReactNode
 }
 
 export default function StackedSlides({
@@ -171,18 +175,22 @@ export default function StackedSlides({
     scrolledByStack(root)
   }, [scale, activeSlideId])
 
-  // Live: in view, one either side, and the active slide. Before the observer
-  // has said anything (or with none), the active slide stands for the view.
+  // Live: in view, one either side, and the active slide. Thumbnail: two away.
+  // Before the observer has said anything (or with none), the active slide
+  // stands for the view.
   const index = new Map(slides.map((s, i) => [s.id, i] as const))
   const live = new Set<number>()
+  const near = new Set<number>()
   const seeds = inView.length > 0 ? inView : activeSlideId ? [activeSlideId] : []
   for (const id of seeds) {
     const i = index.get(id)
     if (i === undefined) continue
     live.add(i - 1).add(i).add(i + 1)
+    near.add(i - 2).add(i + 2)
   }
   const activeIdx = activeSlideId ? index.get(activeSlideId) : undefined
   if (activeIdx !== undefined) live.add(activeIdx)
+  const modeOf = (i: number): StackSlideMode => (live.has(i) ? 'live' : near.has(i) ? 'thumb' : 'placeholder')
 
   return (
     <div ref={setRoot} data-slide-stack="" className="flex-1 min-h-0 overflow-auto">
@@ -203,7 +211,7 @@ export default function StackedSlides({
               <div style={{ position: 'absolute', left: 0, right: 0, bottom: '100%', height: SLIDE_HEADER_H, zIndex: 1 }}>
                 {renderHeader(slide, i)}
               </div>
-              {renderSlide(slide, i, live.has(i))}
+              {renderSlide(slide, i, modeOf(i))}
             </div>
           </section>
         ))}

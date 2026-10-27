@@ -167,12 +167,14 @@ describe('CarouselEditor layout="rail": stacked slides (§587 M2)', () => {
     expect(r.queryByRole('button', { name: /Hide slide/ })).toBeNull()
   })
 
-  it('only the slides in view, one either side and the active one are live canvases; the rest are thumbnails', async () => {
+  it('only the slides in view, one either side and the active one are live canvases; two away are thumbnails, the rest placeholders', async () => {
     const { r } = await mount(makeProject([0, 1, 2, 3, 4, 5].map((i) => slide(i, [img(`el-${i}`)]))))
     await inView({ s0: 1, s1: 0.2 })
     expect(['s0', 's1', 's2', 's3', 's4', 's5'].map(live)).toEqual([true, true, true, false, false, false])
-    // A thumbnail still draws the slide.
-    expect(section('s4').querySelector('[data-element-id="el-4"]')).not.toBeNull()
+    // A thumbnail still draws the slide; further away a placeholder stands in.
+    expect(section('s3').querySelector('[data-element-id="el-3"]')).not.toBeNull()
+    expect(section('s4').querySelector('[data-element-id="el-4"]')).toBeNull()
+    expect(section('s4').querySelector('[data-slide-placeholder]')).not.toBeNull()
 
     // Scrolled down: slide 5 is the one most in view and becomes active.
     await inView({ s0: 0, s1: 0, s3: 0.3, s4: 1 })
