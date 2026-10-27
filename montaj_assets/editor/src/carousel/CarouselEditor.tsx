@@ -3,10 +3,14 @@ import { flushSync } from 'react-dom'
 import { RefreshCw, AlertCircle, Download, Info, Undo2, Redo2, Plus } from 'lucide-react'
 import type { Project, Slide, CarouselElement, ImageElement, CarouselEditorProps, OverlayFactory, SlideNotesApi, CarouselApi, ImageDropPayload, GlobalOverlay } from '../types'
 import { IMAGE_DND_MIME } from '../types'
+import type { CustomFont, FontFile } from '../types'
+import { customFontValue } from '../text/FontPicker'
 import type { Asset, SlideNote } from '../schema'
 import { applyTheme, defaultMontajTheme, isLightTheme } from '../theme'
 import { useProjectState } from '../state/use-project-state'
-import SlideCanvas, { type CropExit, type SlideCanvasCropControl } from './SlideCanvas'
+import SlideCanvas, { type CropExit, type InlineTextSession, type SlideCanvasCropControl, type TextRangeInfo } from './SlideCanvas'
+import { setOverlayPropsIn, styleWholeText, type RunPatch } from '../text/runs'
+import { KEEP_TEXT_EDIT } from '../text/InlineTextEditor'
 import SlidePropertyPanel from './SlidePropertyPanel'
 import AddElementMenu from './AddElementMenu'
 import RailLayout from './RailLayout'
@@ -36,8 +40,10 @@ import type { ReorderDirection } from '../state/project-reducer'
 import { COPY_OFFSET, cloneElement, copyElements, duplicateCopies, insertCopies, pasteElements, withoutLock, type ElementClipboard } from './clipboard'
 import { isLocked, toggleLock } from './lock'
 import { moveToLayer, reorderSelection } from './layerOrder'
+import { canGroup, canUngroup, freshGroupIds, groupBox, groupMemberIds, groupOf, groupElements, heldByLock, removeElements, selectionAfterPress, ungroupElements, wholeGroup } from './groups'
 import { newTextElement } from './newText'
 import { elementCategory, newOverlayElement, overlayTileLabel, TEMPLATE_DND_MIME } from './overlayElement'
+import { isFontFile } from '../lib/font-files'
 import { applyTextStyle, isTextOverlay, pickTextStyle, type TextStyle } from './textStyle'
 import { Button, ColourPanelContext, type ColourRequest } from '../ui'
 import { shortcutText } from '../ui/modifierKeys'
@@ -261,6 +267,10 @@ const matchesCmdKey = (key: string) => (e: KeyboardEvent) =>
 const matchesLayerKey = (code: 'BracketLeft' | 'BracketRight', alt: boolean) => (e: KeyboardEvent) =>
   (e.metaKey || e.ctrlKey) && !e.shiftKey && e.altKey === alt && e.code === code
 
+/** Cmd+G (Ctrl+G off a Mac), and with Shift: group and ungroup (§587). Alt leaves G alone. */
+const matchesGroupKey = (shift: boolean) => (e: KeyboardEvent) =>
+  (e.metaKey || e.ctrlKey) && e.shiftKey === shift && !e.altKey && e.key.toLowerCase() === 'g'
+
 /** Option+Shift+L (Alt+Shift+L on Windows), no Cmd or Ctrl. Matched on `code`,
  *  the physical key: Option changes what a Mac types for it. */
 const matchesLockKey = (e: KeyboardEvent) =>
@@ -372,7 +382,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 // ── CarouselEditor ────────────────────────────────────────────────────────────
 
-export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, onProvideRenderTrigger, onProvideCarouselApi, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default', onError, renderSaveTimeoutMs = RENDER_SAVE_TIMEOUT_MS, lockKey = false, layout = 'classic', railPanels, brand, onAskAi }: Props<P>) {
+export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, onProvideRenderTrigger, onProvideCarouselApi, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default', onError, renderSaveTimeoutMs = RENDER_SAVE_TIMEOUT_MS, lockKey = false, layout = 'classic', railPanels, brand, onAskAi, customFonts, onAddFonts, importFont }: Props<P>) {
   const state = useProjectState(adapter, initialProject.id, initialProject)
   const project = state.project
   const slides = project.slides ?? []
@@ -666,22 +676,18 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // to the elements the project holds when it lands, so nothing that arrived
   // meanwhile is written over.
 
-  /** Removes the selected elements. Several go in one slide write, so one undo
-   *  brings them all back. */
+  /** Removes the selected elements in one slide write, so one undo brings
+   *  them all back. A member left alone in its group leaves it in that write. */
   function removeSelection() {
     if (!selectedSlide) return
-    // A locked element stays, and stays selected.
-    const removable = liveSelectedIds.filter(id => !isLocked(selectedSlide.elements.find(el => el.id === id)))
+    // What a lock holds stays, and stays selected: a locked element, or any
+    // member of a group with a locked member (§587).
+    const removable = liveSelectedIds.filter(id => {
+      const el = selectedSlide.elements.find(e => e.id === id)
+      return !!el && !heldByLock(selectedSlide.elements, el)
+    })
     if (removable.length === 0) return
-    if (removable.length === 1) {
-      void state.removeElement(selectedSlide.id, removable[0])
-    } else {
-      const gone = new Set(removable)
-      void state.editElements(selectedSlide.id, (els) => {
-        const kept = els.filter(el => !gone.has(el.id) || isLocked(el))
-        return kept.length === els.length ? els : kept
-      })
-    }
+    void state.editElements(selectedSlide.id, (els) => removeElements(els, removable))
     setSelectedElementIds(liveSelectedIds.filter(id => !removable.includes(id)))
   }
 
@@ -718,6 +724,29 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     void state.editElements(selectedSlide.id, (els) => toggleLock(els, ids))
   }
 
+  // ── Groups (§587) ──
+  const selectedGroupId = selectedSlide ? wholeGroup(selectedSlide.elements, liveSelectedIds) : null
+  const groupable = !!selectedSlide && canGroup(selectedSlide.elements, liveSelectedIds)
+  const ungroupable = !!selectedSlide && canUngroup(selectedSlide.elements, liveSelectedIds)
+  /** Group: the selection becomes one new group, gathered at its frontmost member; one slide write. It stays selected. */
+  function groupSelection() {
+    if (!selectedSlide || !canGroup(selectedSlide.elements, liveSelectedIds)) return
+    const ids = liveSelectedIds
+    const group = crypto.randomUUID()
+    void state.editElements(selectedSlide.id, (els) => (canGroup(els, ids) ? groupElements(els, ids, group) : els))
+  }
+  /** Ungroup: every whole group in the selection; its members stay selected. One slide write. */
+  function ungroupSelection() {
+    if (!selectedSlide || !canUngroup(selectedSlide.elements, liveSelectedIds)) return
+    const ids = liveSelectedIds
+    void state.editElements(selectedSlide.id, (els) => (canUngroup(els, ids) ? ungroupElements(els, ids) : els))
+  }
+  /** What a press on `elementId` of `slideId` selects: its whole group, unless the selection is inside that group already. */
+  function selectElement(slideId: string, elementId: string, current: string[]) {
+    const els = slidesRef.current.find((sl) => sl.id === slideId)?.elements ?? []
+    setSelectedElementIds(selectionAfterPress(els, elementId, current))
+  }
+
   /** T: a text box at the slide centre, as the "+ Text" button adds it. */
   function addTextBox() {
     if (!selectedSlide || !textTemplate) return
@@ -749,13 +778,19 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     })
   }
 
-  /** A font pick: `fontFamily` and `googleFonts` together, one undo step; a locked text is left alone. */
-  function setTextFont(slideId: string, elementId: string, fontFamily: string, googleFonts: string[]) {
+  /** A font pick: `fontFamily` with its `googleFonts` or `fontFiles`, one undo step; a locked text is left alone. */
+  function setTextFont(slideId: string, elementId: string, fontFamily: string, googleFonts: string[], fontFiles?: FontFile[]) {
+    // A later pick outdates a custom font's import still running for this element.
+    fontPickTokens.current.set(elementId, (fontPickTokens.current.get(elementId) ?? 0) + 1)
+    writeTextFont(slideId, elementId, fontFamily, googleFonts, fontFiles)
+  }
+  const fontPickTokens = useRef(new Map<string, number>())
+  function writeTextFont(slideId: string, elementId: string, fontFamily: string, googleFonts: string[], fontFiles?: FontFile[]) {
     void state.editElements(slideId, (els) => {
       let changed = false
       const next = els.map((el) => {
         if (el.id !== elementId || isLocked(el) || !isTextOverlay(el)) return el
-        const styled = applyTextStyle(el, { props: { fontFamily }, googleFonts: googleFonts.length ? googleFonts : undefined })
+        const styled = applyTextStyle(el, { props: { fontFamily }, googleFonts: googleFonts.length ? googleFonts : undefined, fontFiles })
         if (styled !== el) changed = true
         return styled
       })
@@ -763,12 +798,36 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     })
   }
 
+  /** A custom font pick (§587 r3): the file the project already holds for the
+   *  family, else the host's import of it (`importFont`), then one font write. */
+  async function pickCustomFont(slideId: string, elementId: string, picked: { family: string; url: string }) {
+    const font: CustomFont = customFonts?.find((f) => f === picked) ?? picked
+    const key = font.family.toLowerCase()
+    const token = (fontPickTokens.current.get(elementId) ?? 0) + 1
+    fontPickTokens.current.set(elementId, token)
+    let src = (project.slides ?? []).flatMap((sl) => sl.elements)
+      .flatMap((el) => (el.type === 'overlay' && Array.isArray(el.fontFiles) ? el.fontFiles.filter(isFontFile) : []))
+      .find((f) => f.family.toLowerCase() === key)?.src
+    if (!src) {
+      try {
+        src = importFont ? await importFont(font) : font.src ?? font.url
+      } catch (e) {
+        console.error('[carousel] the font could not be added', e)
+        return
+      }
+    }
+    if (src && fontPickTokens.current.get(elementId) === token) writeTextFont(slideId, elementId, customFontValue(font.family), [], [{ family: font.family, src }])
+  }
+
   /** The lock badge: unlocks one element (not the selection), as its own undo
    *  step; a pending crop is applied first, like the lock key. */
   function unlockElement(elementId: string) {
     if (!selectedSlide || !canEdit) return
     if (cropElementId) flushSync(applyCrop)
-    void state.editElements(selectedSlide.id, (els) => els.some((el) => el.id === elementId && isLocked(el)) ? toggleLock(els, [elementId]) : els)
+    // The badge of a selected group unlocks all of it (§587).
+    const g = groupOf(selectedSlide.elements.find((el) => el.id === elementId))
+    const ids = g && g === selectedGroupId ? groupMemberIds(selectedSlide.elements, g) : [elementId]
+    void state.editElements(selectedSlide.id, (els) => els.some((el) => ids.includes(el.id) && isLocked(el)) ? toggleLock(els, ids.filter((id) => isLocked(els.find((el) => el.id === id)))) : els)
   }
 
   /** Select all: every element on the slide the host is not hiding. */
@@ -794,6 +853,18 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (cropElementId && elementId !== cropElementId) applyCrop()
     if (!additive) { setSelectedElementId(elementId); return }
     setSelectedElementIds((prev) => prev.includes(elementId) ? prev.filter((id) => id !== elementId) : [...prev, elementId])
+  }
+  /** A group's layer row (§587): selects its members; additive toggles them in the selection. */
+  function selectLayerGroup(memberIds: string[], additive: boolean) {
+    if (cropElementId && !memberIds.includes(cropElementId)) applyCrop()
+    if (!additive) { setSelectedElementIds(memberIds); return }
+    setSelectedElementIds((prev) => memberIds.every((id) => prev.includes(id)) ? prev.filter((id) => !memberIds.includes(id)) : [...prev, ...memberIds.filter((id) => !prev.includes(id))])
+  }
+  /** A group's layer row lock: all its members, one undo step. */
+  function toggleLayerGroupLock(memberIds: string[]) {
+    if (!selectedSlide || !canEdit) return
+    if (cropElementId) flushSync(applyCrop)
+    void state.editElements(selectedSlide.id, (els) => toggleLock(els, memberIds))
   }
   /** A layer row's lock: that element only, one undo step; a pending crop lands first. */
   function toggleLayerLock(elementId: string) {
@@ -845,6 +916,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       onToggleLock={toggleLayerLock}
       onReorderSelection={reorderFromPanel}
       onMove={moveLayers}
+      onSelectGroup={selectLayerGroup}
+      onToggleGroupLock={toggleLayerGroupLock}
     />
   )
   const brandColours = useMemo(
@@ -868,8 +941,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
    *  faster than a render still add up. */
   function nudgeSelection(dx: number, dy: number) {
     if (!selectedSlide) return
-    // A locked element stays where it is; with only locked ones selected there is nothing to move.
-    const movable = selectedElements.filter(el => !isLocked(el))
+    // What a lock holds stays where it is (a locked element, or any member of
+    // a group with a locked member); with only those selected nothing moves.
+    const movable = selectedElements.filter(el => !heldByLock(selectedSlide.elements, el))
     if (movable.length === 0) return
     const movableIds = movable.map(el => el.id)
     let burst = nudgeRef.current
@@ -1071,6 +1145,22 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       matches: matchesCmdKey('d'),
       guard: () => hasSelection && canEdit,
       action: () => duplicateSelection(),
+    },
+    {
+      id: 'carousel.group',
+      description: 'Group',
+      keyHint: ['⌘', 'G'],
+      matches: matchesGroupKey(false),
+      guard: () => hasSelection && canEdit && liveSelectedIds.length > 1,
+      action: () => groupSelection(),
+    },
+    {
+      id: 'carousel.ungroup',
+      description: 'Ungroup',
+      keyHint: ['⌘', '⇧', 'G'],
+      matches: matchesGroupKey(true),
+      guard: () => hasSelection && canEdit,
+      action: () => ungroupSelection(),
     },
     {
       // Claimed on an empty slide too: the page must not select its own text.
@@ -1338,7 +1428,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (cropElementId) flushSync(applyCrop)
     const src = slidesRef.current.find(s => s.id === id)
     if (!src) return
-    const clone: Slide = { ...src, id: crypto.randomUUID(), elements: src.elements.map(cloneElement) }
+    const clone: Slide = { ...src, id: crypto.randomUUID(), elements: freshGroupIds(src.elements.map(cloneElement)) }
     void state.duplicateSlide(id, clone)
     setSelectedSlideId(clone.id)
     setSelectedElementId(null)
@@ -1372,8 +1462,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   handleAddElementRef.current = handleAddElement
   const addElementStable = useCallback((slideId: string, element: CarouselElement) => handleAddElementRef.current(slideId, element), [])
   function handleDeleteElement(slideId: string, elementId: string) {
-    if (isLocked(slidesRef.current.find(s => s.id === slideId)?.elements.find(el => el.id === elementId))) return
-    void state.removeElement(slideId, elementId)
+    if (heldNow(slideId, elementId)) return
+    void state.editElements(slideId, (els) => removeElements(els, [elementId]))
     setSelectedElementId(null)
     // A crop on it goes with it, unwritten.
     if (cropElementId === elementId) void leaveCrop('discard')
@@ -1389,7 +1479,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     setSelectedElementId(clone.id)
   }
   function handleReorderElement(slideId: string, elementId: string, direction: 'forward' | 'backward') {
-    void state.reorderElement(slideId, elementId, direction)
+    // Group-aware (§587): a member moves among its group, an element passes a
+    // whole group, so no group is ever scattered through the stack.
+    void state.editElements(slideId, (els) => reorderSelection(els, [elementId], direction))
   }
 
   // Replace image (§556 M5): the file goes into the project, the new image's
@@ -1429,6 +1521,59 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     const crop = size ? coverCrop(live.w, live.h, size.width, size.height) : undefined
     // A save that fails is rolled back and shown by `state.lastError`.
     await state.replaceImage(slideId, elementId, { src, crop }).catch(() => {})
+  }
+
+  // Remove background (§587 R3): the host cuts the person out (a new PNG of
+  // the same pixel size), and the cutout takes the photo's place in ONE write
+  // that keeps the box and the crop and adds it to `project.assets`. The
+  // original file stays. One run per image at a time.
+  const [removingBgIds, setRemovingBgIds] = useState<ReadonlySet<string>>(() => new Set())
+  const removingBgRef = useRef(new Set<string>())
+  async function handleRemoveBackground(slideId: string, elementId: string) {
+    const imageNow = () => {
+      const el = slidesRef.current.find(s => s.id === slideId)?.elements.find(e => e.id === elementId)
+      return el?.type === 'image' ? el : undefined
+    }
+    const start = imageNow()
+    if (!start || isLocked(start) || !adapter.removeBackground || removingBgRef.current.has(elementId)) return
+    const running = (on: boolean) => {
+      if (on) removingBgRef.current.add(elementId)
+      else removingBgRef.current.delete(elementId)
+      if (mountedRef.current) setRemovingBgIds(new Set(removingBgRef.current))
+    }
+    running(true)
+    try {
+      let path: string
+      try {
+        ({ path } = await adapter.removeBackground(start.src, project.id))
+        if (typeof path !== 'string' || !path) throw new Error('No cutout came back')
+      } catch (e) {
+        reportError("Couldn't remove the background", e)
+        return
+      }
+      // Written only onto the same photo: not one replaced, locked or removed meanwhile.
+      const live = imageNow()
+      if (!mountedRef.current || !live || isLocked(live) || live.src !== start.src) return
+      flushNudge()
+      const asset: Asset = { id: crypto.randomUUID(), src: path, type: 'image', name: path.split(/[\\/]/).pop() }
+      let applied = false
+      try {
+        await state.editElements(slideId, (els) => els.map((el): CarouselElement => {
+          if (el.id !== elementId || el.type !== 'image') return el
+          applied = true
+          // `mediaId` named the old file.
+          const { mediaId: _mediaId, ...kept } = el
+          return { ...kept, src: path }
+        }), [asset])
+      } catch (e) {
+        reportError("Couldn't remove the background", e)
+        return
+      }
+      // A write the state dropped (the project stopped being editable) is told, not silent.
+      if (!applied && mountedRef.current) reportError("Couldn't remove the background", 'The project could not be changed')
+    } finally {
+      running(false)
+    }
   }
 
   // ── Images onto the canvas (§556 M7) ──
@@ -1656,18 +1801,27 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // inline editor, the panel's text controls, a host slot).
   const lockedNow = (slideId: string, elementId: string) =>
     isLocked(slidesRef.current.find(s => s.id === slideId)?.elements.find(el => el.id === elementId))
+  // An element's place is held by its own lock or one on any member of its group (§587).
+  function heldNow(slideId: string, elementId: string) {
+    const els = slidesRef.current.find(s => s.id === slideId)?.elements
+    const el = els?.find(e => e.id === elementId)
+    return !!els && !!el && heldByLock(els, el)
+  }
   const updateOverlayProp: typeof state.updateOverlayProp = (slideId, elementId, key, value) =>
     lockedNow(slideId, elementId) ? Promise.resolve() : state.updateOverlayProp(slideId, elementId, key, value)
+  /** Several props in one write, one undo step (`undefined` removes one). */
+  const updateOverlayProps = (slideId: string, elementId: string, patch: Record<string, string | undefined>) =>
+    lockedNow(slideId, elementId) ? Promise.resolve() : state.editSlides(all => setOverlayPropsIn(all, slideId, elementId, patch))
   const updateImageCrop: typeof state.updateImageCrop = (slideId, elementId, crop) =>
     lockedNow(slideId, elementId) ? Promise.resolve() : state.updateImageCrop(slideId, elementId, crop)
   // The gesture writes too: an external save can lock the element while the
   // person holds it, and the release then writes nothing.
   const moveElement: typeof state.moveElement = (slideId, elementId, x, y) =>
-    lockedNow(slideId, elementId) ? Promise.resolve() : state.moveElement(slideId, elementId, x, y)
+    heldNow(slideId, elementId) ? Promise.resolve() : state.moveElement(slideId, elementId, x, y)
   const resizeElement: typeof state.resizeElement = (slideId, elementId, box) =>
-    lockedNow(slideId, elementId) ? Promise.resolve() : state.resizeElement(slideId, elementId, box)
+    heldNow(slideId, elementId) ? Promise.resolve() : state.resizeElement(slideId, elementId, box)
   const rotateElement: typeof state.rotateElement = (slideId, elementId, rotation) =>
-    lockedNow(slideId, elementId) ? Promise.resolve() : state.rotateElement(slideId, elementId, rotation)
+    heldNow(slideId, elementId) ? Promise.resolve() : state.rotateElement(slideId, elementId, rotation)
   // A live overlay prop (the toolbar's stroke weight drag): transient until the
   // release commits it as one undo step. Nothing previewed, nothing committed.
   const propPreviewOpen = useRef(false)
@@ -1696,9 +1850,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     const slide = slidesRef.current.find(s => s.id === selectedSlideId)
     const el = slide?.elements.find(e => e.id === selectedElementId)
     if (!el) return
-    // A locked element's place and content are not edited.
+    // A locked element's place and content are not edited, nor the place of a
+    // member of a group with a locked member (§587).
     if (isLocked(el)) return
-    if ('x' in patch || 'y' in patch || 'w' in patch || 'h' in patch) {
+    const held = heldByLock(slide!.elements, el)
+    if (!held && ('x' in patch || 'y' in patch || 'w' in patch || 'h' in patch)) {
       const box = {
         x: patch.x ?? el.x,
         y: patch.y ?? el.y,
@@ -1707,7 +1863,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       }
       void state.resizeElement(selectedSlideId, selectedElementId, box).then(() => state.commit())
     }
-    if ('rotation' in patch && typeof patch.rotation === 'number') {
+    if (!held && 'rotation' in patch && typeof patch.rotation === 'number') {
       void state.rotateElement(selectedSlideId, selectedElementId, patch.rotation).then(() => state.commit())
     }
     if (el.type === 'overlay' && 'overlay' in patch && patch.overlay) {
@@ -1734,8 +1890,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   function handlePanelElementPreview(patch: Partial<CarouselElement>) {
     if (!selectedSlideId || !selectedElementId) return
     if (cropElementIdRef.current) flushSync(applyCrop)
+    if (heldNow(selectedSlideId, selectedElementId)) return
     const el = slidesRef.current.find(s => s.id === selectedSlideId)?.elements.find(e => e.id === selectedElementId)
-    if (!el || isLocked(el)) return
+    if (!el) return
     let edit = panelEdit.current
     if (edit && (edit.slideId !== selectedSlideId || edit.elementId !== selectedElementId)) {
       // Another element's edit is still open: finish it before this one starts.
@@ -1793,19 +1950,63 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // Any colour control opens it (the OS picker is not used); it takes the side
   // panel until closed or the selection moves.
   // `shown`: the colour the open panel shows now, which the toolbar swatch follows (§587 R9).
-  const [colourOpen, setColourOpen] = useState<{ request: ColourRequest; seq: number; shown?: string } | null>(null)
+  // `range`: the panel colours a text range in the open inline edit, which it keeps open.
+  const [colourOpen, setColourOpen] = useState<{ request: ColourRequest; seq: number; shown?: string; range?: boolean } | null>(null)
   const colourSeq = useRef(0)
-  function openColourPanel(request: ColourRequest) {
+  function openColourPanel(request: ColourRequest, range?: boolean) {
     beforeToolbarAction()
-    setColourOpen({ request, seq: ++colourSeq.current })
+    setColourOpen({ request, seq: ++colourSeq.current, ...(range ? { range } : null) })
   }
+
+  // ── Styled runs (§587 round 3) ──
+  // The open inline text edit, and the range selected in it: the text toolbar's
+  // style buttons and colour style that range alone; with none, the whole element.
+  const textEditRef = useRef<InlineTextSession | null>(null)
+  const [textRange, setTextRange] = useState<TextRangeInfo | null>(null)
+  const rangeEditor = (elementId: string) => {
+    const session = textEditRef.current
+    const editor = session && session.elementId === elementId ? session.editor() : null
+    return editor && editor.range() ? editor : null
+  }
+  /** Bold, italic, underline or a colour for the selected text: its range, else the whole element. */
+  function styleText(patch: RunPatch) {
+    const sel = selectedElements.length === 1 ? selectedElements[0] : undefined
+    if (!selectedSlide || !sel || sel.type !== 'overlay') return
+    const editor = rangeEditor(sel.id)
+    if (editor) editor.applyStyle(patch)
+    else void updateOverlayProps(selectedSlide.id, sel.id, styleWholeText(sel.overlay.props, patch))
+  }
+  // The range going (the edit closed, the selection collapsed) closes a panel colouring it.
+  useEffect(() => {
+    if (!textRange) setColourOpen(o => (o?.range ? null : o))
+  }, [textRange])
   /** Opens the panel on one colour prop of the single selected element (previews transient, one undo step per pick). */
   function openElementColour(pick: (el: CarouselElement) => ElementColourTarget | null) {
     const sel = selectedElements.length === 1 ? selectedElements[0] : undefined
     const target = sel && pick(sel)
     if (!selectedSlide || !sel || !target) return
     const slideId = selectedSlide.id
-    const set = (v: string) => state.previewSlides(all => setOverlayPropIn(all, slideId, sel.id, target.key, v))
+    const text = target.key === 'color' && isTextOverlay(sel)
+    const editor = text ? rangeEditor(sel.id) : null
+    if (editor) {
+      // A range in the open edit: previewed in the editor, one write per pick.
+      openColourPanel({
+        label: target.label,
+        value: textRange?.style.color ?? target.value,
+        alpha: target.alpha,
+        preview: v => editor.previewStyle({ c: v }),
+        commit: v => editor.applyStyle({ c: v }),
+        cancel: () => editor.previewStyle(null),
+      }, true)
+      return
+    }
+    // The whole text: its runs' own colours go with the pick.
+    const set = text
+      ? (v: string) => state.previewSlides(all => {
+          const el = all.find(s => s.id === slideId)?.elements.find(e => e.id === sel.id)
+          return el?.type === 'overlay' ? setOverlayPropsIn(all, slideId, sel.id, styleWholeText(el.overlay.props, { c: v })) : all
+        })
+      : (v: string) => state.previewSlides(all => setOverlayPropIn(all, slideId, sel.id, target.key, v))
     openColourPanel({
       label: target.label,
       value: target.value,
@@ -1888,7 +2089,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (!selectedSlide) return
     const moves = patches.flatMap(p => {
       const el = selectedSlide.elements.find(e => e.id === p.id)
-      if (!el || isLocked(el)) return []
+      if (!el || heldByLock(selectedSlide.elements, el)) return []
       const x = 'x' in p ? p.x : el.x
       const y = 'y' in p ? p.y : el.y
       return x === el.x && y === el.y ? [] : [{ id: el.id, x, y }]
@@ -2025,6 +2226,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 selectedElementIds={liveSelectedIds}
                 onToggleSelect={toggleSelect}
                 onSelectMany={selectBand}
+                editElements={state.editElements}
                 scale={canvasScale}
                 resolveImageSrc={adapter.resolveImageSrc}
                 compileOverlay={(t) => adapter.compileOverlay(t)}
@@ -2034,6 +2236,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 rotateElement={rotateElement}
                 commit={state.commit}
                 updateOverlayProp={updateOverlayProp}
+                updateOverlayProps={updateOverlayProps}
                 updateImageCrop={updateImageCrop}
                 cropElementId={cropElementId}
                 onExitCrop={() => setCropElementId(null)}
@@ -2154,8 +2357,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     moveElement,
     resizeElement,
     rotateElement,
+    editElements: state.editElements,
     commit: state.commit,
     updateOverlayProp,
+    updateOverlayProps,
+    textRange: setTextRange,
     updateImageCrop,
     exitCrop: () => setCropElementId(null),
     enterCrop,
@@ -2195,6 +2401,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         watchFile={adapter.watchFile}
         handlers={railHandlersRef}
         cropControlRef={cropControlRef}
+        textEditRef={textEditRef}
         armLayerRef={armLayerRef}
       />
     )
@@ -2217,8 +2424,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (!onActive) activateSlide(slideId)
     if (info.elementId) {
       if (cropElementIdRef.current && cropElementIdRef.current !== info.elementId) applyCrop()
-      // Inside the selection it stays (a multi-selection too); elsewhere the element is selected.
-      if (!onActive || !liveSelectedIds.includes(info.elementId)) setSelectedElementId(info.elementId)
+      // Inside the selection it stays (a multi-selection too); elsewhere the element (its group, §587) is selected.
+      if (!onActive || !liveSelectedIds.includes(info.elementId)) selectElement(slideId, info.elementId, onActive ? liveSelectedIds : [])
     } else {
       if (cropElementIdRef.current) applyCrop()
       setSelectedElementId(null)
@@ -2248,7 +2455,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       return entries
     }
     const sel = selectedElements
-    const allLocked = sel.length > 0 && sel.every(isLocked)
+    // Delete removes nothing a lock holds, a group's lock included (§587).
+    const allHeld = sel.length > 0 && !!selectedSlide && sel.every(el => heldByLock(selectedSlide.elements, el))
     const anyLocked = sel.some(isLocked)
     const before = (fn: () => void) => () => { beforeToolbarAction(); fn() }
     const layer = (id: string, label: string, keys: string[], dir: ReorderDirection): ContextMenuEntry => (
@@ -2265,13 +2473,16 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           else { beforeToolbarAction(); duplicateSelection() }
         },
       },
-      { id: 'delete', label: 'Delete', keys: ['⌫'], disabled: !canEdit || allLocked, run: before(removeSelection) },
+      { id: 'delete', label: 'Delete', keys: ['⌫'], disabled: !canEdit || allHeld, run: before(removeSelection) },
       'separator',
       layer('front', 'Bring to front', ['⌥', '⌘', ']'], 'front'),
       layer('forward', 'Bring forward', ['⌘', ']'], 'forward'),
       layer('backward', 'Send backward', ['⌘', '['], 'backward'),
       layer('back', 'Send to back', ['⌥', '⌘', '['], 'back'),
       'separator',
+      ...(selectedGroupId
+        ? [{ id: 'ungroup', label: 'Ungroup', keys: ['⌘', '⇧', 'G'], disabled: !canEdit || !ungroupable, run: before(ungroupSelection) }]
+        : sel.length > 1 ? [{ id: 'group', label: 'Group', keys: ['⌘', 'G'], disabled: !canEdit || !groupable, run: before(groupSelection) }] : []),
       {
         id: 'lock', label: anyLocked ? 'Unlock' : 'Lock', keys: lockKey ? ['⌥', '⇧', 'L'] : undefined,
         disabled: !canEdit, run: before(toggleSelectionLock),
@@ -2398,6 +2609,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             onAlignSelection={handleAlignSelection}
             onMoveInStack={moveSelectionInStack}
             onToggleLock={toggleSelectionLock}
+            onGroup={!selectedGroupId && selectedElements.length > 1 ? groupSelection : undefined}
+            onUngroup={selectedGroupId ? ungroupSelection : undefined}
+            groupDisabled={selectedGroupId ? !ungroupable : !groupable}
+            groupBox={selectedGroupId ? groupBox(selectedElements) : undefined}
             onDuplicate={() => {
               // One element: the panel's Duplicate, which copies it as it is
               // after the crop just applied. Several: Cmd+D's.
@@ -2411,6 +2626,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
               else enterCrop(selectedElementId, selectedSlide.id)
             }}
             onReplaceImage={state.isEditingAllowed ? handleReplaceImage : undefined}
+            onRemoveBackground={adapter.removeBackground && state.isEditingAllowed ? handleRemoveBackground : undefined}
+            removingBackground={!!selectedElementId && removingBgIds.has(selectedElementId)}
             overlaySchemas={overlaySchemas}
             schemasLoading={schemasLoading}
             hiddenElementIds={hiddenElementIds}
@@ -2418,11 +2635,14 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             mode={mode}
             onOpenTextColour={openTextColour}
             onOpenElementColour={openSwatchColour}
+            textRange={textRange && textRange.elementId === selectedElementId ? textRange.style : null}
+            onTextStyle={styleText}
             colourShown={colourShown}
             onCloseColour={() => setColourOpen(null)}
             brandFont={brand?.fonts?.heading}
             brandGoogleFonts={brand?.fonts?.googleFonts}
             onSetFont={setTextFont}
+            fontMenu={customFonts?.length || onAddFonts ? { customFonts, onAddFonts, onPickCustom: (sid, eid, f) => { void pickCustomFont(sid, eid, f) } } : undefined}
             onPreviewOverlayProp={previewOverlayProp}
             onCommitPropPreview={commitPropPreview}
             onCancelPropPreview={cancelPropPreview}
@@ -2430,6 +2650,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         ) : undefined
       }
       colourPanel={colourOpen && (
+        // A panel colouring a text range keeps the inline edit open while it is used.
+        <div style={{ display: 'contents' }} {...(colourOpen.range ? { [KEEP_TEXT_EDIT]: '' } : null)}>
         <ColourPanel
           key={colourOpen.seq}
           request={colourOpen.request}
@@ -2445,6 +2667,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           onDiscardPreview={() => state.discardTransient()}
           onClose={() => setColourOpen(null)}
         />
+        </div>
       )}
       onRailItem={() => setColourOpen(null)}
       notesMode={!notes ? 'hidden' : !notes.enabled ? 'locked' : slots?.carouselNotesPanel ? 'panel' : 'hidden'}

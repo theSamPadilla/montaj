@@ -7,6 +7,16 @@ function text(props: Record<string, unknown>, extra: Partial<OverlayElement> = {
 }
 
 describe('textStyle', () => {
+  it('ignores malformed fontFiles when picking and applying', () => {
+    const bad = [null, { family: 3 }, 'x', { family: 'A' }, { family: 'Ok', src: 'ok.ttf' }] as unknown as OverlayElement['fontFiles']
+    expect(pickTextStyle(text({ text: 'a', fontFamily: 'Ok' }, { fontFiles: bad })).fontFiles).toEqual([{ family: 'Ok', src: 'ok.ttf' }])
+    expect(() => pickTextStyle(text({ text: 'a' }, { fontFiles: 'x' as unknown as OverlayElement['fontFiles'] }))).not.toThrow()
+    const style = { props: { fontFamily: 'Ok' }, fontFiles: bad as unknown as { family: string; src: string }[] }
+    const out = applyTextStyle(text({ text: 'a', fontFamily: 'Inter' }), style)
+    expect(out.fontFiles).toEqual([{ family: 'Ok', src: 'ok.ttf' }])
+    expect(applyTextStyle(text({ text: 'a', fontFamily: 'Inter' }), { props: { fontFamily: 'Ok' }, fontFiles: 'x' as unknown as never }).fontFiles).toBeUndefined()
+  })
+
   it('lists the standard props but the text, plus the effect trio', () => {
     expect([...TEXT_STYLE_PROPS].sort()).toEqual([
       'bgColor', 'color', 'effect', 'effectColor', 'effectStrength', 'fontFamily', 'fontSize', 'fontStyle', 'fontWeight', 'textAlign', 'textTransform',
@@ -39,6 +49,15 @@ describe('textStyle', () => {
     expect(applyTextStyle(text({ text: 'a', fontFamily: 'Inter' }), style).googleFonts).toEqual(['Syne:wght@800'])
     expect(applyTextStyle(text({ text: 'a', color: 'x' }), style).googleFonts).toBeUndefined()
     expect('googleFonts' in applyTextStyle(text({ text: 'a', fontFamily: 'Syne' }, { googleFonts: ['Old'] }), { props: { fontFamily: 'Syne' } })).toBe(false)
+  })
+
+  it('carries fontFiles with fontFamily, as googleFonts (§587 r3)', () => {
+    const files = [{ family: 'Brand Sans', src: '/p/brand.ttf' }]
+    const picked = pickTextStyle(text({ text: 'a', fontFamily: '"Brand Sans"' }, { fontFiles: files }))
+    expect(picked.fontFiles).toEqual(files)
+    expect(applyTextStyle(text({ text: 'a', fontFamily: 'Inter' }), picked).fontFiles).toEqual(files)
+    expect(applyTextStyle(text({ text: 'a', color: 'x' }), picked).fontFiles).toBeUndefined()
+    expect('fontFiles' in applyTextStyle(text({ text: 'a', fontFamily: 'Inter' }, { fontFiles: files }), { props: { fontFamily: 'Inter' } })).toBe(false)
   })
 
   it('returns the same element when nothing would change', () => {

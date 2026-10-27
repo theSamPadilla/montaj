@@ -1,6 +1,6 @@
 import { memo, type ComponentProps, type DragEvent, type RefObject } from 'react'
 import type { EditorAdapter, OverlayFactory, Project, Slide, SlidePin, SlidePinDisplay } from '../types'
-import SlideCanvas, { type SlideCanvasCropControl } from './SlideCanvas'
+import SlideCanvas, { type InlineTextSession, type SlideCanvasCropControl, type TextRangeInfo } from './SlideCanvas'
 import { NoteArmLayer, NotePinLayer } from './NoteLayers'
 import type { StackSlideMode } from './StackedSlides'
 
@@ -24,8 +24,11 @@ export interface RailSlideHandlers {
   moveElement: Req<'moveElement'>
   resizeElement: Req<'resizeElement'>
   rotateElement: Req<'rotateElement'>
+  editElements: Req<'editElements'>
   commit: Req<'commit'>
   updateOverlayProp: Req<'updateOverlayProp'>
+  updateOverlayProps: Req<'updateOverlayProps'>
+  textRange: (range: TextRangeInfo | null) => void
   updateImageCrop: Req<'updateImageCrop'>
   exitCrop: () => void
   enterCrop: (elementId: string, slideId?: string | null) => void
@@ -58,13 +61,15 @@ export interface RailSlideProps {
   watchFile: EditorAdapter<Project>['watchFile']
   handlers: RefObject<RailSlideHandlers>
   cropControlRef: RefObject<SlideCanvasCropControl | null>
+  /** The open inline text edit, shared by the stack (only the active slide edits). */
+  textEditRef: { current: InlineTextSession | null }
   armLayerRef: RefObject<HTMLDivElement | null>
 }
 
 function RailSlide({
   slide, width, height, scale, margin, mode, active, selectedElementId, selectedElementIds, cropElementId,
   pins, pinDisplay, onPinClick, armed, hiddenElementIds, resolveImageSrc, compileOverlay, watchFile,
-  handlers, cropControlRef, armLayerRef,
+  handlers, cropControlRef, textEditRef, armLayerRef,
 }: RailSlideProps) {
   const id = slide.id
   const h = () => handlers.current!
@@ -108,8 +113,12 @@ function RailSlide({
         moveElement={(...a) => h().moveElement(...a)}
         resizeElement={(...a) => h().resizeElement(...a)}
         rotateElement={(...a) => h().rotateElement(...a)}
+        editElements={(...a) => h().editElements(...a)}
         commit={() => h().commit()}
         updateOverlayProp={(...a) => h().updateOverlayProp(...a)}
+        updateOverlayProps={(...a) => h().updateOverlayProps(...a)}
+        textEditRef={textEditRef}
+        onTextRange={(range) => h().textRange(range)}
         updateImageCrop={(...a) => h().updateImageCrop(...a)}
         // Crop mode is the active slide's alone.
         cropElementId={cropElementId}

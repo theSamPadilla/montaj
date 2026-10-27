@@ -1,17 +1,22 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
-import { ArrowDown, ArrowUp, Blocks, TextCursor, ChevronsDown, ChevronsUp, Eye, EyeOff, GripVertical, Lock, LockOpen } from 'lucide-react'
+import { ArrowDown, ArrowUp, Blocks, ChevronDown, ChevronRight, TextCursor, ChevronsDown, ChevronsUp, Eye, EyeOff, GripVertical, Group, Lock, LockOpen } from 'lucide-react'
 import type { CarouselElement, ImageElement, OverlayElement } from '../types'
 import type { ReorderDirection } from '../state/project-reducer'
 import { isLocked } from './lock'
 import { moveToLayer } from './layerOrder'
+import { groupOf } from './groups'
 import { isTextOverlay } from './textStyle'
 import { railEyebrow, railFaint, railHoverBg, railIconBtn, railMuted, railSelectedBg } from './railStyles'
 
 /** How far a press moves before it is a drag and not a click, in px. */
 const DRAG_START_PX = 4
 
-type DropAt = { id: string; where: 'above' | 'below' }
+/** Where the line shows (`id`: a row's) and where the rows land (`target`: an element's). */
+type DropAt = { id: string; where: 'above' | 'below'; target: { id: string; where: 'above' | 'below' } }
+
+/** A group's row id (§587); an element's row is its id. */
+const groupRowId = (group: string) => `group:${group}`
 
 // A row is 40px: its lock and eye take Montaj's 32px tool.
 const iconBtn = railIconBtn
@@ -48,14 +53,27 @@ export interface LayersPanelProps {
   onReorderSelection: (direction: ReorderDirection) => void
   /** Moves `ids` (any order) so they sit just above (`before`) or below the target row on screen. */
   onMove: (ids: string[], targetId: string, where: 'above' | 'below') => void
+  /** A group row's click (§587): selects its members; additive toggles them in the selection. Absent: rows are not grouped. */
+  onSelectGroup?: (memberIds: string[], additive: boolean) => void
+  /** A group row's lock: all its members, one undo step. */
+  onToggleGroupLock?: (memberIds: string[]) => void
 }
 
 /** The Layers rail panel (§587 M4): the active slide's elements front to back. */
 export default function LayersPanel({
   elements, slideLabel, selectedIds, hiddenElementIds, onToggleElementVisibility, resolveImageSrc, overlayLabel, canEdit,
-  onSelect, onToggleLock, onReorderSelection, onMove,
+  onSelect, onToggleLock, onReorderSelection, onMove, onSelectGroup, onToggleGroupLock,
 }: LayersPanelProps) {
   const rows = [...elements].reverse()
+  // Groups (§587): one row each, its members under it while open.
+  const grouped = !!onSelectGroup
+  const membersOf = (g: string) => rows.filter((el) => groupOf(el) === g)
+  // A group of one is no group: its element is a plain row.
+  const rowGroupOf = (el: CarouselElement | undefined, list: readonly CarouselElement[] = rows) => {
+    const g = groupOf(el)
+    return g && list.filter((o) => groupOf(o) === g).length >= 2 ? g : undefined
+  }
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(new Set())
   const selected = new Set(selectedIds)
   const hidden = new Set(hiddenElementIds ?? [])
   const [dragId, setDragId] = useState<string | null>(null)
@@ -74,6 +92,10 @@ export default function LayersPanel({
   /** The ids a drag of `from` moves: the whole selection when it is in it. */
   const movingIds = (from: string) => {
     const ids = live.current.selectedIds
+    if (from.startsWith('group:')) {
+      const members = live.current.elements.filter((el) => groupRowId(groupOf(el) ?? '') === from).map((el) => el.id)
+      return members.every((id) => ids.includes(id)) ? ids : members
+    }
     return ids.includes(from) ? ids : [from]
   }
 
@@ -87,13 +109,32 @@ export default function LayersPanel({
     for (const row of rowEls) {
       const r = row.getBoundingClientRect()
       if (clientY < r.bottom || row === rowEls[rowEls.length - 1]) {
-        at = { id: row.dataset.layerId!, where: clientY < r.top + r.height / 2 ? 'above' : 'below' }
+        const where = clientY < r.top + r.height / 2 ? 'above' : 'below'
+        at = { id: row.dataset.layerId!, where, target: { id: row.dataset.layerId!, where } }
         break
       }
     }
     if (!at) return null
     const els = live.current.elements
-    return moveToLayer(els, ids, at.id, at.where) === els ? null : at
+    // A group's rows (§587): its header stands for the whole group, and a drag
+    // from outside it lands beside the whole group, the line drawn there.
+    const g = at.id.startsWith('group:') ? at.id.slice(6) : rowGroupOf(els.find((el) => el.id === at!.id), els)
+    if (g) {
+      const members = [...els].reverse().filter((el) => groupOf(el) === g)
+      const inside = ids.every((id) => members.some((m) => m.id === id))
+      const head = groupRowId(g)
+      const tail = rowEls.filter((row) => members.some((m) => m.id === row.dataset.layerId)).pop()?.dataset.layerId ?? head
+      if (inside) {
+        if (at.id === head) at = { id: head, where: 'below', target: { id: members[0].id, where: 'above' } }
+      } else if (at.where === 'above' && at.id !== head) {
+        at = { id: head, where: 'above', target: { id: members[0].id, where: 'above' } }
+      } else if (at.where === 'below' || at.id !== head) {
+        at = { id: tail, where: 'below', target: { id: members[members.length - 1].id, where: 'below' } }
+      } else {
+        at = { id: head, where: 'above', target: { id: members[0].id, where: 'above' } }
+      }
+    }
+    return moveToLayer(els, ids, at.target.id, at.target.where) === els ? null : at
   }
 
   /** A press on a row: past `DRAG_START_PX` it drags the row (the selection
@@ -135,7 +176,7 @@ export default function LayersPanel({
         swallowClickRef.current = true
         setTimeout(() => { swallowClickRef.current = false }, 0)
         const target = dropAt(ids, ev.clientY)
-        if (target) live.current.onMove(ids, target.id, target.where)
+        if (target) live.current.onMove(ids, target.target.id, target.target.where)
       }
       end()
     }
@@ -160,6 +201,97 @@ export default function LayersPanel({
     </button>
   )
 
+  // The rows on show: each group one row, its members under it while open (§587).
+  type DisplayRow =
+    | { kind: 'element'; el: CarouselElement; member: boolean }
+    | { kind: 'group'; group: string; members: CarouselElement[]; on: boolean; open: boolean }
+  const display: DisplayRow[] = []
+  const shownGroups = new Set<string>()
+  for (const el of rows) {
+    const g = grouped ? rowGroupOf(el) : undefined
+    if (!g) { display.push({ kind: 'element', el, member: false }); continue }
+    if (shownGroups.has(g)) continue
+    shownGroups.add(g)
+    const members = membersOf(g)
+    const on = members.every((m) => selected.has(m.id))
+    const open = openGroups.has(g) || (!on && members.some((m) => selected.has(m.id)))
+    display.push({ kind: 'group', group: g, members, on, open })
+    if (open) for (const m of members) display.push({ kind: 'element', el: m, member: true })
+  }
+
+  /** A group's row (§587): its icon, name, open toggle, lock and eye stand for all its members. */
+  const groupRow = (g: string, members: CarouselElement[], on: boolean, open: boolean) => {
+    const ids = members.map((m) => m.id)
+    const rowId = groupRowId(g)
+    const locked = members.some(isLocked)
+    const anyHidden = members.some((m) => hidden.has(m.id))
+    return (
+      <li
+        key={rowId}
+        data-layer-id={rowId}
+        data-layer-group={g}
+        onPointerDown={(e) => onRowPointerDown(e, rowId)}
+        style={{ position: 'relative', userSelect: 'none', WebkitUserSelect: 'none', cursor: canEdit ? (dragId ? 'grabbing' : 'grab') : undefined }}
+        className={`flex items-center gap-1.5 h-10 pl-1 pr-1 rounded-xl ${on ? railSelectedBg : railHoverBg} ${dragId === rowId ? 'opacity-50' : ''}`}
+      >
+        {over?.id === rowId && (
+          <span
+            aria-hidden="true"
+            data-layer-drop-line={over.where}
+            style={{ position: 'absolute', left: 0, right: 0, height: 2, borderRadius: 1, pointerEvents: 'none', background: 'var(--editor-accent)', ...(over.where === 'above' ? { top: -2 } : { bottom: -2 }) }}
+          />
+        )}
+        <button
+          type="button"
+          data-layer-action
+          aria-label={open ? 'Collapse' : 'Expand'}
+          aria-expanded={open}
+          onClick={() => setOpenGroups((prev) => { const next = new Set(prev); if (open) next.delete(g); else next.add(g); return next })}
+          className={`flex-shrink-0 flex items-center justify-center h-6 w-4 ${railFaint}`}
+        >
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </button>
+        <button
+          type="button"
+          aria-pressed={on}
+          aria-label="Select Group"
+          title="Group"
+          onClick={(e) => onSelectGroup?.(ids, e.shiftKey || e.metaKey || e.ctrlKey)}
+          style={{ cursor: 'inherit' }}
+          className={`flex-1 min-w-0 flex items-center gap-2 text-left text-[13px] text-[var(--editor-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)] rounded-md ${on ? 'font-semibold' : ''} ${anyHidden && members.every((m) => hidden.has(m.id)) ? 'opacity-40' : ''}`}
+        >
+          <span className={`flex-shrink-0 flex items-center justify-center h-7 w-7 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] ${railMuted}`}>
+            <Group size={16} aria-hidden="true" />
+          </span>
+          <span className="truncate">Group</span>
+        </button>
+        <button
+          type="button"
+          className={iconBtn}
+          data-layer-action
+          aria-label={locked ? 'Unlock Group' : 'Lock Group'}
+          title={locked ? 'Unlock' : 'Lock'}
+          disabled={!canEdit}
+          onClick={() => onToggleGroupLock?.(ids)}
+        >
+          {locked ? <Lock size={16} /> : <LockOpen size={16} className="opacity-60" />}
+        </button>
+        {onToggleElementVisibility && (
+          <button
+            type="button"
+            className={iconBtn}
+            data-layer-action
+            aria-label={anyHidden ? 'Show Group' : 'Hide Group'}
+            title={anyHidden ? 'Show' : 'Hide'}
+            onClick={() => { for (const m of members) if (hidden.has(m.id) === anyHidden) onToggleElementVisibility(m.id) }}
+          >
+            {anyHidden ? <EyeOff size={16} /> : <Eye size={16} />}
+          </button>
+        )}
+      </li>
+    )
+  }
+
   return (
     <div className="flex flex-col text-[var(--editor-text)]">
       <div className="flex items-center justify-between px-3 pt-3 pb-0.5">
@@ -183,7 +315,9 @@ export default function LayersPanel({
           e.preventDefault()
         }}
       >
-        {rows.map((el) => {
+        {display.map((entry) => {
+          if (entry.kind === 'group') return groupRow(entry.group, entry.members, entry.on, entry.open)
+          const { el, member } = entry
           const on = selected.has(el.id)
           const locked = isLocked(el)
           const isHidden = hidden.has(el.id)
@@ -195,7 +329,7 @@ export default function LayersPanel({
               onPointerDown={(e) => onRowPointerDown(e, el.id)}
               // Inline, so a host's stylesheet cannot lose them: the row is a grab handle, the line its drop place.
               style={{ position: 'relative', userSelect: 'none', WebkitUserSelect: 'none', cursor: canEdit ? (dragId ? 'grabbing' : 'grab') : undefined }}
-              className={`flex items-center gap-1.5 h-10 pl-1 pr-1 rounded-xl ${on ? railSelectedBg : railHoverBg} ${dragId && (dragId === el.id || (selected.has(dragId) && on)) ? 'opacity-50' : ''}`}
+              className={`flex items-center gap-1.5 h-10 ${member ? 'pl-6' : 'pl-1'} pr-1 rounded-xl ${on ? railSelectedBg : railHoverBg} ${dragId && (dragId === el.id || (selected.has(dragId) && on)) ? 'opacity-50' : ''}`}
             >
               {over?.id === el.id && (
                 <span

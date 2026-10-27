@@ -198,6 +198,9 @@ class _Recorder:
     def __init__(self):
         self.sessions = []
         self.calls = []
+        # pha(h, w) -> [1,1,h,w]; fgr is src unless fgr_scale is set
+        self.pha = None
+        self.fgr_scale = None
         recorder = self
 
         class _FakeSession:
@@ -221,9 +224,12 @@ class _Recorder:
                     "rec_in": [np.array(feed[f"r{i}i"], copy=True) for i in range(1, 5)],
                     "rec_out": rec_out,
                 })
+                fgr = np.array(src, dtype=np.float32, copy=True)
+                if recorder.fgr_scale is not None:
+                    fgr *= recorder.fgr_scale
                 out = dict(zip(_OUTPUT_NAMES, [
-                    np.array(src, dtype=np.float32, copy=True),
-                    np.full((1, 1, h, w), 0.5, dtype=np.float32),
+                    fgr,
+                    recorder.pha(h, w) if recorder.pha else np.full((1, 1, h, w), 0.5, dtype=np.float32),
                     *rec_out,
                 ]))
                 return [out[name] for name in (output_names or _OUTPUT_NAMES)]
@@ -548,3 +554,286 @@ def test_ffmpeg_timeout_becomes_error_json(monkeypatch, capsys):
     err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
     assert err["error"] == "unexpected_error"
     assert "ffmpeg" not in err["message"] and "—" not in err["message"]
+
+
+# ---------------------------------------------------------------------------
+# A still image: one frame through RVM, a PNG with alpha out (§587)
+# ---------------------------------------------------------------------------
+
+PERSON = REPO_ROOT / "tests" / "fixtures" / "remove_bg" / "person.jpg"
+
+
+def _srgb_icc():
+    from PIL import ImageCms
+    return ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+
+
+def _photo(path, size=(64, 48), *, orientation=None, icc=None, mode="RGB"):
+    """A noisy photo (so a pixel copied from it is told from one that is not)."""
+    from PIL import Image
+    w, h = size
+    rng = np.random.default_rng(7)
+    arr = rng.integers(40, 216, size=(h, w, 4 if mode == "RGBA" else 3), dtype=np.uint8)
+    if mode == "RGBA":
+        arr[..., 3] = 255
+        arr[: h // 2, :, 3] = 0  # the top half is already transparent
+    im = Image.fromarray(arr, mode)
+    kw = {}
+    if icc:
+        kw["icc_profile"] = icc
+    if orientation:
+        exif = Image.Exif()
+        exif[0x0112] = orientation
+        kw["exif"] = exif.tobytes()
+    im.save(path, **kw)
+    return path
+
+
+def _left_half(h, w):
+    pha = np.zeros((1, 1, h, w), dtype=np.float32)
+    pha[..., : w // 2] = 1.0
+    return pha
+
+
+def test_image_input_writes_a_png_cutout_beside_it(stubbed, monkeypatch, capsys, tmp_path):
+    from PIL import Image
+    mod, rec, _ = stubbed
+    rec.pha, rec.fgr_scale = _left_half, 0.5
+    icc = _srgb_icc()
+    src = _photo(tmp_path / "photo.png", icc=icc)
+
+    res = _run_main(mod, monkeypatch, capsys, "--input", str(src))
+
+    out = tmp_path / "photo-cutout.png"
+    assert res == {"out": str(out), "width": 64, "height": 48}
+    # one frame, the recurrent state at its start
+    assert len(rec.sessions) == 1 and len(rec.calls) == 1
+    call = rec.calls[0]
+    assert call["src_shape"] == (1, 3, 48, 64)
+    assert all(np.array_equal(r, np.zeros((1, 1, 1, 1), np.float32)) for r in call["rec_in"])
+    with Image.open(out) as im:
+        assert im.format == "PNG" and im.mode == "RGBA" and im.size == (64, 48)
+        assert im.info.get("icc_profile") == icc
+        got = np.asarray(im)
+    want = np.asarray(Image.open(src).convert("RGB"))
+    # the person (pha 1) is opaque and keeps the photo's own pixels
+    assert (got[:, :32, 3] == 255).all()
+    assert np.array_equal(got[:, :32, :3], want[:, :32])
+    # the background (pha 0) is transparent
+    assert (got[:, 32:, 3] == 0).all()
+    # no video files
+    assert sorted(p.name for p in tmp_path.iterdir() if p.is_file()) == ["photo-cutout.png", "photo.png"]
+
+
+def test_image_edges_take_the_matted_foreground(stubbed, monkeypatch, capsys, tmp_path):
+    from PIL import Image
+    mod, rec, _ = stubbed
+    rec.fgr_scale = 0.5  # pha 0.5 everywhere: every pixel is an edge
+    src = _photo(tmp_path / "photo.png")
+    res = _run_main(mod, monkeypatch, capsys, "--input", str(src))
+    got = np.asarray(Image.open(res["out"]))
+    want = np.asarray(Image.open(src).convert("RGB")).astype(np.float32)
+    assert (got[..., 3] == 128).all()
+    assert np.abs(got[..., :3].astype(np.float32) - want * 0.5).max() <= 1
+
+
+def test_image_exif_orientation_is_applied(stubbed, monkeypatch, capsys, tmp_path):
+    from PIL import Image
+    mod, rec, _ = stubbed
+    src = _photo(tmp_path / "photo.jpg", orientation=6)  # stored 64x48, shown 48x64
+
+    res = _run_main(mod, monkeypatch, capsys, "--input", str(src))
+
+    assert (res["width"], res["height"]) == (48, 64)
+    assert rec.calls[0]["src_shape"] == (1, 3, 64, 48)
+    with Image.open(res["out"]) as im:
+        assert im.size == (48, 64)
+        assert im.getexif().get(0x0112) in (None, 1)
+
+
+def test_image_source_alpha_stays_transparent(stubbed, monkeypatch, capsys, tmp_path):
+    from PIL import Image
+    mod, rec, _ = stubbed
+    rec.pha = lambda h, w: np.ones((1, 1, h, w), dtype=np.float32)
+    src = _photo(tmp_path / "photo.png", mode="RGBA")
+    res = _run_main(mod, monkeypatch, capsys, "--input", str(src))
+    a = np.asarray(Image.open(res["out"]))[..., 3]
+    assert (a[:24] == 0).all() and (a[24:] == 255).all()
+
+
+def test_image_out_is_always_a_png(stubbed, monkeypatch, capsys, tmp_path):
+    """serve's `_project` names a .mov (the step's `out` ext) when out is left off."""
+    mod, rec, _ = stubbed
+    src = _photo(tmp_path / "photo.jpg")
+    res = _run_main(mod, monkeypatch, capsys, "--input", str(src), "--out", str(tmp_path / "x.mov"))
+    assert res["out"] == str(tmp_path / "x.png")
+    assert (tmp_path / "x.png").is_file() and not (tmp_path / "x.mov").exists()
+
+
+def test_image_batch(stubbed, monkeypatch, capsys, tmp_path):
+    mod, rec, _ = stubbed
+    a, b = _photo(tmp_path / "a.png"), _photo(tmp_path / "b.jpg", (40, 30))
+    res = _run_main(mod, monkeypatch, capsys, "--inputs", str(a), str(b))
+    assert res == [
+        {"out": str(tmp_path / "a-cutout.png"), "width": 64, "height": 48},
+        {"out": str(tmp_path / "b-cutout.png"), "width": 40, "height": 30},
+    ]
+    assert len(rec.sessions) == 1 and len(rec.calls) == 2
+
+
+def test_image_that_does_not_decode_fails_with_json(stubbed, monkeypatch, capsys, tmp_path):
+    mod, _, _ = stubbed
+    bad = tmp_path / "bad.png"
+    bad.write_bytes(b"not an image")
+    monkeypatch.setattr(sys, "argv", ["remove_bg.py", "--input", str(bad)])
+    with pytest.raises(SystemExit):
+        mod.main()
+    assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])["error"] == "invalid_image"
+
+
+def test_image_out_that_is_not_png_never_overwrites_an_existing_png(stubbed, monkeypatch, capsys, tmp_path):
+    mod, rec, _ = stubbed
+    src = _photo(tmp_path / "photo.jpg")
+    (tmp_path / "cutout.png").write_bytes(b"keep me")
+    res = _run_main(mod, monkeypatch, capsys, "--input", str(src), "--out", str(tmp_path / "cutout.mov"))
+    assert res["out"] == str(tmp_path / "cutout-2.png")
+    assert (tmp_path / "cutout.png").read_bytes() == b"keep me"
+    res = _run_main(mod, monkeypatch, capsys, "--input", str(src), "--out", str(tmp_path / "cutout.mov"))
+    assert res["out"] == str(tmp_path / "cutout-3.png")
+    assert (tmp_path / "cutout-2.png").is_file()
+
+
+@pytest.mark.parametrize("name, fmt", [("p.apng", "PNG"), ("p.ico", "ICO"), ("p.dat", "PNG")])
+def test_still_is_detected_by_content_not_extension(name, fmt, stubbed, monkeypatch, capsys, tmp_path):
+    from PIL import Image
+    mod, rec, _ = stubbed
+    src = tmp_path / name
+    Image.new("RGB", (32, 32), (200, 10, 10)).save(src, format=fmt)
+    res = _run_main(mod, monkeypatch, capsys, "--input", str(src))
+    assert res["out"] == str(tmp_path / f"{src.stem}-cutout.png")
+    assert len(rec.calls) == 1
+
+
+def test_svg_input_fails_with_json(stubbed, monkeypatch, capsys, tmp_path):
+    mod, _, _ = stubbed
+    svg = tmp_path / "a.svg"
+    svg.write_text("<svg xmlns='http://www.w3.org/2000/svg' width='4' height='4'/>")
+    monkeypatch.setattr(sys, "argv", ["remove_bg.py", "--input", str(svg)])
+    with pytest.raises(SystemExit):
+        mod.main()
+    assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])["error"] == "invalid_image"
+
+
+def test_huge_still_is_matted_on_a_capped_copy_and_output_stays_source_sized(stubbed, monkeypatch, capsys, tmp_path):
+    from PIL import Image
+    mod, rec, _ = stubbed
+    rec.pha = _left_half
+    src = tmp_path / "huge.png"
+    Image.new("RGB", (5000, 3000), (90, 120, 150)).save(src)
+    res = _run_main(mod, monkeypatch, capsys, "--input", str(src))
+    assert (res["width"], res["height"]) == (5000, 3000)
+    _, _, h, w = rec.calls[0]["src_shape"]
+    assert max(h, w) <= 4096 and abs(w / h - 5000 / 3000) < 0.01
+    with Image.open(res["out"]) as im:
+        assert im.size == (5000, 3000)
+        a = np.asarray(im)[..., 3]
+    assert a[:, :2400].min() == 255 and a[:, 2600:].max() == 0
+
+
+def test_decompression_bomb_fails_with_json(stubbed, monkeypatch, capsys, tmp_path):
+    from PIL import Image
+    mod, _, _ = stubbed
+    src = _photo(tmp_path / "bomb.png")
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100)
+    monkeypatch.setattr(sys, "argv", ["remove_bg.py", "--input", str(src)])
+    with pytest.raises(SystemExit):
+        mod.main()
+    assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])["error"] == "invalid_image"
+
+
+@pytest.mark.parametrize("w, h, want", [(409, 512, 1.0), (300, 200, 1.0), (4000, 3000, 0.128), (1080, 1920, 0.2667)])
+def test_image_ratio_mattes_near_512(w, h, want):
+    """A still mattes best with RVM's own pass near 512 px on the long side
+    (measured on the fixture portrait: 0.5 on a 1536 px image left holes in the helmet)."""
+    mod = _import_step_module()
+    assert mod._image_ratio(w, h) == pytest.approx(want, abs=1e-4)
+
+
+@pytest.mark.slow
+def test_real_model_cuts_out_a_person(tmp_path):
+    from PIL import Image
+    from tests.conftest import skip_or_fail
+    model_src = os.environ.get("MONTAJ_TEST_RVM_MODEL")
+    if not model_src:
+        skip_or_fail("MONTAJ_TEST_RVM_MODEL is unset; point it at the pinned RVM ONNX model")
+    pinned = _rvm_model_constants()
+    home = tmp_path / "home"
+    model_dir = home / ".local" / "share" / "montaj" / "models" / "rvm"
+    model_dir.mkdir(parents=True)
+    shutil.copyfile(model_src, model_dir / pinned.FILENAME)
+    src = tmp_path / "person.jpg"
+    shutil.copyfile(PERSON, src)
+
+    r = subprocess.run(
+        [sys.executable, str(STEP), "--input", str(src)],
+        capture_output=True, text=True, env=_step_env(home),
+    )
+    assert r.returncode == 0, r.stderr
+    res = json.loads(r.stdout)
+    assert res == {"out": str(tmp_path / "person-cutout.png"), "width": 409, "height": 512}
+    with Image.open(res["out"]) as im:
+        assert im.mode == "RGBA" and im.size == (409, 512)
+        a = np.asarray(im)[..., 3]
+    # the backdrop's top corners are transparent, the face and the suit opaque
+    assert a[:60, :60].max() == 0 and a[:60, -60:].max() == 0
+    assert a[100:140, 220:260].min() == 255   # face
+    assert a[330:370, 150:200].min() == 255   # suit
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("out", ["person-cutout.png", None])
+def test_real_model_through_serve_with_project(out, tmp_path, monkeypatch):
+    """The app's call (a plain out name) and an AI's run_step (out left off): either
+    way a PNG in the project's assets, recorded as made from the photo."""
+    import uuid
+    from PIL import Image
+    from starlette.testclient import TestClient
+    import serve.routes.steps as steps_mod
+    from serve.server import app
+    from tests.conftest import skip_or_fail
+    model_src = os.environ.get("MONTAJ_TEST_RVM_MODEL")
+    if not model_src:
+        skip_or_fail("MONTAJ_TEST_RVM_MODEL is unset; point it at the pinned RVM ONNX model")
+    pinned = _rvm_model_constants()
+    home = tmp_path / "home"
+    model_dir = home / ".local" / "share" / "montaj" / "models" / "rvm"
+    model_dir.mkdir(parents=True)
+    shutil.copyfile(model_src, model_dir / pinned.FILENAME)
+    for k, v in _step_env(home).items():
+        monkeypatch.setenv(k, v)
+    ws = tmp_path / "Montaj"
+    pdir = ws / "2026-10-26-photo"
+    (pdir / "assets").mkdir(parents=True)
+    pid = str(uuid.uuid4())
+    (pdir / "project.json").write_text(json.dumps({"id": pid, "projectType": "carousel", "slides": []}))
+    photo = pdir / "assets" / "person.jpg"
+    shutil.copyfile(PERSON, photo)
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(ws))
+    steps_mod._RESERVED_OUTS.clear()
+
+    body = {"input": str(photo), "_project": pid, **({"out": out} if out else {})}
+    r = TestClient(app).post("/api/steps/remove_bg", json=body)
+
+    assert r.status_code == 200, r.text
+    res = r.json()
+    made = Path(res["out"])
+    assert made.parent == pdir / "assets" and made.suffix == ".png"
+    if out:
+        assert made.name == "person-cutout.png"
+    with Image.open(made) as im:
+        assert im.mode == "RGBA" and im.size == (409, 512)
+    assert not list((pdir / "assets").glob("*.mov"))
+    record = json.loads((pdir / "assets" / ".provenance.json").read_text())
+    entry = next(v for k, v in record.items() if k.endswith(made.name))
+    assert entry["kind"] == "derived" and entry["step"] == "remove_bg"
+    assert [f.split("/")[-1] for f in entry["from"]] == ["person.jpg"]

@@ -51,10 +51,12 @@ DEFAULTS = {
     "crop_spec": ("cut.json", [("cut_cropped.json", "file", ())]),
     # steps/media/paper_cutout.py:263-265  <stem>_paper.png (enforced .png)
     "paper_cutout": ("photo.png", [("photo_paper.png", "file", ())]),
-    # steps/transform/remove_bg.py:444 (<stem>_nobg.mov), :333-334 (<mov_stem>_preview.webm)
+    # steps/transform/remove_bg.py main (<stem>_nobg.mov), _make_webm_preview (<mov_stem>_preview.webm),
+    # _image_out (an image input: <stem>-cutout.png)
     "remove_bg": ("clip.mp4", [
         ("clip_nobg.mov", "file", ()),
         ("clip_nobg_preview.webm", "file", ()),
+        ("clip-cutout.png", "file", ()),
     ]),
     # steps/audio/mix_timeline.py:229-230  <spec_stem>_mix.wav (beside the mix-spec input)
     "mix_timeline": ("mix.json", [("mix_mix.wav", "file", ())]),

@@ -1,10 +1,12 @@
 import { useEffect, useRef, type ReactNode } from 'react'
-import { ArrowLeft, ArrowRight, Bold, Copy, Crop, Italic, Lock, LockOpen, Replace, Trash2 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Bold, Copy, Crop, Eraser, Group, Italic, Loader2, Lock, LockOpen, Replace, Trash2, Underline, Ungroup } from 'lucide-react'
 import type { CarouselElement, GlobalOverlay, OverlayElement } from '../types'
 import type { ReorderDirection } from '../state/project-reducer'
 import { cn, NumberField, Slider, Switch } from '../ui'
-import { FontFamilyPicker, FontSizePicker } from '../text/FontPicker'
-import { caseLabel, TEXT_ALIGNS, TextBackgroundControl, TextColorControl, textFormatting } from '../text/TextFormattingToolbar'
+import { shortcutText } from '../ui/modifierKeys'
+import { FontFamilyPicker, FontSizePicker, type PickerCustomFont } from '../text/FontPicker'
+import { caseLabel, keepEditProps, TEXT_ALIGNS, TextBackgroundControl, TextColorControl, textFormatting } from '../text/TextFormattingToolbar'
+import { runsOf, supportsRuns, type BaseTextStyle, type RunPatch } from '../text/runs'
 import { supportsEffects, supportsFit, TextEffectControls } from '../text/TextEffectControls'
 import { AlignControls, type AlignPatch } from './AlignControls'
 import { cropBlockedReason, HideToggle, LayerOrderButtons, OverlayPropsSection, schemaPropsFor, TEXT_CONTROL_PROPS, useReplaceImagePicker } from './ElementControls'
@@ -45,11 +47,23 @@ export interface ElementToolbarProps {
   onAlignSelection: (patches: Array<{ id: string } & AlignPatch>) => void
   onMoveInStack: (direction: ReorderDirection) => void
   onToggleLock: () => void
+  /** Group the selection (§587). Absent: no Group button. */
+  onGroup?: () => void
+  /** Ungroup the selected group. Absent: no Ungroup button. */
+  onUngroup?: () => void
+  /** Group or Ungroup is off (a locked element in it). */
+  groupDisabled?: boolean
+  /** The selected group's box: Position aligns the group as one box. */
+  groupBox?: { x: number; y: number; w: number; h: number }
   onDuplicate: () => void
   onDelete: () => void
   /** Crop: enter crop mode for the image, or (while cropping) apply and leave it. */
   onToggleCrop: () => void
   onReplaceImage?: (slideId: string, elementId: string, file: File) => void | Promise<void>
+  /** Remove background on the image (the host's); absent: no button. */
+  onRemoveBackground?: (slideId: string, elementId: string) => void
+  /** The image's Remove background is running. */
+  removingBackground?: boolean
   /** The overlay prop schemas by template path, for the Edit popover. */
   overlaySchemas?: Map<string, GlobalOverlay>
   schemasLoading?: boolean
@@ -71,12 +85,18 @@ export interface ElementToolbarProps {
   brandGoogleFonts?: string[]
   /** A font pick: the family and its `googleFonts` in one write (locked elements are refused by the host). */
   onSetFont?: (slideId: string, elementId: string, fontFamily: string, googleFonts: string[]) => void
+  /** The font menu's own fonts, "Add your fonts" and a custom pick (§587 r3). */
+  fontMenu?: { customFonts?: PickerCustomFont[]; onAddFonts?: () => void; onPickCustom?: (slideId: string, elementId: string, font: PickerCustomFont) => void }
   /** A live overlay prop write with no undo step (a stroke weight drag); `onCommitPropPreview`
    *  then saves what was previewed as one step. Absent: the weight writes on each change. */
   onPreviewOverlayProp?: (slideId: string, elementId: string, key: string, value: string) => void
   onCommitPropPreview?: () => void
   /** Escape in the weight field: drop the preview, write nothing. */
   onCancelPropPreview?: () => void
+  /** The text range selected in the open inline edit, and what it shows (§587 round 3). */
+  textRange?: BaseTextStyle | null
+  /** Bold, italic, underline: the selected range, else the whole element. Absent: the props are written as before. */
+  onTextStyle?: (patch: RunPatch) => void
 }
 
 // Montaj's tools: 10px squares, muted at rest, ink on hover; on = the brand tint.
@@ -115,7 +135,10 @@ function TextGroup({
   brandFont,
   brandGoogleFonts,
   onSetFont,
+  fontMenu,
   swatch,
+  textRange,
+  onTextStyle,
 }: {
   slideId: string
   element: OverlayElement
@@ -127,10 +150,21 @@ function TextGroup({
   brandFont?: string
   brandGoogleFonts?: string[]
   onSetFont?: (fontFamily: string, googleFonts: string[]) => void
+  fontMenu?: { customFonts?: PickerCustomFont[]; onAddFonts?: () => void; onPickCustom?: (font: PickerCustomFont) => void }
   /** The colour swatch, before Effects; outside the fieldset, so a locked element's still opens the panel. */
   swatch?: ReactNode
+  textRange?: BaseTextStyle | null
+  onTextStyle?: (patch: RunPatch) => void
 }) {
   const fmt = textFormatting(slideId, element, update)
+  // A range selected in the inline edit: the buttons show and style it alone.
+  const range = textRange ?? null
+  const bold = range ? range.bold : fmt.boldActive
+  const italic = range ? range.italic : fmt.italicActive
+  const runs = runsOf(element.overlay.props)
+  const underline = range ? range.underline : runs.length > 0 && runs.every((r) => r.u === 1)
+  const colour = range ? range.color : fmt.colorValue
+  const keep = keepEditProps(!!range)
   const { supported } = fmt
   const alignAt = Math.max(0, TEXT_ALIGNS.findIndex((a) => a.value === fmt.currentAlign))
   const align = TEXT_ALIGNS[alignAt]
@@ -147,6 +181,9 @@ function TextGroup({
           disabled={disabled}
           brandFont={brandFont}
           brandGoogleFonts={brandGoogleFonts}
+          customFonts={fontMenu?.customFonts}
+          onPickCustom={fontMenu?.onPickCustom}
+          onAddFonts={fontMenu?.onAddFonts}
           variant="rail"
           className="w-32"
           buttonClassName={`flex h-8 w-full items-center gap-1 ${fieldBox} px-3 text-[13px] ${railInk} ${railHoverBg} disabled:cursor-not-allowed disabled:opacity-40 ${railFocus}`}
@@ -166,20 +203,25 @@ function TextGroup({
       )}
       {hasStyle && <Sep />}
       {supported.has('color') && (
-        <TextColorControl value={fmt.colorValue} onChange={fmt.setColor} onOpenPanel={onOpenTextColour} className={cn(iconBtn, 'flex-col gap-px', disabled && 'cursor-not-allowed opacity-40')}>
+        <TextColorControl value={colour} onChange={fmt.setColor} onOpenPanel={onOpenTextColour} keepTextEdit={!!range} className={cn(iconBtn, 'flex-col gap-px', disabled && 'cursor-not-allowed opacity-40')}>
           {/* An "A" over a thick bar of the text's colour (§587 R9). */}
           <span aria-hidden="true" className="text-[15px] font-bold leading-none">A</span>
-          <span aria-hidden="true" data-colour-bar className={colourBar} style={{ backgroundColor: fmt.colorValue }} />
+          <span aria-hidden="true" data-colour-bar className={colourBar} style={{ backgroundColor: colour }} />
         </TextColorControl>
       )}
       {supported.has('fontWeight') && (
-        <button type="button" aria-label="Bold" title="Bold" aria-pressed={fmt.boldActive} onClick={fmt.toggleBold} className={cn(iconBtn, fmt.boldActive && onClass)}>
+        <button type="button" aria-label="Bold" title="Bold" aria-pressed={bold} onClick={onTextStyle ? () => onTextStyle({ b: bold ? 0 : 1 }) : fmt.toggleBold} className={cn(iconBtn, bold && onClass)} {...keep}>
           <Bold className="h-4 w-4" aria-hidden="true" />
         </button>
       )}
       {supported.has('fontStyle') && (
-        <button type="button" aria-label="Italic" title="Italic" aria-pressed={fmt.italicActive} onClick={fmt.toggleItalic} className={cn(iconBtn, fmt.italicActive && onClass)}>
+        <button type="button" aria-label="Italic" title="Italic" aria-pressed={italic} onClick={onTextStyle ? () => onTextStyle({ i: italic ? 0 : 1 }) : fmt.toggleItalic} className={cn(iconBtn, italic && onClass)} {...keep}>
           <Italic className="h-4 w-4" aria-hidden="true" />
+        </button>
+      )}
+      {onTextStyle && supportsRuns(element) && (
+        <button type="button" aria-label="Underline" title="Underline" aria-pressed={underline} onClick={() => onTextStyle({ u: underline ? 0 : 1 })} className={cn(iconBtn, underline && onClass)} {...keep}>
+          <Underline className="h-4 w-4" aria-hidden="true" />
         </button>
       )}
       {supported.has('textAlign') && (
@@ -211,9 +253,9 @@ function TextGroup({
 const colourBar = 'mt-[3px] h-[5px] w-[18px] rounded-full shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--editor-text)_20%,transparent)]'
 
 /** The element's colour as a round swatch (§587 R9). A click opens the colour panel on it. */
-function ColourSwatch({ value, label, open, onClick }: { value: string; label: string; open: boolean; onClick: () => void }) {
+function ColourSwatch({ value, label, open, onClick, keepTextEdit }: { value: string; label: string; open: boolean; onClick: () => void; keepTextEdit?: boolean }) {
   return (
-    <button type="button" aria-label="Color" title={label} aria-haspopup="dialog" aria-expanded={open} onClick={onClick} className={cn(iconBtn, open && onClass)}>
+    <button type="button" aria-label="Color" title={label} aria-haspopup="dialog" aria-expanded={open} onClick={onClick} className={cn(iconBtn, open && onClass)} {...keepEditProps(keepTextEdit)}>
       <span
         aria-hidden="true"
         data-colour-swatch
@@ -375,10 +417,16 @@ export default function ElementToolbar({
   onAlignSelection,
   onMoveInStack,
   onToggleLock,
+  onGroup,
+  onUngroup,
+  groupDisabled,
+  groupBox,
   onDuplicate,
   onDelete,
   onToggleCrop,
   onReplaceImage,
+  onRemoveBackground,
+  removingBackground = false,
   overlaySchemas,
   schemasLoading,
   hiddenElementIds,
@@ -391,9 +439,12 @@ export default function ElementToolbar({
   brandFont,
   brandGoogleFonts,
   onSetFont,
+  fontMenu,
   onPreviewOverlayProp,
   onCommitPropPreview,
   onCancelPropPreview,
+  textRange,
+  onTextStyle,
 }: ElementToolbarProps) {
   const element = selection.length === 1 ? selection[0] : undefined
   const image = element?.type === 'image' ? element : undefined
@@ -437,9 +488,11 @@ export default function ElementToolbar({
   // The colour swatch: the element's own colour, or the one the open panel is on.
   const colourTarget = element && onOpenElementColour ? elementColourTarget(element) : null
   const colourOpen = colourShown != null
+  const rangeShown = text && textRange && colourTarget?.key === 'color' ? textRange : null
   const swatch = colourTarget && (
     <ColourSwatch
-      value={colourShown ?? colourTarget.value}
+      keepTextEdit={!!rangeShown}
+      value={colourShown ?? rangeShown?.color ?? colourTarget.value}
       label={colourTarget.label}
       open={colourOpen}
       onClick={colourOpen ? () => onCloseColour?.() : run(onOpenElementColour!)}
@@ -455,7 +508,7 @@ export default function ElementToolbar({
       >
         {text && (
           <>
-            <TextGroup slideId={slideId} element={text} update={update} disabled={locked || !canEdit} effectsOpen={popover === 'effects'} onToggleEffects={toggle('effects')} onOpenTextColour={onOpenTextColour && (colourOpen ? () => onCloseColour?.() : run(onOpenTextColour))} brandFont={brandFont} brandGoogleFonts={brandGoogleFonts} onSetFont={onSetFont && ((family, specs) => { beforeAction(); onSetFont(slideId, text.id, family, specs) })} swatch={swatch} />
+            <TextGroup slideId={slideId} element={text} update={update} disabled={locked || !canEdit} effectsOpen={popover === 'effects'} onToggleEffects={toggle('effects')} onOpenTextColour={onOpenTextColour && (colourOpen ? () => onCloseColour?.() : run(onOpenTextColour))} brandFont={brandFont} brandGoogleFonts={brandGoogleFonts} onSetFont={onSetFont && ((family, specs) => { beforeAction(); onSetFont(slideId, text.id, family, specs) })} fontMenu={fontMenu && text && { customFonts: fontMenu.customFonts, onAddFonts: fontMenu.onAddFonts, onPickCustom: fontMenu.onPickCustom && ((f) => { beforeAction(); fontMenu.onPickCustom?.(slideId, text.id, f) }) }} swatch={swatch} textRange={textRange} onTextStyle={onTextStyle && ((patch) => { beforeAction(); onTextStyle(patch) })} />
             <Sep />
           </>
         )}
@@ -517,6 +570,20 @@ export default function ElementToolbar({
               <Replace className="h-4 w-4" aria-hidden="true" />
               Replace
             </button>
+            {onRemoveBackground && (
+              <button
+                type="button"
+                aria-busy={removingBackground}
+                disabled={locked || !canEdit || removingBackground}
+                onClick={run(() => { onPopoverChange(null); onRemoveBackground(slideId, image.id) })}
+                className={cn(textBtn, 'gap-1.5')}
+              >
+                {removingBackground
+                  ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  : <Eraser className="h-4 w-4" aria-hidden="true" />}
+                Remove background
+              </button>
+            )}
             {replace.input}
             <Sep />
           </>
@@ -530,6 +597,18 @@ export default function ElementToolbar({
           Position
         </button>
         <Sep />
+        {(onGroup || onUngroup) && (
+          <button
+            type="button"
+            aria-label={onUngroup ? 'Ungroup' : 'Group'}
+            title={`${onUngroup ? 'Ungroup' : 'Group'} (${shortcutText(onUngroup ? ['⌘', '⇧', 'G'] : ['⌘', 'G'])})`}
+            disabled={!canEdit || groupDisabled}
+            onClick={run((onUngroup ?? onGroup)!)}
+            className={iconBtn}
+          >
+            {onUngroup ? <Ungroup className="h-4 w-4" aria-hidden="true" /> : <Group className="h-4 w-4" aria-hidden="true" />}
+          </button>
+        )}
         <button
           type="button"
           aria-label={anyLocked ? 'Unlock' : 'Lock'}
@@ -562,6 +641,20 @@ export default function ElementToolbar({
               (Sam, 2026-10-26); the AI sets exact numbers through its tools. */}
           {element ? (
             <AlignControls element={element} width={w} height={h} disabled={locked || !canEdit} onChange={onElementChange} />
+          ) : groupBox ? (
+            // A group aligns to the slide as one box: every member moves by the same step.
+            <AlignControls
+              element={groupBox}
+              width={w}
+              height={h}
+              disabled={anyLocked || !canEdit}
+              onChange={(patch: AlignPatch) => {
+                beforeAction()
+                const dx = 'x' in patch ? patch.x - Math.round(groupBox.x) : 0
+                const dy = 'y' in patch ? patch.y - Math.round(groupBox.y) : 0
+                onAlignSelection(selection.map((el) => ({ id: el.id, ...('x' in patch ? { x: el.x + dx } : { y: el.y + dy }) })))
+              }}
+            />
           ) : (
             <AlignControls elements={selection} width={w} height={h} disabled={allLocked || !canEdit} onChange={(patches: Array<{ id: string } & AlignPatch>) => { beforeAction(); onAlignSelection(patches) }} />
           )}

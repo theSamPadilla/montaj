@@ -424,6 +424,13 @@ export interface ImageElement {
    * Absent = unlocked.
    */
   locked?: boolean
+  /**
+   * Optional: the id of the group this element belongs to (§587). Elements
+   * that share it are selected, moved, resized and rotated as one in the
+   * editor, and sit next to each other in `elements`. Editor-only: the
+   * renderer ignores it. Absent = not in a group.
+   */
+  group?: string
 }
 
 export interface OverlayElement {
@@ -444,12 +451,35 @@ export interface OverlayElement {
    */
   googleFonts?: string[]
   /**
+   * Optional font files of the person's own (§587 r3) the overlay renders
+   * with, each a family and its file: `src` is a path (absolute, or relative
+   * to the project dir) or an http(s) URL. The editor loads each with
+   * FontFace and the carousel renderer declares each as an `@font-face`, as
+   * `googleFonts` is fetched. Absent = none.
+   */
+  fontFiles?: FontFile[]
+  /**
    * Optional: true while the element is locked. A locked element can be
    * selected and styled, but not moved, resized, rotated, cropped, replaced,
    * aligned or deleted. Saved with the project; the renderer ignores it.
    * Absent = unlocked.
    */
   locked?: boolean
+  /**
+   * Optional: the id of the group this element belongs to (§587). Elements
+   * that share it are selected, moved, resized and rotated as one in the
+   * editor, and sit next to each other in `elements`. Editor-only: the
+   * renderer ignores it. Absent = not in a group.
+   */
+  group?: string
+}
+
+/** One font file an overlay element renders with (`OverlayElement.fontFiles`). */
+export interface FontFile {
+  /** The CSS family name the element's `fontFamily` names. */
+  family: string
+  /** The file: a path (absolute, or relative to the project dir) or an http(s) URL. */
+  src: string
 }
 
 export type CarouselElement = ImageElement | OverlayElement

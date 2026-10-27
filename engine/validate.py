@@ -463,6 +463,10 @@ def validate_project(path):
                 fail("missing_field", f"slides[{si}].elements must be an array")
 
             el_ids = set()
+            # §587: a group's members sit side by side in `elements` (the
+            # editor moves a group through the stack as one block). A group
+            # belongs to its slide: the same id on another slide is another group.
+            group_last = {}
             for ei, el in enumerate(elements):
                 el_id = el.get("id")
                 if not isinstance(el_id, str):
@@ -483,6 +487,15 @@ def validate_project(path):
                     fail("invalid_field", f"slides[{si}].elements[{ei}].w must be > 0")
                 if el["h"] <= 0:
                     fail("invalid_field", f"slides[{si}].elements[{ei}].h must be > 0")
+                # §587: the editor's groups; null is no group.
+                group = el.get("group")
+                if group is not None and (not isinstance(group, str) or not group):
+                    fail("invalid_field", f"slides[{si}].elements[{ei}].group must be a non-empty string")
+                if group is not None:
+                    prev = group_last.get(group)
+                    if prev is not None and prev != ei - 1:
+                        fail("invalid_field", f"slides[{si}]: group '{group}' members at elements[{prev}] and elements[{ei}] must be adjacent; move them next to each other in elements")
+                    group_last[group] = ei
 
                 if el_type == "image":
                     src = el.get("src")
@@ -513,6 +526,15 @@ def validate_project(path):
                     frame = el.get("frame")
                     if not isinstance(frame, (int, float)) or frame < 0:
                         fail("missing_field", f"slides[{si}].elements[{ei}].frame must be a number >= 0")
+                    # §587 r3: the element's own font files.
+                    font_files = el.get("fontFiles")
+                    if font_files is not None and (not isinstance(font_files, list) or not all(
+                        isinstance(f, dict)
+                        and isinstance(f.get("family"), str) and f["family"].strip()
+                        and isinstance(f.get("src"), str) and f["src"]
+                        for f in font_files
+                    )):
+                        fail("invalid_field", f"slides[{si}].elements[{ei}].fontFiles must be a list of {{family, src}} non-empty strings")
 
     else:
         for field in ("version", "id", "status", "workflow", "editingPrompt", "settings", "tracks"):

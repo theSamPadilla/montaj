@@ -17,8 +17,10 @@ import {
 import { OverlayPreview } from '../preview/OverlayPreview'
 import { CanvasCropOverlay } from '../crop/CanvasCropOverlay'
 import { croppedBox, shownCrop } from '../crop/crop-math'
-import { InlineTextEditor } from '../text/InlineTextEditor'
+import { InlineTextEditor, type InlineTextEditorHandle } from '../text/InlineTextEditor'
+import { baseTextStyle, decodeRuns, runsPatch, supportsRuns, type BaseTextStyle, type Run } from '../text/runs'
 import { ensureGoogleFontsLoaded } from '../lib/google-fonts'
+import { ensureFontFilesLoaded } from '../lib/font-files'
 import { isLocked } from './lock'
 import { bandRect, bandTouches, type BandRect } from './bandSelect'
 import { groupDragMove, type GroupDragResult, type GroupMember } from './groupDrag'
@@ -26,6 +28,9 @@ import { elementsAt, isLayerPress, nextLayerDown, pointInElement } from './hitTe
 import { isApplePlatform } from '../ui/modifierKeys'
 import { scaleFontSize, scalesTextWithBox } from './textScale'
 import { createLiveBoxes, useLiveBox, type LiveBoxes } from './liveBox'
+import { useGroupGestures } from './groupGestures'
+import { expandToGroups, groupOf, heldByLock, selectionAfterPress, toggleGroupSelection } from './groups'
+import GroupChrome from './GroupChrome'
 
 // Neutral fallback used only when no host `resolveImageSrc` is injected. The
 // package must not synthesize a host-shaped URL (e.g. Montaj's `/api/files`):
@@ -76,11 +81,14 @@ function OverlayElementView({
   element,
   box,
   compileOverlay,
+  resolveFontSrc = resolveAssetDefault,
 }: {
   element: OverlayElement
   /** The box it draws to, in slide px: the element's, or a resize's live one. */
   box: { w: number; h: number }
   compileOverlay?: (template: string) => Promise<OverlayFactory>
+  /** A `fontFiles` src as a URL, through the host's image resolver. */
+  resolveFontSrc?: (src: string) => string
 }) {
   const duration = (element.overlay.props.duration as number | undefined) ?? 60
   // The box in slide px, as the renderer's slide.jsx passes it: a template that
@@ -92,6 +100,11 @@ function OverlayElementView({
   useEffect(() => {
     ensureGoogleFontsLoaded(element.googleFonts)
   }, [element.googleFonts])
+  // The person's own font files (§587 r3), as the renderer declares them.
+  useEffect(() => {
+    // Keyed on the files only: the resolver is a fresh function each render.
+    if (element.fontFiles) ensureFontFilesLoaded(element.fontFiles, resolveFontSrc)
+  }, [element.fontFiles])
   return (
     <OverlayPreview
       compileOverlay={compileOverlay ?? noopCompiler}
@@ -124,6 +137,7 @@ function OverlayLayer({
   hidden,
   compileOverlay,
   watchFile,
+  resolveFontSrc,
 }: {
   element: OverlayElement
   scale: number
@@ -131,6 +145,7 @@ function OverlayLayer({
   hidden: boolean
   compileOverlay?: (template: string) => Promise<OverlayFactory>
   watchFile?: (path: string, onChange: () => void) => () => void
+  resolveFontSrc?: (src: string) => string
 }) {
   const live = useLiveBox(liveBoxes, element.id)
   const ratio = live?.ratio ?? 1
@@ -152,7 +167,7 @@ function OverlayLayer({
         watchPath={element.overlay.template}
         watchFile={watchFile}
       >
-        <OverlayElementView element={element} box={box} compileOverlay={compileOverlay} />
+        <OverlayElementView element={element} box={box} compileOverlay={compileOverlay} resolveFontSrc={resolveFontSrc} />
       </OverlayErrorBoundary>
     </div>
   )
@@ -252,6 +267,20 @@ function windowOf(open: CropSession, el: ImageElement, dims: { width: number; he
  *  nothing when it is the crop the image has; `discard` writes nothing. */
 export type CropExit = 'apply' | 'discard'
 
+/** The open inline text edit: which element, and the editor's handle. */
+export interface InlineTextSession {
+  slideId: string
+  elementId: string
+  editor: () => InlineTextEditorHandle | null
+}
+
+/** A text range selected in the inline editor: its element and what it shows. */
+export interface TextRangeInfo {
+  slideId: string
+  elementId: string
+  style: BaseTextStyle
+}
+
 /** The host's hold on crop mode (§556 M4): every way out of it but Esc, which
  *  this canvas handles itself, goes through `leave`. */
 export interface SlideCanvasCropControl {
@@ -277,9 +306,15 @@ interface Props {
   /**
    * Drag-select (§586 M6): the new selection, in order, so the last is the
    * primary. The band's elements back-to-front, behind the prior selection's
-   * when shift was held at the press. Absent → no band is drawn.
+   * when shift was held at the press. Absent → no band is drawn. Also how a
+   * press on a member of a group selects the whole group (§587).
    */
   onSelectMany?: (ids: string[]) => void
+  /**
+   * One write of several elements, one undo step (§587): a group's resize and
+   * turn. Absent → a selected group draws its box without handles.
+   */
+  editElements?: (slideId: string, edit: (elements: CarouselElement[]) => CarouselElement[]) => Promise<void>
   /** Shift-click on an element: add it to the selection or take it out. Absent → shift-click selects as a plain click. */
   onToggleSelect?: (id: string) => void
   scale?: number
@@ -305,6 +340,12 @@ interface Props {
   commit?: () => Promise<void>
   /** A number is written as a number: a text box's corner resize keeps a numeric font size numeric (§586 M8). */
   updateOverlayProp?: (slideId: string, elementId: string, key: string, value: string | number) => Promise<void>
+  /** Several overlay props in one write (one undo step); `undefined` removes a prop. The inline editor's text with its runs. */
+  updateOverlayProps?: (slideId: string, elementId: string, patch: Record<string, string | undefined>) => Promise<void>
+  /** The open inline text edit (§587 round 3), for the toolbar's style buttons; null while none is open. */
+  textEditRef?: { current: InlineTextSession | null }
+  /** The inline editor's selected range and its style, or null when nothing is selected. */
+  onTextRange?: (range: TextRangeInfo | null) => void
   updateImageCrop?: (slideId: string, elementId: string, crop: { x: number; y: number; w: number; h: number } | undefined) => Promise<void>
 
   // Crop mode is owned here; the host enters it (the panel's Crop button, or a
@@ -378,6 +419,10 @@ const FALLBACK_EDIT_STYLE: Partial<CSSStyleDeclaration> = {
 // Find the innermost element under `root` whose full text equals `text` — the
 // overlay's text container. Used to copy its computed style onto the editor.
 function findTextNode(root: HTMLElement, text: string): HTMLElement | null {
+  // A template that marks its text box (static-text) is read there: with runs,
+  // a lone run's span holds all the text too, in that run's own style.
+  const marked = root.querySelector<HTMLElement>('[data-montaj-text]')
+  if (marked) return marked
   const want = text.trim()
   if (!want) return null
   const matches: HTMLElement[] = []
@@ -448,6 +493,9 @@ export default function SlideCanvas({
   rotateElement,
   commit,
   updateOverlayProp,
+  updateOverlayProps,
+  textEditRef,
+  onTextRange,
   updateImageCrop,
   cropElementId,
   onExitCrop,
@@ -462,9 +510,11 @@ export default function SlideCanvas({
   margin = 0,
   pickList = false,
   onContextMenu,
+  editElements,
 }: Props) {
   const sid = slideId ?? slide.id
   const resolveSrc = resolveImageSrc ?? ((el: ImageElement) => resolveAssetDefault(el.src))
+  const resolveFontSrc = (src: string) => resolveSrc({ id: '', type: 'image', src, x: 0, y: 0, w: 0, h: 0, rotation: 0 })
   const hiddenSet = hiddenElementIds && hiddenElementIds.length ? new Set(hiddenElementIds) : null
   const selectedIds = selectedElementIds ?? (selectedElementId ? [selectedElementId] : [])
 
@@ -536,6 +586,19 @@ export default function SlideCanvas({
     if (elementById(id)?.type === 'overlay') liveBoxes.set(id, { w: box.w, h: box.h, ratio })
   }
 
+  // ── Groups (§587): a press selects a member's whole group (one member alone
+  // inside a group already entered); a selected group gets one box and handles.
+  const groupGesture = useGroupGestures({ slide, slideId: sid, scale, selectedIds, editElements, applyPreviewBox, applyPreviewOverlayBox, liveBoxes, hidden: hiddenSet })
+  const selectPress = (el: CarouselElement) => {
+    const ids = selectionAfterPress(slide.elements, el.id, selectedIds)
+    if (ids.length > 1 && onSelectMany) onSelectMany(ids)
+    else onSelect?.(el.id)
+  }
+  const toggleOn = (el: CarouselElement) => {
+    if (groupOf(el) && onSelectMany) onSelectMany(toggleGroupSelection(slide.elements, el.id, selectedIds))
+    else onToggleSelect?.(el.id)
+  }
+
   // ── Gesture hooks ──
   // Each commit rounds to whole pixels and draws exactly that, since the
   // preview drew the unrounded value. A gesture that rounds back to where the
@@ -557,8 +620,8 @@ export default function SlideCanvas({
     onCommit: async (id, x, y) => {
       const el = elementById(id)
       if (!el) return
-      // Locked while held: back to where it is, nothing written or committed.
-      if (isLocked(el)) { applyPreviewTransform(id, el.x, el.y, el.rotation); return }
+      // Locked while held (its own lock or its group's): back to where it is, nothing written or committed.
+      if (heldByLock(slide.elements, el)) { applyPreviewTransform(id, el.x, el.y, el.rotation); return }
       const nx = Math.round(x)
       const ny = Math.round(y)
       applyPreviewTransform(id, nx, ny, el.rotation)
@@ -588,7 +651,7 @@ export default function SlideCanvas({
       const el = elementById(id)
       if (!el) return
       const rotation = gesture.startBox.rotation ?? 0
-      if (isLocked(el)) { applyPreviewBox(id, el, el.rotation); return }
+      if (heldByLock(slide.elements, el)) { applyPreviewBox(id, el, el.rotation); return }
       // w and h first, then x and y from the point the handle pins.
       const next = roundResizedBox(box, gesture.handle, rotation)
       applyPreviewBox(id, next, rotation)
@@ -612,7 +675,7 @@ export default function SlideCanvas({
     onCommit: async (id, rotation) => {
       const el = elementById(id)
       if (!el) return
-      if (isLocked(el)) { applyPreviewTransform(id, el.x, el.y, el.rotation); return }
+      if (heldByLock(slide.elements, el)) { applyPreviewTransform(id, el.x, el.y, el.rotation); return }
       const next = Math.round(rotation)
       // A whole turn away is the same angle: put back the element's own.
       const same = ((next - (el.rotation ?? 0)) % 360 + 360) % 360 === 0
@@ -722,7 +785,22 @@ export default function SlideCanvas({
     setEditingId(element.id)
   }
 
+  // The editor reports its range on every selection change; the host hears only
+  // a change of element or style, so moving the selection inside one style
+  // re-renders nothing.
+  const lastTextRange = useRef<TextRangeInfo | null>(null)
+  function reportTextRange(range: TextRangeInfo | null) {
+    const last = lastTextRange.current
+    const same = range === null ? last === null : last !== null && last.slideId === range.slideId && last.elementId === range.elementId
+      && last.style.bold === range.style.bold && last.style.italic === range.style.italic
+      && last.style.underline === range.style.underline && last.style.color === range.style.color
+    if (same) return
+    lastTextRange.current = range
+    onTextRange?.(range)
+  }
+
   function endTextEdit() {
+    reportTextRange(null)
     setEditingId(null)
     setEditRect(null)
     setEditStyle(null)
@@ -734,10 +812,32 @@ export default function SlideCanvas({
     if (editingLocked) endTextEdit()
   }, [editingLocked])
 
-  function commitTextEdit(element: OverlayElement, value: string) {
-    void updateOverlayProp?.(sid, element.id, 'text', value)
+  // The editor's writes: a plain text keeps today's single `text` write; text
+  // with runs writes them together, a style every char shares onto the element.
+  function writeText(element: OverlayElement, value: string, runs: Run[], base: BaseTextStyle) {
+    const live = slide.elements.find((e) => e.id === element.id)
+    const props = live?.type === 'overlay' ? live.overlay.props : element.overlay.props
+    const patch = runsPatch(props, value, runs, base)
+    const keys = Object.keys(patch)
+    if (keys.length === 1 || !updateOverlayProps) return updateOverlayProp?.(sid, element.id, 'text', value)
+    return updateOverlayProps(sid, element.id, patch)
+  }
+
+  function commitTextEdit(element: OverlayElement, value: string, runs: Run[], base: BaseTextStyle) {
+    void writeText(element, value, runs, base)
     endTextEdit()
   }
+
+  // The open edit, for the host's style buttons.
+  const editorHandle = useRef<InlineTextEditorHandle | null>(null)
+  useEffect(() => {
+    if (!textEditRef || !editingId) return
+    const session: InlineTextSession = { slideId: sid, elementId: editingId, editor: () => editorHandle.current }
+    textEditRef.current = session
+    return () => {
+      if (textEditRef.current === session) textEditRef.current = null
+    }
+  }, [editingId, sid])
 
   // The slide-space point under a mouse event: the root sits at the slide's
   // corner, and its drawn size says how far the display is zoomed past `scale`.
@@ -868,7 +968,10 @@ export default function SlideCanvas({
   // ── Pointer wiring shared by drag/resize/rotate ──
   // We attach window-level move/up listeners while a gesture is active so the
   // gesture keeps tracking outside the element bounds.
-  const activeGesture = useRef<'drag' | 'resize' | 'rotate' | 'group' | 'band' | null>(null)
+  const activeGesture = useRef<'drag' | 'resize' | 'rotate' | 'group' | 'band' | 'group-transform' | null>(null)
+  // The window listeners below are set up once: they reach this render's group gesture here.
+  const groupGestureRef = useRef(groupGesture)
+  groupGestureRef.current = groupGesture
 
   // Set when a gesture ends (a resize, a rotate, a drag, or a group drag that
   // moved), so the click the browser sends after its release changes nothing:
@@ -909,6 +1012,7 @@ export default function SlideCanvas({
         const m = g.members.find((mm) => mm.id === p.id)
         applyPreviewTransform(p.id, p.x, p.y, m?.rotation ?? 0)
       }
+      if (g.members.length) groupGesture.dragTo(result)
     },
     up: () => {
       const g = groupRef.current
@@ -925,6 +1029,7 @@ export default function SlideCanvas({
       if (!moved) {
         // Rounded back to where they are: draw them there, record nothing.
         for (const m of g.members) applyPreviewTransform(m.id, m.x, m.y, m.rotation ?? 0)
+        groupGesture.dragTo(null)
         return
       }
       void (async () => {
@@ -988,13 +1093,15 @@ export default function SlideCanvas({
       const b = bandRef.current
       bandRef.current = null
       setBandShown(false)
-      if (b && !b.rect && commitBand && b.toggleId) onToggleSelect?.(b.toggleId)
+      const toggled = b?.toggleId ? elementById(b.toggleId) : undefined
+      if (b && !b.rect && commitBand && toggled) toggleOn(toggled)
       if (!b?.rect || !commitBand) return
       swallowClickRef.current = true
       const rect = b.rect
-      const ids = slide.elements
+      // A band that touches a member selects its whole group (§587).
+      const ids = expandToGroups(slide.elements, slide.elements
         .filter((el) => !hiddenSet?.has(el.id) && bandTouches(el, rect))
-        .map((el) => el.id)
+        .map((el) => el.id))
       onSelectMany?.(b.add ? [...selectedIds.filter((id) => !ids.includes(id)), ...ids] : ids)
     },
   }
@@ -1015,11 +1122,12 @@ export default function SlideCanvas({
       else if (gesture === 'rotate') rotate.onPointerUp()
       else if (gesture === 'group') groupHandlers.current.up()
       else if (gesture === 'band') bandHandlers.current.up(swallowClick)
+      else if (gesture === 'group-transform') groupGestureRef.current.end()
       // A group drag decides for itself: a press on a member that did not move
       // is a click, and collapses the selection to that member.
       const unmoved = heldPressRef.current?.moved === false
       heldPressRef.current = null
-      if (swallowClick && !(gesture === 'drag' && unmoved) && (gesture === 'drag' || gesture === 'resize' || gesture === 'rotate')) swallowClickRef.current = true
+      if (swallowClick && !(gesture === 'drag' && unmoved) && (gesture === 'drag' || gesture === 'resize' || gesture === 'rotate' || gesture === 'group-transform')) swallowClickRef.current = true
     }
     const onMove = (e: PointerEvent) => {
       // A mouse that moves with no button held has lost its release (the window
@@ -1044,6 +1152,7 @@ export default function SlideCanvas({
       else if (activeGesture.current === 'rotate') rotate.onPointerMove(cursor)
       else if (activeGesture.current === 'group') groupHandlers.current.move(cursor, skipSnap)
       else if (activeGesture.current === 'band') bandHandlers.current.move(cursor)
+      else if (activeGesture.current === 'group-transform') groupGestureRef.current.move(cursor, e.shiftKey)
     }
     const onUp = () => end(true)
     const onCancel = () => end(false)
@@ -1210,11 +1319,12 @@ export default function SlideCanvas({
           }
 
           // Every selected, unlocked element, as one drag moves them (§156).
-          const startGroupDrag = (e: React.PointerEvent) => {
+          // A member of a group with a locked member stays too (§587).
+          const startGroupDrag = (e: React.PointerEvent, ids: string[] = selectedIds) => {
             const members: GroupMember[] = []
-            for (const id of selectedIds) {
+            for (const id of ids) {
               const m = slide.elements.find((el) => el.id === id)
-              if (m && !isLocked(m)) members.push({ id: m.id, x: m.x, y: m.y, w: m.w, h: m.h, rotation: m.rotation })
+              if (m && !heldByLock(slide.elements, m)) members.push({ id: m.id, x: m.x, y: m.y, w: m.w, h: m.h, rotation: m.rotation })
             }
             groupRef.current = { start: { x: e.clientX, y: e.clientY }, members, others: snapTargets(members.map((m) => m.id)), latest: null }
             activeGesture.current = 'group'
@@ -1247,7 +1357,7 @@ export default function SlideCanvas({
             // On a locked element it toggles on release, and a move bands and adds.
             if (e.shiftKey && onToggleSelect && !cropSession) {
               if (isLocked(element) && onSelectMany) startBand(e, element.id)
-              else onToggleSelect(element.id)
+              else toggleOn(element)
               return
             }
             // A press inside a selected element's box acts on it though another
@@ -1262,7 +1372,7 @@ export default function SlideCanvas({
               else if (selectedIds.length > 1) {
                 heldPressRef.current = { x: e.clientX, y: e.clientY, moved: false }
                 startGroupDrag(e)
-              } else if (!isLocked(held)) {
+              } else if (!heldByLock(slide.elements, held)) {
                 heldPressRef.current = { x: e.clientX, y: e.clientY, moved: false }
                 startDrag(e, held)
               }
@@ -1271,7 +1381,7 @@ export default function SlideCanvas({
             // A press on a locked element starts nothing (§586 M5): it is only
             // selected, as a click does; a press-and-move on it draws a band.
             if (isLocked(element)) {
-              if (!(selectedIds.length > 1 && selectedIds.includes(element.id))) onSelect?.(element.id)
+              if (!(selectedIds.length > 1 && selectedIds.includes(element.id))) selectPress(element)
               startBand(e)
               return
             }
@@ -1281,8 +1391,18 @@ export default function SlideCanvas({
               startGroupDrag(e)
               return
             }
+            // A member of a group not entered: the whole group is selected and dragged.
+            const pressed = selectionAfterPress(slide.elements, element.id, selectedIds)
+            if (pressed.length > 1 && onSelectMany) {
+              onSelectMany(pressed)
+              startGroupDrag(e, pressed)
+              return
+            }
             onSelect?.(element.id)
-            startDrag(e, element)
+            // One member inside a group with a locked member is held by that
+            // lock (§587): a press-and-move bands, as on a locked element.
+            if (heldByLock(slide.elements, element)) startBand(e)
+            else startDrag(e, element)
           }
 
           const innerContent =
@@ -1335,6 +1455,7 @@ export default function SlideCanvas({
                 hidden={editingId === element.id}
                 compileOverlay={compileOverlay}
                 watchFile={watchFile}
+                resolveFontSrc={resolveFontSrc}
               />
             )
 
@@ -1365,7 +1486,7 @@ export default function SlideCanvas({
                 // click that is not under the selection ends it.
                 if (held && held.id !== element.id) clickBaseRef.current = { id: held.id, at: Date.now() }
                 else if (e.detail < 2) clickBaseRef.current = null
-                onSelect?.(element.id)
+                selectPress(element)
               } : undefined}
               onPointerDown={handlePointerDownDrag}
               onDoubleClick={interactive ? (e) => handleDoubleClick(element, e) : undefined}
@@ -1380,14 +1501,21 @@ export default function SlideCanvas({
           const el = slide.elements.find((e) => e.id === editingId)
           if (!el || el.type !== 'overlay') return null
           const initial = typeof el.overlay.props.text === 'string' ? el.overlay.props.text : ''
+          const styled = supportsRuns(el)
           return (
             <InlineTextEditor
               key={editingId}
+              handleRef={editorHandle}
               initialValue={initial}
+              initialRuns={decodeRuns(el.overlay.props.runs, initial)}
+              base={baseTextStyle(el.overlay.props)}
+              styled={styled}
               rect={editRect}
               styleSnapshot={editStyle ?? FALLBACK_EDIT_STYLE}
               onChange={() => {}}
-              onCommit={(value) => commitTextEdit(el, value)}
+              onCommit={(value, runs, base) => commitTextEdit(el, value, runs, base)}
+              onWrite={(value, runs, base) => void writeText(el, value, runs, base)}
+              onRangeStyle={styled && onTextRange ? (style) => reportTextRange(style ? { slideId: sid, elementId: el.id, style } : null) : undefined}
               onCancel={endTextEdit}
             />
           )
@@ -1526,7 +1654,8 @@ export default function SlideCanvas({
             {slide.elements.map((element) => {
               if (hiddenSet?.has(element.id)) return null
               // Outlined when selected at all; handles only for the one selected element.
-              const isOutlined = selectedIds.includes(element.id)
+              // A selected group's members are drawn by the group's box (§587).
+              const isOutlined = selectedIds.includes(element.id) && !(groupGesture.group && groupOf(element) === groupGesture.group)
               const isSelected = selectedElementId === element.id
               const locked = isLocked(element)
               const inCrop = cropSession?.elementId === element.id
@@ -1615,7 +1744,7 @@ export default function SlideCanvas({
                   {/* Selection handles (hidden while cropping or rotated-crop guard).
                       Placed in percentages of the box, so they follow the size a
                       resize preview writes straight to this box. */}
-                  {isSelected && !locked && !inCrop && editingId !== element.id && (
+                  {isSelected && !locked && !heldByLock(slide.elements, element) && !inCrop && editingId !== element.id && (
                     <>
                       {HANDLES.map((h) => (
                         <div
@@ -1740,6 +1869,23 @@ export default function SlideCanvas({
                 </div>
               )
             })}
+
+            {/* A selected group's box and handles (§587). */}
+            {groupGesture.group && groupGesture.box && (
+              <GroupChrome
+                key={groupGesture.group}
+                box={groupGesture.box}
+                scale={scale}
+                boxRef={groupGesture.boxRef}
+                locked={groupGesture.locked}
+                handles={groupGesture.handles}
+                isMenuPress={isMenuPress}
+                onResizeStart={(handle, e) => { if (groupGesture.beginResize(handle, e)) activeGesture.current = 'group-transform' }}
+                onRotateStart={(e) => { if (groupGesture.beginRotate(e)) activeGesture.current = 'group-transform' }}
+                onUnlock={onUnlock && (() => { const m = slide.elements.find((el) => groupOf(el) === groupGesture.group && isLocked(el)); if (m) onUnlock(m.id) })}
+                onBadgeClick={() => { swallowClickRef.current = false }}
+              />
+            )}
           </div>
         </div>
       )}

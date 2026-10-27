@@ -1,4 +1,5 @@
 import type { CarouselElement, Slide } from '../types'
+import { freshGroupIds, groupMemberIds, groupOf, normalizeGroups } from './groups'
 
 /** Pixels a copy steps down and right: Duplicate, and each paste past the one
  *  before it on the same slide. */
@@ -37,7 +38,14 @@ export interface ElementClipboard {
  *  pastes counted). Null when none of them is on the slide. */
 export function copyElements(slide: Slide, selectedIds: Iterable<string>): ElementClipboard | null {
   const selected = new Set(selectedIds)
-  const elements = slide.elements.filter((el) => selected.has(el.id)).map((el) => structuredClone(el))
+  // A group copied in part is not a group in the copy (§587).
+  const whole = (g: string) => groupMemberIds(slide.elements, g).every((id) => selected.has(id))
+  const elements = slide.elements.filter((el) => selected.has(el.id)).map((el) => {
+    const copy = structuredClone(el)
+    const g = groupOf(copy)
+    if (g && !whole(g)) delete copy.group
+    return copy
+  })
   return elements.length > 0 ? { slideId: slide.id, elements, lastSteps: new Map() } : null
 }
 
@@ -54,7 +62,8 @@ export function pasteElements(clipboard: ElementClipboard, slide: Slide): Carous
   const last = clipboard.lastSteps.get(slide.id)
   const steps = last !== undefined ? last + 1 : firstPasteSteps(clipboard, slide)
   clipboard.lastSteps.set(slide.id, steps)
-  return clipboard.elements.map((el) => stepped(cloneElement(el), steps * COPY_OFFSET))
+  // Each pasted group is a new group (§587).
+  return freshGroupIds(clipboard.elements.map((el) => stepped(cloneElement(el), steps * COPY_OFFSET)))
 }
 
 /** Steps for the first paste onto `slide`: one when it is the slide the elements
@@ -77,8 +86,17 @@ export function duplicateCopies(
 ): Map<string, CarouselElement> {
   const selected = new Set(selectedIds)
   const copies = new Map<string, CarouselElement>()
+  // A group duplicated whole is a new group; a member duplicated alone stays in its group (§587).
+  const fresh = new Map<string, string>()
   for (const el of elements) {
-    if (selected.has(el.id)) copies.set(el.id, stepped(cloneElement(el), COPY_OFFSET))
+    if (!selected.has(el.id)) continue
+    const copy = stepped(cloneElement(el), COPY_OFFSET)
+    const g = groupOf(el)
+    if (g && groupMemberIds(elements, g).every((id) => selected.has(id))) {
+      if (!fresh.has(g)) fresh.set(g, crypto.randomUUID())
+      copy.group = fresh.get(g)
+    }
+    copies.set(el.id, copy)
   }
   return copies
 }
@@ -93,10 +111,11 @@ export function insertCopies(
   copies: ReadonlyMap<string, CarouselElement>,
 ): CarouselElement[] {
   if (!elements.some((el) => copies.has(el.id))) return elements
-  return elements.flatMap((el) => {
+  // A copied group lands whole, in front of the group it copies (§587).
+  return normalizeGroups(elements.flatMap((el) => {
     const copy = copies.get(el.id)
     return copy ? [el, copy] : [el]
-  })
+  }))
 }
 
 /**

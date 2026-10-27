@@ -16,6 +16,7 @@ export type {
   Asset,
   ImageElement,
   OverlayElement,
+  FontFile,
   CarouselElement,
   Slide,
   EditorProject,
@@ -73,6 +74,7 @@ export type {
   CarouselLayout,
   CarouselRailItemId,
   CarouselBrand,
+  CustomFont,
   AskAiRequest,
   CarouselEditorProps,
   VideoEditorProps,
@@ -214,6 +216,10 @@ export {
   FontSizePicker,
 } from './text/FontPicker'
 export type { FontOption } from './text/FontPicker'
+// §587 r3: a custom font's saved family value, and its FontFace loader (cached per family and URL).
+export { customFontValue } from './text/FontPicker'
+export type { PickerCustomFont } from './text/FontPicker'
+export { loadFontFace } from './lib/font-files'
 // Two independent Google Fonts base-URL setters, one per loader — see each
 // file's own header for why there are two. `setFontsBaseUrl` (from
 // `lib/google-fonts.ts`) covers the broader surface: captions, overlays and

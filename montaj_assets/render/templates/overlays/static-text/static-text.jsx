@@ -20,6 +20,12 @@
  *   effectStrength — '0'..'100' (default '60')
  *   fit           — 'true' shrinks the text until it fits the box (default 'false')
  *   minFontSize   — CSS px the fit never goes below (default '24')
+ *   runs          — optional styled runs, a JSON array string beside `text`:
+ *                   [{"t":"Make it "},{"t":"red","c":"#ff0000","b":1}]. `t` the
+ *                   run's text, `c` a hex colour, `b`/`i`/`u` 1 (bold, italic,
+ *                   underline on) or 0 (off); absent = the element's own. Used
+ *                   only when the runs spell `text` exactly and no boundary
+ *                   splits an emoji's two halves; otherwise ignored.
  *
  * Effects are sized in em, so they follow the size the text is drawn at,
  * fitted or not. Fit measures the laid-out text in the browser (a callback
@@ -38,6 +44,31 @@ function withAlpha(color, alpha) {
   const [r, g, b] = [0, 2, 4].map(i => parseInt(hex.slice(i, i + 2), 16))
   const own = hex.length === 8 ? parseInt(hex.slice(6, 8), 16) / 255 : 1
   return `rgba(${r}, ${g}, ${b}, ${+(alpha * own).toFixed(3)})`
+}
+
+const HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i
+
+// The runs in `raw` when they are well formed and spell `text`, else null (draw `text`).
+function decodeRuns(raw, text) {
+  if (typeof raw !== 'string' || raw === '') return null
+  let list
+  try { list = JSON.parse(raw) } catch { return null }
+  if (!Array.isArray(list) || !list.every(r => r && typeof r === 'object' && typeof r.t === 'string')) return null
+  if (list.map(r => r.t).join('') !== String(text)) return null
+  // A boundary between an emoji's two UTF-16 halves would draw each half alone.
+  for (let i = 0; i < list.length - 1; i++) {
+    if (/[\uD800-\uDBFF]$/.test(list[i].t) && /^[\uDC00-\uDFFF]/.test(list.slice(i + 1).map(r => r.t).join(''))) return null
+  }
+  return list.filter(r => r.t !== '')
+}
+
+// A run's own style. Underline is drawn per run: a child cannot take back its parent's.
+function runStyle(r) {
+  const s = { textDecorationLine: r.u === 1 ? 'underline' : 'none' }
+  if (typeof r.c === 'string' && HEX.test(r.c)) s.color = r.c
+  if (r.b === 1 || r.b === 0) s.fontWeight = r.b === 1 ? '700' : '400'
+  if (r.i === 1 || r.i === 0) s.fontStyle = r.i === 1 ? 'italic' : 'normal'
+  return s
 }
 
 const em = (n) => `${+n.toFixed(4)}em`
@@ -99,6 +130,7 @@ export default function StaticText({
   effectStrength = '60',
   fit           = 'false',
   minFontSize   = '24',
+  runs          = '',
 }) {
   // parseFloat (not Number) so we tolerate both "64" (legacy unit-less) and
   // "64px" (the canonical FontSizePicker storage format). Number("64px") = NaN
@@ -111,6 +143,7 @@ export default function StaticText({
   const strengthNum = parseFloat(String(effectStrength))
   const strength = Number.isFinite(strengthNum) ? Math.min(Math.max(strengthNum, 0), 100) / 100 : 0.6
   const fitOn = String(fit) === 'true'
+  const styled = decodeRuns(runs, text)
 
   // Runs after every commit (a new function each render). With fit off it
   // puts the chosen size back, since React leaves a style it did not change.
@@ -145,7 +178,7 @@ export default function StaticText({
       boxSizing:      'border-box',
       overflow:       'hidden',
     }}>
-      <p ref={sizeText} style={{
+      <p ref={sizeText} data-montaj-text="" style={{
         margin:        0,
         fontFamily,
         fontWeight,
@@ -161,7 +194,7 @@ export default function StaticText({
         wordBreak:     'normal',
         overflowWrap:  'break-word',
         ...effectStyle(effect, effectColor, strength),
-      }}>{text}</p>
+      }}>{styled ? styled.map((r, i) => <span key={i} style={runStyle(r)}>{r.t}</span>) : text}</p>
     </div>
   )
 }
