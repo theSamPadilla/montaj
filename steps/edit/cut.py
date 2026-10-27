@@ -56,7 +56,8 @@ PLAN_HELP = ("Edit, then run cut with plan. Silences and fillers are already gon
              "in recording order, and nothing else is removed. A tag ending in ? is a label, never a cut: retake? and "
              "false-start? name the take said after it (delete this row to keep that one); repeat? names words said "
              "again later (delete them to keep the last saying); restart? names a word cut off mid-way (delete it to start on "
-             "the second try); noise? names words with no voice under them. Delete "
+             "the second try); slow? names words said at half the pace around them, maybe a line said twice and written once; "
+             "noise? names words with no voice under them. Delete "
              "rows or words, move rows to reorder, never add or change a word. A ## Unused row went with the silence "
              "(no sound, or no voice, under it), or [earlier] before this cut, said just before its time: move it into "
              "## Cut to keep it.")
@@ -397,6 +398,7 @@ def _plan(d, title, units, trailing, labels, gone, at, of_source, language, max_
         return units[ui][1][0][1] if ui is not None and 0 <= ui < len(units) and units[ui][1] else None
 
     rules = language.split("-")[0].lower() not in NON_SPACED      # the take rules run for this language
+    slow_at = _slow_stretches(units) if rules else {}
     order = [row for _, urows, _ in units for _, row in urows]
     following = {id(a): b for a, b in zip(order, order[1:])}
 
@@ -443,6 +445,8 @@ def _plan(d, title, units, trailing, labels, gone, at, of_source, language, max_
                 for k, w in enumerate(ws):
                     if _cut_off(w.text) and (k < len(ws) - 1 or nxt is not None) and not any(w.text in tg for tg in tags):
                         tags.append(f'restart? "{w.text}"')
+            if id(row) in slow_at and not any(tg.split()[0] in ("repeat?", "retake?") for tg in tags):
+                tags.append(f'slow? "{slow_at[id(row)]}"')
             pos += n
             drop = {k for k, w in enumerate(row.words) if (letter, w.idx) in gone}
             if drop:
@@ -492,6 +496,43 @@ def _plan(d, title, units, trailing, labels, gone, at, of_source, language, max_
         out += ["", "## Unused", ""]
         out += [f"{i} {txt} [{why}]" if t is None else f"{i} {txt} [{t:.1f} {why}]" for i, t, txt, why in unused]
     return _seal("\n".join(out) + "\n"), kept, unused, counts
+
+
+SLOW_SHARE = 0.5     # four words at under this share of their clip's pace ...
+HELD_SHARE = 1.5     # ... held over this share of its median word length: maybe a line said twice and written once
+
+
+def _slow_stretches(units):
+    """{id(row): words} of the slowest four-word stretch of each sentence said at under SLOW_SHARE of its clip's pace,
+    its words held long (HELD_SHARE of the clip's median word), no sentence ending inside it (CV pl89r: "Here's how it
+    works" said twice was written once, at 1.7 words a second against 3.6). On the row its first word is in."""
+    pace, lengths = {}, {}
+    for u, urows, _ in units:
+        ws = [(_line_key(row.line)[0], w) for _, row in urows for w in row.words]
+        if len(ws) >= 3 and ws[-1][1].end - ws[0][1].start > 1e-6:
+            pace.setdefault(ws[0][0], []).append(len(ws) / (ws[-1][1].end - ws[0][1].start))
+        for letter, w in ws:
+            lengths.setdefault(letter, []).append(w.end - w.start)
+    med = lambda xs: sorted(xs)[len(xs) // 2]
+    out = {}
+    for u, urows, _ in units:
+        if getattr(u, "fixed", False):
+            continue
+        ws = [(row, _line_key(row.line)[0], w) for _, row in urows for w in row.words]
+        best = None
+        for k in range(len(ws) - 3):
+            four = ws[k:k + 4]
+            letter = four[0][1]
+            if any(x[1] != letter for x in four) or letter not in pace or any(_ends_sentence(x[2].text) for x in four[:3]):
+                continue
+            span = four[-1][2].end - four[0][2].start
+            rate = 4 / span if span > 1e-6 else float("inf")
+            held = sum(x[2].end - x[2].start for x in four) / 4
+            if rate < SLOW_SHARE * med(pace[letter]) and held > HELD_SHARE * med(lengths[letter]) and (best is None or rate < best[0]):
+                best = (rate, four)
+        if best:
+            out[id(best[1][0][0])] = " ".join(x[2].text for x in best[1])
+    return out
 
 
 def _cut_off(text):

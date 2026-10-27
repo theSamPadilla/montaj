@@ -32,6 +32,7 @@ SLOW_RATE = 0.5          # a phrase said at under this share of the clip's other
 RATE_MIN_WORDS = 3       # ... with at least this many words, may hold a second saying
 EARLY_S = 0.1            # the second try's window starts this much earlier
 EDGE_S = 0.15            # words ending this close to the window's end may be cut by it: judged without them
+EXTEND_S = 1.0           # the first retry runs on through the words ending this soon after the phrase (1.5.0)
 
 
 @dataclass
@@ -145,10 +146,21 @@ def _accept(words, heard, end):
     return hw + [(t, max(a, last), max(b, last)) for t, a, b in tail]
 
 
-def rehear_phrase(window, words, alt=None):
+def until_after(words, j):
+    """The end of the words that run on from word j without a pause and end within EXTEND_S of it, or None."""
+    k = j
+    while (k + 1 < len(words) and words[k + 1][1] - words[k][2] < PHRASE_GAP_S
+           and words[k + 1][2] <= words[j][2] + EXTEND_S):
+        k += 1
+    return words[k][2] if k > j else None
+
+
+def rehear_phrase(window, words, alt=None, until=None):
     """The phrase's words as heard again, or None. window(start, end) -> [(text, start, end)] in source seconds; alt:
-    the same with a second model, or None. First the whole phrase; when that hears it once again, from its longest
-    held word on, the words before kept; then the whole phrase EARLY_S earlier; then with `alt`."""
+    the same with a second model, or None; until: where the words after the phrase reach a natural end (until_after).
+    First the whole phrase; when that hears it once again, from its longest held word on, the words before kept; then
+    run on to `until` (1.5.0, CV pl89r: a window cut mid-word collapsed the repeat, one ending on whole words did not),
+    judged up to the phrase's own end; then the whole phrase EARLY_S earlier; then with `alt`."""
     start, end = words[0][1] - PAD_S, words[-1][2] + PAD_S
     got = _accept(words, _clean(window(round(start, 3), round(end, 3))), end)
     if got:
@@ -161,10 +173,11 @@ def rehear_phrase(window, words, alt=None):
         combined = list(words[:h]) + tail
         if _better(words, combined):
             return combined
-    for hear, s0 in ((window, start - EARLY_S), (alt, start)):
+    tries = [(window, start, until + PAD_S)] if until is not None and until + PAD_S > end else []
+    for hear, s0, e0 in tries + [(window, start - EARLY_S, end), (alt, start, end)]:
         if hear is None:
             continue
-        got = _accept(words, _clean(hear(round(max(0.0, s0), 3), round(end, 3))), end)
+        got = _accept(words, _clean(hear(round(max(0.0, s0), 3), round(e0, 3))), end)
         if got:
             return got
     return None
@@ -215,7 +228,7 @@ def rehear_file(sidecar, src, window, budget, only=None, alt=None):
         phrase = [w for _, w in indexed[i:j + 1]]
         if not budget.take(phrase[-1][2] - phrase[0][1] + 2 * PAD_S):
             break
-        new = rehear_phrase(window, phrase, alt)
+        new = rehear_phrase(window, phrase, alt, until_after([w for _, w in indexed], j))
         if new:
             changes.append((indexed[i][0], indexed[j][0], phrase, new))
     if not changes:

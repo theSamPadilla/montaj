@@ -150,3 +150,40 @@ def test_the_cut_off_shapes(word):
 def test_whole_words_with_a_hyphen_are_not_cut_off(word):
     import steps.edit.cut as cc
     assert not cc._cut_off(word)
+
+
+# 1.5.0 (CV pl89r): "Here's how it works" said twice was written once, at 1.7 words a second against 3.6, and nothing in the
+# plan said so. A stretch said at under half its clip's pace, its words held long, is labeled slow?.
+class _W:
+    def __init__(self, text, start, end):
+        self.text, self.start, self.end = text, start, end
+
+
+class _Row:
+    def __init__(self, line, words):
+        self.line, self.words = line, [_W(*w) for w in words]
+
+
+class _U:
+    fixed = False
+
+
+def _units(rows):
+    return [(_U(), [(None, r) for r in rs], []) for rs in rows]
+
+
+def test_a_stretch_said_at_half_the_pace_with_its_words_held_is_slow():
+    import steps.edit.cut as cc
+    brisk = lambda line, t: _Row(line, [(w, t + k * 0.28, t + k * 0.28 + 0.24) for k, w in enumerate("so we built a thing for you".split())])
+    cv = _Row("E4", [("Here's", 17.96, 18.62), ("how", 18.62, 19.43), ("it", 19.43, 19.5), ("works,", 19.5, 20.31),
+                     ("the", 20.31, 20.4), ("app", 20.4, 20.62), ("reads", 20.62, 20.84)])
+    paused = _Row("E5", [("Done.", 30.0, 30.3), ("Then", 31.4, 31.6), ("we", 31.6, 31.75), ("go", 31.75, 31.95)])
+    units = _units([[brisk("E1", 0.0)], [brisk("E2", 5.0)], [brisk("E3", 10.0)], [cv], [paused]])
+    got = cc._slow_stretches(units)
+    assert got == {id(cv): "Here's how it works,"}, got     # a pause between sentences is not slow speech
+
+
+def test_the_plan_help_names_slow(tmp_path, monkeypatch):
+    d = sources_project(tmp_path, TWO)
+    run(d, monkeypatch=monkeypatch)
+    assert "slow? names" in (d / "cut-plan.md").read_text().split("-->")[3]
