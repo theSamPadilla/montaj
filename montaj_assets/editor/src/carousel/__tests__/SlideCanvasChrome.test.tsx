@@ -6,10 +6,17 @@ import { NotePinLayer } from '../NoteLayers'
 
 // ── Handles past the slide edge (§586 M4) ────────────────────────────────────
 //
-// The selection outline, the handles, the snap guides and the crop window's
-// handles are drawn in a chrome layer over the slide that the slide does not
-// clip, so an element half off the slide keeps every handle. The elements
-// still clip at the slide edge, as the export does. Thumbnails are unchanged.
+// The selection outline, the handles, the snap guides, the crop window's
+// handles and the lock badge are drawn in a chrome layer over the slide that
+// neither the slide nor the margin clips: it spans the visible part of the
+// scroll area holding the canvas, so an element far off the slide keeps every
+// handle wherever that area shows it, and the area never scrolls for it. The
+// elements still clip at the slide edge, as the export does. Thumbnails are
+// unchanged.
+//
+// jsdom lays nothing out and clips nothing, so these tests say which boxes
+// clip and where; `browser/slide-chrome-clip.test.mjs` measures in a real
+// browser that the handles are drawn, take the press, and grow no scroll.
 
 function image(over: Partial<ImageElement> = {}): ImageElement {
   return { id: 'el', type: 'image', src: 'a.png', x: 100, y: 100, w: 200, h: 100, rotation: 0, ...over }
@@ -60,9 +67,59 @@ function frameOf(el: HTMLElement) {
 }
 
 const SLIDE_FRAME = ['0px', '0px', `${SLIDE_PX}px`, `${SLIDE_PX}px`]
+// The scroll area the canvas sits in, as `layout` lays it out: 1000 x 900 at
+// the window's corner, a 2 px border, the slide's corner at 230, 180 in it.
+const AREA = { left: 0, top: 0, width: 1000, height: 900, border: 2 }
+const ROOT_AT = { left: 230, top: 180 }
+// The chrome layer on the area's visible part, in the slide's display pixels.
+const AREA_FRAME = ['-228px', '-178px', '996px', '896px']
+
+function rect(left: number, top: number, width: number, height: number): DOMRect {
+  return { left, top, width, height, x: left, y: top, right: left + width, bottom: top + height, toJSON: () => ({}) } as DOMRect
+}
+
+// Lays out the scroll area and the slide for jsdom, which lays out nothing.
+const layoutPatches: Array<() => void> = []
+function layout(root: { top: number } = ROOT_AT) {
+  const isArea = (el: Element) => el.getAttribute('data-testid') === 'scroll-area'
+  const rects = Element.prototype.getBoundingClientRect
+  Element.prototype.getBoundingClientRect = function (this: Element) {
+    if (isArea(this)) return rect(AREA.left, AREA.top, AREA.width, AREA.height)
+    if (this.hasAttribute('data-interactive')) return rect(ROOT_AT.left, root.top, SLIDE_PX, SLIDE_PX)
+    return rects.call(this)
+  }
+  layoutPatches.push(() => { Element.prototype.getBoundingClientRect = rects })
+  const sizes: Record<string, number> = {
+    clientWidth: AREA.width - 2 * AREA.border,
+    clientHeight: AREA.height - 2 * AREA.border,
+    clientLeft: AREA.border,
+    clientTop: AREA.border,
+    offsetWidth: AREA.width,
+  }
+  for (const [key, value] of Object.entries(sizes)) {
+    const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, key)
+    const inherited = (el: HTMLElement) => {
+      for (let p = Object.getPrototypeOf(HTMLElement.prototype); p; p = Object.getPrototypeOf(p)) {
+        const d = Object.getOwnPropertyDescriptor(p, key)
+        if (d?.get) return d.get.call(el) as number
+      }
+      return 0
+    }
+    Object.defineProperty(HTMLElement.prototype, key, {
+      configurable: true,
+      get(this: HTMLElement) { return isArea(this) ? value : own?.get ? own.get.call(this) : inherited(this) },
+    })
+    layoutPatches.push(() => {
+      if (own) Object.defineProperty(HTMLElement.prototype, key, own)
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key]
+    })
+  }
+}
+afterEach(() => { while (layoutPatches.length) layoutPatches.pop()!() })
 const MARGIN_FRAME = [`-${MARGIN}px`, `-${MARGIN}px`, `${SLIDE_PX + 2 * MARGIN}px`, `${SLIDE_PX + 2 * MARGIN}px`]
 
-function setup(elements: ImageElement[], extra: Partial<React.ComponentProps<typeof SlideCanvas>> = {}) {
+/** `inArea`: the canvas in a scroll area, as the editor puts it (lay it out with `layout()` first). */
+function setup(elements: ImageElement[], extra: Partial<React.ComponentProps<typeof SlideCanvas>> = {}, { inArea = false } = {}) {
   const spies = {
     onSelect: vi.fn(),
     moveElement: vi.fn(async () => {}),
@@ -72,7 +129,7 @@ function setup(elements: ImageElement[], extra: Partial<React.ComponentProps<typ
     commit: vi.fn(async () => {}),
     onExitCrop: vi.fn(),
   }
-  const r = render(
+  const canvas = (
     <SlideCanvas
       slide={{ id: 's', base_color: '#ffffff', elements }}
       width={1080}
@@ -84,8 +141,9 @@ function setup(elements: ImageElement[], extra: Partial<React.ComponentProps<typ
       resolveImageSrc={(e) => e.src}
       {...spies}
       {...extra}
-    />,
+    />
   )
+  const r = render(inArea ? <div data-testid="scroll-area" style={{ overflowY: 'auto' }}><div>{canvas}</div></div> : canvas)
   const q = (sel: string) => r.container.querySelector(sel) as HTMLElement
   return {
     ...spies,
@@ -94,6 +152,7 @@ function setup(elements: ImageElement[], extra: Partial<React.ComponentProps<typ
     wrapper: (id = elements[0].id) => q(`[data-element-id="${id}"]`),
     chrome: (id = elements[0].id) => q(`[data-chrome-for="${id}"]`),
     chromeLayer: q('[data-slide-chrome]'),
+    area: q('[data-testid="scroll-area"]'),
     handle: (id: Handle) => q(`[data-testid="resize-handle-${id}"]`),
     rotateHandle: () => q('[data-testid="rotate-handle"]'),
   }
@@ -129,19 +188,45 @@ describe('SlideCanvas thumbnails (§586 M4)', () => {
 })
 
 describe('SlideCanvas: handles past the slide edge (§586 M4)', () => {
-  it('an element half off the slide shows all eight handles, clipped only at the margin, not at the slide', () => {
-    const c = setup([AT_EDGE])
+  it('an element half off the slide shows all eight handles, clipped only where the scroll area stops showing them, not at the slide or the margin', () => {
+    layout()
+    const c = setup([AT_EDGE], {}, { inArea: true })
     for (const id of HANDLES) {
       const h = c.handle(id)
       expect(h).not.toBeNull()
       expect(c.wrapper().contains(h)).toBe(false)
       const clips = clipsAbove(h)
       expect(clips).toEqual([c.chromeLayer])
-      expect(frameOf(clips[0])).toEqual(MARGIN_FRAME)
+      // The visible part of the area, inside its border.
+      expect(frameOf(clips[0])).toEqual(AREA_FRAME)
     }
+    // The boxes in it stay on the slide.
+    const inner = c.chromeLayer.firstElementChild as HTMLElement
+    expect(frameOf(inner)).toEqual(['228px', '178px', `${SLIDE_PX}px`, `${SLIDE_PX}px`])
     // The outline is drawn there too, not on the element.
     expect(c.chrome().style.outline).toContain('solid')
     expect(c.wrapper().style.outline).toBe('none')
+    // Over a slide that follows it, so its handles take their presses.
+    expect(c.chromeLayer.style.zIndex).toBe('1')
+  })
+
+  it('a scroll of the area, or a change of its size, places the chrome layer again: it stays on what the area shows', async () => {
+    const root = { top: ROOT_AT.top }
+    layout(root)
+    const c = setup([AT_EDGE], {}, { inArea: true })
+    root.top = ROOT_AT.top - 300
+    await act(async () => { c.area.dispatchEvent(new Event('scroll')) })
+    expect(frameOf(c.chromeLayer)).toEqual(['-228px', '122px', '996px', '896px'])
+    expect(frameOf(c.chromeLayer.firstElementChild as HTMLElement).slice(0, 2)).toEqual(['228px', '-122px'])
+    root.top = ROOT_AT.top
+    await act(async () => { window.dispatchEvent(new Event('resize')) })
+    expect(frameOf(c.chromeLayer)).toEqual(AREA_FRAME)
+  })
+
+  it('until the canvas is laid out, the chrome layer is the margin box', () => {
+    const c = setup([AT_EDGE], {}, { inArea: true })
+    expect(frameOf(c.chromeLayer)).toEqual(MARGIN_FRAME)
+    expect(clipsAbove(c.handle('nw'))).toEqual([c.chromeLayer])
   })
 
   it('dragging the outside corner resizes it, and the handles follow the element on every preview', async () => {
@@ -337,9 +422,11 @@ describe('SlideCanvas: the margin around the page (§586 M4)', () => {
   })
 
   it('without a margin there is none, and the chrome clips at the slide edge', () => {
-    const c = setup([AT_EDGE], { margin: undefined })
+    layout()
+    const c = setup([AT_EDGE], { margin: undefined }, { inArea: true })
     expect(c.r.container.querySelector('[data-canvas-margin]')).toBeNull()
     expect(frameOf(c.chromeLayer)).toEqual(SLIDE_FRAME)
+    expect(c.chromeLayer.style.zIndex).toBe('')
   })
 })
 
