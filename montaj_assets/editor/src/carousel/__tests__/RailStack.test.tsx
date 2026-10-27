@@ -54,8 +54,13 @@ class MockIO {
   disconnect() { this.observed.clear() }
   takeRecords() { return [] }
 }
-/** Reports each named slide's share in view (0..1) to the live observer. */
+/** A user scroll of the stack: a scroll event, then the observer reports each named slide's share in view (0..1). */
 async function inView(ratios: Record<string, number>) {
+  await act(async () => { document.querySelector('[data-slide-stack]')!.dispatchEvent(new Event('scroll')) })
+  await layoutInView(ratios)
+}
+/** The observer reports the shares with no scroll before it: the layout changed (a zoom, a panel opened). */
+async function layoutInView(ratios: Record<string, number>) {
   const io = [...MockIO.instances].reverse().find((o) => o.observed.size > 0)
   if (!io) throw new Error('no IntersectionObserver is observing')
   const entries = [...io.observed]
@@ -162,17 +167,57 @@ describe('CarouselEditor layout="rail": stacked slides (§587 M2)', () => {
     expect(r.queryByRole('button', { name: /Hide slide/ })).toBeNull()
   })
 
-  it('only the slides in view, one either side and the active one are live canvases; the rest are thumbnails', async () => {
+  it('only the slides in view, one either side and the active one are live canvases; two away are thumbnails, the rest placeholders', async () => {
     const { r } = await mount(makeProject([0, 1, 2, 3, 4, 5].map((i) => slide(i, [img(`el-${i}`)]))))
     await inView({ s0: 1, s1: 0.2 })
     expect(['s0', 's1', 's2', 's3', 's4', 's5'].map(live)).toEqual([true, true, true, false, false, false])
-    // A thumbnail still draws the slide.
-    expect(section('s4').querySelector('[data-element-id="el-4"]')).not.toBeNull()
+    // A thumbnail still draws the slide; further away a placeholder stands in.
+    expect(section('s3').querySelector('[data-element-id="el-3"]')).not.toBeNull()
+    expect(section('s4').querySelector('[data-element-id="el-4"]')).toBeNull()
+    expect(section('s4').querySelector('[data-slide-placeholder]')).not.toBeNull()
 
     // Scrolled down: slide 5 is the one most in view and becomes active.
     await inView({ s0: 0, s1: 0, s3: 0.3, s4: 1 })
     expect(counter(r).textContent).toContain('5 / 6')
     expect(['s0', 's1', 's2', 's3', 's4', 's5'].map(live)).toEqual([false, false, true, true, true, true])
+  })
+
+  it('a scale change with two slides in view does not change the active slide; a user scroll does', async () => {
+    const { r } = await mount(three())
+    await inView({ s0: 1, s1: 0.4 })
+    await pressClick(wrapper('el-0'))
+    const slider = within(r.getByRole('contentinfo', { name: 'Bottom bar' })).getByRole('slider', { name: 'Zoom' })
+    await act(async () => { fireEvent.change(slider, { target: { value: '30' } }) })
+    // Smaller slides: slide 2 is now the one most in view, by layout alone.
+    await layoutInView({ s0: 0.8, s1: 1 })
+    expect(counter(r).textContent).toContain('1 / 3')
+    expect(chromeOf('el-0').style.outline).toContain('solid')
+    // A scroll just before a zoom is not a scroll to another slide either.
+    await act(async () => { document.querySelector('[data-slide-stack]')!.dispatchEvent(new Event('scroll')) })
+    await act(async () => { fireEvent.change(slider, { target: { value: '40' } }) })
+    await layoutInView({ s0: 0.7, s1: 1 })
+    expect(counter(r).textContent).toContain('1 / 3')
+    // The person scrolls: the slide most in view takes over.
+    await inView({ s0: 0.5, s1: 1 })
+    expect(counter(r).textContent).toContain('2 / 3')
+  })
+
+  it('a wheel on the stack counts as a scroll; a slide scrolled to from the slide list stays active', async () => {
+    const scrollTo = vi.fn()
+    HTMLElement.prototype.scrollTo = scrollTo as unknown as HTMLElement['scrollTo']
+    const { r } = await mount(three())
+    await layoutInView({ s0: 1, s1: 0.4 })
+    await act(async () => { document.querySelector('[data-slide-stack]')!.dispatchEvent(new Event('wheel')) })
+    await layoutInView({ s0: 0.4, s1: 1 })
+    expect(counter(r).textContent).toContain('2 / 3')
+    // A scroll, then a pick from the list: the stack's own scroll to slide 3 activates nothing else.
+    await act(async () => { document.querySelector('[data-slide-stack]')!.dispatchEvent(new Event('scroll')) })
+    await act(async () => { fireEvent.click(counter(r)) })
+    await act(async () => { fireEvent.click(r.getByRole('option', { name: 'Slide 3' })) })
+    expect(scrollTo).toHaveBeenCalled()
+    await layoutInView({ s0: 0, s1: 1, s2: 0.6 })
+    expect(counter(r).textContent).toContain('3 / 3')
+    delete (HTMLElement.prototype as { scrollTo?: unknown }).scrollTo
   })
 
   it('a click on an element on slide 3 makes slide 3 active, and Delete acts there', async () => {
@@ -215,6 +260,25 @@ describe('CarouselEditor layout="rail": stacked slides (§587 M2)', () => {
     expect(counter(r).textContent).toContain('2 / 3')
   })
 
+  it.each([
+    ['a zoom key', async () => { await key('1', { metaKey: true }) }],
+    ['the zoom slider', async (r: ReturnType<typeof render>) => {
+      const sl = within(r.getByRole('contentinfo', { name: 'Bottom bar' })).getByRole('slider', { name: 'Zoom' })
+      await act(async () => { fireEvent.change(sl, { target: { value: '150' } }) })
+    }],
+    ['the zoom % button', async (r: ReturnType<typeof render>) => {
+      await act(async () => { fireEvent.click(within(r.getByRole('contentinfo', { name: 'Bottom bar' })).getByRole('button', { name: /^Zoom level/ })) })
+    }],
+  ])('%s applies a pending crop first', async (_name, zoom) => {
+    const { adapter, r } = await mount(three())
+    await inView({ s0: 1, s1: 0.4 })
+    await pickCrop()
+    expect(adapter.saveCalls).toHaveLength(0)
+    await zoom(r)
+    await waitFor(() => expectCropApplied(lastSave(adapter).slides![0].elements[0]))
+    expect(inCrop()).toBe(false)
+  })
+
   it('move down and move up each reorder in one undo step', async () => {
     const { adapter } = await mount(three())
     await act(async () => { fireEvent.click(header('s0').getByRole('button', { name: 'Move slide down' })) })
@@ -255,6 +319,23 @@ describe('CarouselEditor layout="rail": stacked slides (§587 M2)', () => {
     expect(added.elements).toEqual([])
     expect(slideIds(lastSave(adapter))[0]).toBe('s1')
     expect(counter(r).textContent).toContain('2 / 4')
+  })
+
+  it('deleting another slide from its header keeps the active slide and its selection', async () => {
+    const { adapter, r } = await mount(three())
+    await inView({ s0: 0.5, s1: 1, s2: 0.5 })
+    await pressClick(wrapper('el-1'))
+    expect(counter(r).textContent).toContain('2 / 3')
+    expect(chromeOf('el-1').style.outline).toContain('solid')
+    const del = header('s2').getByRole('button', { name: 'Delete slide' })
+    await act(async () => {
+      pointer(del, 'pointerdown', { clientX: 5, clientY: 5 })
+      pointer(window, 'pointerup', { clientX: 5, clientY: 5 })
+      fireEvent.click(del)
+    })
+    await waitFor(() => expect(slideIds(lastSave(adapter))).toEqual(['s0', 's1']))
+    expect(counter(r).textContent).toContain('2 / 2')
+    expect(chromeOf('el-1').style.outline).toContain('solid')
   })
 
   it('the title field writes `title` once, on Enter, as one undo step', async () => {

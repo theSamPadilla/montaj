@@ -187,11 +187,15 @@ describe('CarouselEditor layout="rail" shell', () => {
     r.unmount()
   })
 
-  it('"?" opens the Controls window', async () => {
+  it('the help icon opens the Controls window', async () => {
     const r = mount()
     await waitFor(() => wrapperOf('el-img'))
     expect(r.queryByText('Editor controls')).toBeNull()
-    await act(async () => { fireEvent.click(within(r.getByRole('contentinfo', { name: 'Bottom bar' })).getByRole('button', { name: 'Controls' })) })
+    const btn = within(r.getByRole('contentinfo', { name: 'Bottom bar' })).getByRole('button', { name: 'Controls' })
+    // An icon, not a typed glyph.
+    expect(btn.textContent).toBe('')
+    expect(btn.querySelector('svg')).not.toBeNull()
+    await act(async () => { fireEvent.click(btn) })
     expect(r.getByText('Editor controls')).toBeTruthy()
   })
 
