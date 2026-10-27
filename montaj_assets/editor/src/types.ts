@@ -971,6 +971,15 @@ export interface EditorAdapter<P extends Project = Project> {
   generateImage?(prompt: string, projectId: string): Promise<{ path: string }>
 
   /**
+   * Optional: cut the person out of the image at `src` (an image element's
+   * own `src`) and return the host path of a new PNG with alpha, the same
+   * pixel size, saved in the project. The source file is left as it is. Hosts
+   * without background removal omit this; the photo toolbar then has no
+   * Remove background.
+   */
+  removeBackground?(src: string, projectId: string): Promise<{ path: string }>
+
+  /**
    * Optional: watch a host file path for changes, invoking `onChange` whenever
    * the file is rewritten. Returns an unsubscribe function. The editor uses this
    * to auto-recover an overlay preview when its source is edited on disk. Hosts

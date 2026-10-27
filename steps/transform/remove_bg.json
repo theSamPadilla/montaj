@@ -1,33 +1,33 @@
 {
   "name": "remove_bg",
-  "description": "Remove video background using RVM on the CPU. Outputs ProRes 4444 .mov with alpha + VP9 WebM preview. LONG-RUNNING: time grows with pixel count, roughly 0.1 s per megapixel per frame, so minutes per clip. Always run via --inputs batch mode, fire in the background, and pass --progress to emit per-frame JSON progress lines to stderr so you can monitor status. Pass max-height to matte at the size the clip is shown rather than the camera's; use downsample 1.0 for sharper edges (slower).",
+  "description": "Remove video or image background (RVM, CPU): a video gives a ProRes 4444 .mov with alpha + VP9 WebM preview, an image a PNG with alpha. Video is LONG-RUNNING, about 0.1 s per megapixel per frame: batch clips with inputs, run in the background with progress (per-frame JSON on stderr). Pass max-height to matte at the size the clip is shown; downsample 1.0 for sharper video edges (slower).",
   "input": {
-    "type": "video",
-    "description": "Source video file"
+    "type": "media",
+    "description": "Source video or image"
   },
   "output": {
     "type": "json",
-    "description": "{ nobg_src: ProRes 4444 .mov for render, nobg_preview_src: VP9 WebM for browser preview }"
+    "description": "{ nobg_src: .mov for render, nobg_preview_src: WebM preview }; an image: { out: PNG, width, height }"
   },
   "params": [
     {
       "name": "input",
       "type": "string",
       "required": false,
-      "description": "Single source video file (mutually exclusive with inputs)"
+      "description": "One source file (not with inputs)"
     },
     {
       "name": "inputs",
       "type": "array",
       "required": false,
-      "description": "Multiple source video files"
+      "description": "Several source files"
     },
     {
       "name": "out",
       "type": "string",
       "required": false,
       "ext": ".mov",
-      "description": "Output path (only valid with --input, default: {stem}_nobg.mov)"
+      "description": "Output path, with input only. Default {stem}_nobg.mov, an image {stem}-cutout.png"
     },
     {
       "name": "downsample",
@@ -36,7 +36,7 @@
       "default": 0.5,
       "min": 0.25,
       "max": 1.0,
-      "description": "Inference resolution ratio (0.25-1.0), relative to the frame RVM is given. 1.0 = full resolution (about 4x slower, sharper edges and finer hair/detail)."
+      "description": "Video inference resolution ratio, relative to the frame RVM is given. 1.0 = full resolution (about 4x slower, sharper hair)."
     },
     {
       "name": "max-height",

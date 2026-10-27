@@ -1431,6 +1431,49 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     await state.replaceImage(slideId, elementId, { src, crop }).catch(() => {})
   }
 
+  // Remove background (§587 R3): the host cuts the person out (a new PNG of
+  // the same pixel size), and the cutout takes the photo's place in ONE write
+  // that keeps the box and the crop and adds it to `project.assets`. The
+  // original file stays. One run per image at a time.
+  const [removingBgIds, setRemovingBgIds] = useState<ReadonlySet<string>>(() => new Set())
+  const removingBgRef = useRef(new Set<string>())
+  async function handleRemoveBackground(slideId: string, elementId: string) {
+    const imageNow = () => {
+      const el = slidesRef.current.find(s => s.id === slideId)?.elements.find(e => e.id === elementId)
+      return el?.type === 'image' ? el : undefined
+    }
+    const start = imageNow()
+    if (!start || isLocked(start) || !adapter.removeBackground || removingBgRef.current.has(elementId)) return
+    const running = (on: boolean) => {
+      if (on) removingBgRef.current.add(elementId)
+      else removingBgRef.current.delete(elementId)
+      if (mountedRef.current) setRemovingBgIds(new Set(removingBgRef.current))
+    }
+    running(true)
+    try {
+      let path: string
+      try {
+        ({ path } = await adapter.removeBackground(start.src, project.id))
+      } catch (e) {
+        reportError("Couldn't remove the background", e)
+        return
+      }
+      // Written only onto the same photo: not one replaced, locked or removed meanwhile.
+      const live = imageNow()
+      if (!mountedRef.current || !live || isLocked(live) || live.src !== start.src) return
+      flushNudge()
+      const asset: Asset = { id: crypto.randomUUID(), src: path, type: 'image', name: path.split(/[\\/]/).pop() }
+      await state.editElements(slideId, (els) => els.map((el): CarouselElement => {
+        if (el.id !== elementId || el.type !== 'image') return el
+        // `mediaId` named the old file.
+        const { mediaId: _mediaId, ...kept } = el
+        return { ...kept, src: path }
+      }), [asset]).catch(() => {})
+    } finally {
+      running(false)
+    }
+  }
+
   // ── Images onto the canvas (§556 M7) ──
   // An image dropped on the canvas (from the host's Media panel, or files from
   // the OS) and the host's `addImage` each put images on a slide, shaped like
@@ -2411,6 +2454,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
               else enterCrop(selectedElementId, selectedSlide.id)
             }}
             onReplaceImage={state.isEditingAllowed ? handleReplaceImage : undefined}
+            onRemoveBackground={adapter.removeBackground && state.isEditingAllowed ? handleRemoveBackground : undefined}
+            removingBackground={!!selectedElementId && removingBgIds.has(selectedElementId)}
             overlaySchemas={overlaySchemas}
             schemasLoading={schemasLoading}
             hiddenElementIds={hiddenElementIds}

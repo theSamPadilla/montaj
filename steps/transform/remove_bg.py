@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Remove video background using RVM (Robust Video Matting) on onnxruntime's CPU provider.
 
-Outputs ProRes 4444 .mov with alpha channel.
+Outputs ProRes 4444 .mov with alpha channel; an image input, a PNG with alpha.
 """
 import json
 import os
@@ -324,6 +324,69 @@ def _process_one(
 
 
 # ---------------------------------------------------------------------------
+# A still image: one frame, a PNG with alpha
+# ---------------------------------------------------------------------------
+
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".gif"}
+# RVM's own pass mattes a still best near this long side (measured on the
+# fixture portrait: a 1536 px pass left holes in the helmet).
+_IMAGE_PASS_PX = 512
+
+
+def _is_image(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in _IMAGE_EXTS
+
+
+def _image_out(input_path: str, out: str | None) -> str:
+    """<stem>-cutout.png beside the input, or out as a .png: serve's
+    _project names the step's .mov when out is left off."""
+    if not out:
+        return f"{os.path.splitext(input_path)[0]}-cutout.png"
+    root, ext = os.path.splitext(out)
+    return out if ext.lower() == ".png" else root + ".png"
+
+
+def _image_ratio(width: int, height: int) -> float:
+    return round(min(1.0, _IMAGE_PASS_PX / max(width, height)), 4)
+
+
+def _process_image(input_path: str, output_path: str, session, max_height: int | None) -> dict:
+    """Matte one still: EXIF orientation applied, the recurrent state at its
+    start. Opaque pixels keep the photo's own colour, edges take RVM's
+    foreground, and the photo's own transparency stays. The colour profile is
+    kept for an RGB photo."""
+    from PIL import Image, ImageOps, UnidentifiedImageError
+
+    try:
+        with Image.open(input_path) as im:
+            icc = im.info.get("icc_profile") if im.mode in ("RGB", "RGBA", "P") else None
+            im = ImageOps.exif_transpose(im)
+            rgba = im.convert("RGBA")
+    except (UnidentifiedImageError, OSError) as e:
+        fail("invalid_image", f"Could not read {os.path.basename(input_path)} as an image: {e}")
+
+    width, height = _target_size(rgba.width, rgba.height, 0, max_height)
+    if (width, height) != rgba.size:
+        rgba = rgba.resize((width, height), Image.LANCZOS)
+    arr = np.asarray(rgba)
+    src = arr[..., :3].transpose(2, 0, 1)[None].astype(np.float32) / 255.0
+    zeros = np.zeros((1, 1, 1, 1), dtype=np.float32)
+    fgr, pha, *_ = session.run(_OUTPUT_NAMES, {
+        "src": src, "r1i": zeros, "r2i": zeros, "r3i": zeros, "r4i": zeros,
+        "downsample_ratio": np.array([_image_ratio(width, height)], dtype=np.float32),
+    })
+
+    alpha = (pha[0, 0] * (arr[..., 3] / 255.0) * 255).round().clip(0, 255).astype(np.uint8)
+    fg = (fgr[0].transpose(1, 2, 0) * 255).round().clip(0, 255).astype(np.uint8)
+    rgb = np.where((alpha == 255)[..., None], arr[..., :3], fg)
+    out = Image.fromarray(np.dstack([rgb, alpha]), "RGBA")
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    out.save(output_path, format="PNG", **({"icc_profile": icc} if icc else {}))
+    check_output(output_path)
+    return {"out": output_path, "width": width, "height": height}
+
+
+# ---------------------------------------------------------------------------
 # WebM preview generation (VP9 with alpha — browser-compatible)
 # ---------------------------------------------------------------------------
 
@@ -396,11 +459,11 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Remove video background using RVM. Outputs ProRes 4444 .mov with alpha"
+        description="Remove video or image background using RVM. Outputs ProRes 4444 .mov or PNG with alpha"
     )
 
     input_group = parser.add_mutually_exclusive_group(required=True)
-    input_group.add_argument("--input", help="Single source video file")
+    input_group.add_argument("--input", help="Single source video or image file")
     input_group.add_argument("--inputs", nargs="+", help="Multiple source video files")
 
     parser.add_argument("--out", help="Output path (only valid with --input, default: {stem}_nobg.mov)")
@@ -438,7 +501,10 @@ def main():
     # One session serves every clip, sequentially.
     session = _load_session()
 
-    if args.input:
+    if args.input and _is_image(args.input):
+        print(json.dumps(_process_image(args.input, _image_out(args.input, args.out), session, args.max_height)))
+
+    elif args.input:
         # Single file mode
         stem = os.path.splitext(args.input)[0]
         out = args.out or f"{stem}_nobg.mov"
@@ -447,18 +513,23 @@ def main():
         print(json.dumps({"nobg_src": mov_path, "nobg_preview_src": webm_path}))
 
     else:
-        # Multiple files mode
-        mov_paths = []
+        # Multiple files mode: every matte first, then the previews. A still is done in the first pass.
+        done = []
         for path in args.inputs:
+            if _is_image(path):
+                done.append(_process_image(path, _image_out(path, None), session, args.max_height))
+                continue
             stem = os.path.splitext(path)[0]
             out = f"{stem}_nobg.mov"
-            mov_paths.append(
-                _process_one(path, out, session, args.downsample, args.max_height, args.progress))
+            done.append(_process_one(path, out, session, args.downsample, args.max_height, args.progress))
 
         results = []
-        for mov_path in mov_paths:
-            webm_path = _make_webm_preview(mov_path, emit_progress=args.progress)
-            results.append({"nobg_src": mov_path, "nobg_preview_src": webm_path})
+        for item in done:
+            if isinstance(item, dict):
+                results.append(item)
+                continue
+            webm_path = _make_webm_preview(item, emit_progress=args.progress)
+            results.append({"nobg_src": item, "nobg_preview_src": webm_path})
 
         print(json.dumps(results))
 
