@@ -21,7 +21,7 @@ from lib import transcripts
 from lib.common import ffprobe_bin, ff_path
 from lib.speech_lines import norm, sidecar_for
 
-BRIEF_VERSION = 5     # 5: the canvas line, caption by default, sound effects (CV)
+BRIEF_VERSION = 6     # 6: the b-roll rules; 5: the canvas line, caption by default, sound effects (CV)
 LONG_BROLL_S = 20.0          # b-roll at least this long gets its shots listed and a sheet
 PROFILE_SECTIONS = ("Titles & overlays", "Format")
 LOOKED = ("probe", "snapshot")   # steps whose answer the brief already holds   # the style profile's sections that bear on the edit
@@ -172,6 +172,15 @@ def _profile_text(project):
     return out
 
 
+# CV (52's visual compare; Sam: "primarily bad b-roll placement"): general rules for placing b-roll, kept short.
+BROLL_RULES = ("A shot under a line that names an action shows that action: find its moment (shot labels, a half-second "
+               "sheet around it, an app's own on-screen readout) and look at a frame of the placed span; with no footage "
+               "of it, a graphic, never a near miss. Crop to what the line is about, never window chrome or sidebars, never "
+               "past the action. A list gets one shot per item, each from its own moment and labelled item → effect the "
+               "same way. A small change gets a ring or an arrow when it happens. Before finishing, walk the script: "
+               "every beat its own visual.")
+
+
 def _canvas_line(project):
     """CV (Sam): a canvas taken from the footage is a default, never the AI's choice; it picks the aspect itself."""
     st = project.get("settings") or {}
@@ -307,13 +316,14 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
                      f"the source).{seen}")
             bare = sum(1 for sh in shots if not sh.get("label"))
             if bare:   # run 4 (#50-56): b-roll added by unlabelled number swapped the mannequin and the lift
-                W.append(f"Label the shots first, from the sheet, before adding any: run_step shots {{clip: \"{s.get('id', '')}\", "
-                         f"labels: {{\"1\": \"a few words\", ...}}}} names each by what happens in it; {bare} of {len(shots)} "
+                W.append(f"Label the shots first, from the sheet, before adding any: run_step {{name: \"shots\", params: {{clip: "
+                         f"\"{s.get('id', '')}\", labels: {{\"1\": \"a few words\", ...}}}}}} names each by what happens in it; {bare} of {len(shots)} "
                          "have no label yet. Every later read shows them.")
             W += [f"- {sh['n']}: {sh['start']:.1f}-{sh['end']:.1f}" + (f" {sh['label']}" if sh.get("label") else "")
                   for sh in shots]
             W.append(f"Then add b-roll by shot: edit_timeline {{op: \"add\", item: {{source: \"{s.get('id', '')}\", shot: n, "
                      "start}}, which takes the shot's span; for a closer look at a moment, snapshot the clip.")
+        W.append(BROLL_RULES)
         W.append("")
 
     # steps

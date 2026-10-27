@@ -112,7 +112,7 @@ def test_a_long_b_roll_gets_its_shots_and_one_sheet_a_short_one_does_not(proj):
     # run 4 (#50-56): b-roll added by unlabelled shot number swapped the mannequin and the lift; label first
     roll = text.split("## B-roll")[1].split("##")[0]
     assert roll.index("Label the shots first") < roll.index("- 1: 0.0-4.9"), roll
-    assert 'shots {clip: "clip-1", labels: {"1": "a few words"' in roll, roll
+    assert 'run_step {name: "shots", params: {clip: "clip-1", labels: {"1": "a few words"' in roll, roll
     # how to use them without looking again: add b-roll by shot; snapshot is the one closer look
     assert 'edit_timeline {op: "add", item: {source: "clip-1", shot: n, start}}' in text, text
     assert "snapshot" in text.split("## B-roll")[1].split("##")[0]
@@ -230,3 +230,14 @@ def test_sound_effects_are_synth_audio_and_an_ask_is_consent(proj):
     text = pb.build(p, str(d), str(ROOT), **Fns().kw())["text"]
     assert "Sound effects: `synth_audio`, free" in text
     assert "music or a voice the prompt asks for is a yes to spend on it" in text
+
+
+# CV (52's visual compare, Sam: "primarily bad b-roll placement"): the general b-roll rules, where the brief lists b-roll.
+def test_the_b_roll_section_carries_the_placement_rules(proj):
+    p, d = proj
+    text = pb.build(p, str(d), str(ROOT), **Fns().kw())["text"]
+    broll = text.split("## B-roll")[1].split("\n## ")[0]
+    for s in ["shows that action", "half-second sheet", "never a near miss", "never window chrome",
+              "one shot per item", "a ring or an arrow", "every beat its own visual"]:
+        assert s in broll, s
+    assert 'run_step {name: "shots", params: {clip: ' in broll, "the call's own shape, never a bare name"
