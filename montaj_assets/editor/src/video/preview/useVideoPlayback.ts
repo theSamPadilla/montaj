@@ -183,6 +183,13 @@ export function useVideoPlayback(
   const videoGainRef  = useRef<[GainNode | null, GainNode | null]>([null, null])
   const [isPlaying, setIsPlaying] = useState(false)
   const isPlayingRef = useRef(false)
+  // Bumped by every press of play or pause: a play() waiting on `canplay`
+  // only fires if no press came after it (see `playOrWait`).
+  const playIntentRef = useRef(0)
+  // A press of play at the end rewinds first and plays once the seek to 0
+  // has landed (see `togglePlay` and the effect after the scrub effect).
+  const playFromStartRef = useRef(false)
+  const togglePlayRef = useRef<() => void>(() => {})
   // Keep ref in sync so effects with narrow deps can read current playing state
   useEffect(() => { isPlayingRef.current = isPlaying }, [isPlaying])
   // §190: what the preview mixer carries (see legacy-mixer.ts). While it is
@@ -298,14 +305,38 @@ export function useVideoPlayback(
     if (cur) applyClipVolume(cur)
     const w = window as Window & MontajWindow
     const ctx = w.__montajSharedCtx
+    const intent = ++playIntentRef.current
     if (ctx && ctx.state === 'suspended') {
-      ctx.resume().then(
-        () => { void video.play().catch(() => {}) },
-        () => { void video.play().catch(() => {}) },
-      )
+      ctx.resume().then(() => playOrWait(video, intent), () => playOrWait(video, intent))
     } else {
-      void video.play().catch(() => {})
+      playOrWait(video, intent)
     }
+  }
+
+  /**
+   * `play()` for a press of play. A refusal is logged, never swallowed: the
+   * element stays paused and the play glyph stays up, so a silent refusal is a
+   * click that does nothing. A slot still loading (its src just set, or a slow
+   * tail-moov fetch) refuses with an AbortError or before it has data: wait
+   * for `canplay` and play then, unless play was pressed again meanwhile or
+   * the slot is no longer the active one.
+   */
+  function playOrWait(video: HTMLVideoElement, intent: number) {
+    video.play().catch((err: unknown) => {
+      const e = err as { name?: string; message?: string } | null
+      console.warn(`[montaj] play() refused on the preview (${e?.name ?? 'Error'}: ${e?.message ?? String(err)}); src: ${video.currentSrc || video.src || 'none'}`)
+      if (video.error) return
+      const onCanPlay = () => {
+        video.removeEventListener('canplay', onCanPlay)
+        if (intent === playIntentRef.current && video === getActiveVideo() && video.paused) {
+          video.play().catch((again: unknown) => {
+            const a = again as { name?: string; message?: string } | null
+            console.warn(`[montaj] play() refused again once the clip could play (${a?.name ?? 'Error'}: ${a?.message ?? String(again)})`)
+          })
+        }
+      }
+      video.addEventListener('canplay', onCanPlay)
+    })
   }
 
   // Start playback on a slot during an automated clip-boundary switch (context
@@ -639,36 +670,16 @@ export function useVideoPlayback(
       if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable) return
       if (e.code === 'Space') {
         e.preventDefault()
-        // GESTURE-ANCHORED: resume the AudioContext synchronously here. After
-        // a hard page refresh, the context was first created in a useEffect
-        // (no gesture) and stays suspended. With <video> wired through
-        // MediaElementSource → GainNode → ctx.destination, a suspended context
-        // also gates video frame production in some browsers (Safari notably).
-        // Resuming inside the keydown handler credits the resume() call as
-        // gesture-driven, unblocking both audio and frame advance.
-        resumeAudioContextFromGesture()
-        if (isCanvasProject) { setIsPlaying(prev => !prev); return }
-        if (inGapRef.current) {
-          if (gapRAFRef.current !== null) {
-            cancelAnimationFrame(gapRAFRef.current)
-            gapRAFRef.current = null
-            setIsPlaying(false)
-          } else {
-            gapFromRef.current = lastTimeRef.current
-            gapWallRef.current = performance.now()
-            gapRAFRef.current  = requestAnimationFrame(tickGap)
-            setIsPlaying(true)
-          }
-          return
-        }
-        const video = getActiveVideo()
-        if (!video) return
-        if (video.paused) { playFromGesture(video) } else { video.pause() }
+        // The same path as a click on the preview, through a ref so it is
+        // never a stale render's (it used to carry its own copy, which lacked
+        // the paused-in-a-gap and at-the-end branches). `togglePlay` resumes
+        // the AudioContext synchronously, inside this gesture.
+        togglePlayRef.current()
       }
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [isCanvasProject])
+  }, [])
 
   // Track clip identity to avoid reloading when only overlays change
   const clipsSourceRef = useRef('')
@@ -855,6 +866,14 @@ export function useVideoPlayback(
       }, 100)
     }
   }, [currentTime, clips])
+
+  // The second half of a press of play at the end: the scrub effect above has
+  // just moved to 0 (it runs first, being declared first), so play from there.
+  useEffect(() => {
+    if (!playFromStartRef.current || currentTime > 0.05) return
+    playFromStartRef.current = false
+    togglePlayRef.current()
+  }, [currentTime])
 
   const handleTimeUpdate = useCallback(() => {
     // Gap clock owns time during gaps — ignore timeupdate events from the paused video element
@@ -1068,7 +1087,20 @@ export function useVideoPlayback(
     // AudioContext synchronously inside this user-gesture call so a wired
     // <video> isn't trapped in a suspended Web Audio graph after page refresh.
     resumeAudioContextFromGesture()
-    if (isCanvasProject) { setIsPlaying(p => !p); return }
+    playIntentRef.current++
+    if (isCanvasProject) {
+      // At the end there is nowhere to run (the first tick clamps and stops):
+      // play again from the start.
+      const maxEnd = canvasMaxEndRef.current
+      if (!isPlayingRef.current && maxEnd > 0 && lastTimeRef.current >= maxEnd - 1e-3) {
+        lastTimeRef.current = 0
+        emitTime(0)
+        setIsPlaying(true)
+        return
+      }
+      setIsPlaying(p => !p)
+      return
+    }
     // If current time is in a gap/image section (not inside any video clip), drive via gap clock
     const t = lastTimeRef.current
     const inVideoClip = clips.some(c => t >= c.start && t < c.end)
@@ -1092,6 +1124,11 @@ export function useVideoPlayback(
             gapNextIdxRef.current = clips.length
             gapRAFRef.current     = requestAnimationFrame(tickGap)
             setIsPlaying(true)
+          } else if (t >= 0.05) {
+            // At the end: nowhere to run. Seek to 0 through the store (the
+            // scrub effect loads the first clip) and play once it lands.
+            playFromStartRef.current = true
+            onTimeUpdate(0)
           }
           return
         }
@@ -1109,6 +1146,7 @@ export function useVideoPlayback(
     if (!video) return
     if (video.paused) { playFromGesture(video) } else { video.pause() }
   }
+  togglePlayRef.current = togglePlay
 
   // §190: whether the preview mixer plays this overlay-track video's sound
   // (OverlayItemsLayer mutes it when it does). Same rule as useEnginePlayback.

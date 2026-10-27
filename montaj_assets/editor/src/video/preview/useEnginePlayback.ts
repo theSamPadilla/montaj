@@ -634,6 +634,12 @@ export function useEnginePlayback(
     if (engine.status().transport !== 'playing') {
       // `play()` runs a tick, which emits the playhead for free.
       engine.play()
+      // Parked at or past the end, `play()` has nowhere to run and reports
+      // 'ended'. A press of play there plays again from the start.
+      if (engine.status().transport === 'ended') {
+        engine.seek(0)
+        engine.play()
+      }
       return
     }
     engine.pause()

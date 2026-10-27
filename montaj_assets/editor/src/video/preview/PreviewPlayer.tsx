@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react'
 import { containsTime, geometryAt, hasCropKeyframes } from '@bycrux/timeline-core'
 import { videoTransformContainerStyle, videoTransformBoxPct, mediaBoxStyle, perAxisRatio, zoomTo, type VideoTransform } from './transformStyle'
 import type { EditorProject as Project, VisualItem } from '../../schema'
@@ -54,6 +54,52 @@ export interface ScrubHandle {
   acquireDemux: (src: string) => Promise<AcquiredDemux>
   /** §190 T4: the mixer's scrub grain sink while the engine is in mixer mode, else null. */
   mixerScrub: () => MixerScrub | null
+}
+
+/** How far a press on the selected clip may travel and still be a click. */
+const CLICK_SLOP_PX = 4
+
+/**
+ * Whether a click on the play glyph (drawn at the frame's centre, click-through)
+ * would play: what the browser hit-tests there must be a play target
+ * (`data-montaj-play-target`: the play toggle, or the selected clip's move box,
+ * which plays on a click). A selected overlay or a caption box under the centre
+ * takes the click for itself, so the glyph hides rather than promise a play.
+ *
+ * Re-checked after every render and on any DOM change in the frame (an overlay
+ * mounts after its compile resolves), coalesced to one hit test per frame.
+ * Off screen, unlaid out or without hit testing, it stays shown.
+ */
+function useGlyphClickPlays(containerRef: RefObject<HTMLDivElement | null>, isPlaying: boolean): boolean {
+  const [plays, setPlays] = useState(true)
+  const check = useCallback(() => {
+    const el = containerRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    // No layout or no hit testing (jsdom): nothing to check against.
+    if (!r.width || !r.height || typeof document.elementFromPoint !== 'function') { setPlays(true); return }
+    const x = r.left + r.width / 2
+    const y = r.top + r.height / 2
+    if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) { setPlays(true); return }
+    const hit = document.elementFromPoint(x, y)
+    setPlays(!hit || !el.contains(hit) || !!hit.closest('[data-montaj-play-target]'))
+  }, [containerRef])
+  useLayoutEffect(() => { if (!isPlaying) check() })
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el || isPlaying) return
+    let raf: number | null = null
+    const schedule = () => { if (raf === null) raf = requestAnimationFrame(() => { raf = null; check() }) }
+    const mo = new MutationObserver(schedule)
+    mo.observe(el, { subtree: true, childList: true, attributes: true })
+    window.addEventListener('resize', schedule)
+    return () => {
+      mo.disconnect()
+      window.removeEventListener('resize', schedule)
+      if (raf !== null) cancelAnimationFrame(raf)
+    }
+  }, [containerRef, isPlaying, check])
+  return plays
 }
 
 /** Stable no-op for the legacy playback path, which has no transport-rate knob. */
@@ -547,6 +593,8 @@ function PreviewSurface({
     return () => { transportRef.current = null }
   }, [transportRef, guardedTogglePlay, isPlaying, setRate])
 
+  const glyphClickPlays = useGlyphClickPlays(containerRef, isPlaying)
+
   // Push play/pause to the host. Held in a ref so a new callback identity
   // never re-fires it; only a real `isPlaying` change does.
   const onPlayingChangeRef = useRef(onPlayingChange)
@@ -662,6 +710,9 @@ function PreviewSurface({
     e.stopPropagation(); e.currentTarget.setPointerCapture?.(e.pointerId)
     xfDragRef.current = { kind: 'move', startClient: { x: e.clientX, y: e.clientY }, start: baseXf }
   }
+  // The selected clip's move box covers the whole picture, above the play
+  // toggle. A press that never travels CLICK_SLOP_PX is a click, and a click on
+  // the picture plays, selected or not; only a real drag moves the clip.
   const onXfScaleDown = (e: ReactPointerEvent) => {
     e.stopPropagation(); e.currentTarget.setPointerCapture?.(e.pointerId)
     const r = containerRef.current?.getBoundingClientRect()
@@ -674,6 +725,7 @@ function PreviewSurface({
     const d = xfDragRef.current
     if (!d) return
     if (d.kind === 'move') {
+      if (!liveXf && Math.hypot(e.clientX - d.startClient.x, e.clientY - d.startClient.y) < CLICK_SLOP_PX) return
       const ox = (d.start.offsetX ?? 0) + ((e.clientX - d.startClient.x) / (frameSize.w || 1)) * 100
       const oy = (d.start.offsetY ?? 0) + ((e.clientY - d.startClient.y) / (frameSize.h || 1)) * 100
       setLiveXf({ ...d.start, offsetX: ox, offsetY: oy })
@@ -685,8 +737,10 @@ function PreviewSurface({
   }
   const onXfUp = (e: ReactPointerEvent) => {
     const live = liveXf
+    const wasMove = xfDragRef.current?.kind === 'move'
     xfDragRef.current = null
     setLiveXf(null)
+    if (!live && wasMove) { guardedTogglePlay(); return }
     if (live && selectedClip && onOverlayChange) {
       // Option is read off the release, as useDragOverlay reads it.
       onOverlayChange(selectedClip.id, { offsetX: live.offsetX, offsetY: live.offsetY, ...zoomChanges(live) }, { shiftAnimation: e.altKey })
@@ -705,7 +759,7 @@ function PreviewSurface({
     <div style={FIT_PARENT_STYLE}>
     <div ref={containerRef} data-montaj-preview-frame="" className="relative bg-black overflow-hidden rounded" style={{ ...fitBoxStyle(RENDER_W, RENDER_H), isolation: 'isolate' }}>
       {isCanvasProject ? (
-        <div className="absolute inset-0 cursor-pointer" style={{ zIndex: 10 }} role="button" aria-label="Play or pause" onClick={guardedTogglePlay} />
+        <div className="absolute inset-0 cursor-pointer" style={{ zIndex: 10 }} role="button" aria-label="Play or pause" data-montaj-play-target="" onClick={guardedTogglePlay} />
       ) : clips.length === 0 ? (
         <div className="absolute inset-0 flex items-center justify-center text-gray-600 text-sm">
           No clips
@@ -811,6 +865,7 @@ function PreviewSurface({
               left: `${xfBox.left}%`, top: `${xfBox.top}%`, width: `${xfBox.width}%`, height: `${xfBox.height}%`,
               outline: '2px solid var(--editor-selection)', cursor: 'move', pointerEvents: 'auto', touchAction: 'none',
             }}
+            data-montaj-play-target=""
           />
           {([['nw', 0, 0], ['ne', 1, 0], ['sw', 0, 1], ['se', 1, 1]] as const).map(([k, dx, dy]) => (
             <div
@@ -842,12 +897,14 @@ function PreviewSurface({
           style={{ zIndex: 10 }}
           role="button"
           aria-label="Play or pause"
+          data-montaj-play-target=""
           onClick={guardedTogglePlay}
         />
       )}
 
-      {/* Play button overlay — shown when paused */}
-      {!isPlaying && (clips.length > 0 || isCanvasProject) && (
+      {/* Play glyph: paused, and only where a click lands on a play target
+          (see `useGlyphClickPlays`). */}
+      {!isPlaying && glyphClickPlays && (clips.length > 0 || isCanvasProject) && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none" style={{ zIndex: 100 }}>
           <div className="w-14 h-14 rounded-full bg-black/50 flex items-center justify-center">
             <svg className="w-6 h-6 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
