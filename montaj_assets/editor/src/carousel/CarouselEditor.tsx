@@ -748,6 +748,20 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     })
   }
 
+  /** A font pick: `fontFamily` and `googleFonts` together, one undo step; a locked text is left alone. */
+  function setTextFont(slideId: string, elementId: string, fontFamily: string, googleFonts: string[]) {
+    void state.editElements(slideId, (els) => {
+      let changed = false
+      const next = els.map((el) => {
+        if (el.id !== elementId || isLocked(el) || !isTextOverlay(el)) return el
+        const styled = applyTextStyle(el, { props: { fontFamily }, googleFonts: googleFonts.length ? googleFonts : undefined })
+        if (styled !== el) changed = true
+        return styled
+      })
+      return changed ? next : els
+    })
+  }
+
   /** The lock badge: unlocks one element (not the selection), as its own undo
    *  step; a pending crop is applied first, like the lock key. */
   function unlockElement(elementId: string) {
@@ -2344,6 +2358,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             mode={mode}
             onOpenTextColour={openTextColour}
             brandFont={brand?.fonts?.heading}
+            brandGoogleFonts={brand?.fonts?.googleFonts}
+            onSetFont={setTextFont}
           />
         ) : undefined
       }
