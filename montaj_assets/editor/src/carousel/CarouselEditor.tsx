@@ -10,6 +10,7 @@ import SlideCanvas, { type CropExit, type SlideCanvasCropControl } from './Slide
 import SlidePropertyPanel from './SlidePropertyPanel'
 import AddElementMenu from './AddElementMenu'
 import RailLayout from './RailLayout'
+import { TextPanel, ElementsPanel, AiImagePanel } from './RailPanels'
 import StackedSlides, { SlideHeader } from './StackedSlides'
 import SlideGridView from './SlideGridView'
 import { useSlideReorderDrag } from './slideReorderDrag'
@@ -1881,6 +1882,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     </div>
   )
 
+  const panelSlideId = selectedSlide && !showPendingSurface && state.isEditingAllowed ? selectedSlide.id : null
   const railShell = (
     <RailLayout
       topLeft={slots?.carouselTopLeft}
@@ -1895,6 +1897,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         media: slots?.carouselMediaPanel,
         brand: slots?.carouselBrandPanel,
         notes: slots?.carouselNotesPanel,
+        // The editor's own panels; a host's `railPanels` entry wins.
+        text: <TextPanel project={project} slideId={panelSlideId} onAddElement={handleAddElement} textTemplate={textTemplate} />,
+        elements: <ElementsPanel project={project} adapter={adapter} slideId={panelSlideId} onAddElement={handleAddElement} />,
+        'ai-image': <AiImagePanel project={project} adapter={adapter} slideId={panelSlideId} onAddElement={handleAddElement} />,
         ...railPanels,
       }}
       onBeforeToggle={applyCrop}

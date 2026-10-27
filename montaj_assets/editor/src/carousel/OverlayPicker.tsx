@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Project, OverlayElement, GlobalOverlay, EditorAdapter } from '../types'
+import { loadOverlays, newOverlayElement } from './overlayElement'
 import { Loader } from '../ui/Loader'
 
 // TODO (v2): live thumbnail rendering for each overlay card
@@ -31,24 +32,8 @@ export default function OverlayPicker({ open, onClose, project, adapter, onPick,
     setLoading(true)
     setError(null)
 
-    const promises: Promise<GlobalOverlay[]>[] = [adapter.listGlobalOverlays()]
-    if (project.profile) {
-      promises.push(adapter.listProfileOverlays?.(project.profile) ?? Promise.resolve([]))
-    }
-
-    Promise.all(promises)
-      .then(results => {
-        // Combine and dedupe by jsxPath
-        const seen = new Set<string>()
-        const combined: GlobalOverlay[] = []
-        for (const list of results) {
-          for (const o of list) {
-            if (!seen.has(o.jsxPath)) {
-              seen.add(o.jsxPath)
-              combined.push(o)
-            }
-          }
-        }
+    loadOverlays(adapter, project)
+      .then(combined => {
         setOverlays(combined)
         setLoaded(true)
       })
@@ -73,27 +58,7 @@ export default function OverlayPicker({ open, onClose, project, adapter, onPick,
   if (!open) return null
 
   function handlePick(overlay: GlobalOverlay) {
-    const [w, h] = project.settings.resolution
-    const elementW = 800
-    const elementH = 200
-    const durationProp = overlay.props.find(p => p.name === 'duration')
-    const duration = typeof durationProp?.default === 'number' ? durationProp.default : 60
-    const props = Object.fromEntries(
-      overlay.props
-        .filter(p => p.default !== undefined)
-        .map(p => [p.name, p.default])
-    )
-    const element: OverlayElement = {
-      id: crypto.randomUUID(),
-      type: 'overlay',
-      overlay: { template: overlay.jsxPath, props },
-      frame: Math.max(0, duration - 1),
-      x: Math.round(w / 2 - elementW / 2),
-      y: Math.round(h / 2 - elementH / 2),
-      w: elementW,
-      h: elementH,
-      rotation: 0,
-    }
+    const element = newOverlayElement(overlay, project.settings.resolution)
     onPick(element)
     onClose()
   }
