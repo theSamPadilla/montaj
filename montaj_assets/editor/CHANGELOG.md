@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+- Added: Remove background in the rail toolbar for a photo (§587), when the host implements the new optional `EditorAdapter.removeBackground(src, projectId)`. A spinner shows while it runs (one run per image); the cutout replaces the photo's `src` in one undo step that keeps the box and crop, drops `mediaId` and adds the cutout to `project.assets`. The original file stays. A failure goes to `onError`; a locked image's button is disabled; a photo replaced meanwhile is left as it is. `ElementToolbarProps` gains `onRemoveBackground` and `removingBackground`.
 - Added: `CarouselApi.addImage(src, options?: { asset?: { name?: string } })` also lists the image in `project.assets`, in the same save as the element (one undo step), as `setBackgroundImage` does. Fixed: `addImage` resolves `false` when nothing was written (the slide went mid-upload, or the image could not be read).
 - Fixed: the toolbar's colour swatch and Stroke popover (`shapeKind`, `strokeStateOf`) apply only to a shipped template (`shippedTemplateKey`), so a project overlay that shares a file name such as `callout-stat.jsx` gets neither control (§587).
 - Fixed: a shape, arrow or callout tile previews in the box the element is added in (`newOverlayBox`), then shrinks to the tile, so px props such as a corner radius are in scale (§587).

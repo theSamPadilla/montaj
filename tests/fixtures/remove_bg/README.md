@@ -1,0 +1,1 @@
+`person.jpg`: Mae Jemison's 1992 official NASA portrait (NASA photo S92-40463), shrunk to 409x512 with metadata removed. From https://commons.wikimedia.org/wiki/File:Mae_Carol_Jemison.jpg (original: https://images.nasa.gov/details-S92-40463.html). Licence: Public domain, work of NASA. Fetched 2026-10-26.

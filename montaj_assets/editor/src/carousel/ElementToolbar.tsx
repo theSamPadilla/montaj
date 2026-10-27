@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react'
-import { ArrowLeft, ArrowRight, Bold, Copy, Crop, Italic, Lock, LockOpen, Replace, Trash2 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Bold, Copy, Crop, Eraser, Italic, Loader2, Lock, LockOpen, Replace, Trash2 } from 'lucide-react'
 import type { CarouselElement, GlobalOverlay, OverlayElement } from '../types'
 import type { ReorderDirection } from '../state/project-reducer'
 import { cn, NumberField, Slider, Switch } from '../ui'
@@ -50,6 +50,10 @@ export interface ElementToolbarProps {
   /** Crop: enter crop mode for the image, or (while cropping) apply and leave it. */
   onToggleCrop: () => void
   onReplaceImage?: (slideId: string, elementId: string, file: File) => void | Promise<void>
+  /** Remove background on the image (the host's); absent: no button. */
+  onRemoveBackground?: (slideId: string, elementId: string) => void
+  /** The image's Remove background is running. */
+  removingBackground?: boolean
   /** The overlay prop schemas by template path, for the Edit popover. */
   overlaySchemas?: Map<string, GlobalOverlay>
   schemasLoading?: boolean
@@ -379,6 +383,8 @@ export default function ElementToolbar({
   onDelete,
   onToggleCrop,
   onReplaceImage,
+  onRemoveBackground,
+  removingBackground = false,
   overlaySchemas,
   schemasLoading,
   hiddenElementIds,
@@ -517,6 +523,20 @@ export default function ElementToolbar({
               <Replace className="h-4 w-4" aria-hidden="true" />
               Replace
             </button>
+            {onRemoveBackground && (
+              <button
+                type="button"
+                aria-busy={removingBackground}
+                disabled={locked || !canEdit || removingBackground}
+                onClick={run(() => { onPopoverChange(null); onRemoveBackground(slideId, image.id) })}
+                className={cn(textBtn, 'gap-1.5')}
+              >
+                {removingBackground
+                  ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  : <Eraser className="h-4 w-4" aria-hidden="true" />}
+                Remove background
+              </button>
+            )}
             {replace.input}
             <Sep />
           </>
