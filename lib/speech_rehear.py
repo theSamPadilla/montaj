@@ -7,7 +7,12 @@ starts survived, and an agent's "restore" put one back. cut hears such a phrase'
 the plan, and when that hearing has more words and still holds the phrase's words in order, they replace the
 phrase's words in montaj's own transcript (a copy of the old one kept), so repeat? and retake? fire as usual.
 
-Bounded: only a phrase holding a short word held long, at most MAX_PHRASES of them and MAX_AUDIO_S of audio a cut.
+Bounded: only a phrase holding a short word held long, or said at under SLOW_RATE of the clip's other phrases' rate
+(CV: "Here's how it works" twice, written once at 1.7 words a second against 3.6), at most MAX_PHRASES of them and
+MAX_AUDIO_S of audio a cut. One hearing can collapse the repeat the way the transcript did (CV: large-v3-turbo heard it
+once on the phrase's window and 0.1 s earlier; base.en heard it twice), so a phrase not heard better is heard again
+EARLY_S earlier, then with a second model; a hearing is judged on the words that end clear of the window's end (EDGE_S),
+where the next word is cut, and the phrase's own words past that edge are kept.
 """
 import json
 import os
@@ -23,6 +28,10 @@ PAD_S = 0.1              # heard this much beyond the phrase each side
 HELD_PAD_S = 0.05        # the second try starts this much before the held word
 MAX_PHRASES = 6
 MAX_AUDIO_S = 30.0
+SLOW_RATE = 0.5          # a phrase said at under this share of the clip's other phrases' rate (median) ...
+RATE_MIN_WORDS = 3       # ... with at least this many words, may hold a second saying
+EARLY_S = 0.1            # the second try's window starts this much earlier
+EDGE_S = 0.15            # words ending this close to the window's end may be cut by it: judged without them
 
 
 @dataclass
@@ -67,22 +76,37 @@ def _words(entries):
     return out
 
 
+def _rate(ws):
+    span = ws[-1][2] - ws[0][1]
+    return len(ws) / span if span > 1e-6 else float("inf")
+
+
 def slow_phrases(entries):
-    """[(first, last)] word indexes (into the transcript's words) of phrases that hold a short word held long."""
+    """[(first, last)] word indexes (into the transcript's words) of phrases that hold a short word held long, or are
+    said at under SLOW_RATE of the median rate of the clip's other phrases."""
     words = [w for _, w in _words(entries)]
-    out, i = [], 0
+    spans, i = [], 0
     while i < len(words):
         j = i
         while j + 1 < len(words) and words[j + 1][1] - words[j][2] < PHRASE_GAP_S:
             j += 1
+        spans.append((i, j))
+        i = j + 1
+    rates = {(i, j): _rate(words[i:j + 1]) for i, j in spans if j - i + 1 >= RATE_MIN_WORDS}
+    out = []
+    for i, j in spans:
         held = [k for k in range(i, j + 1) if _held(words[k])]
-        if held:
+        others = sorted(r for k, r in rates.items() if k != (i, j))
+        slow = ((i, j) in rates and others and j - i + 1 <= PHRASE_MAX_WORDS
+                and rates[(i, j)] < SLOW_RATE * others[len(others) // 2])
+        if slow and not held:
+            out.append((i, j))
+        elif held:
             if j - i + 1 > PHRASE_MAX_WORDS:
                 h = max(held, key=lambda k: words[k][2] - words[k][1])
                 out.append((max(i, h - AROUND_HELD), min(j, h + AROUND_HELD)))
             else:
                 out.append((i, j))
-        i = j + 1
     return out
 
 
@@ -105,21 +129,45 @@ def _better(orig, new):
     return k == len(want) and all(e in want for e in extra)
 
 
-def rehear_phrase(window, words):
-    """The phrase's words as heard again, or None. window(start, end) -> [(text, start, end)] in source seconds.
-    First the whole phrase; when that hears it once again, from its longest held word on, the words before kept."""
-    start, end = words[0][1] - PAD_S, words[-1][2] + PAD_S
-    heard = _clean(window(round(start, 3), round(end, 3)))
+def _accept(words, heard, end):
+    """The phrase's words as `heard` gives them, or None: when heard is better (_better), or, judged only on the words
+    of both that end clear of the window's end (EDGE_S, where the next word is cut), better there; then the phrase's
+    own words past that edge follow, none starting before the last word heard."""
     if _better(words, heard):
         return heard
-    held = [k for k, w in enumerate(words) if _held(w)]
-    if not held:
+    cut = end - EDGE_S
+    ow = [w for w in words if w[2] <= cut]
+    hw = [w for w in heard if w[2] <= cut]
+    tail = words[len(ow):]
+    if not ow or not tail or len(ow) < len(words) - len(tail) or not _better(ow, hw):
         return None
-    h = max(held, key=lambda k: words[k][2] - words[k][1])
-    at = words[h][1] - HELD_PAD_S
-    tail = [w for w in _clean(window(round(at, 3), round(end, 3))) if w[1] >= at - 1e-6]
-    combined = list(words[:h]) + tail
-    return combined if _better(words, combined) else None
+    last = hw[-1][2]
+    return hw + [(t, max(a, last), max(b, last)) for t, a, b in tail]
+
+
+def rehear_phrase(window, words, alt=None):
+    """The phrase's words as heard again, or None. window(start, end) -> [(text, start, end)] in source seconds; alt:
+    the same with a second model, or None. First the whole phrase; when that hears it once again, from its longest
+    held word on, the words before kept; then the whole phrase EARLY_S earlier; then with `alt`."""
+    start, end = words[0][1] - PAD_S, words[-1][2] + PAD_S
+    got = _accept(words, _clean(window(round(start, 3), round(end, 3))), end)
+    if got:
+        return got
+    held = [k for k, w in enumerate(words) if _held(w)]
+    if held:
+        h = max(held, key=lambda k: words[k][2] - words[k][1])
+        at = words[h][1] - HELD_PAD_S
+        tail = [w for w in _clean(window(round(at, 3), round(end, 3))) if w[1] >= at - 1e-6]
+        combined = list(words[:h]) + tail
+        if _better(words, combined):
+            return combined
+    for hear, s0 in ((window, start - EARLY_S), (alt, start)):
+        if hear is None:
+            continue
+        got = _accept(words, _clean(hear(round(max(0.0, s0), 3), round(end, 3))), end)
+        if got:
+            return got
+    return None
 
 
 def _montaj_runs(sidecar):
@@ -145,12 +193,12 @@ def candidates(sidecar):
     words = [w for _, w in _words(entries)]
     out = []
     for i, j in slow_phrases(entries):
-        held = max(w[2] - w[1] for w in words[i:j + 1] if _held(w))
+        held = max((w[2] - w[1] for w in words[i:j + 1] if _held(w)), default=max(w[2] - w[1] for w in words[i:j + 1]))
         out.append((round(held, 3), i, j, round(words[j][2] - words[i][1] + 2 * PAD_S, 3)))
     return out
 
 
-def rehear_file(sidecar, src, window, budget, only=None):
+def rehear_file(sidecar, src, window, budget, only=None, alt=None):
     """Hear the transcript's slow phrases again and put what was heard in it. Only montaj's own transcript made by runs
     is rewritten, and only when it is as read; a copy of it is kept first (<stem>.full.json). [{clip, at, was,
     heard}] for each phrase changed. only: the (first, last) phrases to hear (all when None)."""
@@ -167,7 +215,7 @@ def rehear_file(sidecar, src, window, budget, only=None):
         phrase = [w for _, w in indexed[i:j + 1]]
         if not budget.take(phrase[-1][2] - phrase[0][1] + 2 * PAD_S):
             break
-        new = rehear_phrase(window, phrase)
+        new = rehear_phrase(window, phrase, alt)
         if new:
             changes.append((indexed[i][0], indexed[j][0], phrase, new))
     if not changes:

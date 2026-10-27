@@ -97,3 +97,45 @@ def test_the_budget_bounds_the_hearings():
     assert b.take(1.3) and not b.take(1.3)
     b = rh.Budget(phrases=6, seconds=2.0)
     assert b.take(1.5) and not b.take(1.0)
+
+
+# CV (52's root cause, run pl89p): "Here's how it works. Here's how it works." in 2026-10-22 16-46-14.mov was written
+# once ("how" 0.81 s). Heard again on the phrase's own window (17.86-20.72), large-v3-turbo still heard it once, as it
+# did 0.1 s earlier; base.en heard it twice. The window ends inside "app reads", so base.en's last words differ
+# ("The average..."): the hearing is judged on the words that end clear of that edge, the phrase's tail kept.
+# Captured with montaj's transcribe on that clip, 2026-10-26 (09).
+CV = [("Here's", 17.96, 18.62), ("how", 18.62, 19.43), ("it", 19.43, 19.5), ("works,", 19.5, 20.31), ("the", 20.31, 20.4),
+      ("app", 20.4, 20.62)]
+CV_TURBO = [("", 17.86, 17.96), ("Here's", 17.96, 18.939), ("how", 18.939, 19.5), ("it", 19.5, 19.8), ("works.", 19.8, 20.72)]
+CV_TURBO_EARLY = [("", 17.76, 17.96), ("Here's", 17.96, 18.93), ("how", 18.93, 19.5), ("it", 19.5, 19.78), ("works:", 19.78, 20.71),
+                  ("the", 20.71, 20.71), ("average", 20.71, 20.72)]
+CV_BASE_EN = [("", 17.86, 17.96), ("Here's", 17.96, 18.63), ("how", 18.63, 18.97), ("it", 18.97, 19.5), ("works.", 19.5, 19.93),
+              ("Here's", 19.93, 20.05), ("how", 20.05, 20.14), ("it", 20.14, 20.169), ("works.", 20.169, 20.36),
+              ("The", 20.36, 20.46), ("average...", 20.46, 20.72)]
+
+
+def test_a_fused_repeat_one_hearing_misses_is_heard_by_the_earlier_window_or_the_second_model():
+    tried = []
+
+    def turbo(start, end):
+        tried.append(("turbo", round(start, 2)))
+        return CV_TURBO_EARLY if start < 17.8 else CV_TURBO
+
+    def base_en(start, end):
+        tried.append(("base.en", round(start, 2)))
+        return CV_BASE_EN
+    got = rh.rehear_phrase(turbo, CV, alt=base_en)
+    text = " ".join(t for t, _, _ in got)
+    assert text.count("Here's how it works") == 2, text
+    assert text.lower().endswith("the app"), "the phrase's own tail, past the window's edge, is kept"
+    assert tried == [("turbo", 17.86), ("turbo", 18.57), ("turbo", 17.76), ("base.en", 17.86)]   # whole, held word on, earlier, base.en
+    assert all(b >= a for (_, a, _), (_, b, _) in zip(got, got[1:])), "in time order"
+
+
+def test_a_stretch_said_at_under_half_the_clips_rate_is_heard_again_with_no_held_word():
+    # 12 words at 3.6 a second, then 4 at 1.8 a second, no word held 0.5 s
+    fast = [(f"w{i}", round(i / 3.6, 3), round(i / 3.6 + 0.25, 3)) for i in range(12)]
+    slow = [(t, round(4 + k * 0.6, 3), round(4 + k * 0.6 + 0.45, 3)) for k, t in enumerate(["here's", "how", "it", "works"])]
+    phrases = rh.slow_phrases(_entries(fast + slow))
+    assert (12, 15) in phrases, phrases
+    assert (0, 11) not in phrases

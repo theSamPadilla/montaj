@@ -66,6 +66,7 @@ _LABEL = {"retake": "retake?", "repeat": "retake?", "false-start": "false-start?
 _SPAN_LABEL = {"retake": "repeat?", "repeat": "repeat?", "restart": "repeat?", "false-start": "false-start?",
                "abandoned": "false-start?"}
 SEAMS_MAX = 40
+REHEAR_ALT_MODEL = "base.en"   # the second hearing of a slow phrase (CV), English only
 # A word cut off mid-way and said again (2b, kung fu run 4): letters then a hyphen, then nothing or one digit (whisper wrote
 # " Uni-3" for "Uni-", a pause and "Unitree"). A hyphenated word ("well-known") or a name with a number ("COVID-19",
 # "F-16") is whole.
@@ -115,13 +116,13 @@ def _rehear_slow(project, track_id, project_dir, model, language):
         if sc not in chosen:
             continue
 
-        def window(start, end, src=src):
+        def window(start, end, src=src, with_model=model):
             tmp = tempfile.mkdtemp(prefix="montaj-rehear-")
             try:
                 spec = os.path.join(tmp, "window.json")
                 Path(spec).write_text(json.dumps({"input": src, "keeps": [[max(0.0, start), end]]}), encoding="utf-8")
                 prefix = os.path.join(tmp, "heard")
-                ok, _ = speech_units.quiet(transcribe_file, spec, prefix, model, language)
+                ok, _ = speech_units.quiet(transcribe_file, spec, prefix, with_model, language)
                 if not ok or not os.path.isfile(prefix + ".json"):
                     return []
                 doc = json.loads(Path(prefix + ".json").read_text(encoding="utf-8"))
@@ -132,8 +133,11 @@ def _rehear_slow(project, track_id, project_dir, model, language):
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
 
+        # CV: one model can hear a repeat once on every window; base.en (shipped) is the second hearing, in English
+        alt = (lambda start, end, src=src: window(start, end, src, REHEAR_ALT_MODEL)) \
+            if (language or "").split("-")[0].lower() == "en" and model != REHEAR_ALT_MODEL else None
         out += speech_rehear.rehear_file(sc, src, window, speech_rehear.Budget(phrases=10 ** 6, seconds=float("inf")),
-                                         only=chosen[sc])
+                                         only=chosen[sc], alt=alt)
     return out
 
 
