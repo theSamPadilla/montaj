@@ -253,4 +253,59 @@ describe('CarouselApi.setBackgroundImage (§587 r2 note 9)', () => {
     await waitFor(() => expect(adapter.saveCalls.length).toBe(before + 2))
     expect(elementsOf(last(adapter))).toHaveLength(4)
   })
+
+  it('resolves true when it wrote', async () => {
+    let api: import('../../types').CarouselApi | null = null
+    await mount('rail', { onProvideCarouselApi: (a) => { api = a } })
+    let ok: boolean | undefined
+    await act(async () => { ok = await api!.setBackgroundImage('/lib/bg.png') })
+    expect(ok).toBe(true)
+  })
+
+  it('read-only: resolves false and writes nothing', async () => {
+    let api: import('../../types').CarouselApi | null = null
+    const { adapter } = await mount('rail', { onProvideCarouselApi: (a) => { api = a } }, { ...makeProject(), status: 'rendering' } as never)
+    let ok: boolean | undefined
+    await act(async () => { ok = await api!.setBackgroundImage('/lib/bg.png') })
+    expect(ok).toBe(false)
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('crop mode: resolves false and writes nothing', async () => {
+    let api: import('../../types').CarouselApi | null = null
+    const { adapter, r } = await mount('classic', { onProvideCarouselApi: (a) => { api = a } })
+    await click('el-img')
+    await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
+    await waitFor(() => expect(document.querySelector('img[alt="Crop source"]')).not.toBeNull())
+    let ok: boolean | undefined
+    await act(async () => { ok = await api!.setBackgroundImage('/lib/bg.png') })
+    expect(ok).toBe(false)
+    expect(adapter.saveCalls).toHaveLength(0)
+    r.unmount()
+  })
+
+  it('with { asset }: one save adds the element and the asset, one undo removes both, and the old background comes back', async () => {
+    let api: import('../../types').CarouselApi | null = null
+    const project = makeProject()
+    project.slides![0].elements.unshift({ id: 'el-old-bg', type: 'image', src: 'old.png', x: 0, y: 0, w: 1080, h: 1080, rotation: 0, locked: true } as never)
+    const { adapter } = await mount('rail', { onProvideCarouselApi: (a) => { api = a } }, project)
+    const before = adapter.saveCalls.length
+    await act(async () => { await api!.setBackgroundImage('/kit/bg.png', { asset: { name: 'Kit bg.png' } }) })
+    await waitFor(() => expect(adapter.saveCalls.length).toBe(before + 1))
+    let p = last(adapter)
+    expect(elementsOf(p).find((e) => e.id === 'el-old-bg')).toBeUndefined()
+    expect(elementsOf(p)[0]).toMatchObject({ src: '/kit/bg.png', locked: true })
+    expect(p.assets).toEqual([expect.objectContaining({ src: '/kit/bg.png', type: 'image', name: 'Kit bg.png' })])
+    await undo()
+    await waitFor(() => expect(adapter.saveCalls.length).toBe(before + 2))
+    p = last(adapter)
+    expect(elementsOf(p)[0]).toMatchObject({ id: 'el-old-bg', src: 'old.png' })
+    expect(p.assets ?? []).toHaveLength(0)
+  })
+
+  it('the Background panel disables the images slot while the images cannot be set (read-only)', async () => {
+    const { r } = await mount('rail', { slots: { carouselBackgroundImages: <button data-testid="bg-img">x</button> } }, { ...makeProject(), status: 'rendering' } as never)
+    await openRail(r, 'Background')
+    expect(r.getByTestId('bg-img').matches(':disabled')).toBe(true)
+  })
 })

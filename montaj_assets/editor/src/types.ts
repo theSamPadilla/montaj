@@ -743,9 +743,12 @@ export interface CarouselApi {
    * Makes the image at `src` (a host path) the selected slide's background:
    * it is added as `setAsBackground` leaves an image (covering, at the back,
    * locked), in one undo step. Does nothing when no slide is selected, when
-   * the project cannot be edited, and in crop mode.
+   * the project cannot be edited, in crop mode, in the grid view and on a
+   * pending surface: it then resolves `false`, and `true` once it wrote.
+   * `asset` also adds the image to `project.assets` (named `asset.name`) in the
+   * same step, skipping a `src` already there.
    */
-  setBackgroundImage(src: string): Promise<void>
+  setBackgroundImage(src: string, options?: { asset?: { name?: string } }): Promise<boolean>
 }
 
 // ── Adapter ────────────────────────────────────────────────────────────────
