@@ -142,7 +142,7 @@ describe('Colour panel (§587 M5, layout="rail")', () => {
     expect(toolbar(r).querySelector('input[type="color"]')).toBeNull()
     expect(r.queryByRole('region', { name: 'Colour panel' })).toBeNull()
     await press(tb(r, 'Text color'))
-    expect(within(panel(r)).getByText('Text colour')).toBeTruthy()
+    expect(within(panel(r)).getByText('Text color')).toBeTruthy()
     expect(hexField(r).value).toBe('#111111')
     await press(within(panel(r)).getByRole('button', { name: 'Close' }))
     expect(r.queryByRole('region', { name: 'Colour panel' })).toBeNull()
@@ -235,6 +235,63 @@ describe('Colour panel (§587 M5, layout="rail")', () => {
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
     expect(colourOf(last(adapter), 'el-t')).toBe('#111111')
     expect(colourOf(last(adapter), 'el-u', 1)).toBe('#111111')
+  })
+
+  it('"Change on every slide": two slider changes then release save the LAST value on every slide, one undo step', async () => {
+    const { adapter, r } = await mount()
+    await openTextColour(r)
+    await press(within(panel(r)).getByRole('button', { name: 'Change on every slide' }))
+    await act(async () => { fireEvent.change(slider(r), { target: { value: '50' } }) })
+    await act(async () => { fireEvent.change(slider(r), { target: { value: '25' } }) })
+    await act(async () => { fireEvent.pointerUp(slider(r)) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(colourOf(last(adapter), 'el-t')).toBe('#111111bf')
+    expect(colourOf(last(adapter), 'el-u', 1)).toBe('#111111bf')
+    await undo()
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(colourOf(last(adapter), 'el-t')).toBe('#111111')
+    expect(colourOf(last(adapter), 'el-u', 1)).toBe('#111111')
+  })
+
+  it('"Change on every slide" with transparency keeps non-text props opaque', async () => {
+    const project = makeProject()
+    ;(byId(project, 'el-ov') as unknown as { overlay: { props: Record<string, unknown> } }).overlay.props.accent = '#111111'
+    const { adapter, r } = await mount('rail', {}, project)
+    await openTextColour(r)
+    await press(within(panel(r)).getByRole('button', { name: 'Change on every slide' }))
+    await act(async () => { fireEvent.change(slider(r), { target: { value: '50' } }) })
+    await act(async () => { fireEvent.pointerUp(slider(r)) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(colourOf(last(adapter), 'el-t')).toBe('#11111180')
+    expect(propsOf(last(adapter), 'el-ov').accent).toBe('#111111')
+  })
+
+  it('a colour picked from Edit does not overwrite a prop changed since the panel opened', async () => {
+    const { adapter, r } = await mount()
+    await click('el-ov')
+    await press(tb(r, 'Edit'))
+    await press(within(popover(r, 'Edit')).getByRole('button', { name: 'accent' }))
+    if (!r.queryByRole('dialog', { name: 'Edit' })) await press(tb(r, 'Edit'))
+    const label = within(popover(r, 'Edit')).getByDisplayValue('Hi') as HTMLInputElement
+    await act(async () => { fireEvent.change(label, { target: { value: 'Yo' } }) })
+    await act(async () => { fireEvent.blur(label) })
+    await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThan(0))
+    await press(within(panel(r)).getByRole('button', { name: 'In this carousel color #ffffff' }))
+    await waitFor(() => expect(propsOf(last(adapter), 'el-ov').accent).toBe('#ffffff'))
+    expect(propsOf(last(adapter), 'el-ov').label).toBe('Yo')
+  })
+
+  it('Esc typed in a field outside the colour panel reaches that field', async () => {
+    const { r } = await mount()
+    await openTextColour(r)
+    const outside = document.createElement('input')
+    document.body.appendChild(outside)
+    const seen = vi.fn()
+    outside.addEventListener('keydown', seen)
+    await key('Escape', {}, outside)
+    expect(seen).toHaveBeenCalledTimes(1)
+    expect(r.queryByRole('region', { name: 'Colour panel' })).not.toBeNull()
+    outside.remove()
   })
 
   it('Esc reverts an uncommitted preview and closes the panel', async () => {

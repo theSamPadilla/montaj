@@ -1679,8 +1679,15 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       cancel: () => state.discardTransient(),
     })
   }
-  const previewColourEverywhere = (from: string, to: string) => state.previewSlides(all => replaceColour(all, from, to))
-  const commitColourEverywhere = (from: string, to: string) => { previewColourEverywhere(from, to); void state.commit() }
+  // Each call replaces from the saved slides (a stacked preview no longer holds `from`).
+  const previewColourEverywhere = (from: string, to: string) => {
+    state.discardTransient()
+    state.previewSlides(all => replaceColour(all, from, to))
+  }
+  const commitColourEverywhere = (from: string, to: string) => {
+    state.discardTransient()
+    void state.editSlides(all => replaceColour(all, from, to))
+  }
   const usedColours = useMemo(() => collectColours(slides), [slides])
   const brandColours = useMemo(
     () => (brand?.colors ?? []).map(c => normalizeHex(c)).filter((c): c is string => !!c),

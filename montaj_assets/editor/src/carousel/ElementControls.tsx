@@ -364,7 +364,7 @@ export function OverlayPropsSection({ element, schema, loading, onElementChange,
                 onElementChange({
                   overlay: {
                     ...element.overlay,
-                    props: { ...element.overlay.props, [prop.name]: v },
+                    props: { [prop.name]: v },
                   },
                 } as Partial<CarouselElement>)
               }}

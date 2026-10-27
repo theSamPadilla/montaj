@@ -1,5 +1,6 @@
 import type { CarouselElement, Slide } from '../types'
 import { isLocked } from './lock'
+import { isTextOverlay } from './textStyle'
 
 // The colour panel's data rules (§587 M5): which colours a carousel uses, and
 // the project-wide replace. Pure, so one mutation can apply them.
@@ -61,16 +62,19 @@ export function replaceColour(slides: Slide[], from: string, to: string): Slide[
   const f = normalizeHex(from)
   if (!f) return slides
   let changed = false
+  const opaque = splitAlpha(to).base
   const next = slides.map((slide): Slide => {
     let s = slide
-    if (slide.base_color && normalizeHex(slide.base_color) === f) s = { ...s, base_color: to }
+    if (slide.base_color && normalizeHex(slide.base_color) === f) s = { ...s, base_color: opaque }
     let elements = slide.elements
     const mapped = slide.elements.map((el): CarouselElement => {
       if (el.type !== 'overlay' || isLocked(el)) return el
       const hits = overlayColourEntries(el).filter(([, c]) => c === f)
       if (hits.length === 0) return el
       const props = { ...el.overlay.props }
-      for (const [k] of hits) props[k] = to
+      // Only a text element's own colours take transparency; elsewhere the colour stays opaque.
+      const keepsAlpha = isTextOverlay(el)
+      for (const [k] of hits) props[k] = keepsAlpha && (k === 'color' || k === 'bgColor') ? to : opaque
       return { ...el, overlay: { ...el.overlay, props } }
     })
     if (mapped.some((el, i) => el !== slide.elements[i])) elements = mapped
