@@ -412,7 +412,8 @@ def test_route_missing_theme_defaults_to_empty(tmp_path, monkeypatch):
 
 # ── §231: captions transcribe with --fit-pauses, in both caption paths ──────
 
-def test_route_pipeline_transcribes_with_fit_pauses(tmp_path, monkeypatch):
+def test_route_pipeline_transcribes_the_mix_without_fit_pauses(tmp_path, monkeypatch):
+    # run 5: --fit-pauses on a mix squeezed the words early; with no clip transcript the mix is transcribed by runs
     from serve.routes.projects import _run_caption_pipeline
 
     calls = []
@@ -433,11 +434,10 @@ def test_route_pipeline_transcribes_with_fit_pauses(tmp_path, monkeypatch):
     ))
 
     transcribe = [c for c in calls if any(a.endswith("transcribe.py") for a in c)]
-    assert len(transcribe) == 1 and "--fit-pauses" in transcribe[0]
-    assert all("--fit-pauses" not in c for c in calls if c not in transcribe)
+    assert len(transcribe) == 1 and all("--fit-pauses" not in c for c in calls)
 
 
-def test_step_transcribes_with_fit_pauses(tmp_path, monkeypatch, capsys):
+def test_step_transcribes_the_mix_without_fit_pauses(tmp_path, monkeypatch, capsys):
     mod = _load_step_module()
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
@@ -458,8 +458,7 @@ def test_step_transcribes_with_fit_pauses(tmp_path, monkeypatch, capsys):
     mod.main()
 
     transcribe = [c for c in calls if any(a.endswith("transcribe.py") for a in c)]
-    assert len(transcribe) == 1 and "--fit-pauses" in transcribe[0]
-    assert all("--fit-pauses" not in c for c in calls if c not in transcribe)
+    assert len(transcribe) == 1 and all("--fit-pauses" not in c for c in calls)
 
 
 # ── §467: the step writes only `captions`, under the project lock ────────────

@@ -6292,7 +6292,14 @@ async def _run_caption_pipeline(
     # 2. Write the mix spec.
     mix_spec_path.write_text(json.dumps(mix_spec))
 
-    steps = [
+    # Run 5: the words are each audible clip's and voiceover's own transcript, mapped through the timeline
+    # (lib/caption_words), as the generate_captions step takes them; the mix is transcribed (by voiced runs, never
+    # --fit-pauses, which squeezed run 5's words early) only when one has none.
+    from lib.caption_words import timeline_words, write_transcript
+    from_sources = timeline_words(project, str(project_dir))
+    if from_sources is not None:
+        write_transcript(from_sources, str(words_json_path))
+    steps = ([] if from_sources is not None else [
         (
             "mix_timeline",
             [str(mix_timeline_py), "--input", str(mix_spec_path),
@@ -6302,8 +6309,9 @@ async def _run_caption_pipeline(
             "transcribe",
             [str(transcribe_py), "--input", str(mix_wav_path),
              "--model", model, "--language", language,
-             "--out", str(words_prefix), "--fit-pauses"],
+             "--out", str(words_prefix)],
         ),
+    ]) + [
         (
             "caption",
             [str(caption_py), "--input", str(words_json_path),

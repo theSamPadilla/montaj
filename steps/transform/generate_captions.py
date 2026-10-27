@@ -38,6 +38,7 @@ from serve.caption_job import build_audio_mix_spec, caption_input_change, captio
 from lib.project_revisions import engine_guard_enabled  # noqa: E402
 from lib import caption_ink  # noqa: E402
 from lib.caption_script import script_of, spell_from_script  # noqa: E402
+from lib.caption_words import timeline_words, write_transcript  # noqa: E402
 from lib.caption_marks import keep_persons, stamp_all, stamped  # noqa: E402
 from lib.project_versions import commit_version  # noqa: E402
 from lib.caption_profile_look import caption_words_args, resolve_style_and_look  # noqa: E402
@@ -138,25 +139,31 @@ def main():
     track_path = os.path.join(d, "_caption_track.json")
 
     try:
-        # 1. Write the mix spec.
-        with open(mix_spec_path, "w") as f:
-            json.dump(mix_spec, f)
+        # Run 5: the words are each audible clip's and voiceover's own transcript, mapped through the timeline
+        # (lib/caption_words): the ones the cut was made on. The mix is transcribed only when one has none.
+        from_sources = timeline_words(project, d)
+        if from_sources is not None:
+            write_transcript(from_sources, words_json_path)
+        else:
+            # 1. Write the mix spec.
+            with open(mix_spec_path, "w") as f:
+                json.dump(mix_spec, f)
 
-        # 2. Mix the audible timeline into one WAV, in timeline time.
-        run([sys.executable, mix_timeline_py,
-             "--input", mix_spec_path, "--out", mix_wav_path])
+            # 2. Mix the audible timeline into one WAV, in timeline time.
+            run([sys.executable, mix_timeline_py,
+                 "--input", mix_spec_path, "--out", mix_wav_path])
 
-        # 3. Transcribe the mix as plain audio so word timings are
-        #    output/project-time (NOT a trim spec).
-        #    Outlasts transcribe's own whisper runaway guard, so a stuck
-        #    whisper surfaces as its structured transcription_timeout rather
-        #    than this wrapper's bare TimeoutExpired.
-        #    --fit-pauses: caption word times sit on the audio after a pause.
-        run([sys.executable, transcribe_py,
-             "--input", mix_wav_path,
-             "--model", args.model, "--language", args.language,
-             "--out", words_prefix, "--fit-pauses"],
-            timeout=whisper_runaway_timeout_for(mix_wav_path) + 300)
+            # 3. Transcribe the mix as plain audio so word timings are
+            #    output/project-time (NOT a trim spec). By voiced runs, so the words sit on the voice; never
+            #    --fit-pauses, whose pauses found on a mix squeezed run 5's words early.
+            #    Outlasts transcribe's own whisper runaway guard, so a stuck
+            #    whisper surfaces as its structured transcription_timeout rather
+            #    than this wrapper's bare TimeoutExpired.
+            run([sys.executable, transcribe_py,
+                 "--input", mix_wav_path,
+                 "--model", args.model, "--language", args.language,
+                 "--out", words_prefix],
+                timeout=whisper_runaway_timeout_for(mix_wav_path) + 300)
 
         # 3b. Spell the words from the script, when one is given (lib/caption_script.py): timings stay the transcript's.
         script = args.script if args.script is not None else script_of(project)
