@@ -282,27 +282,21 @@ describe('Ask your AI for a custom shape', () => {
     await mount()
     await openRail('Elements')
     await tile('Rectangle')
-    expect(screen.queryByRole('textbox', { name: 'Ask your AI for a custom shape' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Ask your AI for a shape' })).toBeNull()
   })
 
-  it('Enter or the button hands the host the trimmed text and the slide, then clears; empty text asks nothing', async () => {
+  it('is a pill at the top of Elements; a click hands the host the slide with empty text (the host opens its own modal)', async () => {
     const onAskAi = vi.fn<(req: AskAiRequest) => void>()
     await mount(three(), {}, { onAskAi })
     await pickSlideOf('el-2')
     await openRail('Elements')
-    const input = (await screen.findByRole('textbox', { name: 'Ask your AI for a custom shape' })) as HTMLInputElement
-    const ask = screen.getByRole('button', { name: 'Ask' }) as HTMLButtonElement
-    expect(ask.disabled).toBe(true)
-    await act(async () => { fireEvent.change(input, { target: { value: '   ' } }) })
-    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
-    expect(onAskAi).not.toHaveBeenCalled()
-    await act(async () => { fireEvent.change(input, { target: { value: '  a wavy ribbon banner  ' } }) })
-    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
-    expect(onAskAi).toHaveBeenCalledWith({ kind: 'shape', slideId: 's2', text: 'a wavy ribbon banner' })
-    expect(input.value).toBe('')
-    await act(async () => { fireEvent.change(input, { target: { value: 'a speech bubble' } }) })
-    await act(async () => { fireEvent.click(ask) })
-    expect(onAskAi).toHaveBeenLastCalledWith({ kind: 'shape', slideId: 's2', text: 'a speech bubble' })
-    expect(onAskAi).toHaveBeenCalledTimes(2)
+    const pill = await screen.findByRole('button', { name: 'Ask your AI for a shape' })
+    // At the top: before the first shape tile in the panel.
+    const first = await tile('Rectangle')
+    expect(pill.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByRole('textbox', { name: 'Ask your AI for a custom shape' })).toBeNull()
+    await act(async () => { fireEvent.click(pill) })
+    expect(onAskAi).toHaveBeenCalledTimes(1)
+    expect(onAskAi).toHaveBeenCalledWith({ kind: 'shape', slideId: 's2', text: '' })
   })
 })

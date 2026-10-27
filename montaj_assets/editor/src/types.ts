@@ -1388,9 +1388,10 @@ export interface CarouselBrand {
  */
 /**
  * What the person asked their own AI for, from the editor (§587): `kind`
- * `'shape'` is the Elements panel's "Ask your AI for a custom shape", `text`
- * what they typed (trimmed, never empty), `slideId` the slide on show (null
- * with none). The host turns it into a prompt for the person's AI.
+ * `'shape'` is the Elements panel's "Ask your AI for a shape" pill, `slideId`
+ * the slide on show (null with none). `text` is what was typed, trimmed; it
+ * may be empty, and the pill sends it empty: the host opens its own modal to
+ * take the request. The host turns it into a prompt for the person's AI.
  */
 export interface AskAiRequest {
   kind: 'shape'
@@ -1402,9 +1403,9 @@ export interface CarouselEditorProps<P extends Project = Project> {
   /** `layout="rail"`: the brand's palette and fonts, from the host's profile. */
   brand?: CarouselBrand
   /**
-   * `layout="rail"`: the Elements panel's "Ask your AI for a custom shape"
-   * field calls it on Enter or its button with what was typed, then clears.
-   * The editor runs no AI itself. Absent: no field.
+   * `layout="rail"`: the Elements panel's "Ask your AI for a shape" pill (at
+   * its top) calls it with the slide on show and empty `text`; the host opens
+   * its own modal for the request. The editor runs no AI itself. Absent: no pill.
    */
   onAskAi?: (request: AskAiRequest) => void
   /**
