@@ -2,6 +2,7 @@ import type { CarouselElement, Slide } from '../types'
 import { isLocked } from './lock'
 import { isTextOverlay } from './textStyle'
 import { shippedTemplateKey } from './shippedTemplate'
+import { decodeRuns, encodeRuns } from '../text/runs'
 
 // The colour panel's data rules (§587 M5): which colours a carousel uses, and
 // the project-wide replace. Pure, so one mutation can apply them.
@@ -42,22 +43,33 @@ function overlayColourEntries(el: CarouselElement): Array<[string, string]> {
   return out
 }
 
-/** The distinct colours the carousel uses (overlay hex props, slide backgrounds), most used first, at most `max`. */
+/** A text element's styled runs (§587 round 3), when its `runs` are valid for its `text`. */
+function runsIn(el: CarouselElement) {
+  return el.type === 'overlay' ? decodeRuns(el.overlay.props.runs, el.overlay.props.text) : null
+}
+
+/** The distinct colours the carousel uses (overlay hex props, text run colours, slide backgrounds), most used first, at most `max`. */
 export function collectColours(slides: Slide[], max = 16): string[] {
   const counts = new Map<string, number>()
   const bump = (c: string) => counts.set(c, (counts.get(c) ?? 0) + 1)
   for (const slide of slides) {
     const bg = slide.base_color ? normalizeHex(slide.base_color) : null
     if (bg) bump(bg)
-    for (const el of slide.elements) for (const [, c] of overlayColourEntries(el)) bump(c)
+    for (const el of slide.elements) {
+      for (const [, c] of overlayColourEntries(el)) bump(c)
+      for (const run of runsIn(el) ?? []) {
+        const c = run.c ? normalizeHex(run.c) : null
+        if (c) bump(c)
+      }
+    }
   }
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, max).map(([c]) => c)
 }
 
 /**
- * `slides` with every use of `from` replaced by `to`: overlay props and slide
- * backgrounds. Locked elements are skipped (a lock protects content). The same
- * array comes back when nothing used `from`.
+ * `slides` with every use of `from` replaced by `to`: overlay props, text run
+ * colours and slide backgrounds. Locked elements are skipped (a lock protects
+ * content). The same array comes back when nothing used `from`.
  */
 export function replaceColour(slides: Slide[], from: string, to: string): Slide[] {
   const f = normalizeHex(from)
@@ -71,11 +83,18 @@ export function replaceColour(slides: Slide[], from: string, to: string): Slide[
     const mapped = slide.elements.map((el): CarouselElement => {
       if (el.type !== 'overlay' || isLocked(el)) return el
       const hits = overlayColourEntries(el).filter(([, c]) => c === f)
-      if (hits.length === 0) return el
+      const runs = runsIn(el)
+      const runHit = !!runs?.some((r) => r.c && normalizeHex(r.c) === f)
+      if (hits.length === 0 && !runHit) return el
       const props = { ...el.overlay.props }
       // Only a text element's own colours take transparency; elsewhere the colour stays opaque.
       const keepsAlpha = isTextOverlay(el)
       for (const [k] of hits) props[k] = keepsAlpha && (k === 'color' || k === 'bgColor') ? to : opaque
+      // A run's colour is text colour: it takes transparency too. Same write, so one undo step.
+      if (runs && runHit) {
+        const c = normalizeHex(to) ?? opaque
+        props.runs = encodeRuns(runs.map((r) => (r.c && normalizeHex(r.c) === f ? { ...r, c } : r)))
+      }
       return { ...el, overlay: { ...el.overlay, props } }
     })
     if (mapped.some((el, i) => el !== slide.elements[i])) elements = mapped

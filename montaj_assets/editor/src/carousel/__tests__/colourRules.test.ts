@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import type { CarouselElement } from '../../types'
-import { elementColourTarget, resolveColourQuery, shapeKind } from '../colours'
+import type { CarouselElement, Slide } from '../../types'
+import { collectColours, elementColourTarget, replaceColour, resolveColourQuery, shapeKind } from '../colours'
 import { namedColour } from '../colourNames'
 import { dominantColours } from '../photoColours'
 
@@ -74,5 +74,39 @@ describe('dominantColours', () => {
   it('caps the count', () => {
     const data = [...px([0, 0, 0], 5), ...px([255, 255, 255], 4), ...px([255, 0, 0], 3), ...px([0, 0, 255], 2)]
     expect(dominantColours(data, 2)).toEqual(['#000000', '#ffffff'])
+  })
+})
+
+describe('run colours in the colour list and Change on every slide', () => {
+  const TEXT = 'templates/overlays/static-text/static-text.jsx'
+  const runs = JSON.stringify([{ t: 'Make it ' }, { t: 'red', c: '#FF0000', b: 1 }, { t: ' and ' }, { t: 'blue', c: '#0000ff' }])
+  const text = (id: string, extra: Record<string, unknown> = {}, locked = false) =>
+    ({ ...overlay(TEXT, { text: 'Make it red and blue', color: '#111111', runs, ...extra }), id, ...(locked ? { locked: true } : {}) }) as CarouselElement
+  const slides = (els: CarouselElement[]): Slide[] => [{ id: 's', base_color: '#ffffff', elements: els }]
+  const props = (s: Slide[], i = 0) => (s[0].elements[i] as Extract<CarouselElement, { type: 'overlay' }>).overlay.props
+
+  it('the list counts each run\'s colour', () => {
+    const list = collectColours(slides([text('a'), text('b', { runs: JSON.stringify([{ t: 'Make it red and blue', c: '#ff0000' }]) })]))
+    // Two text colours, two red runs, one background, one blue run.
+    expect(list).toEqual(['#111111', '#ff0000', '#ffffff', '#0000ff'])
+  })
+
+  it('runs that do not spell the text are not counted', () => {
+    expect(collectColours(slides([text('a', { text: 'Something else' })]))).not.toContain('#ff0000')
+  })
+
+  it('a replace rewrites matching run colours in the same element write, keeping the text', () => {
+    const next = replaceColour(slides([text('a')]), '#ff0000', '#00ff0080')
+    const p = props(next)
+    expect(p.text).toBe('Make it red and blue')
+    expect(JSON.parse(p.runs as string)).toEqual([{ t: 'Make it ' }, { t: 'red', c: '#00ff0080', b: 1 }, { t: ' and ' }, { t: 'blue', c: '#0000ff' }])
+    expect(p.color).toBe('#111111')
+  })
+
+  it('a locked element\'s runs stay, and a colour no run uses changes nothing', () => {
+    const locked = slides([text('a', {}, true)])
+    expect(replaceColour(locked, '#ff0000', '#00ff00')).toBe(locked)
+    const plain = slides([text('a')])
+    expect(replaceColour(plain, '#123456', '#00ff00')).toBe(plain)
   })
 })
