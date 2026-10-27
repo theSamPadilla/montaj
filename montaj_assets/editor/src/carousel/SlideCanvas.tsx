@@ -457,6 +457,8 @@ export default function SlideCanvas({
     onCommit: async (id, x, y) => {
       const el = elementById(id)
       if (!el) return
+      // Locked while held: back to where it is, nothing written or committed.
+      if (isLocked(el)) { applyPreviewTransform(id, el.x, el.y, el.rotation); return }
       const nx = Math.round(x)
       const ny = Math.round(y)
       applyPreviewTransform(id, nx, ny, el.rotation)
@@ -485,6 +487,7 @@ export default function SlideCanvas({
       const el = elementById(id)
       if (!el) return
       const rotation = gesture.startBox.rotation ?? 0
+      if (isLocked(el)) { applyPreviewBox(id, el, el.rotation); return }
       // w and h first, then x and y from the point the handle pins.
       const next = roundResizedBox(box, gesture.handle, rotation)
       applyPreviewBox(id, next, rotation)
@@ -508,6 +511,7 @@ export default function SlideCanvas({
     onCommit: async (id, rotation) => {
       const el = elementById(id)
       if (!el) return
+      if (isLocked(el)) { applyPreviewTransform(id, el.x, el.y, el.rotation); return }
       const next = Math.round(rotation)
       // A whole turn away is the same angle: put back the element's own.
       const same = ((next - (el.rotation ?? 0)) % 360 + 360) % 360 === 0
@@ -582,7 +586,7 @@ export default function SlideCanvas({
     const open = cropRef.current
     if (!open) return
     const el = open.slideId === sid ? slide.elements.find((e) => e.id === open.elementId) : undefined
-    if (el?.type !== 'image') void leaveCropRef.current('discard')
+    if (el?.type !== 'image' || isLocked(el)) void leaveCropRef.current('discard')
     else if (el.src !== open.src) setCropSession(startCrop(sid, el))
   }, [slide, sid])
 
@@ -622,6 +626,12 @@ export default function SlideCanvas({
     setEditRect(null)
     setEditStyle(null)
   }
+
+  // The text being edited became locked: close without writing what was typed.
+  const editingLocked = isLocked(slide.elements.find((e) => e.id === editingId))
+  useEffect(() => {
+    if (editingLocked) endTextEdit()
+  }, [editingLocked])
 
   function commitTextEdit(element: OverlayElement, value: string) {
     void updateOverlayProp?.(sid, element.id, 'text', value)

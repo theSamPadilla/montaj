@@ -1545,6 +1545,14 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     lockedNow(slideId, elementId) ? Promise.resolve() : state.updateOverlayProp(slideId, elementId, key, value)
   const updateImageCrop: typeof state.updateImageCrop = (slideId, elementId, crop) =>
     lockedNow(slideId, elementId) ? Promise.resolve() : state.updateImageCrop(slideId, elementId, crop)
+  // The gesture writes too: an external save can lock the element while the
+  // person holds it, and the release then writes nothing.
+  const moveElement: typeof state.moveElement = (slideId, elementId, x, y) =>
+    lockedNow(slideId, elementId) ? Promise.resolve() : state.moveElement(slideId, elementId, x, y)
+  const resizeElement: typeof state.resizeElement = (slideId, elementId, box) =>
+    lockedNow(slideId, elementId) ? Promise.resolve() : state.resizeElement(slideId, elementId, box)
+  const rotateElement: typeof state.rotateElement = (slideId, elementId, rotation) =>
+    lockedNow(slideId, elementId) ? Promise.resolve() : state.rotateElement(slideId, elementId, rotation)
 
   // Property-panel transform/frame edits → committed mutators.
   function handlePanelElementChange(patch: Partial<CarouselElement>) {
@@ -1862,9 +1870,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 resolveImageSrc={adapter.resolveImageSrc}
                 compileOverlay={(t) => adapter.compileOverlay(t)}
                 watchFile={adapter.watchFile}
-                moveElement={state.moveElement}
-                resizeElement={state.resizeElement}
-                rotateElement={state.rotateElement}
+                moveElement={moveElement}
+                resizeElement={resizeElement}
+                rotateElement={rotateElement}
                 commit={state.commit}
                 updateOverlayProp={updateOverlayProp}
                 updateImageCrop={updateImageCrop}
@@ -2003,9 +2011,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           resolveImageSrc={adapter.resolveImageSrc}
           compileOverlay={(t) => adapter.compileOverlay(t)}
           watchFile={adapter.watchFile}
-          moveElement={state.moveElement}
-          resizeElement={state.resizeElement}
-          rotateElement={state.rotateElement}
+          moveElement={moveElement}
+          resizeElement={resizeElement}
+          rotateElement={rotateElement}
           commit={state.commit}
           updateOverlayProp={updateOverlayProp}
           updateImageCrop={updateImageCrop}
