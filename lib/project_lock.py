@@ -281,7 +281,7 @@ def update_project_or_fail(project_path, apply, fail, **kwargs):
         fail("project_locked", str(e))
     except ProjectReadOnly as e:
         fail("project_read_only", str(e))
-    except (sync_clash.SyncConflict, sync_clash.SyncBusy) as e:
+    except sync_clash.SyncConflict as e:
         sync_clash.exit_refused(e.body)
 
 

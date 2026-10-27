@@ -22,7 +22,7 @@ sys.path.insert(0, MONTAJ_ROOT)
 from lib import caption_ink  # noqa: E402
 from lib.common import fail  # noqa: E402
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly  # noqa: E402
-from lib.sync_clash import SyncBusy, SyncConflict, exit_refused  # noqa: E402
+from lib.sync_clash import SyncConflict, exit_refused  # noqa: E402
 
 EMPTY = {"dark": 0, "light": 0, "cleared": 0, "kept": 0, "split": 0, "changed": False}
 
@@ -39,7 +39,7 @@ def run(project_path, render_fn=None):
         fail("project_locked", str(e))
     except ProjectReadOnly as e:
         fail("project_read_only", str(e))
-    except (SyncConflict, SyncBusy) as e:
+    except SyncConflict as e:
         exit_refused(e.body)
     return out if out is not None else dict(EMPTY)
 

@@ -11,7 +11,7 @@ binding 409 `{"error": "sync_conflict", "fields": [...], "message": "..."}` when
 
 Unset: serve never reads a sidecar and behaves exactly as before. Set but unreadable (a corrupt or unknown
 sidecar, a state folder that exists but cannot be read, an id that cannot name a folder): not a clash (1.5.1, Sam): the
-read is retried, and when it stays unsure every non-human write answers 503 sync_state_busy, retryable. A state folder that does not exist at all records no clash (review 40, 3a).
+write goes through. A state folder that does not exist at all records no clash (review 40, 3a).
 
 The design is montaj-app docs/plans/s482-m4-design.md §4 (its 15 pytest cases are marked `case N`). Real FastAPI
 app, real lock; every path lives under tmp_path."""
@@ -183,12 +183,10 @@ def _refused(resp, names):
     assert body == {"error": "sync_conflict", "fields": list(names), "message": _message(names)}
 
 
-def _busy(resp):
-    """An unsure clash set is not a clash (1.5.1, Sam): 503 sync_state_busy, never "A person must resolve it"."""
-    assert resp.status_code == 503, resp.text
-    body = resp.json()["detail"]
-    assert body == _sc().busy()
-    assert "person must resolve" not in body["message"] and "Do not retry" not in body["message"]
+def _let_through(resp):
+    """An unsure clash set is not a clash (1.5.1, Sam: edit optimistically): nothing is refused for sync."""
+    assert resp.status_code not in (403, 409, 503), resp.text
+    assert "sync" not in str(resp.json().get("detail", "")) if resp.status_code >= 400 else True
 
 
 def _disk(d):
@@ -453,14 +451,13 @@ def test_case5_a_held_name_lets_a_driven_write_through_but_not_its_unheld_neighb
     assert _put(ws, {"tracks": []}, DRIVE, read=False).status_code == 200
 
 
-def test_case5_the_window_while_the_ai_drives_it_is_busy_on_an_unsure_clash_set(ws, state):
-    """The app could not have held a version it cannot read either: busy (not a clash), as for the AI."""
+def test_case5_the_window_while_the_ai_drives_it_passes_on_an_unsure_clash_set(ws, state):
+    """The app could not have held a version it cannot read either: not a clash, so it passes, as for the AI."""
     d = _project(ws)
     (state / PID).mkdir()
     (state / PID / "clash-set.json").write_text("nope")
-    before = _disk(d)
-    _busy(_put(ws, {"tracks": []}, DRIVE, read=False))
-    assert _disk(d) == before
+    _let_through(_put(ws, {"tracks": []}, DRIVE, read=False))
+    assert json.loads(_disk(d))["tracks"] == []
 
 
 @pytest.mark.parametrize("headers", [
@@ -1015,15 +1012,15 @@ def _unsure(state):
 
 
 def _refused_unsure(resp):
-    """An unsure set is not a clash (1.5.1): the retryable busy answer."""
-    _busy(resp)
+    """An unsure set is not a clash (1.5.1): the write goes through."""
+    _let_through(resp)
 
 
-def test_case10_restore_by_the_window_passes_driven_or_not_and_driven_on_an_unsure_set_is_busy(ws, state):
+def test_case10_restore_by_the_window_passes_driven_or_not_and_driven_on_an_unsure_set_passes(ws, state):
     d = _project(ws)
     sha = _commit(d)
     _unsure(state)
-    _busy(_client().post(f"/api/projects/{PID}/versions/{sha}/restore", headers=DRIVE))
+    _let_through(_client().post(f"/api/projects/{PID}/versions/{sha}/restore", headers=DRIVE))
     _held(state, fields=["notes"])
     assert _client().post(f"/api/projects/{PID}/versions/{sha}/restore", headers=DRIVE).status_code == 200
     assert _client().post(f"/api/projects/{PID}/versions/{sha}/restore", headers=EDITOR).status_code == 200
@@ -1037,18 +1034,16 @@ def test_case10_restore_with_the_guard_off_still_refuses_the_ai(ws, state, monke
     _refused(_client().post(f"/api/projects/{PID}/versions/{sha}/restore", headers=AI), ["overlays/a.jsx"])
 
 
-def test_case10_rerun_by_the_window_passes_driven_or_not_and_driven_on_an_unsure_set_is_busy(ws, state):
+def test_case10_rerun_by_the_window_passes_driven_or_not_and_driven_on_an_unsure_set_passes(ws, state):
     d = _project(ws, sources=[{"id": "clip-0", "src": "/x.mp4"}])
     _unsure(state)
-    before = _disk(d)
     _refused_unsure(_client().post(f"/api/projects/{PID}/rerun", json={}, headers=DRIVE))
-    assert _disk(d) == before
     _held(state, fields=["tracks"])
     assert _client().post(f"/api/projects/{PID}/rerun", json={}, headers=DRIVE).status_code == 200
     assert _client().post(f"/api/projects/{PID}/rerun", json={}, headers=EDITOR).status_code == 200
 
 
-def test_case10_include_asset_by_the_window_passes_driven_or_not_and_driven_on_an_unsure_set_is_busy(ws, state, tmp_path, monkeypatch):
+def test_case10_include_asset_by_the_window_passes_driven_or_not_and_driven_on_an_unsure_set_passes(ws, state, tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".montaj" / "profiles" / "brand" / "assets").mkdir(parents=True)
     (home / ".montaj" / "profiles" / "brand" / "assets" / "logo.png").write_bytes(b"png")
@@ -1057,7 +1052,9 @@ def test_case10_include_asset_by_the_window_passes_driven_or_not_and_driven_on_a
     _unsure(state)
     body = {"from": {"profile": "brand", "filename": "logo.png"}}
     _refused_unsure(_client().post(f"/api/projects/{PID}/assets", json=body, headers=DRIVE))
-    assert not any(p.name.startswith("logo") for p in d.rglob("*"))
+    assert any(p.name.startswith("logo") for p in d.rglob("*"))
+    for p in d.rglob("logo*"):
+        p.unlink()
     _held(state, fields=["assets"])
     assert _client().post(f"/api/projects/{PID}/assets", json=body, headers=DRIVE).status_code == 200
     for p in d.rglob("logo*"):
@@ -1120,13 +1117,12 @@ def test_case12_an_open_heal_of_an_unclashed_field_still_runs(ws, state):
     assert isinstance(json.loads(_disk(d))["tracks"][0], dict)
 
 
-def test_case12_an_open_heal_is_skipped_on_an_unsure_sidecar(ws, state):
+def test_case12_an_open_heal_runs_on_an_unsure_sidecar(ws, state):
     d = _legacy(ws)
     (state / PID).mkdir()
     (state / PID / "clash-set.json").write_text("{not json")
-    before = _disk(d)
     assert _client().get(f"/api/projects/{PID}", headers=EDITOR).status_code == 200
-    assert _disk(d) == before
+    assert isinstance(json.loads(_disk(d))["tracks"][0], dict)
 
 
 def test_case12_a_retired_project_type_is_served_current_and_written_only_once_its_clash_closes(ws, state):
@@ -1275,11 +1271,10 @@ def corrupt(request, ws, state, monkeypatch):
 
 @pytest.mark.parametrize("corrupt", CORRUPT, indirect=True)
 @pytest.mark.parametrize("headers", [AI, TOOL, APP, DRIVE], ids=["ai", "tool", "tool-app", "drive"])
-def test_case13_an_unsure_clash_set_is_busy_for_every_non_human_write(ws, corrupt, headers):
+def test_case13_an_unsure_clash_set_lets_every_non_human_write_through(ws, corrupt, headers):
     d = _project(ws)
-    before = _disk(d)
-    _busy(_put(ws, {"notes": []}, headers, read=headers is not DRIVE))
-    assert _disk(d) == before
+    _let_through(_put(ws, {"notes": []}, headers, read=headers is not DRIVE))
+    assert json.loads(_disk(d))["notes"] == []
 
 
 @pytest.mark.parametrize("corrupt", CORRUPT, indirect=True)
@@ -1289,11 +1284,11 @@ def test_case13_an_unsure_clash_set_lets_the_human_and_the_shell_through(ws, cor
     assert _put(ws, {"notes": []}, headers, read=headers is not EDITOR).status_code == 200
 
 
-def test_case13_an_unsure_set_is_busy_for_a_whole_project_write(ws, state):
+def test_case13_an_unsure_set_lets_a_whole_project_write_through(ws, state):
     _project(ws)
     (state / PID).mkdir()
     (state / PID / "clash-set.json").write_text("nope")
-    _busy(_client().delete(f"/api/projects/{PID}", headers=AI))
+    _let_through(_client().delete(f"/api/projects/{PID}", headers=AI))
 
 
 # ── case 14: no stale cache ───────────────────────────────────────────────────
@@ -1386,7 +1381,7 @@ def test_id_rule_a_bad_id_reads_as_unsure_and_never_builds_a_path(state, monkeyp
 def test_id_rule_a_project_with_a_bad_id_fails_closed(ws, state):
     pid = "bad id"
     _project(ws, pid=pid)
-    _busy(_put(ws, {"notes": []}, AI, pid=pid))
+    _let_through(_put(ws, {"notes": []}, AI, pid=pid))
     assert _put(ws, {"notes": []}, EDITOR, pid=pid, read=False).status_code == 200
 
 
@@ -1397,14 +1392,14 @@ def test_id_rule_a_project_folder_that_resolves_outside_the_state_dir_fails_clos
     (elsewhere / "clash-set.json").write_text(
         json.dumps({"v": 1, "projectId": PID, "fields": [], "files": [], "clashes": []}))
     (state / PID).symlink_to(elsewhere, target_is_directory=True)
-    _busy(_put(ws, {"notes": []}, AI))
+    _let_through(_put(ws, {"notes": []}, AI))
 
 
 def test_id_rule_a_project_folder_linked_to_a_sibling_fails_closed(ws, state):
     _project(ws)
     _sidecar(state, pid="sibling")
     (state / PID).symlink_to(state / "sibling", target_is_directory=True)
-    _busy(_put(ws, {"notes": []}, AI))
+    _let_through(_put(ws, {"notes": []}, AI))
 
 
 def test_id_rule_a_symlinked_sidecar_fails_closed(ws, state, tmp_path):
@@ -1413,7 +1408,7 @@ def test_id_rule_a_symlinked_sidecar_fails_closed(ws, state, tmp_path):
     real.write_text(json.dumps({"v": 1, "projectId": PID, "fields": [], "files": [], "clashes": []}))
     (state / PID).mkdir()
     (state / PID / "clash-set.json").symlink_to(real)
-    _busy(_put(ws, {"notes": []}, AI))
+    _let_through(_put(ws, {"notes": []}, AI))
 
 
 def test_id_rule_without_o_nofollow_a_symlinked_sidecar_still_fails_closed(ws, state, tmp_path, monkeypatch):
@@ -1423,7 +1418,7 @@ def test_id_rule_without_o_nofollow_a_symlinked_sidecar_still_fails_closed(ws, s
     real.write_text(json.dumps({"v": 1, "projectId": PID, "fields": [], "files": [], "clashes": []}))
     (state / PID).mkdir()
     (state / PID / "clash-set.json").symlink_to(real)
-    _busy(_put(ws, {"notes": []}, AI))
+    _let_through(_put(ws, {"notes": []}, AI))
 
 
 def test_id_rule_without_o_nofollow_a_regular_sidecar_still_reads(ws, state, monkeypatch):
@@ -1482,7 +1477,7 @@ def test_crash_a_torn_sidecar_written_in_place_fails_closed(ws, state):
     _project(ws)
     side = _sidecar(state, fields=["captions"])
     side.write_text(side.read_text()[:-5])
-    _busy(_put(ws, {"notes": []}, AI))
+    _let_through(_put(ws, {"notes": []}, AI))
     assert _put(ws, {"notes": []}, EDITOR, read=False).status_code == 200
 
 
@@ -1534,13 +1529,15 @@ def test_models_deleting_a_folder_holding_a_clashed_file_is_refused(ws, state):
     (d / "models" / "robot").mkdir(parents=True)
     (d / "models" / "robot" / "rig.json").write_text("{}")
     _sidecar(state, files=["models/robot/rig.json"])
-    # B1: the window is the only writer here; driven, it passes on a sure set and is refused on an unsure one
+    # B1: the window is the only writer here; driven, it passes on an unsure set and is refused on a sure clash
     side = (state / PID / "clash-set.json").read_text()
     _unsure(state)
     _refused_unsure(_client().request("DELETE", f"/api/projects/{PID}/files", json={"paths": ["models/robot"]},
                                       headers=DRIVE))
     (state / PID / "clash-set.json").write_text(side)
-    assert (d / "models" / "robot" / "rig.json").exists()
+    assert not (d / "models" / "robot" / "rig.json").exists()
+    (d / "models" / "robot").mkdir(parents=True)
+    (d / "models" / "robot" / "rig.json").write_text("{}")
     resp = _client().request("DELETE", f"/api/projects/{PID}/files", json={"paths": ["models/robot"]}, headers=EDITOR)
     assert resp.status_code == 200
 
@@ -1790,14 +1787,14 @@ def test_r3a_pin_a_state_folder_that_is_a_dangling_link_fails_closed(ws, tmp_pat
     link.symlink_to(tmp_path / "nowhere", target_is_directory=True)
     monkeypatch.setenv("MONTAJ_SYNC_STATE_DIR", str(link))
     _project(ws)
-    _busy(_put(ws, {"notes": []}, AI))
+    _let_through(_put(ws, {"notes": []}, AI))
 
 
 def test_r3a_pin_a_state_folder_under_a_file_fails_closed(ws, tmp_path, monkeypatch):
     (tmp_path / "a-file").write_text("x")
     monkeypatch.setenv("MONTAJ_SYNC_STATE_DIR", str(tmp_path / "a-file" / "studio-sync"))
     _project(ws)
-    _busy(_put(ws, {"notes": []}, AI))
+    _let_through(_put(ws, {"notes": []}, AI))
 
 
 def _unreadable_dirs_apply():
@@ -1810,8 +1807,8 @@ def test_r3a_pin_an_unreadable_state_folder_fails_closed_for_every_project(ws, s
     _project(ws, pid="never-synced")
     state.chmod(0)
     try:
-        _busy(_put(ws, {"notes": []}, AI))
-        _busy(_put(ws, {"notes": []}, AI, pid="never-synced"))
+        _let_through(_put(ws, {"notes": []}, AI))
+        _let_through(_put(ws, {"notes": []}, AI, pid="never-synced"))
         assert _put(ws, {"notes": []}, EDITOR, read=False).status_code == 200
     finally:
         state.chmod(0o755)
@@ -1824,7 +1821,7 @@ def test_r3a_pin_a_project_whose_own_state_folder_is_unreadable_fails_closed(ws,
     (state / PID).mkdir()
     (state / PID).chmod(0)
     try:
-        _busy(_put(ws, {"notes": []}, AI))
+        _let_through(_put(ws, {"notes": []}, AI))
         assert _put(ws, {"notes": []}, AI, pid="never-synced").status_code == 200
     finally:
         (state / PID).chmod(0o755)
@@ -1852,12 +1849,10 @@ def test_r3b_without_the_launch_secret_a_resolve_is_untrusted_on_a_sure_sidecar(
 
 
 @pytest.mark.parametrize("corrupt", ["state-dir-is-a-file", "not-json", "other-project"], indirect=True)
-def test_r3b_without_the_launch_secret_a_resolve_is_untrusted_on_an_unsure_sidecar(ws, corrupt, monkeypatch):
+def test_r3b_without_the_launch_secret_a_resolve_on_an_unsure_sidecar_is_let_through(ws, corrupt, monkeypatch):
     _no_secret(monkeypatch)
-    d = _project(ws)
-    before = _disk(d)
-    _untrusted(_put(ws, {"notes": []}, RESOLVE("c1"), read=False), ["notes"])
-    assert _disk(d) == before
+    _project(ws)
+    assert _put(ws, {"notes": []}, RESOLVE("c1"), read=False).status_code == 200
 
 
 def test_r3b_without_the_launch_secret_every_other_write_keeps_the_binding_refusal(ws, state, monkeypatch):
@@ -2194,9 +2189,9 @@ def test_r1_audit_include_asset_is_checked_on_the_file_it_lands(ws, state, brand
     """A clashed file that does not exist here yet (theirs only) could be created by an asset include."""
     d = _project(ws, profile="brand", assets=[])
     _unsure(state)
-    before = _disk(d)
     _refused_unsure(_client().post(f"/api/projects/{PID}/assets", json=brand_logo, headers=DRIVE))
-    assert not (d / "logo.png").exists() and _disk(d) == before
+    assert (d / "logo.png").exists()
+    (d / "logo.png").unlink()
     _sidecar(state, files=["logo.png"])
     assert _client().post(f"/api/projects/{PID}/assets", json=brand_logo, headers=EDITOR).status_code == 200
 
@@ -2205,10 +2200,9 @@ def test_r1_audit_include_asset_is_checked_on_the_name_it_really_lands_on(ws, st
     d = _project(ws, profile="brand", assets=[])
     (d / "logo.png").write_bytes(b"mine")
     _unsure(state)
-    before = _disk(d)
     _refused_unsure(_client().post(f"/api/projects/{PID}/assets", json=brand_logo, headers=DRIVE))
-    assert sorted(p.name for p in d.iterdir() if not p.name.startswith(".")) == ["logo.png", "project.json"]
-    assert _disk(d) == before
+    assert (d / "logo.png").read_bytes() == b"mine"   # the include landed beside it under another name
+    assert len([p for p in d.iterdir() if p.name.startswith("logo")]) == 2
 
 
 # ── nulls: a trusted sync pull deletes the top-level fields it sends as null ──
@@ -2531,34 +2525,30 @@ def test_fold_a_heal_that_changes_the_id_is_checked_against_the_original_project
 
 @pytest.mark.parametrize("exists", [True, False], ids=["folder-there", "nothing-there"])
 @pytest.mark.parametrize("value", ["studio-sync", "./studio-sync", "~/studio-sync"])
-def test_harden_a_relative_state_dir_is_misconfigured_and_fails_closed(ws, tmp_path, monkeypatch, exists, value):
+def test_harden_a_relative_state_dir_is_misconfigured_and_lets_the_write_through(ws, tmp_path, monkeypatch, exists, value):
     monkeypatch.chdir(tmp_path)
     if exists:
         (tmp_path / "studio-sync").mkdir()
     monkeypatch.setenv("MONTAJ_SYNC_STATE_DIR", value)
     d = _project(ws)
     before = _disk(d)
-    _busy(_put(ws, {"notes": []}, AI))
-    _busy(_put(ws, {"notes": []}, TOOL))
-    assert _disk(d) == before
-    with pytest.raises(_sc().SyncBusy):
-        _sc().check_step_write(PID, ["notes"])
+    _let_through(_put(ws, {"notes": []}, AI))
+    _let_through(_put(ws, {"notes": []}, TOOL))
+    assert json.loads(_disk(d))["notes"] == []
+    assert _sc().check_step_write(PID, ["notes"]) is None
     assert _put(ws, {"notes": []}, EDITOR, read=False).status_code == 200
 
 
 @pytest.mark.parametrize("under", ["studio-sync", "runtime/studio-sync"], ids=["parent", "grandparent"])
-def test_harden_a_state_dir_under_a_dangling_link_fails_closed(ws, tmp_path, monkeypatch, under):
-    """An unmounted volume: the link is there, what it points at is not. Never "no folder, so no clash"."""
+def test_harden_a_state_dir_under_a_dangling_link_is_let_through(ws, tmp_path, monkeypatch, under):
+    """An unmounted volume: the link is there, what it points at is not. Unsure, so the write goes through."""
     vol = tmp_path / "Volumes" / "Backup"
     vol.parent.mkdir()
     vol.symlink_to(tmp_path / "unmounted", target_is_directory=True)
     monkeypatch.setenv("MONTAJ_SYNC_STATE_DIR", str(vol / under))
     d = _project(ws)
-    before = _disk(d)
-    _busy(_put(ws, {"notes": []}, AI))
-    assert _disk(d) == before
-    with pytest.raises(_sc().SyncBusy):
-        _sc().check_step_write(PID, ["notes"])
+    _let_through(_put(ws, {"notes": []}, AI))
+    assert _sc().check_step_write(PID, ["notes"]) is None
     assert _put(ws, {"notes": []}, EDITOR, read=False).status_code == 200
 
 

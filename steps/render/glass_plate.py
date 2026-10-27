@@ -184,7 +184,7 @@ def _land(project_path, project_id, staged, out_dir):
     with project_lock_or_fail(project_path, fail):
         try:
             sync_clash.check_step_write(project_id, files=[rel])
-        except (sync_clash.SyncConflict, sync_clash.SyncBusy) as e:
+        except sync_clash.SyncConflict as e:
             sync_clash.exit_refused(e.body)
         return _swap_in(staged, out_dir)
 

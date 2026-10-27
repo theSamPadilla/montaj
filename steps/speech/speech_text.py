@@ -27,7 +27,7 @@ def _write_text(project_path, project_id, out_path, text):
     with project_lock_or_fail(project_path, fail):
         try:
             sync_clash.check_step_write(project_id, files=[SPEECH_TEXT_FILE])
-        except (sync_clash.SyncConflict, sync_clash.SyncBusy) as e:
+        except sync_clash.SyncConflict as e:
             sync_clash.exit_refused(e.body)
         _write(out_path, text)
 

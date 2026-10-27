@@ -18,14 +18,13 @@ names-only sidecar per synced project, `<dir>/<projectId>/clash-set.json`:
   a real folder above it lacks the name: a missing name under a link that points nowhere (an unmounted volume) is
   unsure. serve prints MISSING_STATE_LINE once (at startup, or when it first finds the folder gone), so this
   fail-open is never silent.
-- Anything else that is not a valid sidecar (a relative path, which names a different folder for every working
-  directory, a state folder that exists but is not a readable folder, a dangling link as the state folder or above it,
-  a project folder that cannot be read, a corrupt file, an unknown `v`, an id that cannot name a folder, a link out of
-  the folder): UNSURE. UNSURE IS NOT A CLASH (Sam, 1.5.1: a false "person must resolve it" stopped the AI on a project
-  with no clash). It is logged with its reason (once per id and reason a minute), re-read a few times
-  (`load_settled`, so an atomic rename in flight passes), and when it stays unsure a non-human write is answered with
-  the retryable `busy()` body (HTTP 503 `sync_state_busy`), never the clash text. Only a recorded clash that covers
-  what the write touches refuses, and a whole-project one reads "the whole project", not `*`.
+- Anything else that is not a valid sidecar (a relative path, a state folder that exists but is not a readable folder,
+  a dangling link, a project folder that cannot be read, a corrupt file, an unknown `v`, an id that cannot name a
+  folder, a link out of the folder): UNSURE. UNSURE IS NOT A CLASH (Sam, 1.5.1: a false "person must resolve it"
+  stopped the AI on a project with no clash; "if the sync state can't be checked make the edit optimistically"). The
+  write goes through. load() logs the reason once per id and reason a minute, so an unsure read names itself. Only a
+  readable recorded clash that covers what the write touches refuses, and a whole-project one reads "the whole
+  project", not `*`.
 
 Read fresh on every write (a few hundred bytes, no cache): a cache keyed on the file's stat can miss an in-place
 rewrite, and the shell's atomic rename is the common case.
@@ -117,8 +116,8 @@ class ClashSet:
 NO_CLASH = ClashSet()
 UNSURE = ClashSet(unsure=True)
 
-# An UNSURE read is not a clash (Sam, 1.5.1): it is logged, re-read (load_settled) and, when it stays unsure, answered
-# with a retryable busy answer. The reason is only ever logged, never the contents of a path.
+# An UNSURE read is not a clash (Sam, 1.5.1): it is logged and the write goes through. The reason is only ever
+# logged, never the contents of a path.
 _UNSURE_LOG_EVERY = 60.0
 _unsure_logged: dict = {}
 
@@ -131,7 +130,7 @@ def _unsure(project_id, reason: str) -> ClashSet:
     last = _unsure_logged.get(key)
     if last is None or now - last >= _UNSURE_LOG_EVERY:
         _unsure_logged[key] = now
-        print(f"sync_clash: unsure for {ident}: {reason}", file=sys.stderr, flush=True)
+        print(f"sync_clash: unsure for {ident}: {reason}; let through", file=sys.stderr, flush=True)
     return UNSURE
 
 
@@ -232,7 +231,14 @@ def startup() -> None:
 
 
 def load(project_id) -> ClashSet:
-    """The project's clash set. Call only with state_dir() set."""
+    """The project's clash set. Call only with state_dir() set. Never raises: anything unexpected is UNSURE."""
+    try:
+        return _load(project_id)
+    except Exception as e:
+        return _unsure(project_id, f"unexpected {type(e).__name__}")
+
+
+def _load(project_id) -> ClashSet:
     base = state_dir()
     if not base:
         return _unsure(project_id, "the state folder is not named")
@@ -284,18 +290,6 @@ def load(project_id) -> ClashSet:
     finally:
         os.close(fd)
     return _parse(b"".join(chunks), project_id)
-
-
-def load_settled(project_id, tries: int = 4, wait: float = 0.05) -> ClashSet:
-    """`load`, re-read up to `tries` more times, `wait` seconds apart, while it is unsure: a transient state (the app's
-    atomic rename of a sidecar, a push rewriting files) passes. The last read is the answer. About 0.2 s at most; it
-    runs inside serve's async step route."""
-    clashes = load(project_id)
-    while clashes.unsure and tries > 0:
-        tries -= 1
-        time.sleep(wait)
-        clashes = load(project_id)
-    return clashes
 
 
 def _file_hit(written_key: str, clashed_key: str) -> bool:
@@ -424,13 +418,6 @@ def refusal(names) -> dict:
     return {"error": "sync_conflict", "fields": list(names), "message": message(names)}
 
 
-def busy() -> dict:
-    """The answer to a write whose clash set stayed unreadable after the re-reads: retryable, and not a clash."""
-    return {"error": "sync_state_busy",
-            "message": "Montaj couldn't read this project's Studio sync state just now, so nothing was saved. "
-                       "Run the same call again in a moment."}
-
-
 _MISSING = object()
 
 
@@ -465,17 +452,9 @@ class SyncConflict(RuntimeError):
         self.body = body
 
 
-class SyncBusy(RuntimeError):
-    """A step's write that could not read the clash set (still unsure after the re-reads); `body` is `busy()`."""
-
-    def __init__(self, body: dict):
-        super().__init__(body["message"])
-        self.body = body
-
-
 def check_step_write(project_id, fields=(), files=()) -> None:
-    """For a step's own write, under the project lock: raise SyncConflict when it touches a clashed name, and SyncBusy
-    when the clash set stays unreadable (never a clash). Off with
+    """For a step's own write, under the project lock: raise SyncConflict when it touches a clashed name of a readable
+    clash set (an unreadable one is not a clash). Off with
     the variable unset; a step the window ran (MONTAJ_WRITE_ORIGIN=human, set only by serve) passes, and one it ran
     while the person's AI drove it (`drive`) passes on held names only."""
     origin = os.environ.get(ORIGIN_ENV)
@@ -483,9 +462,9 @@ def check_step_write(project_id, fields=(), files=()) -> None:
         return
     if not fields and not files:
         return
-    clashes = load_settled(project_id)
+    clashes = load(project_id)
     if clashes.unsure:
-        raise SyncBusy(busy())
+        return   # not a clash: the write goes through (load logged why)
     names = unheld_touched(clashes, fields, files) if origin == DRIVE_ORIGIN else touched(clashes, fields, files)
     if names:
         raise SyncConflict(refusal(names))
@@ -502,6 +481,6 @@ def check_step_document(before: dict, after: dict, files=()) -> None:
 
 def exit_refused(body: dict) -> None:
     """A step's structured exit for a refusal: the binding body on stderr, exit 1 (serve answers a sync_conflict as
-    409 and a sync_state_busy as 503)."""
+    409)."""
     print(json.dumps(body), file=sys.stderr)
     sys.exit(1)

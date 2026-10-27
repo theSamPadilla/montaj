@@ -125,13 +125,13 @@ def test_a_save_the_guard_lets_through_on_a_full_disk_is_507_and_project_json_is
     assert _no_temp(d) == []
 
 
-def test_an_unsure_asset_include_is_busy_not_a_clash_on_a_full_disk(ws, state, brand_logo, monkeypatch):
+def test_an_unsure_asset_include_is_not_a_clash_on_a_full_disk(ws, state, brand_logo, monkeypatch):
     d = _project(ws, profile="brand", assets=[])
     (state / PID).mkdir(exist_ok=True)
-    (state / PID / "clash-set.json").write_text("nope")  # B1: the window is the only writer here, busy when unsure
+    (state / PID / "clash-set.json").write_text("nope")  # B1: the window is the only writer here, let through when unsure
     _fill(monkeypatch)
     resp = _client().post(f"/api/projects/{PID}/assets", json=brand_logo, headers=DRIVE)
-    assert resp.status_code == 503 and resp.json()["detail"]["error"] == "sync_state_busy", resp.text
+    assert resp.status_code == 507, resp.text   # past the sync check, on to the full disk
     assert not any(p.name.startswith("logo") for p in d.rglob("*"))
 
 
