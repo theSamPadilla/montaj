@@ -1,19 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
-import { ArrowDown, ArrowUp, ChevronsDown, ChevronsUp, Eye, EyeOff, GripVertical, Lock, LockOpen, Shapes, Type } from 'lucide-react'
+import { ArrowDown, ArrowUp, Blocks, TextCursor, ChevronsDown, ChevronsUp, Eye, EyeOff, GripVertical, Lock, LockOpen } from 'lucide-react'
 import type { CarouselElement, ImageElement, OverlayElement } from '../types'
 import type { ReorderDirection } from '../state/project-reducer'
 import { isLocked } from './lock'
 import { moveToLayer } from './layerOrder'
 import { isTextOverlay } from './textStyle'
+import { railEyebrow, railFaint, railHoverBg, railIconBtn, railMuted, railSelectedBg } from './railStyles'
 
 /** How far a press moves before it is a drag and not a click, in px. */
 const DRAG_START_PX = 4
 
 type DropAt = { id: string; where: 'above' | 'below' }
 
-const iconBtn =
-  'flex items-center justify-center h-7 w-7 rounded-md text-[var(--editor-text)] hover:bg-[var(--editor-surface)] disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)]'
+// A row is 40px: its lock and eye take Montaj's 32px tool.
+const iconBtn = railIconBtn
 
 /** A layer row's label: a text's words, an image's file name, an overlay's template name. */
 export function layerName(el: CarouselElement): string {
@@ -152,8 +153,8 @@ export default function LayersPanel({
 
   return (
     <div className="flex flex-col text-[var(--editor-text)]">
-      <div className="flex items-center justify-between px-3 pt-3 pb-1.5">
-        <span className="text-xs font-semibold uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">{slideLabel}</span>
+      <div className="flex items-center justify-between px-3 pt-3 pb-0.5">
+        <span className={railEyebrow}>{slideLabel}</span>
         <div className="flex gap-0.5">
           {header('Bring to front', 'front', ChevronsUp)}
           {header('Bring forward', 'forward', ArrowUp)}
@@ -185,7 +186,7 @@ export default function LayersPanel({
               onPointerDown={(e) => onRowPointerDown(e, el.id)}
               // Inline, so a host's stylesheet cannot lose them: the row is a grab handle, the line its drop place.
               style={{ position: 'relative', userSelect: 'none', WebkitUserSelect: 'none', cursor: canEdit ? (dragId ? 'grabbing' : 'grab') : undefined }}
-              className={`flex items-center gap-1.5 h-10 pl-1 pr-1 rounded-md ${on ? 'bg-[var(--editor-surface)] ring-1 ring-[var(--editor-accent)]' : 'hover:bg-[var(--editor-surface)]'} ${dragId && (dragId === el.id || (selected.has(dragId) && on)) ? 'opacity-50' : ''}`}
+              className={`flex items-center gap-1.5 h-10 pl-1 pr-1 rounded-xl ${on ? railSelectedBg : railHoverBg} ${dragId && (dragId === el.id || (selected.has(dragId) && on)) ? 'opacity-50' : ''}`}
             >
               {over?.id === el.id && (
                 <span
@@ -194,7 +195,7 @@ export default function LayersPanel({
                   style={{ position: 'absolute', left: 0, right: 0, height: 2, borderRadius: 1, pointerEvents: 'none', background: 'var(--editor-accent)', ...(over.where === 'above' ? { top: -2 } : { bottom: -2 }) }}
                 />
               )}
-              <span aria-hidden="true" className="text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)]"><GripVertical size={14} /></span>
+              <span aria-hidden="true" className={railFaint}><GripVertical size={14} /></span>
               <button
                 type="button"
                 aria-pressed={on}
@@ -202,12 +203,12 @@ export default function LayersPanel({
                 title={name}
                 onClick={(e) => onSelect(el.id, e.shiftKey || e.metaKey || e.ctrlKey)}
                 style={{ cursor: 'inherit' }}
-                className={`flex-1 min-w-0 flex items-center gap-2 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)] rounded ${isHidden ? 'opacity-50' : ''}`}
+                className={`flex-1 min-w-0 flex items-center gap-2 text-left text-[13px] text-[var(--editor-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)] rounded-md ${on ? 'font-semibold' : ''} ${isHidden ? 'opacity-40' : ''}`}
               >
-                <span className="flex-shrink-0 flex items-center justify-center h-7 w-7 rounded border border-[var(--editor-border)] bg-[var(--editor-bg)] overflow-hidden">
+                <span className={`flex-shrink-0 flex items-center justify-center h-7 w-7 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] overflow-hidden ${railMuted}`}>
                   {el.type === 'image'
                     ? <img src={resolveImageSrc(el)} alt="" draggable={false} className="h-full w-full object-cover" />
-                    : isTextOverlay(el) ? <Type size={14} aria-hidden="true" /> : <Shapes size={14} aria-hidden="true" />}
+                    : isTextOverlay(el) ? <TextCursor size={16} aria-hidden="true" /> : <Blocks size={16} aria-hidden="true" />}
                 </span>
                 <span className="truncate">{name}</span>
               </button>
@@ -220,7 +221,7 @@ export default function LayersPanel({
                 disabled={!canEdit}
                 onClick={() => onToggleLock(el.id)}
               >
-                {locked ? <Lock size={14} /> : <LockOpen size={14} className="opacity-50" />}
+                {locked ? <Lock size={16} /> : <LockOpen size={16} className="opacity-60" />}
               </button>
               {onToggleElementVisibility && (
                 <button
@@ -231,13 +232,13 @@ export default function LayersPanel({
                   title={isHidden ? 'Show' : 'Hide'}
                   onClick={() => onToggleElementVisibility(el.id)}
                 >
-                  {isHidden ? <EyeOff size={14} /> : <Eye size={14} />}
+                  {isHidden ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               )}
             </li>
           )
         })}
-        <li data-layer-background className="flex items-center gap-2 h-10 pl-6 pr-2 text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">
+        <li data-layer-background className={`flex items-center gap-2 h-10 pl-6 pr-2 text-[13px] ${railMuted}`}>
           Background
         </li>
       </ul>

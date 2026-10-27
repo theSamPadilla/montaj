@@ -10,6 +10,7 @@ import {
   AlignVerticalDistributeCenter,
 } from 'lucide-react'
 import { cn, inspectorInputClass } from '../ui'
+import { railFieldShape, railMuted, railOutlineTool } from './railStyles'
 import type { LucideIcon } from 'lucide-react'
 
 // Align the selected element to the slide: its edges or its center. A rotated
@@ -150,8 +151,7 @@ export type AlignControlsProps = {
   | { elements: ReadonlyArray<Box & { id: string }>; onChange: (patches: Array<{ id: string } & AlignPatch>) => void }
 )
 
-const iconButtonClass =
-  'flex h-7 w-9 items-center justify-center rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] transition-colors hover:border-[var(--editor-accent)] hover:text-[var(--editor-text)] focus:outline-none focus:ring-1 focus:ring-[var(--editor-accent)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-[var(--editor-border)]'
+const iconButtonClass = cn(railOutlineTool, 'h-7 w-9')
 
 export function AlignControls(props: AlignControlsProps) {
   const { width, height } = props
@@ -185,7 +185,7 @@ export function AlignControls(props: AlignControlsProps) {
             title={label}
             disabled={props.disabled}
             onClick={() => align(to)}
-            className="flex h-7 flex-1 items-center justify-center rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] transition-colors hover:border-[var(--editor-accent)] hover:text-[var(--editor-text)] focus:outline-none focus:ring-1 focus:ring-[var(--editor-accent)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-[var(--editor-border)]"
+            className={cn(railOutlineTool, 'h-7 flex-1')}
           >
             <Icon className="h-4 w-4" aria-hidden="true" />
           </button>
@@ -215,7 +215,7 @@ export function AlignControls(props: AlignControlsProps) {
             >
               <AlignVerticalDistributeCenter className="h-4 w-4" aria-hidden="true" />
             </button>
-            <span className="ml-2 text-xs text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)]">Gap</span>
+            <span className={`ml-2 text-xs ${railMuted}`}>Gap</span>
             <input
               type="number"
               inputMode="numeric"
@@ -223,9 +223,9 @@ export function AlignControls(props: AlignControlsProps) {
               value={gap}
               disabled={!canDistribute}
               onChange={(e) => setGap(e.target.value)}
-              className={cn(inspectorInputClass, 'w-16 flex-none')}
+              className={cn(inspectorInputClass, railFieldShape, 'w-16 flex-none')}
             />
-            <span className="text-xs text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">px</span>
+            <span className={`text-xs ${railMuted}`}>px</span>
           </div>
         </>
       )}

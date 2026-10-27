@@ -2347,7 +2347,6 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       canvas={railCanvas}
       panels={{
         media: slots?.carouselMediaPanel,
-        brand: slots?.carouselBrandPanel,
         notes: slots?.carouselNotesPanel,
         layers: layersPanel || undefined,
         background: backgroundPanel || undefined,

@@ -1266,8 +1266,6 @@ export interface EditorSlots {
   carouselTopRight?: ReactNode
   /** `layout="rail"` only: the Media rail item's side panel. */
   carouselMediaPanel?: ReactNode
-  /** `layout="rail"` only: the Brand rail item's side panel. */
-  carouselBrandPanel?: ReactNode
   /** `layout="rail"` only: the Notes rail item's right panel. */
   carouselNotesPanel?: ReactNode
 }
@@ -1276,7 +1274,7 @@ export interface EditorSlots {
 export type CarouselLayout = 'classic' | 'rail'
 
 /** The rail layout's items, in order. `notes` opens the right panel; the others the side panel. */
-export type CarouselRailItemId = 'media' | 'elements' | 'text' | 'brand' | 'ai-image' | 'layers' | 'background' | 'notes'
+export type CarouselRailItemId = 'media' | 'elements' | 'text' | 'ai-image' | 'layers' | 'background' | 'notes'
 
 // ── Controls window ───────────────────────────────────────────────────────────
 // Declared here rather than in ControlsInfoModal (which re-exports the two

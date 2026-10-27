@@ -10,6 +10,7 @@ import { AlignControls, type AlignPatch } from './AlignControls'
 import { cropBlockedReason, HideToggle, LayerOrderButtons, OverlayPropsSection, schemaPropsFor, TEXT_CONTROL_PROPS, TransformFields, useReplaceImagePicker } from './ElementControls'
 import { isLocked } from './lock'
 import { isTextOverlay } from './textStyle'
+import { railFocus, railHoverBg, railIconBtn, railIconBtnSm, railInk, railToolBtn, railToolOn } from './railStyles'
 
 // The rail layout's element toolbar (§587 M3): what the selection can do,
 // centred along the top of the canvas. Every control drives the same handler
@@ -61,12 +62,13 @@ export interface ElementToolbarProps {
   onOpenTextColour?: () => void
 }
 
-const iconBtn =
-  'flex h-8 min-w-8 items-center justify-center rounded-full px-2 text-sm text-[var(--editor-text)] transition-colors hover:bg-[var(--editor-surface)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)]'
-const textBtn = cn(iconBtn, 'px-3 text-[13px] font-medium')
-const onClass = 'bg-[color-mix(in_srgb,var(--editor-accent)_15%,transparent)] text-[var(--editor-accent-text,var(--editor-accent))]'
-const stepBtn =
-  'flex h-7 w-7 items-center justify-center rounded-full text-sm text-[var(--editor-text)] hover:bg-[var(--editor-surface)] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)]'
+// Montaj's tools: 10px squares, muted at rest, ink on hover; on = the brand tint.
+const iconBtn = cn(railIconBtn, 'w-auto min-w-8 px-2 disabled:hover:bg-transparent')
+const textBtn = cn(railToolBtn, 'disabled:hover:bg-transparent')
+const onClass = railToolOn
+const stepBtn = cn(railIconBtnSm, 'text-sm')
+/** The font and size fields: a 32px field with 10px corners. */
+const fieldBox = 'border border-[var(--editor-border)] rounded-[10px]'
 
 function Sep() {
   return <span aria-hidden="true" className="mx-1 h-5 w-px flex-shrink-0 bg-[var(--editor-border)]" />
@@ -77,7 +79,7 @@ function Popover({ label, children }: { label: string; children: ReactNode }) {
     <div
       role="dialog"
       aria-label={label}
-      className="absolute left-1/2 top-full z-40 mt-2 flex w-[300px] -translate-x-1/2 flex-col gap-4 rounded-xl border border-[var(--editor-border)] bg-[var(--editor-bg)] p-4 text-[var(--editor-text)] shadow-lg"
+      className="absolute left-1/2 top-full z-40 mt-2 flex w-[300px] -translate-x-1/2 flex-col gap-4 rounded-xl border border-[var(--editor-border)] bg-[var(--editor-surface)] p-4 text-[var(--editor-text)] shadow-lg"
     >
       {children}
     </div>
@@ -117,11 +119,11 @@ function TextGroup({
           onChange={fmt.setFontFamily}
           disabled={disabled}
           className="w-32"
-          buttonClassName="flex h-8 w-full items-center gap-1 rounded-full border border-[var(--editor-border)] px-3 text-[13px] text-[var(--editor-text)] hover:bg-[var(--editor-surface)] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)]"
+          buttonClassName={`flex h-8 w-full items-center gap-1 ${fieldBox} px-3 text-[13px] ${railInk} ${railHoverBg} disabled:cursor-not-allowed disabled:opacity-40 ${railFocus}`}
         />
       )}
       {supported.has('fontSize') && (
-        <div className="ml-1 flex h-8 items-center rounded-full border border-[var(--editor-border)] px-0.5">
+        <div className={`ml-1 flex h-8 items-center ${fieldBox} px-0.5`}>
           <FontSizePicker
             value={fmt.fontSizeValue}
             onChange={fmt.setFontSize}
@@ -186,7 +188,7 @@ function EffectsContent({ slideId, element, update, disabled, mode }: { slideId:
               type="button"
               aria-label={`Text case (currently ${textTransform})`}
               onClick={fmt.cycleCase}
-              className={cn('h-7 min-w-[2rem] rounded-md border border-[var(--editor-border)] px-1.5 font-mono text-xs', fmt.caseActive && onClass)}
+              className={cn('h-7 min-w-[2rem] rounded-[10px] border border-[var(--editor-border)] px-1.5 font-mono text-xs', fmt.caseActive && onClass)}
             >
               {caseLabel(fmt.textTransform)}
             </button>
@@ -271,7 +273,7 @@ export default function ElementToolbar({
       <div
         role="toolbar"
         aria-label="Element"
-        className="flex max-w-full flex-wrap items-center gap-0.5 rounded-xl border border-[var(--editor-border)] bg-[var(--editor-bg)] px-1.5 py-1 text-[var(--editor-text)] shadow-md"
+        className="flex max-w-full flex-wrap items-center gap-0.5 rounded-xl border border-[var(--editor-border)] bg-[var(--editor-surface)] px-1.5 py-1 text-[var(--editor-text)] shadow-md"
       >
         {text && (
           <>
