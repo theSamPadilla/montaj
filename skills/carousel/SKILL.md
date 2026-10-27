@@ -89,6 +89,7 @@ Key rules:
 - Element ordering in `elements[]` is z-order, bottom → top. Put full-bleed images at index 0.
 - A "background" image is just an image element sized to the slide at index 0. No special background type exists.
 - Text and shapes are overlays, not dedicated element types.
+- Elements sharing a `group` string are one group in the editor (moved as one; the render ignores it). Keep a group's members next to each other in `elements[]`; give a copied group a new id.
 - `frame` selects which frame of an overlay's animation gets statically rendered. Default: the overlay's declared `staticFrame`, or `duration - 1` (end of entrance animation) when `staticFrame` is absent.
 
 ---

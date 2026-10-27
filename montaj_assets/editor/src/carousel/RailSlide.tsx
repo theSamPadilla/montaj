@@ -24,6 +24,7 @@ export interface RailSlideHandlers {
   moveElement: Req<'moveElement'>
   resizeElement: Req<'resizeElement'>
   rotateElement: Req<'rotateElement'>
+  editElements: Req<'editElements'>
   commit: Req<'commit'>
   updateOverlayProp: Req<'updateOverlayProp'>
   updateImageCrop: Req<'updateImageCrop'>
@@ -108,6 +109,7 @@ function RailSlide({
         moveElement={(...a) => h().moveElement(...a)}
         resizeElement={(...a) => h().resizeElement(...a)}
         rotateElement={(...a) => h().rotateElement(...a)}
+        editElements={(...a) => h().editElements(...a)}
         commit={() => h().commit()}
         updateOverlayProp={(...a) => h().updateOverlayProp(...a)}
         updateImageCrop={(...a) => h().updateImageCrop(...a)}

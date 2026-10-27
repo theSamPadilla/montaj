@@ -1,8 +1,9 @@
 import { useEffect, useRef, type ReactNode } from 'react'
-import { ArrowLeft, ArrowRight, Bold, Copy, Crop, Eraser, Italic, Loader2, Lock, LockOpen, Replace, Trash2 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Bold, Copy, Crop, Eraser, Group, Italic, Loader2, Lock, LockOpen, Replace, Trash2, Ungroup } from 'lucide-react'
 import type { CarouselElement, GlobalOverlay, OverlayElement } from '../types'
 import type { ReorderDirection } from '../state/project-reducer'
 import { cn, NumberField, Slider, Switch } from '../ui'
+import { shortcutText } from '../ui/modifierKeys'
 import { FontFamilyPicker, FontSizePicker, type PickerCustomFont } from '../text/FontPicker'
 import { caseLabel, TEXT_ALIGNS, TextBackgroundControl, TextColorControl, textFormatting } from '../text/TextFormattingToolbar'
 import { supportsEffects, supportsFit, TextEffectControls } from '../text/TextEffectControls'
@@ -45,6 +46,14 @@ export interface ElementToolbarProps {
   onAlignSelection: (patches: Array<{ id: string } & AlignPatch>) => void
   onMoveInStack: (direction: ReorderDirection) => void
   onToggleLock: () => void
+  /** Group the selection (§587). Absent: no Group button. */
+  onGroup?: () => void
+  /** Ungroup the selected group. Absent: no Ungroup button. */
+  onUngroup?: () => void
+  /** Group or Ungroup is off (a locked element in it). */
+  groupDisabled?: boolean
+  /** The selected group's box: Position aligns the group as one box. */
+  groupBox?: { x: number; y: number; w: number; h: number }
   onDuplicate: () => void
   onDelete: () => void
   /** Crop: enter crop mode for the image, or (while cropping) apply and leave it. */
@@ -386,6 +395,10 @@ export default function ElementToolbar({
   onAlignSelection,
   onMoveInStack,
   onToggleLock,
+  onGroup,
+  onUngroup,
+  groupDisabled,
+  groupBox,
   onDuplicate,
   onDelete,
   onToggleCrop,
@@ -558,6 +571,18 @@ export default function ElementToolbar({
           Position
         </button>
         <Sep />
+        {(onGroup || onUngroup) && (
+          <button
+            type="button"
+            aria-label={onUngroup ? 'Ungroup' : 'Group'}
+            title={`${onUngroup ? 'Ungroup' : 'Group'} (${shortcutText(onUngroup ? ['⌘', '⇧', 'G'] : ['⌘', 'G'])})`}
+            disabled={!canEdit || groupDisabled}
+            onClick={run((onUngroup ?? onGroup)!)}
+            className={iconBtn}
+          >
+            {onUngroup ? <Ungroup className="h-4 w-4" aria-hidden="true" /> : <Group className="h-4 w-4" aria-hidden="true" />}
+          </button>
+        )}
         <button
           type="button"
           aria-label={anyLocked ? 'Unlock' : 'Lock'}
@@ -590,6 +615,20 @@ export default function ElementToolbar({
               (Sam, 2026-10-26); the AI sets exact numbers through its tools. */}
           {element ? (
             <AlignControls element={element} width={w} height={h} disabled={locked || !canEdit} onChange={onElementChange} />
+          ) : groupBox ? (
+            // A group aligns to the slide as one box: every member moves by the same step.
+            <AlignControls
+              element={groupBox}
+              width={w}
+              height={h}
+              disabled={anyLocked || !canEdit}
+              onChange={(patch: AlignPatch) => {
+                beforeAction()
+                const dx = 'x' in patch ? patch.x - Math.round(groupBox.x) : 0
+                const dy = 'y' in patch ? patch.y - Math.round(groupBox.y) : 0
+                onAlignSelection(selection.map((el) => ({ id: el.id, ...('x' in patch ? { x: el.x + dx } : { y: el.y + dy }) })))
+              }}
+            />
           ) : (
             <AlignControls elements={selection} width={w} height={h} disabled={allLocked || !canEdit} onChange={(patches: Array<{ id: string } & AlignPatch>) => { beforeAction(); onAlignSelection(patches) }} />
           )}

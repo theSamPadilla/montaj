@@ -258,7 +258,8 @@ describe('Element toolbar (§587 M3, layout="rail")', () => {
     await shiftClick('el-b')
     await shiftClick('el-t')
     const names = tbNames(r)
-    expect(names).toEqual(['Position', 'Lock', 'Duplicate', 'Delete'])
+    // Several ungrouped: Group too (§587).
+    expect(names).toEqual(['Position', 'Group', 'Lock', 'Duplicate', 'Delete'])
     await press(tb(r, 'Position'))
     const pop = popover(r, 'Position')
     expect(within(pop).queryByRole('spinbutton', { name: 'X' })).toBeNull()
