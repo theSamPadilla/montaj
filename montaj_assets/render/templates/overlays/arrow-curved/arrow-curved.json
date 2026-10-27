@@ -1,0 +1,13 @@
+{
+  "description": "Curved arrow",
+  "category": "arrow",
+  "aspect": 1.6,
+  "props": [
+    { "name": "fill",        "type": "string", "default": "#bdbdbd", "format": "color" },
+    { "name": "stroke",      "type": "string", "default": "#111111", "format": "color" },
+    { "name": "strokeWidth", "type": "int", "default": 0 },
+    { "name": "thickness", "type": "int", "default": 26 },
+    { "name": "strokeStyle", "type": "string", "default": "solid", "enum": ["solid", "long-dash", "short-dash", "dotted"] },
+    { "name": "roundJoins", "type": "bool", "default": true }
+  ]
+}

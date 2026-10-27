@@ -1,0 +1,12 @@
+{
+  "description": "Dot line",
+  "category": "line",
+  "props": [
+    { "name": "stroke",      "type": "string", "default": "#111111", "format": "color" },
+    { "name": "strokeWidth", "type": "int", "default": 8 },
+    { "name": "cap", "type": "string", "default": "dot", "enum": ["dot", "circle", "square", "bar"] },
+    { "name": "arrowhead", "type": "string", "default": "none", "enum": ["none", "end", "start", "both"] },
+    { "name": "strokeStyle", "type": "string", "default": "solid", "enum": ["solid", "long-dash", "short-dash", "dotted"] },
+    { "name": "roundCaps", "type": "bool", "default": false }
+  ]
+}

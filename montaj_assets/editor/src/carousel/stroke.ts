@@ -38,6 +38,31 @@ const TEMPLATES: Record<string, StrokeTemplate> = {
   'shape-star': shape('roundJoins', true),
   'shape-polygon': shape('roundJoins', true),
   'shape-arrow': shape('roundJoins', true),
+  // §587 F-I: the fuller set.
+  'line-dot-ends': line(),
+  'line-bar-ends': line(),
+  'shape-heart': shape('roundJoins', true),
+  'shape-diamond': shape('roundJoins', false),
+  'shape-hexagon': shape('roundJoins', false),
+  'shape-octagon': shape('roundJoins', false),
+  'shape-pill': shape(null, false),
+  'shape-semicircle': shape('roundJoins', false),
+  'shape-ring': shape(null, false),
+  'shape-plus': shape('roundJoins', false),
+  'shape-cross': shape('roundJoins', false),
+  'shape-x': shape('roundJoins', false),
+  'shape-check': shape('roundJoins', false),
+  'shape-blob-1': shape(null, false),
+  'shape-blob-2': shape(null, false),
+  'shape-blob-3': shape(null, false),
+  'shape-blob-4': shape(null, false),
+  'arrow-double': shape('roundJoins', true),
+  'arrow-curved': shape('roundJoins', true),
+  'arrow-chevron': shape('roundJoins', false),
+  'callout-speech-round': shape('roundJoins', true),
+  'callout-speech-rect': shape('roundJoins', false),
+  'callout-box': shape('roundJoins', false),
+  'callout-thought': shape(null, false),
   'frame-border': shape('roundJoins', false, 12),
   'frame-corners': shape('roundJoins', false, 8),
   'frame-double': shape('roundJoins', false, 4),
@@ -59,7 +84,7 @@ export interface StrokeState {
 const isStyle = (v: unknown): v is StrokeStyle => STROKE_STYLES.some((s) => s.value === v)
 const isOn = (v: unknown) => v === true || v === 'true'
 
-/** The stroke of a shipped line, shape or frame; null for anything else. */
+/** The stroke of a shipped line, shape, arrow, frame or callout; null for anything else. */
 export function strokeStateOf(el: CarouselElement | undefined): StrokeState | null {
   if (!el || el.type !== 'overlay') return null
   const t = TEMPLATES[templateName(el.overlay.template)]

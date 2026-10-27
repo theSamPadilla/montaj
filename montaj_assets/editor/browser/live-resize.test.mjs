@@ -6,8 +6,8 @@
 // are while the handle is still held.
 //
 // The fixture (fixtures/live-resize.tsx) is the real CarouselEditor in the
-// rail layout with the real frame-corners, shape-rect, line-straight and
-// static-text templates, bundled with esbuild into a temp dir and opened from
+// rail layout with the real frame-corners, shape-rect, line-straight,
+// shape-heart and static-text templates, bundled with esbuild into a temp dir and opened from
 // file://. The browser is render's puppeteer and its pinned headless Chrome,
 // launched with a throwaway profile and no network, and closed at the end. It
 // never reaches a running app or the person's browser.
@@ -103,7 +103,7 @@ beforeEach(async () => {
   await page.goto(pathToFileURL(join(workDir, 'index.html')).href)
   await page.waitForFunction(() => window.__ready === true)
   await page.waitForSelector('[data-element-id="text"] p, [data-element-id="text"] div')
-  await page.waitForFunction(() => document.querySelectorAll('[data-element-id] svg').length >= 3)
+  await page.waitForFunction(() => document.querySelectorAll('[data-element-id] svg').length >= 4)
 })
 
 const frames = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
@@ -197,8 +197,8 @@ function assertLive(kind, m, start, scale, step) {
     const vbTol = TOL / scale + 1
     assert.ok(Math.abs(m.viewBox.w - box.width / scale) <= vbTol && Math.abs(m.viewBox.h - box.height / scale) <= vbTol,
       `${at}: the SVG is drawn for ${m.viewBox.w} x ${m.viewBox.h}, the box is ${(box.width / scale).toFixed(1)} x ${(box.height / scale).toFixed(1)} slide px`)
-    if (kind === 'frame' || kind === 'rect') {
-      // The corner marks / the rect lie on the box, half a stroke in.
+    if (kind === 'frame' || kind === 'rect' || kind === 'heart') {
+      // The corner marks / the rect / the heart's curves lie on the box, half a stroke in.
       const half = (kind === 'frame' ? 8 : 6) / 2 * scale
       near(m.shape, { left: box.left + half, top: box.top + half, width: box.width - 2 * half, height: box.height - 2 * half }, `${at}: the drawn ${kind}`)
     } else {
@@ -254,7 +254,7 @@ async function dragAndCheck(id, kind, which, moves) {
   return { seen, done, after, scale, start }
 }
 
-const TEMPLATE = { frame: 'frame-corners', rect: 'shape-rect', line: 'line-straight', text: 'static-text' }
+const TEMPLATE = { frame: 'frame-corners', rect: 'shape-rect', line: 'line-straight', heart: 'shape-heart', text: 'static-text' }
 
 const CORNER = [[-20, -20], [-50, -50], [-80, -80], [-30, -30], [40, 40], [70, 70]]
 const SIDE = [[-30, 0], [-70, 0], [-110, 0], [-40, 0], [30, 0], [60, 0]]
@@ -277,6 +277,14 @@ test('shape-rect, a side handle: redrawn at the box on every move', async () => 
 
 test('shape-rect, a corner: redrawn at the box on every move', async () => {
   await dragAndCheck('rect', 'rect', 'se', CORNER)
+})
+
+test('shape-heart (§587 F-I), a corner: its curves are redrawn at the box on every move', async () => {
+  await dragAndCheck('heart', 'heart', 'se', CORNER)
+})
+
+test('shape-heart, a side handle: redrawn at the box on every move', async () => {
+  await dragAndCheck('heart', 'heart', 'e', SIDE)
 })
 
 test('line-straight: the line spans the box on every move', async () => {

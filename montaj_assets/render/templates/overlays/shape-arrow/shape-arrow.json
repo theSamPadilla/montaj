@@ -1,6 +1,6 @@
 {
   "description": "Arrow",
-  "category": "shape",
+  "category": "arrow",
   "props": [
     { "name": "fill",        "type": "string", "default": "#bdbdbd", "format": "color" },
     { "name": "stroke",      "type": "string", "default": "#111111", "format": "color" },

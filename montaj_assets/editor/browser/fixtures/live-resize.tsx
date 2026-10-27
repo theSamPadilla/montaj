@@ -1,8 +1,8 @@
 // The page `live-resize.test.mjs` drives in a real browser (§587 round 2, F-E).
 //
 // The real CarouselEditor in the rail layout, on one slide with a photo, a
-// cropped photo, the shipped frame-corners, shape-rect and line-straight
-// overlays, and a static-text box. The overlays are the real templates from
+// cropped photo, the shipped frame-corners, shape-rect, line-straight and
+// shape-heart overlays, and a static-text box. The overlays are the real templates from
 // render/templates/overlays, bundled in and called as the host's compiler
 // calls them (the component as a function of frame, fps, duration and props).
 // The editor's latest project is kept on `window.__project`, and how many
@@ -13,6 +13,7 @@ import type { EditorAdapter, ImageElement, OverlayElement, OverlayFactory, Proje
 import FrameCorners from '../../../render/templates/overlays/frame-corners/frame-corners.jsx'
 import ShapeRect from '../../../render/templates/overlays/shape-rect/shape-rect.jsx'
 import LineStraight from '../../../render/templates/overlays/line-straight/line-straight.jsx'
+import ShapeHeart from '../../../render/templates/overlays/shape-heart/shape-heart.jsx'
 import StaticText from '../../../render/templates/overlays/static-text/static-text.jsx'
 
 type Template = (props: Record<string, unknown>) => React.ReactElement | null
@@ -20,6 +21,7 @@ const TEMPLATES: Record<string, Template> = {
   'frame-corners': FrameCorners as Template,
   'shape-rect': ShapeRect as Template,
   'line-straight': LineStraight as Template,
+  'shape-heart': ShapeHeart as Template,
   'static-text': StaticText as Template,
 }
 
@@ -44,6 +46,7 @@ const project = {
       overlay('frame', 'frame-corners', { x: 60, y: 420, w: 300, h: 300 }, { stroke: '#111111', strokeWidth: '8', cornerLength: '20' }),
       overlay('rect', 'shape-rect', { x: 420, y: 420, w: 300, h: 200 }, { fill: '#bdbdbd', stroke: '#111111', strokeWidth: '6' }),
       overlay('line', 'line-straight', { x: 60, y: 800, w: 400, h: 40 }, { stroke: '#111111', strokeWidth: '8' }),
+      overlay('heart', 'shape-heart', { x: 60, y: 900, w: 300, h: 280 }, { fill: '#e33', stroke: '#111111', strokeWidth: '6' }),
       overlay('text', 'static-text', { x: 520, y: 800, w: 400, h: 160 }, { text: 'Hi there', fontSize: '80', textAlign: 'left' }),
     ],
   }],

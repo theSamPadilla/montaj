@@ -78,6 +78,9 @@ def scan_overlays(overlays_dir: Path) -> list[dict]:
         category = schema.get("category")
         if isinstance(category, str) and category:
             entry["category"] = category
+        # §587 F-I: a shipped shape's width over its height, for the box it is added in (a pill is 2).
+        if _num(schema.get("aspect")):
+            entry["aspect"] = schema["aspect"]
         defaults = schema.get("defaults")
         if isinstance(defaults, dict) and isinstance(defaults.get("props"), dict):
             entry["defaults"] = {"props": defaults["props"]}

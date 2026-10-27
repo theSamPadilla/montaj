@@ -1,0 +1,12 @@
+{
+  "description": "Thought bubble",
+  "category": "callout",
+  "aspect": 1.25,
+  "props": [
+    { "name": "fill",        "type": "string", "default": "#bdbdbd", "format": "color" },
+    { "name": "stroke",      "type": "string", "default": "#111111", "format": "color" },
+    { "name": "strokeWidth", "type": "int", "default": 0 },
+    { "name": "tail", "type": "string", "default": "left", "enum": ["left", "right"] },
+    { "name": "strokeStyle", "type": "string", "default": "solid", "enum": ["solid", "long-dash", "short-dash", "dotted"] }
+  ]
+}

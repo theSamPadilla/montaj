@@ -267,11 +267,14 @@ export interface GlobalOverlay {
   group?: string
   empty?: boolean
   /**
-   * A shipped template's kind, from its sidecar (§587): `'shape'`, `'line'` or
-   * `'frame'` put it in that section of the rail layout's Elements panel, added
-   * in a box of that kind's shape. Absent for every other template.
+   * A shipped template's kind, from its sidecar (§587): `'shape'`, `'arrow'`,
+   * `'line'`, `'frame'` or `'callout'` put it in that section of the rail
+   * layout's Elements panel, added in a box of that kind's shape. Absent for
+   * every other template.
    */
   category?: string
+  /** A shipped shape's own width over its height, from its sidecar (§587): the box it is added in (a pill is 2). Absent: square. */
+  aspect?: number
 }
 
 // ── Version history (optional capability) ─────────────────────────────────────
