@@ -241,3 +241,14 @@ def test_the_b_roll_section_carries_the_placement_rules(proj):
               "one shot per item", "a ring or an arrow", "every beat its own visual"]:
         assert s in broll, s
     assert 'run_step {name: "shots", params: {clip: ' in broll, "the call's own shape, never a bare name"
+
+
+# 1.5.0 (CV pl89r): the rules sat after the shot list and said crop without saying how in a split; the AI showed every
+# demo shot whole. Now they open the section, name the split's sourceCrop and the place presets.
+def test_the_b_roll_rules_open_the_section_and_say_how_to_crop_in_a_split(proj):
+    p, d = proj
+    text = pb.build(p, str(d), str(ROOT), **Fns().kw())["text"]
+    broll = text.split("## B-roll\n")[1]
+    assert broll.startswith("A shot under a line that names an action"), broll[:80]
+    assert "in a split, the item's sourceCrop on the hand or the screen it moves" in broll
+    assert "place's presets callout and ring" in broll

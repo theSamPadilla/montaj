@@ -218,6 +218,7 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=None, sheet
     issues = lc.data_issues(project, project_dir)
     issues += lc.caption_ink_issues(project, project_dir)   # captions over a card whose ink was not checked
     issues += lc.still_holds(project, project_dir)   # PL89: a stretch over 4 s with no beat and nothing moving
+    issues += lc.wide_broll_issues(project)   # 1.5.0: a wide b-roll shown whole on a vertical canvas
     to_measure, unmeasured = overlays_to_measure(project, project_dir, times)
     samples = os.path.join(project_dir, "render", "samples", "look")
     os.makedirs(samples, exist_ok=True)

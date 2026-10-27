@@ -139,3 +139,31 @@ def test_a_stretch_said_at_under_half_the_clips_rate_is_heard_again_with_no_held
     phrases = rh.slow_phrases(_entries(fast + slow))
     assert (12, 15) in phrases, phrases
     assert (0, 11) not in phrases
+
+
+# 1.5.0 (pl89r: the app ships large-v3-turbo only, so no base.en; turbo collapsed the repeat on the phrase's window and
+# 0.1 s earlier). Ended at the next whole words after the phrase (through "laptop's", 21.38 + 0.1), turbo hears it twice
+# from 17.80, 17.86 and 17.90 alike. Captured on 2026-10-22 16-46-14.mov, 2026-10-26 (09).
+CV_TURBO_TO_PAUSE = [("", 17.86, 17.96), ("Here's", 17.96, 18.34), ("how", 18.34, 18.57), ("it", 18.57, 18.8), ("works.", 18.8, 19.419),
+                     ("Here's", 19.419, 19.669), ("how", 19.669, 19.8), ("it", 19.8, 19.88), ("works.", 19.88, 20.259),
+                     ("The", 20.259, 20.439), ("app", 20.439, 20.619), ("reads", 20.619, 20.91), ("my", 20.91, 21.02),
+                     ("laptops", 21.02, 21.48), ("away.", 21.48, 21.48)]
+
+
+def test_the_first_retry_ends_at_the_next_whole_words_and_one_model_hears_the_repeat():
+    tried = []
+
+    def turbo(start, end):
+        tried.append((round(start, 2), round(end, 2)))
+        return CV_TURBO_TO_PAUSE if end > 21 else CV_TURBO
+    got = rh.rehear_phrase(turbo, CV, until=21.38)
+    text = " ".join(t for t, _, _ in got)
+    assert text.count("Here's how it works") == 2, text
+    assert text.lower().endswith("the app") and "reads" not in text, "judged up to the phrase's own end"
+    assert tried[-1] == (17.86, 21.48), tried
+
+
+def test_until_is_the_end_of_the_words_within_a_second_after_the_phrase():
+    words = CV + [("reads", 20.62, 20.84), ("my", 20.84, 20.95), ("laptop's", 20.95, 21.38), ("webcam", 21.38, 21.76)]
+    assert rh.until_after(words, len(CV) - 1) == 21.38
+    assert rh.until_after(words, len(words) - 1) is None
