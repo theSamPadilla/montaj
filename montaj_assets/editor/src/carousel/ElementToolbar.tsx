@@ -123,6 +123,7 @@ function TextGroup({
           onChange={fmt.setFontFamily}
           disabled={disabled}
           brandFont={brandFont}
+          variant="rail"
           className="w-32"
           buttonClassName={`flex h-8 w-full items-center gap-1 ${fieldBox} px-3 text-[13px] ${railInk} ${railHoverBg} disabled:cursor-not-allowed disabled:opacity-40 ${railFocus}`}
         />

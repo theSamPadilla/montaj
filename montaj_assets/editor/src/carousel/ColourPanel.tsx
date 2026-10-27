@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import type { ColourRequest } from '../ui'
+import { cn } from '../ui'
 import { fieldLabelClass } from './ElementControls'
+import { railBrandRow, railField, railIconBtn, railSecondaryBtn, railSwatch, railTitle } from './railStyles'
 import { normalizeHex, splitAlpha, withAlphaHex } from './colours'
 
 // The colour panel (§587 M5): it takes the rail layout's side panel while a
@@ -29,10 +31,8 @@ export function colourTitle(label: string): string {
   return label
 }
 
-const swatchBtn =
-  'h-7 w-7 rounded-md border border-[var(--editor-border)] shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)] disabled:cursor-not-allowed disabled:opacity-40'
-const fieldClass =
-  'h-8 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] px-2 text-sm text-[var(--editor-text)] focus:outline-none focus:ring-1 focus:ring-[var(--editor-accent)] disabled:opacity-40'
+const swatchBtn = `${railSwatch} h-7 w-7`
+const fieldClass = `${railField} h-8`
 
 export default function ColourPanel({
   request, disabled, brandColours, usedColours, onPreviewEverywhere, onCommitEverywhere, onDiscardPreview, onClose,
@@ -162,12 +162,12 @@ export default function ColourPanel({
   return (
     <section ref={rootRef} aria-label="Colour panel" className="flex min-h-0 flex-col">
       <div className="flex h-10 flex-shrink-0 items-center justify-between border-b border-[var(--editor-border)] px-3">
-        <h2 className="text-sm font-semibold">{colourTitle(request.label)}</h2>
+        <h2 className={railTitle}>{colourTitle(request.label)}</h2>
         <button
           type="button"
           aria-label="Close"
           onClick={() => closeRef.current()}
-          className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-[var(--editor-surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)]"
+          className={railIconBtn}
         >
           <X size={16} />
         </button>
@@ -178,9 +178,9 @@ export default function ColourPanel({
             type="button"
             disabled={disabled}
             onClick={() => commit(fit(brandColours[0]) ?? brandColours[0])}
-            className="flex h-9 items-center gap-2 rounded-md border border-[var(--editor-accent)] bg-[color-mix(in_srgb,var(--editor-accent)_15%,transparent)] px-3 text-[13px] font-medium text-[var(--editor-text)] hover:bg-[color-mix(in_srgb,var(--editor-accent)_25%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)] disabled:cursor-not-allowed disabled:opacity-40"
+            className={`${railBrandRow} h-9 gap-2 px-3`}
           >
-            <span aria-hidden="true" className="h-4 w-4 flex-shrink-0 rounded-sm border border-[var(--editor-border)]" style={{ backgroundColor: brandColours[0] }} />
+            <span aria-hidden="true" className="h-4 w-4 flex-shrink-0 rounded-md border border-[var(--editor-border)]" style={{ backgroundColor: brandColours[0] }} />
             Use brand default
           </button>
         )}
@@ -194,7 +194,7 @@ export default function ColourPanel({
               disabled={disabled}
               value={hexText}
               spellCheck={false}
-              className={`${fieldClass} w-full font-mono uppercase`}
+              className={`${fieldClass} font-mono text-[13px] uppercase`}
               onChange={(e) => setHexText(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') { e.stopPropagation(); applyHexText() }
@@ -202,7 +202,7 @@ export default function ColourPanel({
               onBlur={() => { if (hexText !== draft) applyHexText() }}
             />
           </div>
-          <span aria-hidden="true" className="h-8 w-8 flex-shrink-0 rounded-md border border-[var(--editor-border)]" style={{ backgroundColor: draft }} />
+          <span aria-hidden="true" className="h-8 w-8 flex-shrink-0 rounded-[10px] border border-[var(--editor-border)]" style={{ backgroundColor: draft }} />
         </div>
 
         {alphaOk && (
@@ -217,7 +217,7 @@ export default function ColourPanel({
                 step={1}
                 disabled={disabled}
                 value={pct}
-                className="min-w-0 flex-1 accent-[var(--editor-accent)]"
+                className="min-w-0 flex-1 accent-[#0e7490]"
                 onChange={(e) => setTransparency(Number(e.target.value))}
                 onPointerUp={releaseSlider}
                 onMouseUp={releaseSlider}
@@ -231,7 +231,7 @@ export default function ColourPanel({
                 max={100}
                 disabled={disabled}
                 value={pct}
-                className={`${fieldClass} w-16`}
+                className={cn(fieldClass, 'w-16')}
                 onChange={(e) => { if (e.target.value !== '') setTransparency(Number(e.target.value)) }}
                 onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); releaseSlider() } }}
                 onBlur={releaseSlider}
@@ -248,11 +248,7 @@ export default function ColourPanel({
           aria-pressed={everywhere}
           disabled={disabled}
           onClick={() => { revert(); setEverywhere((e) => !e) }}
-          className={`h-8 rounded-md border px-3 text-[13px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)] disabled:cursor-not-allowed disabled:opacity-40 ${
-            everywhere
-              ? 'border-[var(--editor-accent)] bg-[color-mix(in_srgb,var(--editor-accent)_15%,transparent)] text-[var(--editor-accent-text,var(--editor-accent))]'
-              : 'border-[var(--editor-border)] text-[var(--editor-text)] hover:bg-[var(--editor-surface)]'
-          }`}
+          className={cn(railSecondaryBtn, everywhere && 'ring-1 ring-[var(--editor-text)]')}
         >
           Change on every slide
         </button>

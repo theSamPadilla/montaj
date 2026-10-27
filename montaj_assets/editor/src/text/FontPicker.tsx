@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { Check, ChevronDown } from 'lucide-react'
 import { NumberField, stepValue } from '../ui'
 import { partitionFontSpecs, reportUnvendoredFonts, reportVendoredSet, vendoredFaceIndex, vendoredKeySet } from '../lib/font-families'
 import type { FaceIndex, FaceMap } from '../lib/font-families'
+import { railBrandRow, railHoverBg, railMenu, railMuted, railSelectedBg } from '../carousel/railStyles'
 
 export type FontOption = {
   label: string
@@ -160,9 +161,11 @@ type FontFamilyPickerProps = {
   buttonClassName?: string
   /** The linked profile's font (a CSS font-family value): leads the list as "Use brand default". */
   brandFont?: string
+  /** 'rail' draws the list in the carousel's look (§587 R5c). The default is the video editor's. */
+  variant?: 'default' | 'rail'
 }
 
-export function FontFamilyPicker({ value, onChange, disabled, className, buttonClassName, brandFont }: FontFamilyPickerProps) {
+export function FontFamilyPicker({ value, onChange, disabled, className, buttonClassName, brandFont, variant = 'default' }: FontFamilyPickerProps) {
   const [open, setOpen] = useState(false)
   const wrapperRef = useRef<HTMLDivElement | null>(null)
 
@@ -183,6 +186,7 @@ export function FontFamilyPicker({ value, onChange, disabled, className, buttonC
 
   const current = findFontOption(value)
   const displayLabel = current?.label ?? (value ? 'Custom' : 'Default')
+  const rail = variant === 'rail'
   const displayStyle = current ? { fontFamily: current.value } : undefined
 
   return (
@@ -202,14 +206,18 @@ export function FontFamilyPicker({ value, onChange, disabled, className, buttonC
         title={value || 'Default font'}
       >
         <span className="flex-1 truncate text-left">{displayLabel}</span>
-        <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
+        <ChevronDown className={rail ? `h-4 w-4 shrink-0 ${railMuted}` : 'h-3 w-3 shrink-0 opacity-70'} />
       </button>
       {open && (
         <div
           role="listbox"
-          className="absolute right-0 z-50 mt-1 max-h-80 w-60 overflow-y-auto rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] shadow-xl ring-1 ring-black/20"
+          className={
+            rail
+              ? `absolute right-0 z-50 mt-1 max-h-80 w-60 overflow-y-auto ${railMenu}`
+              : 'absolute right-0 z-50 mt-1 max-h-80 w-60 overflow-y-auto rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] shadow-xl ring-1 ring-black/20'
+          }
         >
-          <ul className="py-1">
+          <ul className={rail ? '' : 'py-1'}>
             {brandFont && (
               <li>
                 <button
@@ -220,7 +228,11 @@ export function FontFamilyPicker({ value, onChange, disabled, className, buttonC
                     onChange(brandFont)
                     setOpen(false)
                   }}
-                  className="mx-1 flex w-[calc(100%-0.5rem)] items-center rounded-md border border-[var(--editor-accent)] bg-[color-mix(in_srgb,var(--editor-accent)_15%,transparent)] px-3 py-2 text-left text-[15px] font-medium leading-tight text-[var(--editor-text)] hover:bg-[color-mix(in_srgb,var(--editor-accent)_25%,transparent)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)]"
+                  className={
+                    rail
+                      ? `mx-1 w-[calc(100%-0.5rem)] px-3 py-2 text-left leading-tight ${railBrandRow}`
+                      : 'mx-1 flex w-[calc(100%-0.5rem)] items-center rounded-md border border-[var(--editor-accent)] bg-[color-mix(in_srgb,var(--editor-accent)_15%,transparent)] px-3 py-2 text-left text-[15px] font-medium leading-tight text-[var(--editor-text)] hover:bg-[color-mix(in_srgb,var(--editor-accent)_25%,transparent)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)]'
+                  }
                 >
                   Use brand default
                 </button>
@@ -239,12 +251,17 @@ export function FontFamilyPicker({ value, onChange, disabled, className, buttonC
                       setOpen(false)
                     }}
                     style={{ fontFamily: opt.value }}
-                    className={`flex w-full items-center justify-between px-3 py-2 text-left text-[15px] leading-tight text-[var(--editor-text)] hover:bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] focus:bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] focus:outline-none ${
-                      isActive ? 'bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] font-medium' : ''
-                    }`}
+                    className={
+                      rail
+                        ? `flex w-full items-center justify-between px-3 py-2 text-left text-sm leading-tight text-[var(--editor-text)] focus:outline-none focus-visible:bg-[color-mix(in_srgb,var(--editor-text)_4%,transparent)] ${isActive ? `${railSelectedBg} font-semibold` : railHoverBg}`
+                        : `flex w-full items-center justify-between px-3 py-2 text-left text-[15px] leading-tight text-[var(--editor-text)] hover:bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] focus:bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] focus:outline-none ${
+                            isActive ? 'bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] font-medium' : ''
+                          }`
+                    }
                   >
                     <span className="truncate">{opt.label}</span>
-                    {isActive && (
+                    {isActive && rail && <Check size={16} aria-hidden="true" className={`ml-2 shrink-0 ${railMuted}`} />}
+                    {isActive && !rail && (
                       <span
                         className="ml-2 shrink-0 text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]"
                         style={{ fontFamily: 'system-ui, sans-serif' }}
