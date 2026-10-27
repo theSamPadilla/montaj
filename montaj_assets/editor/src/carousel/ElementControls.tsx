@@ -6,6 +6,7 @@ import { STANDARD_TEXT_PROPS } from '../overlays/contract'
 import { cn, inspectorInputClass, NumberField, Select, stepValue, SwatchInput } from '../ui'
 import { Loader } from '../ui/Loader'
 import { elementCategory } from './overlayElement'
+import { shippedTemplateKey } from './shippedTemplate'
 import { railEyebrow, railFieldShape, railOutlineTool } from './railStyles'
 
 // The element controls the classic SlidePropertyPanel and the rail layout's
@@ -204,6 +205,23 @@ export function SlideBackgroundField({ slide, onSlideChange }: { slide: Slide; o
   )
 }
 
+/** Schemas by `jsxPath`. A shipped shape, line or frame is also found by its
+ *  shipped key (§569) when the exact path misses: it stores the maker's own
+ *  runtime path, which another Mac does not have. */
+class OverlaySchemaMap extends Map<string, GlobalOverlay> {
+  private shipped = new Map<string, GlobalOverlay>()
+  addShipped(o: GlobalOverlay) {
+    const key = shippedTemplateKey(o.jsxPath)
+    if (key && !this.shipped.has(key)) this.shipped.set(key, o)
+  }
+  override get(path: string): GlobalOverlay | undefined {
+    const exact = super.get(path)
+    if (exact) return exact
+    const key = shippedTemplateKey(path)
+    return key ? this.shipped.get(key) : undefined
+  }
+}
+
 /**
  * The overlay prop schemas, by template path (`jsxPath`): the shipped shapes,
  * lines and frames, the global ones and the project profile's. `enabled` false loads nothing (a layout that has
@@ -232,7 +250,8 @@ export function useOverlaySchemas(
     }
     Promise.all(promises)
       .then(results => {
-        const map = new Map<string, GlobalOverlay>()
+        const map = new OverlaySchemaMap()
+        for (const o of results[0]) map.addShipped(o)
         for (const list of results) {
           for (const o of list) {
             map.set(o.jsxPath, o)
