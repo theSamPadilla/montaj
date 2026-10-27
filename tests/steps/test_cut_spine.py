@@ -6,6 +6,8 @@ import shutil
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_cut import (FIX, SOURCE_S, SPEECH, _error, audio_project, git, narration, run, sections,  # noqa: E402
                       synthetic,  # noqa: E402
@@ -119,3 +121,32 @@ def test_the_plan_answer_carries_the_whole_plan_however_long(tmp_path, monkeypat
     d = sources_project(tmp_path, TWO)
     plan, _ = run(d, monkeypatch=monkeypatch)
     assert plan["text"] == (d / "cut-plan.md").read_text()
+
+
+# ── a cut-off word (2b, kung fu run 4: whisper wrote " Uni-3" for "Uni-" + a pause + "Unitree") ─────────────────────
+
+def test_a_cut_off_word_is_labeled_restart_and_taking_it_starts_on_the_second_try(tmp_path, monkeypatch):
+    d = sources_project(tmp_path, [("one", synthetic("Uni-3 just announced a humanoid kung fu bodyguard. "
+                                                      "It throws flying elbows and kicks."))])
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    cut, _ = sections((d / "cut-plan.md").read_text())
+    row = next(r for r in cut if "Uni-3" in r)
+    assert 'restart? "Uni-3"' in row, row
+    assert plan["labels"].get("restart?") == 1, plan["labels"]
+    assert "restart?" in (d / "cut-plan.md").read_text().split("-->")[3], "the plan's help says what restart? means"
+    (d / "cut-plan.md").write_text((d / "cut-plan.md").read_text().replace("Uni-3 just", "just", 1))
+    run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    from test_cut import phrases
+    assert phrases(d)[0].startswith("just announced"), phrases(d)
+
+
+@pytest.mark.parametrize("word", ["Uni-", "be-", "th-", "Uni-3"])
+def test_the_cut_off_shapes(word):
+    import steps.edit.cut as cc
+    assert cc._cut_off(word)
+
+
+@pytest.mark.parametrize("word", ["well-known", "kung-fu", "COVID-19", "F-16", "20-30", "-", "Unitree"])
+def test_whole_words_with_a_hyphen_are_not_cut_off(word):
+    import steps.edit.cut as cc
+    assert not cc._cut_off(word)

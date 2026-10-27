@@ -55,7 +55,8 @@ PLAN_FILE = "cut-plan.md"
 PLAN_HELP = ("Edit, then run cut with plan. Silences and fillers are already gone; every saying is a row of ## Cut, "
              "in recording order, and nothing else is removed. A tag ending in ? is a label, never a cut: retake? and "
              "false-start? name the take said after it (delete this row to keep that one); repeat? names words said "
-             "again later (delete them to keep the last saying); noise? names words with no voice under them. Delete "
+             "again later (delete them to keep the last saying); restart? names a word cut off mid-way (delete it to start on "
+             "the second try); noise? names words with no voice under them. Delete "
              "rows or words, move rows to reorder, never add or change a word. A ## Unused row went with the silence "
              "(no sound, or no voice, under it), or [earlier] before this cut, said just before its time: move it into "
              "## Cut to keep it.")
@@ -65,6 +66,10 @@ _LABEL = {"retake": "retake?", "repeat": "retake?", "false-start": "false-start?
 _SPAN_LABEL = {"retake": "repeat?", "repeat": "repeat?", "restart": "repeat?", "false-start": "false-start?",
                "abandoned": "false-start?"}
 SEAMS_MAX = 40
+# A word cut off mid-way and said again (2b, kung fu run 4): letters then a hyphen, then nothing or one digit (whisper wrote
+# " Uni-3" for "Uni-", a pause and "Unitree"). A hyphenated word ("well-known") or a name with a number ("COVID-19",
+# "F-16") is whole.
+_CUT_OFF = re.compile(r"^[^\W\d_]+-\d?$")
 SEAM_EDGE_S = 0.02
 PREV_PLAN_FILE = "cut-plan.prev.md"
 LOSES_MOST = 0.1            # warn when a clip keeps under this share of its length
@@ -428,6 +433,12 @@ def _plan(d, title, units, trailing, labels, gone, at, of_source, language, max_
                 tags.append(f"retake? {nxt.line} {t_of(nxt):.1f}")
             elif restart:
                 tags.append('repeat? "' + " ".join(w.text for w in keep(row)[:restart[1]]) + '"')
+            if rules and not u.fixed:
+                # a cut-off word with speech after it: deleting it starts the line on the second try
+                ws = keep(row)
+                for k, w in enumerate(ws):
+                    if _cut_off(w.text) and (k < len(ws) - 1 or nxt is not None) and not any(w.text in tg for tg in tags):
+                        tags.append(f'restart? "{w.text}"')
             pos += n
             drop = {k for k, w in enumerate(row.words) if (letter, w.idx) in gone}
             if drop:
@@ -477,6 +488,11 @@ def _plan(d, title, units, trailing, labels, gone, at, of_source, language, max_
         out += ["", "## Unused", ""]
         out += [f"{i} {txt} [{why}]" if t is None else f"{i} {txt} [{t:.1f} {why}]" for i, t, txt, why in unused]
     return _seal("\n".join(out) + "\n"), kept, unused, counts
+
+
+def _cut_off(text):
+    """Whether a word was cut off mid-way (_CUT_OFF), its sentence punctuation left out."""
+    return bool(_CUT_OFF.match(text.strip().rstrip(".,!?;:\u2026")))
 
 
 def _restart(row, nxt, words=None, ahead=None):
