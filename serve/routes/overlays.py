@@ -74,6 +74,10 @@ def scan_overlays(overlays_dir: Path) -> list[dict]:
             entry["googleFonts"] = fonts
         if isinstance(schema.get("opaque"), bool):
             entry["opaque"] = schema["opaque"]
+        # §587: the editor's Elements panel groups the shipped shapes, lines and frames by it.
+        category = schema.get("category")
+        if isinstance(category, str) and category:
+            entry["category"] = category
         defaults = schema.get("defaults")
         if isinstance(defaults, dict) and isinstance(defaults.get("props"), dict):
             entry["defaults"] = {"props": defaults["props"]}

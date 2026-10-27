@@ -1,0 +1,9 @@
+{
+  "description": "Corner frame",
+  "category": "frame",
+  "props": [
+    { "name": "stroke",       "type": "string", "default": "#111111", "format": "color" },
+    { "name": "strokeWidth",  "type": "string", "default": "8" },
+    { "name": "cornerLength", "type": "string", "default": "20" }
+  ]
+}
