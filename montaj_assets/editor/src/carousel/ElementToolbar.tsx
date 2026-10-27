@@ -1,8 +1,8 @@
 import { useEffect, useRef, type ReactNode } from 'react'
-import { Bold, Copy, Crop, Italic, Lock, LockOpen, Replace, Trash2 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Bold, Copy, Crop, Italic, Lock, LockOpen, Replace, Trash2 } from 'lucide-react'
 import type { CarouselElement, GlobalOverlay, OverlayElement } from '../types'
 import type { ReorderDirection } from '../state/project-reducer'
-import { cn } from '../ui'
+import { cn, NumberField, Slider, Switch } from '../ui'
 import { FontFamilyPicker, FontSizePicker } from '../text/FontPicker'
 import { caseLabel, TEXT_ALIGNS, TextBackgroundControl, TextColorControl, textFormatting } from '../text/TextFormattingToolbar'
 import { supportsEffects, supportsFit, TextEffectControls } from '../text/TextEffectControls'
@@ -11,14 +11,15 @@ import { cropBlockedReason, HideToggle, LayerOrderButtons, OverlayPropsSection, 
 import { isLocked } from './lock'
 import { elementColourTarget } from './colours'
 import { isTextOverlay } from './textStyle'
-import { railFocus, railHoverBg, railIconBtn, railIconBtnSm, railInk, railToolBtn, railToolOn } from './railStyles'
+import { railEyebrow, railFieldShape, railFocus, railHoverBg, railIconBtn, railIconBtnSm, railInk, railToolBtn, railToolOn } from './railStyles'
+import { hasArrow, STROKE_STYLES, strokeStateOf, toggleArrowhead, type StrokeState, type StrokeStyle } from './stroke'
 
 // The rail layout's element toolbar (§587 M3): what the selection can do,
 // centred along the top of the canvas. Every control drives the same handler
 // the classic panel or a key does; nothing here writes on its own.
 
 /** The toolbar's popovers; one is open at a time. */
-export type ElementToolbarPopover = 'position' | 'effects' | 'edit'
+export type ElementToolbarPopover = 'position' | 'effects' | 'edit' | 'stroke'
 
 type UpdateOverlayProp = (slideId: string, elementId: string, key: string, value: string) => Promise<void>
 
@@ -73,6 +74,10 @@ export interface ElementToolbarProps {
   brandGoogleFonts?: string[]
   /** A font pick: the family and its `googleFonts` in one write (locked elements are refused by the host). */
   onSetFont?: (slideId: string, elementId: string, fontFamily: string, googleFonts: string[]) => void
+  /** A live overlay prop write with no undo step (a stroke weight drag); `onCommitPropPreview`
+   *  then saves what was previewed as one step. Absent: the weight writes on each change. */
+  onPreviewOverlayProp?: (slideId: string, elementId: string, key: string, value: string) => void
+  onCommitPropPreview?: () => void
 }
 
 // Montaj's tools: 10px squares, muted at rest, ink on hover; on = the brand tint.
@@ -220,6 +225,112 @@ function ColourSwatch({ value, label, open, onClick }: { value: string; label: s
   )
 }
 
+/** The stroke button's icon: three bars, thick to thin. */
+function StrokeWeightIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" aria-hidden="true" className="h-4 w-4">
+      <path d="M4 6h16" strokeWidth={3.5} />
+      <path d="M4 12h16" strokeWidth={2.25} />
+      <path d="M4 18h16" strokeWidth={1.25} />
+    </svg>
+  )
+}
+
+/** A style tile's sample: the pattern the templates draw, at a 3 px weight. */
+const TILE_DASH: Record<StrokeStyle, string | undefined> = { solid: undefined, 'long-dash': '9 6', 'short-dash': '4.5 3', dotted: '0 6' }
+
+/** The props the stroke popover writes: the Edit popover leaves them out. */
+const STROKE_CONTROL_PROPS: ReadonlySet<string> = new Set(['strokeStyle', 'roundCaps', 'roundJoins'])
+
+/** The Stroke popover: style tiles, rounded ends or corners, and the weight. */
+function StrokeContent({
+  stroke,
+  disabled,
+  mode,
+  set,
+  previewWidth,
+  commitWidth,
+}: {
+  stroke: StrokeState
+  disabled: boolean
+  mode: 'light' | 'dark'
+  /** One write, one undo step. */
+  set: (key: string, value: string) => void
+  /** The weight live, then once on release or Enter. */
+  previewWidth: (value: number) => void
+  commitWidth: (value: number) => void
+}) {
+  const roundLabel = stroke.kind === 'line' ? 'Rounded end points' : 'Rounded corners'
+  const min = stroke.kind === 'line' ? 1 : 0
+  return (
+    <fieldset disabled={disabled} className="m-0 flex min-w-0 flex-col gap-4 border-0 p-0">
+      <div className="grid grid-cols-4 gap-2">
+        {STROKE_STYLES.map(({ value, label }) => {
+          const on = stroke.style === value
+          return (
+            <button
+              key={value}
+              type="button"
+              aria-label={label}
+              title={label}
+              aria-pressed={on}
+              disabled={disabled}
+              onClick={() => { if (!on) set('strokeStyle', value) }}
+              className={cn(
+                'flex h-10 items-center justify-center rounded-[10px] border bg-[var(--editor-surface)] text-[var(--editor-text)] transition-colors disabled:cursor-not-allowed disabled:opacity-40',
+                railFocus,
+                on ? 'border-[var(--editor-accent)] ring-1 ring-[var(--editor-accent)]' : 'border-[var(--editor-border)] hover:border-[var(--editor-text)]',
+              )}
+            >
+              <svg viewBox="0 0 40 8" aria-hidden="true" className="h-2 w-10">
+                <line x1={3} y1={4} x2={37} y2={4} stroke="currentColor" strokeWidth={3} strokeDasharray={TILE_DASH[value]} strokeLinecap={value === 'dotted' ? 'round' : 'butt'} />
+              </svg>
+            </button>
+          )
+        })}
+      </div>
+      {stroke.roundKey && (
+        <div className="flex items-center justify-between">
+          <span className={cn('text-sm', railInk)}>{roundLabel}</span>
+          <Switch
+            checked={stroke.round}
+            onCheckedChange={(on) => set(stroke.roundKey!, on ? 'true' : 'false')}
+            aria-label={roundLabel}
+            disabled={disabled}
+            mode={mode}
+          />
+        </div>
+      )}
+      <div className="flex flex-col gap-2">
+        <span className={railEyebrow}>Stroke weight</span>
+        <div className="flex items-center gap-3">
+          <Slider
+            value={stroke.width}
+            min={min}
+            max={100}
+            step={1}
+            onChange={previewWidth}
+            onCommit={commitWidth}
+            aria-label="Stroke weight"
+            className="min-w-0 flex-1"
+            disabled={disabled}
+          />
+          <NumberField
+            name="Stroke weight"
+            value={stroke.width}
+            min={min}
+            step={1}
+            onPreview={(v) => previewWidth(Math.max(min, Math.round(v)))}
+            onCommit={(v) => commitWidth(Math.max(min, Math.round(v)))}
+            disabled={disabled}
+            className={cn('h-8 w-14', railFieldShape)}
+          />
+        </div>
+      </div>
+    </fieldset>
+  )
+}
+
 /** The Effects popover: today's effect controls, with the text case and background the board's toolbar has no room for. */
 function EffectsContent({ slideId, element, update, disabled, mode }: { slideId: string; element: OverlayElement; update: UpdateOverlayProp; disabled: boolean; mode: 'light' | 'dark' }) {
   const fmt = textFormatting(slideId, element, update)
@@ -277,6 +388,8 @@ export default function ElementToolbar({
   brandFont,
   brandGoogleFonts,
   onSetFont,
+  onPreviewOverlayProp,
+  onCommitPropPreview,
 }: ElementToolbarProps) {
   const element = selection.length === 1 ? selection[0] : undefined
   const image = element?.type === 'image' ? element : undefined
@@ -289,7 +402,8 @@ export default function ElementToolbar({
   // props its text controls do not already write.
   const overlay = element?.type === 'overlay' ? element : undefined
   const overlaySchema = overlay ? overlaySchemas?.get(overlay.overlay.template) : undefined
-  const editExclude = text ? TEXT_CONTROL_PROPS : undefined
+  const stroke = strokeStateOf(element)
+  const editExclude = text ? TEXT_CONTROL_PROPS : stroke ? STROKE_CONTROL_PROPS : undefined
   const canOpenEdit = !!overlay && (typeof overlay.frame === 'number' || schemaPropsFor(overlaySchema, editExclude).length > 0)
 
   // A press outside the toolbar and its popovers closes the open one.
@@ -341,9 +455,33 @@ export default function ElementToolbar({
             <Sep />
           </>
         )}
-        {!text && swatch && (
+        {!text && (swatch || stroke) && (
           <>
             {swatch}
+            {stroke && (
+              <button type="button" aria-label="Stroke" title="Stroke" aria-haspopup="dialog" aria-expanded={popover === 'stroke'} onClick={toggle('stroke')} className={cn(iconBtn, popover === 'stroke' && onClass)}>
+                <StrokeWeightIcon />
+              </button>
+            )}
+            {stroke?.kind === 'line' && element && (['start', 'end'] as const).map((side) => {
+              const on = hasArrow(stroke.arrowhead, side)
+              const Icon = side === 'start' ? ArrowLeft : ArrowRight
+              const label = side === 'start' ? 'Start arrow' : 'End arrow'
+              return (
+                <button
+                  key={side}
+                  type="button"
+                  aria-label={label}
+                  title={label}
+                  aria-pressed={on}
+                  disabled={locked || !canEdit}
+                  onClick={() => void update(slideId, element.id, 'arrowhead', toggleArrowhead(stroke.arrowhead, side))}
+                  className={cn(iconBtn, on && onClass)}
+                >
+                  <Icon className="h-4 w-4" aria-hidden="true" />
+                </button>
+              )
+            })}
             <Sep />
           </>
         )}
@@ -437,6 +575,18 @@ export default function ElementToolbar({
               exclude={editExclude}
             />
           </fieldset>
+        </Popover>
+      )}
+      {popover === 'stroke' && stroke && element && (
+        <Popover label="Stroke">
+          <StrokeContent
+            stroke={stroke}
+            disabled={locked || !canEdit}
+            mode={mode}
+            set={(key, value) => void update(slideId, element.id, key, value)}
+            previewWidth={(v) => (onPreviewOverlayProp ? onPreviewOverlayProp(slideId, element.id, 'strokeWidth', String(v)) : void update(slideId, element.id, 'strokeWidth', String(v)))}
+            commitWidth={(v) => (onCommitPropPreview ? onCommitPropPreview() : void update(slideId, element.id, 'strokeWidth', String(v)))}
+          />
         </Popover>
       )}
       {popover === 'effects' && text && (

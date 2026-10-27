@@ -288,7 +288,7 @@ function PropEditor({
       <label className="flex cursor-pointer items-center gap-2" title={description}>
         <input
           type="checkbox"
-          checked={Boolean(value)}
+          checked={value === true || value === 'true'}
           onChange={e => onChange(e.target.checked)}
           className="h-4 w-4 accent-[var(--editor-accent-text,var(--editor-accent))]"
         />

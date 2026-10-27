@@ -136,3 +136,62 @@ test('the shape, ellipse and dashed line templates draw in the carousel export',
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('stroke styles, round ends and joins, and a start arrowhead draw in the carousel export', { timeout: 120_000 }, () => {
+  const el = (id, template, x, y, w, h, props) => ({ id, type: 'overlay', x, y, w, h, rotation: 0, frame: 59, overlay: { template: tpl(template), props } })
+  const project = {
+    projectType: 'carousel',
+    settings: { resolution: [1080, 1080] },
+    carousel: { aspect: 'square' },
+    slides: [{
+      id: 'strokes',
+      base_color: '#ffffff',
+      elements: [
+        el('dotted', 'line-straight', 100, 100, 800, 40, { stroke: '#000000', strokeWidth: 10, arrowhead: 'none', strokeStyle: 'dotted' }),
+        el('long', 'line-straight', 100, 200, 800, 40, { stroke: '#000000', strokeWidth: 10, arrowhead: 'none', strokeStyle: 'long-dash' }),
+        el('round', 'line-straight', 100, 300, 800, 40, { stroke: '#000000', strokeWidth: 20, arrowhead: 'none', roundCaps: 'true' }),
+        el('butt', 'line-straight', 100, 360, 800, 40, { stroke: '#000000', strokeWidth: 20, arrowhead: 'none', roundCaps: false }),
+        el('head', 'line-arrow', 100, 400, 800, 60, { stroke: '#000000', strokeWidth: 8, arrowhead: 'start' }),
+        el('rect-dash', 'shape-rect', 100, 600, 300, 300, { fill: '#ffffff', stroke: '#000000', strokeWidth: 10, strokeStyle: 'long-dash' }),
+        el('rect-round', 'shape-rect', 600, 600, 300, 300, { fill: '#ffffff', stroke: '#000000', strokeWidth: 20, roundJoins: 'true' }),
+      ],
+    }],
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-carousel-strokes-'))
+  try {
+    writeFileSync(join(dir, 'project.json'), JSON.stringify(project))
+    const r = spawnSync('node', [SCRIPT, '--project-json', join(dir, 'project.json'), '--out', join(dir, 'render'), '--scale', '1'], { encoding: 'utf8', timeout: 120_000 })
+    assert.equal(r.status, 0, r.stderr)
+    const manifest = JSON.parse(readFileSync(join(dir, 'render', 'manifest.json'), 'utf8'))
+    assert.deepEqual(manifest.failures, [])
+    const png = decodePng(readFileSync(join(dir, 'render', 'slide_01.png')))
+    const at = (x, y, want, what) => assert.ok(near(png.px(x, y), want), `${what} at ${x},${y}: got ${png.px(x, y)}, want ${want}`)
+
+    // Dotted, 10 px: round dots 10 px across every 20 px, the first one inside the box.
+    at(105, 120, BLACK, 'first dot')
+    at(115, 120, WHITE, 'gap after the first dot')
+    at(125, 120, BLACK, 'second dot')
+    at(98, 120, WHITE, 'before the box')
+    // Long dash, 10 px: dashes of 30 px, gaps of 20 px.
+    at(115, 220, BLACK, 'first long dash')
+    at(145, 220, WHITE, 'first long gap')
+    at(165, 220, BLACK, 'second long dash')
+    // Round end points: the end is a half disc inside the box, its corner empty; a butt end fills it.
+    at(101, 320, BLACK, 'round end, middle')
+    at(102, 312, WHITE, 'round end, corner')
+    at(898, 312, WHITE, 'round end, other corner')
+    at(102, 372, BLACK, 'butt end, corner')
+    // A start arrowhead: wider than the 8 px line, near the start.
+    at(112, 425, BLACK, 'start arrowhead')
+    at(888, 425, WHITE, 'no end arrowhead')
+    // A rectangle with a long-dash stroke: gaps along its edge.
+    at(120, 605, BLACK, 'rect dash')
+    at(145, 605, WHITE, 'rect dash gap')
+    at(170, 605, BLACK, 'rect second dash')
+    // Rounded corners on a 20 px stroke: the box's corner pixel is empty, the edge is not.
+    at(602, 602, WHITE, 'round join corner')
+    at(750, 605, BLACK, 'round join edge')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

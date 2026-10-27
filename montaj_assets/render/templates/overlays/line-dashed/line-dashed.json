@@ -6,6 +6,8 @@
     { "name": "strokeWidth", "type": "int", "default": 8 },
     { "name": "dash",        "type": "int", "default": 24 },
     { "name": "gap",         "type": "int", "default": 16 },
-    { "name": "arrowhead",   "type": "string", "default": "none", "enum": ["none", "end", "start", "both"] }
+    { "name": "arrowhead",   "type": "string", "default": "none", "enum": ["none", "end", "start", "both"] },
+    { "name": "strokeStyle", "type": "string", "default": "long-dash", "enum": ["solid", "long-dash", "short-dash", "dotted"] },
+    { "name": "roundCaps", "type": "bool", "default": false }
   ]
 }
