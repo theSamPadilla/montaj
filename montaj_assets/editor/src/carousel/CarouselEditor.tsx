@@ -31,6 +31,7 @@ import { newTextElement } from './newText'
 import { applyTextStyle, isTextOverlay, pickTextStyle, type TextStyle } from './textStyle'
 import { Button } from '../ui'
 import { shortcutText } from '../ui/modifierKeys'
+import { applyZoomAction, zoomKeyAction, zoomLabel, zoomScale, FIT, clampPct, type Zoom, type ZoomAction } from './zoom'
 
 // Generic over the host's concrete project type `P` (default = the package's
 // own `Project`). Montaj passes its richer Project; the index signature on
@@ -524,6 +525,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     setScrollTarget((t) => ({ id, seq: (t?.seq ?? 0) + 1 }))
   }, [])
   const [gridOpen, setGridOpen] = useState(false)
+  // §587 M6: the stacked canvas's zoom (Fit, Fill or a percentage of real size).
+  const [zoom, setZoom] = useState<Zoom>(FIT)
 
   /** Adds an empty note on `slideId` (at `point`, or about the whole slide)
    *  and returns it as stored: the core of the N flow and `api.add`. */
@@ -832,6 +835,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (!cropElementId) state.redo()
   }
 
+  /** Applies a zoom action from the menu or a key, from the scale in effect. */
+  function zoomBy(action: ZoomAction) {
+    setZoom(applyZoomAction(action, railScale * 100))
+  }
+
   const bindings: KeyBinding[] = [
     {
       // Esc closes the element toolbar's open popover before anything else.
@@ -1054,6 +1062,20 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         binding.action(e)
       },
     })),
+    {
+      // Zoom (§587 M6), rail layout only: Cmd (Ctrl off Apple) with + or =,
+      // -, 0 (Fit) and 1 (100%). The menu in the bottom bar lists them.
+      id: 'carousel.zoom',
+      description: 'Zoom the canvas',
+      keyHint: ['⌘', '+ − 0 1'],
+      matches: (e) => zoomKeyAction(e) !== null,
+      guard: () => !hostDialogOpen() && railLayout && !gridOpen && !showPendingSurface && slides.length > 0,
+      action: (e) => {
+        const a = zoomKeyAction(e)
+        if (a) zoomBy(a)
+      },
+      paletteHidden: true,
+    },
     {
       // Arrows move the selection 1 px, Shift+arrow 10; a held key repeats.
       id: 'carousel.nudge',
@@ -1607,7 +1629,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   const availH = Math.max(0, canvasContainerSize.h - 2 * CANVAS_MARGIN - HINT_RESERVE)
   const canvasScale = Math.min(availW / w, availH / h, 1)
   // Stacked (§587 M2): each slide fits the view, its header in its top margin.
-  const railScale = Math.min(availW / w, Math.max(0, canvasContainerSize.h - 2 * CANVAS_MARGIN) / h, 1)
+  // Zoom (§587 M6): Fit is that scale; Fill is fit-to-height; a percentage is
+  // the scale itself (100% = 1 CSS px per slide px). See ./zoom.
+  const railHeightScale = Math.max(0, canvasContainerSize.h - 2 * CANVAS_MARGIN) / h
+  const railFitScale = Math.min(availW / w, railHeightScale, 1)
+  const railScale = zoomScale(zoom, railFitScale, railHeightScale)
   const slideScale = railLayout ? railScale : canvasScale
 
   // The pending view and the error banner, shared by both layouts.
@@ -1904,6 +1930,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           scrollTarget={scrollTarget}
           containerRef={setCanvasContainer}
           margin={CANVAS_MARGIN}
+          scale={railScale}
           renderHeader={renderRailHeader}
           renderSlide={renderRailSlide}
         />
@@ -1975,6 +2002,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       onOpenControls={() => setShowControls(true)}
       gridOpen={gridOpen}
       onToggleGrid={toggleGrid}
+      zoomLabel={zoomLabel(zoom)}
+      zoomPercent={railScale * 100}
+      onZoomPercent={(pct) => setZoom({ mode: 'pct', pct: clampPct(pct) })}
+      onZoomAction={zoomBy}
     />
   )
 

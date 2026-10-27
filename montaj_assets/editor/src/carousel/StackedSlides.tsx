@@ -30,13 +30,15 @@ export interface StackedSlidesProps {
   containerRef?: (el: HTMLDivElement | null) => void
   /** The space kept around each slide (the canvas margin), px. */
   margin: number
+  /** The slide scale in effect: when it changes, the view stays centred on the same point of the active slide. */
+  scale: number
   renderHeader: (slide: Slide, index: number) => ReactNode
   /** A slide's canvas: `live` asks for the interactive one, else the static thumbnail. */
   renderSlide: (slide: Slide, index: number, live: boolean) => ReactNode
 }
 
 export default function StackedSlides({
-  slides, activeSlideId, onScrollActivate, scrollTarget, containerRef, margin, renderHeader, renderSlide,
+  slides, activeSlideId, onScrollActivate, scrollTarget, containerRef, margin, scale, renderHeader, renderSlide,
 }: StackedSlidesProps) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const setRoot = useCallback((el: HTMLDivElement | null) => {
@@ -102,6 +104,33 @@ export default function StackedSlides({
     else root.scrollTop = top
   })
 
+  // Zoom keeps the point at the view's centre fixed on the active slide: its
+  // place within that slide (as a share of the slide section) is read before
+  // the new scale lays out, and put back at the centre after it.
+  const scaleRef = useRef(scale)
+  const anchorRef = useRef<{ fx: number; fy: number } | null>(null)
+  if (scaleRef.current !== scale) {
+    scaleRef.current = scale
+    const root = rootRef.current
+    const el = activeSlideId ? sectionEls.current.get(activeSlideId) : undefined
+    const s = el?.getBoundingClientRect()
+    const r = root?.getBoundingClientRect()
+    anchorRef.current = root && r && s && s.width > 0 && s.height > 0
+      ? { fx: (r.left + root.clientWidth / 2 - s.left) / s.width, fy: (r.top + root.clientHeight / 2 - s.top) / s.height }
+      : null
+  }
+  useLayoutEffect(() => {
+    const a = anchorRef.current
+    anchorRef.current = null
+    const root = rootRef.current
+    const el = activeSlideId ? sectionEls.current.get(activeSlideId) : undefined
+    if (!a || !root || !el) return
+    const r = root.getBoundingClientRect()
+    const s = el.getBoundingClientRect()
+    root.scrollLeft += s.left + a.fx * s.width - (r.left + root.clientWidth / 2)
+    root.scrollTop += s.top + a.fy * s.height - (r.top + root.clientHeight / 2)
+  }, [scale, activeSlideId])
+
   // Live: in view, one either side, and the active slide. Before the observer
   // has said anything (or with none), the active slide stands for the view.
   const index = new Map(slides.map((s, i) => [s.id, i] as const))
@@ -116,8 +145,9 @@ export default function StackedSlides({
   if (activeIdx !== undefined) live.add(activeIdx)
 
   return (
-    <div ref={setRoot} data-slide-stack="" className="flex-1 min-h-0 overflow-y-auto">
-      <div className="flex flex-col items-center py-2">
+    <div ref={setRoot} data-slide-stack="" className="flex-1 min-h-0 overflow-auto">
+      {/* Wider than the view when zoomed: the column grows and the stack scrolls sideways. */}
+      <div className="flex flex-col items-center py-2 w-max min-w-full">
         {slides.map((slide, i) => (
           <section
             key={slide.id}
