@@ -4,7 +4,7 @@
  * A carousel element (Elements panel, §587). No animation. An SVG that fills
  * the element box (inset:0); its viewBox is the box, so sizes are slide px.
  *
- * Props (strings):
+ * Props:
  *   stroke      — border colour (default '#111111')
  *   strokeWidth — px, each border (default '4')
  *   gap         — px between the borders (default '12')
@@ -21,7 +21,6 @@ const side = (v) => {
   const n = num(v, 100)
   return n > 0 ? n : 100
 }
-const r2 = (n) => Math.round(n * 100) / 100
 const SVG_STYLE = { position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', display: 'block', overflow: 'visible' }
 
 export default function FrameDouble({ stroke = '#111111', strokeWidth = '4', gap = '12', boxWidth, boxHeight }) {

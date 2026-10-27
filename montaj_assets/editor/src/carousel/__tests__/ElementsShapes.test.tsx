@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import dashedSidecar from '../../../../render/templates/overlays/line-dashed/line-dashed.json'
 import { render, act, waitFor, fireEvent, screen, within } from '@testing-library/react'
 import type { AskAiRequest, EditorAdapter, GlobalOverlay, ImageElement, OverlayElement, Project, RenderEvent, Slide } from '../../types'
 import CarouselEditor from '../CarouselEditor'
@@ -238,6 +239,41 @@ describe('Edit popover for a shape: colour and option props', () => {
     await act(async () => { fireEvent.change(select, { target: { value: 'both' } }) })
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
     expect(overlaysOn(lastSave(adapter), 0)[0].overlay.props.arrowhead).toBe('both')
+  })
+})
+
+describe('Edit popover for a shape: numeric props step', () => {
+  it("the shipped dashed line's strokeWidth has a stepper (int in the sidecar)", async () => {
+    const dashed = { ...dashedSidecar, name: 'line-dashed', jsxPath: '/rt/templates/overlays/line-dashed/line-dashed.jsx' } as GlobalOverlay
+    const el: OverlayElement = {
+      id: 'el-dash', type: 'overlay', frame: 59, x: 100, y: 500, w: 648, h: 54, rotation: 0,
+      overlay: { template: dashed.jsxPath, props: { stroke: '#111111', strokeWidth: 8, dash: 24, gap: 16, arrowhead: 'none' } },
+    }
+    const { adapter, r } = await mount(makeProject([slide(0, [img('el-0'), el])]), { listSystemOverlays: vi.fn(async () => [dashed]) })
+    await pickSlideOf('el-dash')
+    await act(async () => { fireEvent.click(within(r.getByRole('toolbar', { name: 'Element' })).getByRole('button', { name: 'Edit' })) })
+    const pop = r.getByRole('dialog', { name: 'Edit' })
+    const inc = await waitFor(() => within(pop).getByRole('button', { name: 'Increase strokeWidth' }))
+    await act(async () => { fireEvent.click(inc) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    // The editor writes every prop edit as a string; the templates read either.
+    expect(overlaysOn(lastSave(adapter), 0)[0].overlay.props.strokeWidth).toBe('9')
+  })
+})
+
+describe('Edit popover for a shape: no Frame field', () => {
+  it('a shape has no Frame (it does not animate), once its props are shown', async () => {
+    const line: OverlayElement = {
+      id: 'el-line', type: 'overlay', frame: 59, x: 100, y: 500, w: 648, h: 54, rotation: 0,
+      overlay: { template: LINE.jsxPath, props: { stroke: '#111111', strokeWidth: '8', arrowhead: 'end' } },
+    }
+    const { r } = await mount(makeProject([slide(0, [img('el-0'), line])]))
+    await pickSlideOf('el-line')
+    await act(async () => { fireEvent.click(within(r.getByRole('toolbar', { name: 'Element' })).getByRole('button', { name: 'Edit' })) })
+    const pop = r.getByRole('dialog', { name: 'Edit' })
+    await waitFor(() => within(pop).getByRole('combobox', { name: 'arrowhead' }))
+    expect(within(pop).queryByText('Frame')).toBeNull()
+    expect(within(pop).queryByRole('spinbutton', { name: 'Frame' })).toBeNull()
   })
 })
 

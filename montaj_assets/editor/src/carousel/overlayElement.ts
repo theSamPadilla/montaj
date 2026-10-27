@@ -29,6 +29,9 @@ export function elementCategory(overlay: Pick<GlobalOverlay, 'category'>): Eleme
   return (ELEMENT_CATEGORIES as readonly string[]).includes(overlay.category ?? '') ? overlay.category as ElementCategory : null
 }
 
+/** What a shipped template is called on its tile and its layer row: its sidecar's description, else its folder name. */
+export const overlayTileLabel = (overlay: Pick<GlobalOverlay, 'description' | 'name'>): string => overlay.description?.trim() || overlay.name
+
 /** The box a new element of `overlay` gets on a slide of `resolution`: a square
  *  for a shape, a wide thin box for a line, most of the slide for a frame, and
  *  `OVERLAY_BOX` for any other template. */

@@ -3,7 +3,7 @@
   "category": "line",
   "props": [
     { "name": "stroke",      "type": "string", "default": "#111111", "format": "color" },
-    { "name": "strokeWidth", "type": "string", "default": "8" },
+    { "name": "strokeWidth", "type": "int", "default": 8 },
     { "name": "arrowhead",   "type": "string", "default": "none", "enum": ["none", "end", "start", "both"] }
   ]
 }

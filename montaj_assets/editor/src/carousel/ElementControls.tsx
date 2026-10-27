@@ -6,6 +6,7 @@ import { STANDARD_TEXT_PROPS } from '../overlays/contract'
 import { cn, inspectorInputClass, NumberField, Select, stepValue, SwatchInput } from '../ui'
 import { Loader } from '../ui/Loader'
 import { elementCategory } from './overlayElement'
+import { shippedTemplateKey } from './shippedTemplate'
 import { railEyebrow, railFieldShape, railOutlineTool } from './railStyles'
 
 // The element controls the classic SlidePropertyPanel and the rail layout's
@@ -204,6 +205,23 @@ export function SlideBackgroundField({ slide, onSlideChange }: { slide: Slide; o
   )
 }
 
+/** Schemas by `jsxPath`. A shipped shape, line or frame is also found by its
+ *  shipped key (§569) when the exact path misses: it stores the maker's own
+ *  runtime path, which another Mac does not have. */
+class OverlaySchemaMap extends Map<string, GlobalOverlay> {
+  private shipped = new Map<string, GlobalOverlay>()
+  addShipped(o: GlobalOverlay) {
+    const key = shippedTemplateKey(o.jsxPath)
+    if (key && !this.shipped.has(key)) this.shipped.set(key, o)
+  }
+  override get(path: string): GlobalOverlay | undefined {
+    const exact = super.get(path)
+    if (exact) return exact
+    const key = shippedTemplateKey(path)
+    return key ? this.shipped.get(key) : undefined
+  }
+}
+
 /**
  * The overlay prop schemas, by template path (`jsxPath`): the shipped shapes,
  * lines and frames, the global ones and the project profile's. `enabled` false loads nothing (a layout that has
@@ -232,7 +250,8 @@ export function useOverlaySchemas(
     }
     Promise.all(promises)
       .then(results => {
-        const map = new Map<string, GlobalOverlay>()
+        const map = new OverlaySchemaMap()
+        for (const o of results[0]) map.addShipped(o)
         for (const list of results) {
           for (const o of list) {
             map.set(o.jsxPath, o)
@@ -353,12 +372,15 @@ export function schemaPropsFor(schema: GlobalOverlay | null | undefined, exclude
   return (schema?.props ?? []).filter(prop => !exclude?.has(prop.name))
 }
 
-/** An overlay's Frame and its schema-driven props. */
+/** An overlay's Frame (not a shape's) and its schema-driven props. */
 export function OverlayPropsSection({ element, schema, loading, onElementChange, exclude }: OverlayPropsSectionProps) {
   const props = schemaPropsFor(schema, exclude)
+  // A shipped shape, line or frame does not animate: its Frame does nothing.
+  // Not shown while the schema loads either, so it does not flash and go.
+  const showFrame = !loading && !(schema && elementCategory(schema) !== null)
   return (
     <>
-      <div className="grid grid-cols-2 gap-3">
+      {showFrame && <div className="grid grid-cols-2 gap-3">
         {numInput(
           'Frame',
           element.frame,
@@ -369,7 +391,7 @@ export function OverlayPropsSection({ element, schema, loading, onElementChange,
           },
           { min: 0 },
         )}
-      </div>
+      </div>}
 
       {loading && (
         <Loader size="sm" label="Loading overlay props" />

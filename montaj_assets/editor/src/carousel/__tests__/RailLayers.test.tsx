@@ -78,6 +78,20 @@ describe('Layers panel', () => {
     expect(document.querySelector('[data-layer-background]')?.textContent).toBe('Background')
   })
 
+  it('names a shipped shape, line or frame by its tile label, any other overlay by its template', async () => {
+    const RECT = { name: 'shape-rect', description: 'Rectangle', jsxPath: '/Users/A/render/templates/overlays/shape-rect/shape-rect.jsx', category: 'shape', props: [] }
+    const shape: OverlayElement = { id: 's', type: 'overlay', overlay: { template: '/Users/B/render/templates/overlays/shape-rect/shape-rect.jsx', props: {} }, frame: 0, x: 10, y: 10, w: 50, h: 50, rotation: 0 }
+    const project = makeProject([slide('s0', [shape, badge('c')])])
+    const adapter = makeAdapter(project)
+    adapter.listSystemOverlays = vi.fn(async () => [RECT])
+    const r = render(<CarouselEditor project={project} adapter={adapter} onProjectChange={vi.fn()} layout="rail" />)
+    await waitFor(() => expect(document.querySelectorAll('[data-slide-section]').length).toBe(1))
+    await openRail(r, 'Layers')
+    await waitFor(() => expect(row('s').textContent).toContain('Rectangle'))
+    expect(row('s').textContent).not.toContain('shape-rect')
+    expect(row('c').textContent).toContain('sticker')
+  })
+
   it('selects on click and toggles on shift-click', async () => {
     const { r } = await mount(base())
     await openRail(r, 'Layers')
@@ -97,9 +111,9 @@ describe('Layers panel', () => {
     return { x: 0, y: top, left: 0, top, right: 200, bottom: top + 40, width: 200, height: 40, toJSON() {} } as DOMRect
   })
   // This jsdom has no PointerEvent, and fireEvent.pointer* drops clientX/Y: a
-  // MouseEvent named for the pointer event carries them.
+  // MouseEvent named for the pointer event carries them (and `buttons`: a move with none down is a lost release).
   const pointer = (target: EventTarget, type: string, clientY: number) =>
-    target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 50, clientY, button: 0 }))
+    target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 50, clientY, button: 0, buttons: type === 'pointerup' ? 0 : 1 }))
   /** A press on `id`'s name, a move to `toY` and a release there, then the click the browser sends when it ends on the same button. */
   async function dragRow(id: string, toY: number, { clickAfter = false } = {}) {
     const name = within(row(id)).getByRole('button', { name: /^Select/ })
