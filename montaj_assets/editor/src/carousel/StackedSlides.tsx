@@ -180,7 +180,7 @@ export interface SlideHeaderProps {
   title: string | undefined
   active: boolean
   canEdit: boolean
-  /** A press anywhere on the header: the slide becomes active, and a pending crop is applied. */
+  /** A press anywhere on the header but Delete: the slide becomes active, and a pending crop is applied. */
   onActivate: () => void
   /** The title typed, trimmed; '' clears it. Called once per edit, and only when it changed. */
   onTitleCommit: (title: string) => void
@@ -254,7 +254,8 @@ export function SlideHeader({
         <Button variant="ghost" className={headerBtn} aria-label="Move slide up" title="Move up" disabled={!canEdit || index === 0} onClick={onMoveUp}><ChevronUp size={14} aria-hidden="true" /></Button>
         <Button variant="ghost" className={headerBtn} aria-label="Move slide down" title="Move down" disabled={!canEdit || index === count - 1} onClick={onMoveDown}><ChevronDown size={14} aria-hidden="true" /></Button>
         <Button variant="ghost" className={headerBtn} aria-label="Duplicate slide" title="Duplicate" disabled={!canEdit} onClick={onDuplicate}><Copy size={14} aria-hidden="true" /></Button>
-        <Button variant="ghost" className={headerBtn} aria-label="Delete slide" title="Delete" disabled={!canEdit} onClick={onDelete}><Trash2 size={14} aria-hidden="true" /></Button>
+        {/* Deleting a slide makes no slide active: the press stays off the header, so the active slide and its selection stay. */}
+        <Button variant="ghost" className={headerBtn} aria-label="Delete slide" title="Delete" disabled={!canEdit} onPointerDown={(e) => e.stopPropagation()} onClick={onDelete}><Trash2 size={14} aria-hidden="true" /></Button>
         <Button variant="ghost" className={headerBtn} aria-label="Add slide after" title="Add slide after" disabled={!canEdit} onClick={onAddAfter}><Plus size={14} aria-hidden="true" /></Button>
       </div>
     </div>

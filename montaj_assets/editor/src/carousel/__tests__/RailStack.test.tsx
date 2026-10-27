@@ -257,6 +257,23 @@ describe('CarouselEditor layout="rail": stacked slides (§587 M2)', () => {
     expect(counter(r).textContent).toContain('2 / 4')
   })
 
+  it('deleting another slide from its header keeps the active slide and its selection', async () => {
+    const { adapter, r } = await mount(three())
+    await inView({ s0: 0.5, s1: 1, s2: 0.5 })
+    await pressClick(wrapper('el-1'))
+    expect(counter(r).textContent).toContain('2 / 3')
+    expect(chromeOf('el-1').style.outline).toContain('solid')
+    const del = header('s2').getByRole('button', { name: 'Delete slide' })
+    await act(async () => {
+      pointer(del, 'pointerdown', { clientX: 5, clientY: 5 })
+      pointer(window, 'pointerup', { clientX: 5, clientY: 5 })
+      fireEvent.click(del)
+    })
+    await waitFor(() => expect(slideIds(lastSave(adapter))).toEqual(['s0', 's1']))
+    expect(counter(r).textContent).toContain('2 / 2')
+    expect(chromeOf('el-1').style.outline).toContain('solid')
+  })
+
   it('the title field writes `title` once, on Enter, as one undo step', async () => {
     const { adapter } = await mount(three())
     const field = header('s1').getByRole('textbox', { name: 'Slide 2 title' }) as HTMLInputElement
