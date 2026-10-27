@@ -1,4 +1,4 @@
-import type { CarouselElement, OverlayElement } from '../types'
+import type { CarouselElement, FontFile, OverlayElement } from '../types'
 import { STANDARD_TEXT_PROPS } from '../overlays/contract'
 
 /** The props a copied text style carries: the standard text props but the text
@@ -13,6 +13,8 @@ export const TEXT_STYLE_PROPS: readonly string[] = [
 export interface TextStyle {
   props: Record<string, unknown>
   googleFonts?: string[]
+  /** The family's own font files (§587 r3), which travel as `googleFonts` do. */
+  fontFiles?: FontFile[]
 }
 
 /** Whether `element` is a text overlay: an overlay with a string `text` prop. */
@@ -27,7 +29,9 @@ export function pickTextStyle(element: OverlayElement): TextStyle {
     const value = element.overlay.props[key]
     if (value !== undefined && value !== null) props[key] = value
   }
-  return element.googleFonts ? { props, googleFonts: [...element.googleFonts] } : { props }
+  const style: TextStyle = element.googleFonts ? { props, googleFonts: [...element.googleFonts] } : { props }
+  if (element.fontFiles) style.fontFiles = element.fontFiles.map((f) => ({ ...f }))
+  return style
 }
 
 /** `element` wearing `style`. Only the props it already has are written: the
@@ -43,12 +47,15 @@ export function applyTextStyle(element: OverlayElement, style: TextStyle): Overl
     }
   }
   const withFont = 'fontFamily' in style.props && current.fontFamily !== undefined && current.fontFamily !== null
-  const fontsDiffer = withFont && JSON.stringify(element.googleFonts ?? null) !== JSON.stringify(style.googleFonts ?? null)
+  const fontsDiffer = withFont && (JSON.stringify(element.googleFonts ?? null) !== JSON.stringify(style.googleFonts ?? null)
+    || JSON.stringify(element.fontFiles ?? null) !== JSON.stringify(style.fontFiles ?? null))
   if (Object.keys(written).length === 0 && !fontsDiffer) return element
   const next: OverlayElement = { ...element, overlay: { ...element.overlay, props: { ...current, ...written } } }
   if (withFont) {
     if (style.googleFonts) next.googleFonts = [...style.googleFonts]
     else delete next.googleFonts
+    if (style.fontFiles?.length) next.fontFiles = style.fontFiles.map((f) => ({ ...f }))
+    else delete next.fontFiles
   }
   return next
 }

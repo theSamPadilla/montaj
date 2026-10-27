@@ -41,6 +41,15 @@ describe('textStyle', () => {
     expect('googleFonts' in applyTextStyle(text({ text: 'a', fontFamily: 'Syne' }, { googleFonts: ['Old'] }), { props: { fontFamily: 'Syne' } })).toBe(false)
   })
 
+  it('carries fontFiles with fontFamily, as googleFonts (§587 r3)', () => {
+    const files = [{ family: 'Brand Sans', src: '/p/brand.ttf' }]
+    const picked = pickTextStyle(text({ text: 'a', fontFamily: '"Brand Sans"' }, { fontFiles: files }))
+    expect(picked.fontFiles).toEqual(files)
+    expect(applyTextStyle(text({ text: 'a', fontFamily: 'Inter' }), picked).fontFiles).toEqual(files)
+    expect(applyTextStyle(text({ text: 'a', color: 'x' }), picked).fontFiles).toBeUndefined()
+    expect('fontFiles' in applyTextStyle(text({ text: 'a', fontFamily: 'Inter' }, { fontFiles: files }), { props: { fontFamily: 'Inter' } })).toBe(false)
+  })
+
   it('returns the same element when nothing would change', () => {
     const target = text({ text: 'a', color: 'red' })
     expect(applyTextStyle(target, { props: { color: 'red', effect: 'x' } })).toBe(target)

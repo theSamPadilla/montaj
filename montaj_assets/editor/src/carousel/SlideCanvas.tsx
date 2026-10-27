@@ -19,6 +19,7 @@ import { CanvasCropOverlay } from '../crop/CanvasCropOverlay'
 import { croppedBox, shownCrop } from '../crop/crop-math'
 import { InlineTextEditor } from '../text/InlineTextEditor'
 import { ensureGoogleFontsLoaded } from '../lib/google-fonts'
+import { ensureFontFilesLoaded } from '../lib/font-files'
 import { isLocked } from './lock'
 import { bandRect, bandTouches, type BandRect } from './bandSelect'
 import { groupDragMove, type GroupDragResult, type GroupMember } from './groupDrag'
@@ -76,11 +77,14 @@ function OverlayElementView({
   element,
   box,
   compileOverlay,
+  resolveFontSrc = resolveAssetDefault,
 }: {
   element: OverlayElement
   /** The box it draws to, in slide px: the element's, or a resize's live one. */
   box: { w: number; h: number }
   compileOverlay?: (template: string) => Promise<OverlayFactory>
+  /** A `fontFiles` src as a URL, through the host's image resolver. */
+  resolveFontSrc?: (src: string) => string
 }) {
   const duration = (element.overlay.props.duration as number | undefined) ?? 60
   // The box in slide px, as the renderer's slide.jsx passes it: a template that
@@ -92,6 +96,11 @@ function OverlayElementView({
   useEffect(() => {
     ensureGoogleFontsLoaded(element.googleFonts)
   }, [element.googleFonts])
+  // The person's own font files (§587 r3), as the renderer declares them.
+  useEffect(() => {
+    // Keyed on the files only: the resolver is a fresh function each render.
+    if (element.fontFiles) ensureFontFilesLoaded(element.fontFiles, resolveFontSrc)
+  }, [element.fontFiles])
   return (
     <OverlayPreview
       compileOverlay={compileOverlay ?? noopCompiler}
@@ -124,6 +133,7 @@ function OverlayLayer({
   hidden,
   compileOverlay,
   watchFile,
+  resolveFontSrc,
 }: {
   element: OverlayElement
   scale: number
@@ -131,6 +141,7 @@ function OverlayLayer({
   hidden: boolean
   compileOverlay?: (template: string) => Promise<OverlayFactory>
   watchFile?: (path: string, onChange: () => void) => () => void
+  resolveFontSrc?: (src: string) => string
 }) {
   const live = useLiveBox(liveBoxes, element.id)
   const ratio = live?.ratio ?? 1
@@ -152,7 +163,7 @@ function OverlayLayer({
         watchPath={element.overlay.template}
         watchFile={watchFile}
       >
-        <OverlayElementView element={element} box={box} compileOverlay={compileOverlay} />
+        <OverlayElementView element={element} box={box} compileOverlay={compileOverlay} resolveFontSrc={resolveFontSrc} />
       </OverlayErrorBoundary>
     </div>
   )
@@ -465,6 +476,7 @@ export default function SlideCanvas({
 }: Props) {
   const sid = slideId ?? slide.id
   const resolveSrc = resolveImageSrc ?? ((el: ImageElement) => resolveAssetDefault(el.src))
+  const resolveFontSrc = (src: string) => resolveSrc({ id: '', type: 'image', src, x: 0, y: 0, w: 0, h: 0, rotation: 0 })
   const hiddenSet = hiddenElementIds && hiddenElementIds.length ? new Set(hiddenElementIds) : null
   const selectedIds = selectedElementIds ?? (selectedElementId ? [selectedElementId] : [])
 
@@ -1335,6 +1347,7 @@ export default function SlideCanvas({
                 hidden={editingId === element.id}
                 compileOverlay={compileOverlay}
                 watchFile={watchFile}
+                resolveFontSrc={resolveFontSrc}
               />
             )
 

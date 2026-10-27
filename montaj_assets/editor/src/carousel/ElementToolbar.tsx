@@ -3,7 +3,7 @@ import { ArrowLeft, ArrowRight, Bold, Copy, Crop, Eraser, Italic, Loader2, Lock,
 import type { CarouselElement, GlobalOverlay, OverlayElement } from '../types'
 import type { ReorderDirection } from '../state/project-reducer'
 import { cn, NumberField, Slider, Switch } from '../ui'
-import { FontFamilyPicker, FontSizePicker } from '../text/FontPicker'
+import { FontFamilyPicker, FontSizePicker, type PickerCustomFont } from '../text/FontPicker'
 import { caseLabel, TEXT_ALIGNS, TextBackgroundControl, TextColorControl, textFormatting } from '../text/TextFormattingToolbar'
 import { supportsEffects, supportsFit, TextEffectControls } from '../text/TextEffectControls'
 import { AlignControls, type AlignPatch } from './AlignControls'
@@ -75,6 +75,8 @@ export interface ElementToolbarProps {
   brandGoogleFonts?: string[]
   /** A font pick: the family and its `googleFonts` in one write (locked elements are refused by the host). */
   onSetFont?: (slideId: string, elementId: string, fontFamily: string, googleFonts: string[]) => void
+  /** The font menu's own fonts, "Add your fonts" and a custom pick (§587 r3). */
+  fontMenu?: { customFonts?: PickerCustomFont[]; onAddFonts?: () => void; onPickCustom?: (slideId: string, elementId: string, font: PickerCustomFont) => void }
   /** A live overlay prop write with no undo step (a stroke weight drag); `onCommitPropPreview`
    *  then saves what was previewed as one step. Absent: the weight writes on each change. */
   onPreviewOverlayProp?: (slideId: string, elementId: string, key: string, value: string) => void
@@ -119,6 +121,7 @@ function TextGroup({
   brandFont,
   brandGoogleFonts,
   onSetFont,
+  fontMenu,
   swatch,
 }: {
   slideId: string
@@ -131,6 +134,7 @@ function TextGroup({
   brandFont?: string
   brandGoogleFonts?: string[]
   onSetFont?: (fontFamily: string, googleFonts: string[]) => void
+  fontMenu?: { customFonts?: PickerCustomFont[]; onAddFonts?: () => void; onPickCustom?: (font: PickerCustomFont) => void }
   /** The colour swatch, before Effects; outside the fieldset, so a locked element's still opens the panel. */
   swatch?: ReactNode
 }) {
@@ -151,6 +155,9 @@ function TextGroup({
           disabled={disabled}
           brandFont={brandFont}
           brandGoogleFonts={brandGoogleFonts}
+          customFonts={fontMenu?.customFonts}
+          onPickCustom={fontMenu?.onPickCustom}
+          onAddFonts={fontMenu?.onAddFonts}
           variant="rail"
           className="w-32"
           buttonClassName={`flex h-8 w-full items-center gap-1 ${fieldBox} px-3 text-[13px] ${railInk} ${railHoverBg} disabled:cursor-not-allowed disabled:opacity-40 ${railFocus}`}
@@ -397,6 +404,7 @@ export default function ElementToolbar({
   brandFont,
   brandGoogleFonts,
   onSetFont,
+  fontMenu,
   onPreviewOverlayProp,
   onCommitPropPreview,
   onCancelPropPreview,
@@ -461,7 +469,7 @@ export default function ElementToolbar({
       >
         {text && (
           <>
-            <TextGroup slideId={slideId} element={text} update={update} disabled={locked || !canEdit} effectsOpen={popover === 'effects'} onToggleEffects={toggle('effects')} onOpenTextColour={onOpenTextColour && (colourOpen ? () => onCloseColour?.() : run(onOpenTextColour))} brandFont={brandFont} brandGoogleFonts={brandGoogleFonts} onSetFont={onSetFont && ((family, specs) => { beforeAction(); onSetFont(slideId, text.id, family, specs) })} swatch={swatch} />
+            <TextGroup slideId={slideId} element={text} update={update} disabled={locked || !canEdit} effectsOpen={popover === 'effects'} onToggleEffects={toggle('effects')} onOpenTextColour={onOpenTextColour && (colourOpen ? () => onCloseColour?.() : run(onOpenTextColour))} brandFont={brandFont} brandGoogleFonts={brandGoogleFonts} onSetFont={onSetFont && ((family, specs) => { beforeAction(); onSetFont(slideId, text.id, family, specs) })} fontMenu={fontMenu && text && { customFonts: fontMenu.customFonts, onAddFonts: fontMenu.onAddFonts, onPickCustom: fontMenu.onPickCustom && ((f) => { beforeAction(); fontMenu.onPickCustom?.(slideId, text.id, f) }) }} swatch={swatch} />
             <Sep />
           </>
         )}

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, ChevronDown } from 'lucide-react'
+import { Check, ChevronDown, Plus } from 'lucide-react'
 import { NumberField, stepValue } from '../ui'
 import { partitionFontSpecs, reportUnvendoredFonts, reportVendoredSet, vendoredFaceIndex, vendoredKeySet } from '../lib/font-families'
 import type { FaceIndex, FaceMap } from '../lib/font-families'
 import { railBrandRow, railHoverBg, railMenu, railMuted, railSelectedBg } from '../carousel/railStyles'
+import { loadFontFace } from '../lib/font-files'
 
 export type FontOption = {
   label: string
@@ -153,6 +154,16 @@ export function findFontOption(cssValue: string): FontOption | null {
   return FONT_OPTIONS.find((opt) => firstFontToken(opt.value) === key) ?? null
 }
 
+/** A font of the person's own in the menu (§587 r3): its family, and the URL its file loads from. */
+export type PickerCustomFont = { family: string; url: string }
+
+const NO_CUSTOM_FONTS: PickerCustomFont[] = []
+
+/** The CSS font-family value a custom font is saved as: the family, then the system stack. */
+export function customFontValue(family: string): string {
+  return `${JSON.stringify(family)}, system-ui, sans-serif`
+}
+
 type FontFamilyPickerProps = {
   value: string
   /** `googleFonts` is the picked family's fetch specs (empty for System): a caller that persists the family persists them with it. */
@@ -166,9 +177,15 @@ type FontFamilyPickerProps = {
   brandGoogleFonts?: string[]
   /** 'rail' draws the list in the carousel's look (§587 R5c). The default is the video editor's. */
   variant?: 'default' | 'rail'
+  /** The person's own fonts (§587 r3): they lead the list, after "Use brand default", each in its own face. */
+  customFonts?: PickerCustomFont[]
+  /** A custom font pick. Without it the custom fonts are not listed. */
+  onPickCustom?: (font: PickerCustomFont) => void
+  /** "Add your fonts", the list's first row: the host takes the person to its font upload. Absent: no row. */
+  onAddFonts?: () => void
 }
 
-export function FontFamilyPicker({ value, onChange, disabled, className, buttonClassName, brandFont, brandGoogleFonts, variant = 'default' }: FontFamilyPickerProps) {
+export function FontFamilyPicker({ value, onChange, disabled, className, buttonClassName, brandFont, brandGoogleFonts, variant = 'default', customFonts, onPickCustom, onAddFonts }: FontFamilyPickerProps) {
   const [open, setOpen] = useState(false)
   const wrapperRef = useRef<HTMLDivElement | null>(null)
 
@@ -187,10 +204,25 @@ export function FontFamilyPicker({ value, onChange, disabled, className, buttonC
     return () => document.removeEventListener('mousedown', onDocDown)
   }, [open])
 
+  const customs = onPickCustom && customFonts ? customFonts : NO_CUSTOM_FONTS
+  // The menu draws each custom font in its own face.
+  useEffect(() => {
+    if (!open) return
+    for (const f of customs) loadFontFace(f.family, f.url).catch(() => { /* the row falls back */ })
+  }, [open, customs])
+
   const current = findFontOption(value)
-  const displayLabel = current?.label ?? (value ? 'Custom' : 'Default')
+  const valueKey = firstFontToken(value ?? '')
+  const currentCustom = current ? undefined : customs.find((f) => f.family.toLowerCase() === valueKey)
+  const displayLabel = current?.label ?? currentCustom?.family ?? (value ? 'Custom' : 'Default')
   const rail = variant === 'rail'
-  const displayStyle = current ? { fontFamily: current.value } : undefined
+  const displayStyle = current ? { fontFamily: current.value } : currentCustom ? { fontFamily: customFontValue(currentCustom.family) } : undefined
+  const optionClass = (isActive: boolean) =>
+    rail
+      ? `flex w-full items-center justify-between px-3 py-2 text-left text-sm leading-tight text-[var(--editor-text)] focus:outline-none focus-visible:bg-[color-mix(in_srgb,var(--editor-text)_4%,transparent)] ${isActive ? `${railSelectedBg} font-semibold` : railHoverBg}`
+      : `flex w-full items-center justify-between px-3 py-2 text-left text-[15px] leading-tight text-[var(--editor-text)] hover:bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] focus:bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] focus:outline-none ${
+          isActive ? 'bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] font-medium' : ''
+        }`
 
   return (
     <div ref={wrapperRef} className={`relative ${className ?? ''}`}>
@@ -220,6 +252,19 @@ export function FontFamilyPicker({ value, onChange, disabled, className, buttonC
               : 'absolute right-0 z-50 mt-1 max-h-80 w-60 overflow-y-auto rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] shadow-xl ring-1 ring-black/20'
           }
         >
+          {onAddFonts && (
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false)
+                onAddFonts()
+              }}
+              className={`${optionClass(false)} justify-start gap-2 font-semibold`}
+            >
+              <Plus size={16} aria-hidden="true" className={`shrink-0 ${rail ? railMuted : 'opacity-70'}`} />
+              Add your fonts
+            </button>
+          )}
           <ul className={rail ? '' : 'py-1'}>
             {brandFont && (
               <li>
@@ -241,6 +286,27 @@ export function FontFamilyPicker({ value, onChange, disabled, className, buttonC
                 </button>
               </li>
             )}
+            {customs.map((f) => {
+              const isActive = f === currentCustom
+              return (
+                <li key={`custom:${f.family}`}>
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={isActive}
+                    onClick={() => {
+                      onPickCustom?.(f)
+                      setOpen(false)
+                    }}
+                    style={{ fontFamily: customFontValue(f.family) }}
+                    className={optionClass(isActive)}
+                  >
+                    <span className="truncate">{f.family}</span>
+                    {isActive && <Check size={16} aria-hidden="true" className={`ml-2 shrink-0 ${rail ? railMuted : 'opacity-70'}`} />}
+                  </button>
+                </li>
+              )
+            })}
             {FONT_OPTIONS.map((opt) => {
               const isActive = opt.value === current?.value
               return (
@@ -254,13 +320,7 @@ export function FontFamilyPicker({ value, onChange, disabled, className, buttonC
                       setOpen(false)
                     }}
                     style={{ fontFamily: opt.value }}
-                    className={
-                      rail
-                        ? `flex w-full items-center justify-between px-3 py-2 text-left text-sm leading-tight text-[var(--editor-text)] focus:outline-none focus-visible:bg-[color-mix(in_srgb,var(--editor-text)_4%,transparent)] ${isActive ? `${railSelectedBg} font-semibold` : railHoverBg}`
-                        : `flex w-full items-center justify-between px-3 py-2 text-left text-[15px] leading-tight text-[var(--editor-text)] hover:bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] focus:bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] focus:outline-none ${
-                            isActive ? 'bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] font-medium' : ''
-                          }`
-                    }
+                    className={optionClass(isActive)}
                   >
                     <span className="truncate">{opt.label}</span>
                     {isActive && rail && <Check size={16} aria-hidden="true" className={`ml-2 shrink-0 ${railMuted}`} />}

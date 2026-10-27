@@ -22,6 +22,7 @@ import type {
   CarouselElement,
   ImageElement,
   OverlayElement,
+  FontFile,
   Captions,
   Note,
   SlideNote,
@@ -46,7 +47,7 @@ export type OverlayFactory = (
 // ── Re-exported canonical carousel types ─────────────────────────────────────
 // schema.ts is the single source of truth. Consumers of editor-core import
 // these from here so the module presents one coherent surface.
-export type { Project, Slide, CarouselElement, ImageElement, OverlayElement }
+export type { Project, Slide, CarouselElement, ImageElement, OverlayElement, FontFile }
 
 // ── Render ───────────────────────────────────────────────────────────────────
 
@@ -1397,6 +1398,18 @@ export interface CarouselBrand {
 }
 
 /**
+ * A font of the person's own the host offers in the carousel font menu
+ * (§587 r3), e.g. from its Library or brand kit. `url` is where the editor
+ * loads it for the preview. `src` is what a pick saves in the element's
+ * `fontFiles` when the host has no `importFont`.
+ */
+export interface CustomFont {
+  family: string
+  url: string
+  src?: string
+}
+
+/**
  * Props for the carousel editor component. Controlled shape: the host owns the
  * `project` and is notified of edits via `onProjectChange`. The adapter drives
  * transport; theme and slots are optional, and `readOnly` disables mutation.
@@ -1417,6 +1430,25 @@ export interface AskAiRequest {
 export interface CarouselEditorProps<P extends Project = Project> {
   /** `layout="rail"`: the brand's palette and fonts, from the host's profile. */
   brand?: CarouselBrand
+  /**
+   * `layout="rail"`: the person's own fonts (§587 r3). They lead the font menu,
+   * after "Use brand default", each drawn in its own face. The editor has no
+   * upload of its own: see `onAddFonts`.
+   */
+  customFonts?: CustomFont[]
+  /**
+   * `layout="rail"`: the font menu's "Add your fonts" item calls it; the host
+   * takes the person to where its fonts are uploaded. Absent: no item.
+   */
+  onAddFonts?: () => void
+  /**
+   * `layout="rail"`: a custom font pick hands the font here first; the host
+   * makes the file the project keeps (a copy in the project, say) and resolves
+   * its path, saved in the element's `fontFiles`. A family the project already
+   * holds a file for reuses that file and is not imported again. A rejection
+   * writes nothing. Absent: `font.src`, else `font.url`, is saved.
+   */
+  importFont?: (font: CustomFont) => Promise<string>
   /**
    * `layout="rail"`: the Elements panel's "Ask your AI for a shape" pill (at
    * its top) calls it with the slide on show and empty `text`; the host opens
