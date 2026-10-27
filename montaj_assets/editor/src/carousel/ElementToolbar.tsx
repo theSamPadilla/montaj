@@ -9,6 +9,7 @@ import { supportsEffects, supportsFit, TextEffectControls } from '../text/TextEf
 import { AlignControls, type AlignPatch } from './AlignControls'
 import { cropBlockedReason, HideToggle, LayerOrderButtons, OverlayPropsSection, schemaPropsFor, TEXT_CONTROL_PROPS, TransformFields, useReplaceImagePicker } from './ElementControls'
 import { isLocked } from './lock'
+import { elementColourTarget } from './colours'
 import { isTextOverlay } from './textStyle'
 import { railFocus, railHoverBg, railIconBtn, railIconBtnSm, railInk, railToolBtn, railToolOn } from './railStyles'
 
@@ -60,6 +61,13 @@ export interface ElementToolbarProps {
   mode?: 'light' | 'dark'
   /** The text colour opens the colour panel (§587 M5) instead of the OS picker. */
   onOpenTextColour?: () => void
+  /** The colour swatch (§587 R9): opens the colour panel on the element's own colour
+   *  (text colour, a shape's fill or stroke). Absent: no swatch. */
+  onOpenElementColour?: () => void
+  /** The colour panel is open on a colour of this element: the colour it shows now.
+   *  The swatch shows that one, and a click on it closes the panel. */
+  colourShown?: string | null
+  onCloseColour?: () => void
   /** The profile's font, for the font picker's "Use brand default". */
   brandFont?: string
 }
@@ -98,6 +106,7 @@ function TextGroup({
   onToggleEffects,
   onOpenTextColour,
   brandFont,
+  swatch,
 }: {
   slideId: string
   element: OverlayElement
@@ -107,6 +116,8 @@ function TextGroup({
   onToggleEffects: () => void
   onOpenTextColour?: () => void
   brandFont?: string
+  /** The colour swatch, before Effects; outside the fieldset, so a locked element's still opens the panel. */
+  swatch?: ReactNode
 }) {
   const fmt = textFormatting(slideId, element, update)
   const { supported } = fmt
@@ -116,6 +127,7 @@ function TextGroup({
   const hasEffects = supportsEffects(element) || supportsFit(element) || supported.has('textTransform') || supported.has('bgColor')
   const hasStyle = supported.has('color') || supported.has('fontWeight') || supported.has('fontStyle') || supported.has('textAlign')
   return (
+    <div className="flex min-w-0 items-center gap-0.5">
     <fieldset disabled={disabled} className="m-0 flex min-w-0 items-center gap-0.5 border-0 p-0">
       {supported.has('fontFamily') && (
         <FontFamilyPicker
@@ -143,8 +155,9 @@ function TextGroup({
       {hasStyle && <Sep />}
       {supported.has('color') && (
         <TextColorControl value={fmt.colorValue} onChange={fmt.setColor} onOpenPanel={onOpenTextColour} className={cn(iconBtn, 'flex-col gap-px', disabled && 'cursor-not-allowed opacity-40')}>
-          <span aria-hidden="true" className="text-sm font-bold leading-none">A</span>
-          <span aria-hidden="true" className="h-[3px] w-4 rounded-sm border border-[var(--editor-border)]" style={{ backgroundColor: fmt.colorValue }} />
+          {/* An "A" over a thick bar of the text's colour (§587 R9). */}
+          <span aria-hidden="true" className="text-[15px] font-bold leading-none">A</span>
+          <span aria-hidden="true" data-colour-bar className={colourBar} style={{ backgroundColor: fmt.colorValue }} />
         </TextColorControl>
       )}
       {supported.has('fontWeight') && (
@@ -168,15 +181,34 @@ function TextGroup({
           <align.Icon className="h-4 w-4" aria-hidden="true" />
         </button>
       )}
+    </fieldset>
+      {swatch}
       {hasEffects && (
-        <>
+        <fieldset disabled={disabled} className="m-0 flex min-w-0 items-center gap-0.5 border-0 p-0">
           <Sep />
           <button type="button" aria-haspopup="dialog" aria-expanded={effectsOpen} onClick={onToggleEffects} className={cn(textBtn, effectsOpen && onClass)}>
             Effects
           </button>
-        </>
+        </fieldset>
       )}
-    </fieldset>
+    </div>
+  )
+}
+
+/** The text colour's bar: thick, rounded, with a hairline so white still shows. */
+const colourBar = 'mt-[3px] h-[5px] w-[18px] rounded-full shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--editor-text)_20%,transparent)]'
+
+/** The element's colour as a round swatch (§587 R9). A click opens the colour panel on it. */
+function ColourSwatch({ value, label, open, onClick }: { value: string; label: string; open: boolean; onClick: () => void }) {
+  return (
+    <button type="button" aria-label="Color" title={label} aria-haspopup="dialog" aria-expanded={open} onClick={onClick} className={cn(iconBtn, open && onClass)}>
+      <span
+        aria-hidden="true"
+        data-colour-swatch
+        className="block h-5 w-5 rounded-full shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--editor-text)_20%,transparent)]"
+        style={{ backgroundColor: value }}
+      />
+    </button>
   )
 }
 
@@ -234,6 +266,9 @@ export default function ElementToolbar({
   onToggleElementVisibility,
   mode = 'dark',
   onOpenTextColour,
+  onOpenElementColour,
+  colourShown,
+  onCloseColour,
   brandFont,
 }: ElementToolbarProps) {
   const element = selection.length === 1 ? selection[0] : undefined
@@ -274,6 +309,17 @@ export default function ElementToolbar({
   const toggle = (which: ElementToolbarPopover) => run(() => onPopoverChange(popover === which ? null : which))
   const [w, h] = resolution
   const cropReason = image ? cropBlockedReason(image) : null
+  // The colour swatch: the element's own colour, or the one the open panel is on.
+  const colourTarget = element && onOpenElementColour ? elementColourTarget(element) : null
+  const colourOpen = colourShown != null
+  const swatch = colourTarget && (
+    <ColourSwatch
+      value={colourShown ?? colourTarget.value}
+      label={colourTarget.label}
+      open={colourOpen}
+      onClick={colourOpen ? () => onCloseColour?.() : run(onOpenElementColour!)}
+    />
+  )
 
   return (
     <div ref={rootRef} className="relative">
@@ -284,7 +330,13 @@ export default function ElementToolbar({
       >
         {text && (
           <>
-            <TextGroup slideId={slideId} element={text} update={update} disabled={locked || !canEdit} effectsOpen={popover === 'effects'} onToggleEffects={toggle('effects')} onOpenTextColour={onOpenTextColour && run(onOpenTextColour)} brandFont={brandFont} />
+            <TextGroup slideId={slideId} element={text} update={update} disabled={locked || !canEdit} effectsOpen={popover === 'effects'} onToggleEffects={toggle('effects')} onOpenTextColour={onOpenTextColour && run(onOpenTextColour)} brandFont={brandFont} swatch={swatch} />
+            <Sep />
+          </>
+        )}
+        {!text && swatch && (
+          <>
+            {swatch}
             <Sep />
           </>
         )}

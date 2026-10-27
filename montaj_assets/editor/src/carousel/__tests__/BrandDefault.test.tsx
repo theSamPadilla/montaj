@@ -149,12 +149,14 @@ describe('Use brand default (§587 r2 note 8)', () => {
     expect(within(r.getByRole('listbox')).queryByText(BRAND_LABEL)).toBeNull()
   })
 
-  it('colour panel: with brand colours the first row is Use brand default and one click applies the brand colour', async () => {
+  it('colour panel: with brand colours the brand section leads with Use brand default and one click applies the brand colour', async () => {
     const { adapter, r } = await mount('rail', { brand: BRAND })
     await click('el-t')
     await press(tb(r, 'Text color'))
-    const row = within(panel(r)).getAllByRole('button')[1]
-    expect(within(panel(r)).getByRole('button', { name: BRAND_LABEL })).toBe(row)
+    // §587 R9: the brand palette is its own section, "Use brand default" its first row.
+    const brand = within(panel(r)).getByRole('region', { name: 'Brand' })
+    const row = within(brand).getAllByRole('button')[0]
+    expect(within(brand).getByRole('button', { name: BRAND_LABEL })).toBe(row)
     await press(row)
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
     expect(colourOf(last(adapter), 'el-t')).toBe('#ff0000')

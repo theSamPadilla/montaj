@@ -16,7 +16,8 @@ import { setImageAsBackground } from './background'
 import { TextPanel, ElementsPanel, AiImagePanel, type AiImageState } from './RailPanels'
 import { generateImageElement } from './newImage'
 import ColourPanel from './ColourPanel'
-import { collectColours, normalizeHex, replaceColour, setOverlayPropIn } from './colours'
+import { collectColours, elementColours, elementColourTarget, normalizeHex, replaceColour, setOverlayPropIn, type ElementColourTarget } from './colours'
+import { usePhotoColours } from './usePhotoColours'
 import ElementToolbar, { type ElementToolbarPopover } from './ElementToolbar'
 import { useOverlaySchemas } from './ElementControls'
 import StackedSlides, { SlideHeader, type StackSlideMode } from './StackedSlides'
@@ -1740,27 +1741,44 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // ── Colour panel (§587 M5, `layout="rail"`) ──
   // Any colour control opens it (the OS picker is not used); it takes the side
   // panel until closed or the selection moves.
-  const [colourOpen, setColourOpen] = useState<{ request: ColourRequest; seq: number } | null>(null)
+  // `shown`: the colour the open panel shows now, which the toolbar swatch follows (§587 R9).
+  const [colourOpen, setColourOpen] = useState<{ request: ColourRequest; seq: number; shown?: string } | null>(null)
   const colourSeq = useRef(0)
   function openColourPanel(request: ColourRequest) {
     beforeToolbarAction()
     setColourOpen({ request, seq: ++colourSeq.current })
   }
-  function openTextColour() {
+  /** Opens the panel on one colour prop of the single selected element (previews transient, one undo step per pick). */
+  function openElementColour(pick: (el: CarouselElement) => ElementColourTarget | null) {
     const sel = selectedElements.length === 1 ? selectedElements[0] : undefined
-    if (!selectedSlide || !sel || !isTextOverlay(sel)) return
+    const target = sel && pick(sel)
+    if (!selectedSlide || !sel || !target) return
     const slideId = selectedSlide.id
-    const raw = sel.overlay.props.color
-    const set = (v: string) => state.previewSlides(all => setOverlayPropIn(all, slideId, sel.id, 'color', v))
+    const set = (v: string) => state.previewSlides(all => setOverlayPropIn(all, slideId, sel.id, target.key, v))
     openColourPanel({
-      label: 'Text color',
-      value: (typeof raw === 'string' && normalizeHex(raw)) || '#111111',
-      alpha: true,
+      label: target.label,
+      value: target.value,
+      alpha: target.alpha,
       preview: set,
       commit: v => { set(v); void state.commit() },
       cancel: () => state.discardTransient(),
     })
   }
+  /** The toolbar's text colour ("A"). */
+  const openTextColour = () => openElementColour(el => (isTextOverlay(el) ? elementColourTarget(el) : null))
+  /** The toolbar's colour swatch: text colour, a shape's fill or stroke. */
+  const openSwatchColour = () => openElementColour(elementColourTarget)
+  const showColour = (seq: number, v: string) =>
+    setColourOpen(o => (o && o.seq === seq && o.shown !== v ? { ...o, shown: v } : o))
+  // The panel open on a colour of the selected element: the swatch shows that colour.
+  const colourShown = colourOpen && colourOpen.request.target !== 'slide' ? colourOpen.shown ?? colourOpen.request.value : null
+  const colourElement = colourOpen && selectedElements.length === 1 ? selectedElements[0] : undefined
+  const colourTargetColours = colourElement && colourOpen?.request.target !== 'slide' ? elementColours(colourElement) : []
+  const photoSrcs = useMemo(
+    () => (selectedSlide?.elements ?? []).filter((el): el is ImageElement => el.type === 'image').map(el => adapter.resolveImageSrc(el)),
+    [selectedSlide?.elements, adapter],
+  )
+  const photoColours = usePhotoColours(photoSrcs, !!colourOpen)
   // Each call replaces from the saved slides (a stacked preview no longer holds `from`).
   const previewColourEverywhere = (from: string, to: string) => {
     state.discardTransient()
@@ -2343,6 +2361,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             onToggleElementVisibility={onToggleElementVisibility}
             mode={mode}
             onOpenTextColour={openTextColour}
+            onOpenElementColour={openSwatchColour}
+            colourShown={colourShown}
+            onCloseColour={() => setColourOpen(null)}
             brandFont={brand?.fonts?.heading}
           />
         ) : undefined
@@ -2355,6 +2376,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           disabled={!canEdit || (colourOpen.request.target !== 'slide' && selectedElements.some(isLocked))}
           brandColours={brandColours}
           usedColours={usedColours}
+          targetColours={colourTargetColours}
+          photoColours={photoColours}
+          onShow={(v) => showColour(colourOpen.seq, v)}
           onPreviewEverywhere={previewColourEverywhere}
           onCommitEverywhere={commitColourEverywhere}
           onDiscardPreview={() => state.discardTransient()}
