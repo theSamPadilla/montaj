@@ -17,7 +17,8 @@ import {
 import { OverlayPreview } from '../preview/OverlayPreview'
 import { CanvasCropOverlay } from '../crop/CanvasCropOverlay'
 import { croppedBox, shownCrop } from '../crop/crop-math'
-import { InlineTextEditor } from '../text/InlineTextEditor'
+import { InlineTextEditor, type InlineTextEditorHandle } from '../text/InlineTextEditor'
+import { baseTextStyle, decodeRuns, runsPatch, supportsRuns, type BaseTextStyle, type Run } from '../text/runs'
 import { ensureGoogleFontsLoaded } from '../lib/google-fonts'
 import { ensureFontFilesLoaded } from '../lib/font-files'
 import { isLocked } from './lock'
@@ -266,6 +267,20 @@ function windowOf(open: CropSession, el: ImageElement, dims: { width: number; he
  *  nothing when it is the crop the image has; `discard` writes nothing. */
 export type CropExit = 'apply' | 'discard'
 
+/** The open inline text edit: which element, and the editor's handle. */
+export interface InlineTextSession {
+  slideId: string
+  elementId: string
+  editor: () => InlineTextEditorHandle | null
+}
+
+/** A text range selected in the inline editor: its element and what it shows. */
+export interface TextRangeInfo {
+  slideId: string
+  elementId: string
+  style: BaseTextStyle
+}
+
 /** The host's hold on crop mode (§556 M4): every way out of it but Esc, which
  *  this canvas handles itself, goes through `leave`. */
 export interface SlideCanvasCropControl {
@@ -325,6 +340,12 @@ interface Props {
   commit?: () => Promise<void>
   /** A number is written as a number: a text box's corner resize keeps a numeric font size numeric (§586 M8). */
   updateOverlayProp?: (slideId: string, elementId: string, key: string, value: string | number) => Promise<void>
+  /** Several overlay props in one write (one undo step); `undefined` removes a prop. The inline editor's text with its runs. */
+  updateOverlayProps?: (slideId: string, elementId: string, patch: Record<string, string | undefined>) => Promise<void>
+  /** The open inline text edit (§587 round 3), for the toolbar's style buttons; null while none is open. */
+  textEditRef?: { current: InlineTextSession | null }
+  /** The inline editor's selected range and its style, or null when nothing is selected. */
+  onTextRange?: (range: TextRangeInfo | null) => void
   updateImageCrop?: (slideId: string, elementId: string, crop: { x: number; y: number; w: number; h: number } | undefined) => Promise<void>
 
   // Crop mode is owned here; the host enters it (the panel's Crop button, or a
@@ -398,6 +419,10 @@ const FALLBACK_EDIT_STYLE: Partial<CSSStyleDeclaration> = {
 // Find the innermost element under `root` whose full text equals `text` — the
 // overlay's text container. Used to copy its computed style onto the editor.
 function findTextNode(root: HTMLElement, text: string): HTMLElement | null {
+  // A template that marks its text box (static-text) is read there: with runs,
+  // a lone run's span holds all the text too, in that run's own style.
+  const marked = root.querySelector<HTMLElement>('[data-montaj-text]')
+  if (marked) return marked
   const want = text.trim()
   if (!want) return null
   const matches: HTMLElement[] = []
@@ -468,6 +493,9 @@ export default function SlideCanvas({
   rotateElement,
   commit,
   updateOverlayProp,
+  updateOverlayProps,
+  textEditRef,
+  onTextRange,
   updateImageCrop,
   cropElementId,
   onExitCrop,
@@ -758,6 +786,7 @@ export default function SlideCanvas({
   }
 
   function endTextEdit() {
+    onTextRange?.(null)
     setEditingId(null)
     setEditRect(null)
     setEditStyle(null)
@@ -769,10 +798,32 @@ export default function SlideCanvas({
     if (editingLocked) endTextEdit()
   }, [editingLocked])
 
-  function commitTextEdit(element: OverlayElement, value: string) {
-    void updateOverlayProp?.(sid, element.id, 'text', value)
+  // The editor's writes: a plain text keeps today's single `text` write; text
+  // with runs writes them together, a style every char shares onto the element.
+  function writeText(element: OverlayElement, value: string, runs: Run[], base: BaseTextStyle) {
+    const live = slide.elements.find((e) => e.id === element.id)
+    const props = live?.type === 'overlay' ? live.overlay.props : element.overlay.props
+    const patch = runsPatch(props, value, runs, base)
+    const keys = Object.keys(patch)
+    if (keys.length === 1 || !updateOverlayProps) return updateOverlayProp?.(sid, element.id, 'text', value)
+    return updateOverlayProps(sid, element.id, patch)
+  }
+
+  function commitTextEdit(element: OverlayElement, value: string, runs: Run[], base: BaseTextStyle) {
+    void writeText(element, value, runs, base)
     endTextEdit()
   }
+
+  // The open edit, for the host's style buttons.
+  const editorHandle = useRef<InlineTextEditorHandle | null>(null)
+  useEffect(() => {
+    if (!textEditRef || !editingId) return
+    const session: InlineTextSession = { slideId: sid, elementId: editingId, editor: () => editorHandle.current }
+    textEditRef.current = session
+    return () => {
+      if (textEditRef.current === session) textEditRef.current = null
+    }
+  }, [editingId, sid])
 
   // The slide-space point under a mouse event: the root sits at the slide's
   // corner, and its drawn size says how far the display is zoomed past `scale`.
@@ -1433,14 +1484,21 @@ export default function SlideCanvas({
           const el = slide.elements.find((e) => e.id === editingId)
           if (!el || el.type !== 'overlay') return null
           const initial = typeof el.overlay.props.text === 'string' ? el.overlay.props.text : ''
+          const styled = supportsRuns(el)
           return (
             <InlineTextEditor
               key={editingId}
+              handleRef={editorHandle}
               initialValue={initial}
+              initialRuns={decodeRuns(el.overlay.props.runs, initial)}
+              base={baseTextStyle(el.overlay.props)}
+              styled={styled}
               rect={editRect}
               styleSnapshot={editStyle ?? FALLBACK_EDIT_STYLE}
               onChange={() => {}}
-              onCommit={(value) => commitTextEdit(el, value)}
+              onCommit={(value, runs, base) => commitTextEdit(el, value, runs, base)}
+              onWrite={(value, runs, base) => void writeText(el, value, runs, base)}
+              onRangeStyle={styled && onTextRange ? (style) => onTextRange(style ? { slideId: sid, elementId: el.id, style } : null) : undefined}
               onCancel={endTextEdit}
             />
           )

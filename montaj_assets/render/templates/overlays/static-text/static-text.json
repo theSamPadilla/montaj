@@ -14,6 +14,7 @@
     { "name": "effectColor",   "type": "string", "default": "#000000",     "format": "color" },
     { "name": "effectStrength", "type": "string", "default": "60" },
     { "name": "fit",           "type": "string", "default": "false",       "enum": ["false", "true"] },
-    { "name": "minFontSize",   "type": "string", "default": "24" }
+    { "name": "minFontSize",   "type": "string", "default": "24" },
+    { "name": "runs",          "type": "string" }
   ]
 }
