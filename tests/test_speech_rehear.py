@@ -167,3 +167,19 @@ def test_until_is_the_end_of_the_words_within_a_second_after_the_phrase():
     words = CV + [("reads", 20.62, 20.84), ("my", 20.84, 20.95), ("laptop's", 20.95, 21.38), ("webcam", 21.38, 21.76)]
     assert rh.until_after(words, len(CV) - 1) == 21.38
     assert rh.until_after(words, len(words) - 1) is None
+
+
+# §596 (Sam, 2026-10-27): the second listen is tiny.en q5_1 (32 MB; on the known collapsed repeats it hears what base.en
+# does). Only in English, and only when its weight is installed: a missing model would fall back to turbo, the very
+# hearing that collapsed the repeat, at the cost of another pass.
+def test_the_second_listen_is_the_small_english_model_when_installed(monkeypatch):
+    import steps.edit.cut as cc
+    have = {"tiny.en-q5_1"}
+    monkeypatch.setattr(cc, "whisper_weight_path", lambda name: f"/m/ggml-{name}.bin" if name in have else None)
+    assert cc.REHEAR_ALT_MODEL == "tiny.en-q5_1"
+    assert cc._second_listen("en", "large-v3-turbo-q5_0") == "tiny.en-q5_1"
+    assert cc._second_listen("en-US", "large-v3-turbo-q5_0") == "tiny.en-q5_1"
+    assert cc._second_listen("es", "large-v3-turbo-q5_0") is None
+    assert cc._second_listen("en", "tiny.en-q5_1") is None, "never the same model twice"
+    have.clear()
+    assert cc._second_listen("en", "large-v3-turbo-q5_0") is None, "not installed: no second pass at all"

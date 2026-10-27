@@ -23,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from common import fail, get_duration, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES
+from common import fail, get_duration, whisper_weight_path, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES
 from ai_video import save_project_changes
 from lib import project_revisions, speech_apply, speech_energy, speech_rehear, speech_source, speech_text, sync_clash, write_places
 from lib.project_lock import project_lock_or_fail
@@ -67,7 +67,7 @@ _LABEL = {"retake": "retake?", "repeat": "retake?", "false-start": "false-start?
 _SPAN_LABEL = {"retake": "repeat?", "repeat": "repeat?", "restart": "repeat?", "false-start": "false-start?",
                "abandoned": "false-start?"}
 SEAMS_MAX = 40
-REHEAR_ALT_MODEL = "base.en"   # the second hearing of a slow phrase (CV), English only
+REHEAR_ALT_MODEL = "tiny.en-q5_1"   # the second hearing of a slow phrase (§596: 32 MB, hears what base.en does), English
 # A word cut off mid-way and said again (2b, kung fu run 4): letters then a hyphen, then nothing or one digit (whisper wrote
 # " Uni-3" for "Uni-", a pause and "Unitree"). A hyphenated word ("well-known") or a name with a number ("COVID-19",
 # "F-16") is whole.
@@ -135,11 +135,19 @@ def _rehear_slow(project, track_id, project_dir, model, language):
                 shutil.rmtree(tmp, ignore_errors=True)
 
         # CV: one model can hear a repeat once on every window; base.en (shipped) is the second hearing, in English
-        alt = (lambda start, end, src=src: window(start, end, src, REHEAR_ALT_MODEL)) \
-            if (language or "").split("-")[0].lower() == "en" and model != REHEAR_ALT_MODEL else None
+        second = _second_listen(language, model)
+        alt = (lambda start, end, src=src, second=second: window(start, end, src, second)) if second else None
         out += speech_rehear.rehear_file(sc, src, window, speech_rehear.Budget(phrases=10 ** 6, seconds=float("inf")),
                                          only=chosen[sc], alt=alt)
     return out
+
+
+def _second_listen(language, model):
+    """The model cut's second listen uses (§596): REHEAR_ALT_MODEL, in English, when its weight is installed and it is not
+    the model already used; else None. A missing weight would fall back to turbo, the hearing that collapsed the repeat."""
+    if (language or "").split("-")[0].lower() != "en" or model == REHEAR_ALT_MODEL:
+        return None
+    return REHEAR_ALT_MODEL if whisper_weight_path(REHEAR_ALT_MODEL) else None
 
 
 def _transcribe_missing(project, track_id, project_path, project_dir, model, language):
