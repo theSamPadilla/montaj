@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { Sparkles } from 'lucide-react'
 import type { AskAiRequest, CarouselBrand, EditorAdapter, GlobalOverlay, CarouselElement, Project, Slide } from '../types'
 import { cn } from '../ui'
 import { Loader } from '../ui/Loader'
@@ -6,7 +7,7 @@ import ReadOnlySlide from './ReadOnlySlide'
 import OverlayErrorBoundary from './OverlayErrorBoundary'
 import { ensureGoogleFontsLoaded } from '../lib/google-fonts'
 import { TEXT_PRESETS, newTextElement, type TextPresetId } from './newText'
-import { railField, railKeycap, railNote, railPrimaryBtn, railSecondaryBtn, railTile, railTitle } from './railStyles'
+import { railField, railKeycap, railNote, railPrimaryBtn, railTile, railTitle } from './railStyles'
 import { ELEMENT_CATEGORIES, elementCategory, loadOverlays, newOverlayElement, OVERLAY_BOX, overlayTileLabel, TEMPLATE_DND_MIME, type ElementCategory } from './overlayElement'
 
 // §587 M4b: the Text, Elements and AI image rail panels. Each adds to the slide
@@ -146,7 +147,7 @@ export interface ElementsPanelProps {
   onAddElement: (slideId: string, element: CarouselElement) => void
   /** A shipped shape's tile drag starts (its template) and ends (null). Keep it stable. */
   onTemplateDrag?: (overlay: GlobalOverlay | null) => void
-  /** The "Ask your AI for a custom shape" field; absent, no field. Keep it stable. */
+  /** The "Ask your AI for a shape" pill at the top; absent, no pill. Keep it stable. */
   onAskAi?: (request: AskAiRequest) => void
 }
 
@@ -155,7 +156,6 @@ export const ElementsPanel = memo(function ElementsPanel({ projectId, profile, w
   const [error, setError] = useState<string | null>(null)
   // The shipped shapes, lines and frames (§587), for every user, signed in or not.
   const [shapes, setShapes] = useState<GlobalOverlay[]>([])
-  const [ask, setAsk] = useState('')
   // Tiles that have been near view: set once, kept, so scrolling back never recompiles.
   const [seen, setSeen] = useState<ReadonlySet<string>>(() => new Set())
   const rootRef = useRef<HTMLDivElement>(null)
@@ -189,14 +189,15 @@ export const ElementsPanel = memo(function ElementsPanel({ projectId, profile, w
   const tileRef = (key: string) => (el: HTMLElement | null) => { if (el) tileRefs.current.set(key, el); else tileRefs.current.delete(key) }
   // With shapes to show, an empty list of the person's own graphics says nothing.
   const showGraphics = !(overlays && overlays.length === 0 && shapes.length > 0)
-  const askText = ask.trim()
-  const submitAsk = () => {
-    if (!onAskAi || !askText) return
-    onAskAi({ kind: 'shape', slideId, text: askText })
-    setAsk('')
-  }
   return (
     <div ref={rootRef} className="flex flex-col gap-3 p-4">
+      {onAskAi && (
+        // The host opens its own modal (prompt, references): the editor hands it the slide and no text.
+        <button type="button" onClick={() => onAskAi({ kind: 'shape', slideId, text: '' })} className={cn(railPrimaryBtn, 'w-full')}>
+          <Sparkles size={16} aria-hidden="true" />
+          Ask your AI for a shape
+        </button>
+      )}
       {ELEMENT_CATEGORIES.map((category) => {
         const list = shapes.filter((o) => elementCategory(o) === category)
         if (list.length === 0) return null
@@ -253,20 +254,6 @@ export const ElementsPanel = memo(function ElementsPanel({ projectId, profile, w
               <span className="truncate text-xs font-semibold text-[var(--editor-text)]">{overlay.name}</span>
             </button>
           ))}
-        </div>
-      )}
-      {onAskAi && (
-        <div className="flex gap-2 pt-1">
-          <input
-            type="text"
-            aria-label="Ask your AI for a custom shape"
-            placeholder="Ask your AI for a custom shape"
-            value={ask}
-            onChange={(e) => setAsk(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); submitAsk() } }}
-            className={cn(railField, 'h-8 min-w-0 flex-1')}
-          />
-          <button type="button" disabled={!askText} onClick={submitAsk} className={railSecondaryBtn}>Ask</button>
         </div>
       )}
     </div>
