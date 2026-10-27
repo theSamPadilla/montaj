@@ -7,6 +7,8 @@ import type { OverlayElement, Slide } from '../../types'
 // actual font bytes load in jsdom).
 const { ensureGoogleFontsLoaded } = vi.hoisted(() => ({ ensureGoogleFontsLoaded: vi.fn() }))
 vi.mock('../../lib/google-fonts', () => ({ ensureGoogleFontsLoaded }))
+const { ensureFontFilesLoaded } = vi.hoisted(() => ({ ensureFontFilesLoaded: vi.fn() }))
+vi.mock('../../lib/font-files', () => ({ ensureFontFilesLoaded }))
 
 import SlideCanvas from '../SlideCanvas'
 
@@ -78,5 +80,30 @@ describe('SlideCanvas carousel overlay Google Fonts', () => {
     )
     // Helper is still invoked (with undefined) — it no-ops internally.
     await waitFor(() => expect(ensureGoogleFontsLoaded).toHaveBeenCalledWith(undefined))
+  })
+
+  it('loads an overlay element’s fontFiles through the host resolver (§587 r3)', async () => {
+    const el: OverlayElement = {
+      id: 'el-ov',
+      type: 'overlay',
+      overlay: { template: '/overlays/lp-text.jsx', props: { text: 'Hola' } },
+      frame: 0, x: 0, y: 0, w: 400, h: 120, rotation: 0,
+      fontFiles: [{ family: 'Brand Sans', src: 'fonts/brand.ttf' }],
+    }
+    render(
+      <SlideCanvas
+        slide={makeSlide(el)}
+        width={1080}
+        height={1080}
+        interactive={false}
+        scale={1}
+        resolveImageSrc={(img) => `/api/files?path=${img.src}`}
+        compileOverlay={vi.fn(async () => () => null)}
+      />,
+    )
+    await waitFor(() => expect(ensureFontFilesLoaded).toHaveBeenCalled())
+    const [files, resolve] = ensureFontFilesLoaded.mock.calls[0]
+    expect(files).toEqual([{ family: 'Brand Sans', src: 'fonts/brand.ttf' }])
+    expect(resolve('fonts/brand.ttf')).toBe('/api/files?path=fonts/brand.ttf')
   })
 })

@@ -3,6 +3,8 @@ import { flushSync } from 'react-dom'
 import { RefreshCw, AlertCircle, Download, Info, Undo2, Redo2, Plus } from 'lucide-react'
 import type { Project, Slide, CarouselElement, ImageElement, CarouselEditorProps, OverlayFactory, SlideNotesApi, CarouselApi, ImageDropPayload, GlobalOverlay } from '../types'
 import { IMAGE_DND_MIME } from '../types'
+import type { CustomFont, FontFile } from '../types'
+import { customFontValue } from '../text/FontPicker'
 import type { Asset, SlideNote } from '../schema'
 import { applyTheme, defaultMontajTheme, isLightTheme } from '../theme'
 import { useProjectState } from '../state/use-project-state'
@@ -372,7 +374,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 // ── CarouselEditor ────────────────────────────────────────────────────────────
 
-export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, onProvideRenderTrigger, onProvideCarouselApi, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default', onError, renderSaveTimeoutMs = RENDER_SAVE_TIMEOUT_MS, lockKey = false, layout = 'classic', railPanels, brand, onAskAi }: Props<P>) {
+export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, onProvideRenderTrigger, onProvideCarouselApi, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default', onError, renderSaveTimeoutMs = RENDER_SAVE_TIMEOUT_MS, lockKey = false, layout = 'classic', railPanels, brand, onAskAi, customFonts, onAddFonts, importFont }: Props<P>) {
   const state = useProjectState(adapter, initialProject.id, initialProject)
   const project = state.project
   const slides = project.slides ?? []
@@ -749,18 +751,37 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     })
   }
 
-  /** A font pick: `fontFamily` and `googleFonts` together, one undo step; a locked text is left alone. */
-  function setTextFont(slideId: string, elementId: string, fontFamily: string, googleFonts: string[]) {
+  /** A font pick: `fontFamily` with its `googleFonts` or `fontFiles`, one undo step; a locked text is left alone. */
+  function setTextFont(slideId: string, elementId: string, fontFamily: string, googleFonts: string[], fontFiles?: FontFile[]) {
     void state.editElements(slideId, (els) => {
       let changed = false
       const next = els.map((el) => {
         if (el.id !== elementId || isLocked(el) || !isTextOverlay(el)) return el
-        const styled = applyTextStyle(el, { props: { fontFamily }, googleFonts: googleFonts.length ? googleFonts : undefined })
+        const styled = applyTextStyle(el, { props: { fontFamily }, googleFonts: googleFonts.length ? googleFonts : undefined, fontFiles })
         if (styled !== el) changed = true
         return styled
       })
       return changed ? next : els
     })
+  }
+
+  /** A custom font pick (§587 r3): the file the project already holds for the
+   *  family, else the host's import of it (`importFont`), then one font write. */
+  async function pickCustomFont(slideId: string, elementId: string, picked: { family: string; url: string }) {
+    const font: CustomFont = customFonts?.find((f) => f === picked) ?? picked
+    const key = font.family.toLowerCase()
+    let src = (project.slides ?? []).flatMap((sl) => sl.elements)
+      .flatMap((el) => (el.type === 'overlay' ? el.fontFiles ?? [] : []))
+      .find((f) => f.family.toLowerCase() === key)?.src
+    if (!src) {
+      try {
+        src = importFont ? await importFont(font) : font.src ?? font.url
+      } catch (e) {
+        console.error('[carousel] the font could not be added', e)
+        return
+      }
+    }
+    if (src) setTextFont(slideId, elementId, customFontValue(font.family), [], [{ family: font.family, src }])
   }
 
   /** The lock badge: unlocks one element (not the selection), as its own undo
@@ -2423,6 +2444,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             brandFont={brand?.fonts?.heading}
             brandGoogleFonts={brand?.fonts?.googleFonts}
             onSetFont={setTextFont}
+            fontMenu={customFonts?.length || onAddFonts ? { customFonts, onAddFonts, onPickCustom: (sid, eid, f) => { void pickCustomFont(sid, eid, f) } } : undefined}
             onPreviewOverlayProp={previewOverlayProp}
             onCommitPropPreview={commitPropPreview}
             onCancelPropPreview={cancelPropPreview}

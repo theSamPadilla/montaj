@@ -26,7 +26,7 @@ import { resolve, join, dirname }                         from 'path'
 import { fileURLToPath }                                  from 'url'
 import { tmpdir }                                         from 'os'
 import { randomBytes }                                    from 'crypto'
-import { toFileHref, fontsCssHref, assetResolverSource } from './file-url.js'
+import { toFileHref, fontsCssHref, assetResolverSource, isAbsPath } from './file-url.js'
 import { overlayEsbuildOptions, overlayReadBoundary }     from './overlay-build.js'
 import { resolveTemplatePath }                            from './shipped-template.js'
 import { overlayPageLaunchOptions, installPageGuard, prefetchPropsUrls, overlayPageCspMeta, pageNeedsGoogleFonts } from './page-guard.js'
@@ -379,9 +379,11 @@ async function bundleSlide({ slide, width, height, projectDir, fontsBaseDir = ''
     .filter(el => el.type === 'image' && typeof el.src === 'string' && el.src
       && !/^(https?:|data:|\/|[A-Za-z]:[\\/])/.test(el.src))
     .map(el => join(projectDir, el.src))
+  // §587 r3: the elements' own font files, each an @font-face (slideFontFaces).
+  const fontFaces = slideFontFaces(elements, projectDir)
   const boundary = overlayReadBoundary({
     projectDir, workDir, fontsDir: fontsBaseDir, props: slide,
-    files: [...uniqueTemplates.map(tpl => resolveTemplatePath(tpl, __dirname)), ...relativeImages],
+    files: [...uniqueTemplates.map(tpl => resolveTemplatePath(tpl, __dirname)), ...relativeImages, ...fontFaces.flatMap(f => f.file ? [f.file] : [])],
   })
 
   // Collect the Google Fonts every element on this slide declares. Mirrors the
@@ -501,7 +503,7 @@ createRoot(document.getElementById('root')).render(<Root />)
     throw err
   }
 
-  const html = generateHtml(width, height, googleFonts, fontsBaseDir, [...boundary.urls, ...boundary.onDemandUrls])
+  const html = generateHtml(width, height, googleFonts, fontsBaseDir, [...boundary.urls, ...boundary.onDemandUrls], fontFaces)
   writeFileSync(htmlPath, html)
 
   return { workDir, boundary, needsGoogleFonts: pageNeedsGoogleFonts(html) }
@@ -810,7 +812,38 @@ function reportVendoredFonts(vendoredKeys, fellThrough, faceIndex) {
 }
 
 // `connectUrls`: the slide's props URLs, which the CSP's connect-src names.
-function generateHtml(width, height, googleFonts = [], fontsBaseDir = '', connectUrls = []) {
+// §587 r3: a slide's own font files (an overlay element's `fontFiles`, each
+// `{ family, src }`), one per family and file, as `{ family, href, file }`:
+// `href` is what the @font-face loads, `file` the path the page may read (null
+// for a URL). A relative `src` is the project dir's, as an image's is; an
+// http(s) one is fetched through the page guard as any props URL is. A family
+// keeps only the characters a CSS string and an HTML page take as they are,
+// and an entry that leaves nothing, or names no usable file, is skipped.
+function slideFontFaces(elements, projectDir) {
+  const seen = new Set()
+  const faces = []
+  for (const el of elements) {
+    for (const f of Array.isArray(el?.fontFiles) ? el.fontFiles : []) {
+      if (!f || typeof f.src !== 'string' || !f.src || typeof f.family !== 'string') continue
+      const family = f.family.replace(/["\\<>{};\u0000-\u001f\u007f]/g, '').trim()
+      if (!family) continue
+      let href, file = null
+      if (/^https?:\/\//i.test(f.src)) href = f.src
+      else {
+        file = isAbsPath(f.src) ? f.src : join(projectDir, f.src)
+        href = toFileHref(file)
+      }
+      if (/["\\<>]/.test(href)) continue
+      const key = `${family}\u0000${href}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      faces.push({ family, href, file })
+    }
+  }
+  return faces
+}
+
+function generateHtml(width, height, googleFonts = [], fontsBaseDir = '', connectUrls = [], fontFaces = []) {
   // §140: whatever shape and spelling the entries arrive in, they become clean
   // specs here (google-fonts.js); one that cannot be a Google family is dropped
   // and named, and each family gets its own <link> below, so a family Google
@@ -871,13 +904,14 @@ ${fellThrough.map(f => `<link rel="stylesheet" href="https://fonts.googleapis.co
 <link rel="stylesheet" href="${vendoredHref}">` : '') + googleFontLinks
   // The page's CSP (page-guard.js), the same one bundle.js's page carries.
   const csp = overlayPageCspMeta({ needsGoogleFonts: fellThrough.length > 0, connectUrls })
+  const ownFaces = fontFaces.map(f => `@font-face { font-family: "${f.family}"; src: url("${f.href}"); font-display: block; }\n`).join('')
   return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 ${csp}${fontLinks}
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
+${ownFaces}* { margin: 0; padding: 0; box-sizing: border-box; }
 html, body, #root {
   width: ${width}px;
   height: ${height}px;
