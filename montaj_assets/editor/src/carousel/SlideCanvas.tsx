@@ -25,6 +25,7 @@ import { groupDragMove, type GroupDragResult, type GroupMember } from './groupDr
 import { elementsAt, isLayerPress, nextLayerDown, pointInElement } from './hitTest'
 import { isApplePlatform } from '../ui/modifierKeys'
 import { scaleFontSize, scalesTextWithBox } from './textScale'
+import { createLiveBoxes, useLiveBox, type LiveBoxes } from './liveBox'
 
 // Neutral fallback used only when no host `resolveImageSrc` is injected. The
 // package must not synthesize a host-shaped URL (e.g. Montaj's `/api/files`):
@@ -73,15 +74,18 @@ const noopCompiler = (): Promise<OverlayFactory> =>
 
 function OverlayElementView({
   element,
+  box,
   compileOverlay,
 }: {
   element: OverlayElement
+  /** The box it draws to, in slide px: the element's, or a resize's live one. */
+  box: { w: number; h: number }
   compileOverlay?: (template: string) => Promise<OverlayFactory>
 }) {
   const duration = (element.overlay.props.duration as number | undefined) ?? 60
   // The box in slide px, as the renderer's slide.jsx passes it: a template that
   // draws to its box (the shipped shapes, the charts) matches the export.
-  const mergedProps = { ...element.overlay.props, offsetX: 0, offsetY: 0, scale: 1, boxWidth: element.w, boxHeight: element.h }
+  const mergedProps = { ...element.overlay.props, offsetX: 0, offsetY: 0, scale: 1, boxWidth: box.w, boxHeight: box.h }
   // Inject any Google Fonts the overlay declares so the carousel preview renders
   // with the same glyphs/metrics as the renderer. Resilient: the helper only
   // appends a <link>; a font-fetch failure never breaks the overlay render.
@@ -97,6 +101,60 @@ function OverlayElementView({
       fps={30}
       duration={duration}
     />
+  )
+}
+
+// Overlays are authored in NATIVE slide pixels (fixed font sizes sized for
+// element.w×element.h at full resolution). The wrapper is already shrunk to
+// element.w*scale, so the overlay renders at native size and is CSS-scaled to
+// fit, mirroring the renderer. Without this the native-size text overflows the
+// shrunk box and overlaps (the box sizing only auto-fits resolution-independent
+// content like <img>).
+//
+// While a resize is held (§587 F-E) it renders at the live box on every move:
+// a template that draws from its box (a shape, a line, a frame, a chart)
+// redraws there, strokes and corner marks at their own px rather than
+// stretched, and text wraps to it. A corner resize that scales text draws the
+// start box scaled by the ratio instead, as the font size it commits would.
+// Subscribed on its own, so a move renders this overlay and not the slide.
+function OverlayLayer({
+  element,
+  scale,
+  liveBoxes,
+  hidden,
+  compileOverlay,
+  watchFile,
+}: {
+  element: OverlayElement
+  scale: number
+  liveBoxes: LiveBoxes
+  hidden: boolean
+  compileOverlay?: (template: string) => Promise<OverlayFactory>
+  watchFile?: (path: string, onChange: () => void) => () => void
+}) {
+  const live = useLiveBox(liveBoxes, element.id)
+  const ratio = live?.ratio ?? 1
+  const box = live ? { w: live.w / ratio, h: live.h / ratio } : { w: element.w, h: element.h }
+  return (
+    <div
+      style={{
+        width: box.w,
+        height: box.h,
+        transform: `scale(${scale * ratio})`,
+        transformOrigin: 'top left',
+        // Hide the live text while it's being edited in place so the
+        // InlineTextEditor isn't doubled over it.
+        visibility: hidden ? 'hidden' : undefined,
+      }}
+    >
+      <OverlayErrorBoundary
+        label={element.overlay.template.split('/').pop() ?? element.overlay.template}
+        watchPath={element.overlay.template}
+        watchFile={watchFile}
+      >
+        <OverlayElementView element={element} box={box} compileOverlay={compileOverlay} />
+      </OverlayErrorBoundary>
+    </div>
   )
 }
 
@@ -450,12 +508,9 @@ export default function SlideCanvas({
   const boxesOf = (id: string) =>
     [wrapperRefs.current.get(id), chromeRefs.current.get(id)].filter((el): el is HTMLDivElement => !!el)
 
-  // Each overlay's inner layer, drawn at native size and scaled to the canvas.
-  const innerRefs = useRef<Map<string, HTMLDivElement>>(new Map())
-  const setInnerRef = (id: string) => (el: HTMLDivElement | null) => {
-    if (el) innerRefs.current.set(id, el)
-    else innerRefs.current.delete(id)
-  }
+  // Each overlay's box while a resize holds it (§587 F-E): its layer renders
+  // again at that size on every move. See OverlayLayer.
+  const [liveBoxes] = useState(createLiveBoxes)
 
   // ── Gesture preview helper: write transform/size directly to the wrapper ──
   // and to its chrome box in the same call, so the handles never lag the element.
@@ -473,12 +528,12 @@ export default function SlideCanvas({
       el.style.height = `${box.h * scale}px`
     }
   }
-  // A text box's corner resize (§586 M8) scales its content by `ratio` while
-  // the drag lasts, so the text does not jump when the real font size lands.
-  // 1 takes the preview off.
-  const applyPreviewTextScale = (id: string, ratio: number) => {
-    const inner = innerRefs.current.get(id)
-    if (inner) inner.style.transform = `scale(${scale * ratio})`
+  // An overlay follows the box on every move (§587 F-E): its layer renders at
+  // the live size. A text box's corner resize (§586 M8) scales its content by
+  // `ratio` instead, so the text does not jump when the real font size lands.
+  // Images need nothing: they fill the wrapper.
+  const applyPreviewOverlayBox = (id: string, box: { w: number; h: number }, ratio: number) => {
+    if (elementById(id)?.type === 'overlay') liveBoxes.set(id, { w: box.w, h: box.h, ratio })
   }
 
   // ── Gesture hooks ──
@@ -523,12 +578,13 @@ export default function SlideCanvas({
     scale,
     onPreview: (id, box, rotation, gesture) => {
       applyPreviewBox(id, box, rotation)
-      if (scalesText(elementById(id), gesture)) applyPreviewTextScale(id, box.h / gesture.startBox.h)
-      else applyPreviewTextScale(id, 1)
+      applyPreviewOverlayBox(id, box, scalesText(elementById(id), gesture) ? box.h / gesture.startBox.h : 1)
     },
     onCommit: async (id, box, gesture) => {
-      // Off first, so an element gone mid-drag leaves no scaled layer.
-      applyPreviewTextScale(id, 1)
+      // Off first, so an element gone mid-drag leaves no live layer. The
+      // writes below are made in this same tick, so the committed box draws
+      // in the render that takes the live one off: no frame at the old size.
+      liveBoxes.clear()
       const el = elementById(id)
       if (!el) return
       const rotation = gesture.startBox.rotation ?? 0
@@ -951,7 +1007,11 @@ export default function SlideCanvas({
       const gesture = activeGesture.current
       activeGesture.current = null
       if (gesture === 'drag') drag.onPointerUp()
-      else if (gesture === 'resize') resize.onPointerUp()
+      else if (gesture === 'resize') {
+        resize.onPointerUp()
+        // A resize that commits nothing (back where it started) leaves no live box.
+        liveBoxes.clear()
+      }
       else if (gesture === 'rotate') rotate.onPointerUp()
       else if (gesture === 'group') groupHandlers.current.up()
       else if (gesture === 'band') bandHandlers.current.up(swallowClick)
@@ -1268,32 +1328,14 @@ export default function SlideCanvas({
                 />
               )
             ) : (
-              // Overlays are authored in NATIVE slide pixels (fixed font sizes sized
-              // for element.w×element.h at full resolution). The wrapper is already
-              // shrunk to element.w*scale, so render the overlay at native size and
-              // CSS-scale it to fit — mirroring the renderer. Without this the
-              // native-size text overflows the shrunk box and overlaps (the box
-              // sizing only auto-fits resolution-independent content like <img>).
-              <div
-                ref={setInnerRef(element.id)}
-                style={{
-                  width: element.w,
-                  height: element.h,
-                  transform: `scale(${scale})`,
-                  transformOrigin: 'top left',
-                  // Hide the live text while it's being edited in place so the
-                  // InlineTextEditor isn't doubled over it.
-                  visibility: editingId === element.id ? 'hidden' : undefined,
-                }}
-              >
-                <OverlayErrorBoundary
-                  label={element.overlay.template.split('/').pop() ?? element.overlay.template}
-                  watchPath={element.overlay.template}
-                  watchFile={watchFile}
-                >
-                  <OverlayElementView element={element} compileOverlay={compileOverlay} />
-                </OverlayErrorBoundary>
-              </div>
+              <OverlayLayer
+                element={element}
+                scale={scale}
+                liveBoxes={liveBoxes}
+                hidden={editingId === element.id}
+                compileOverlay={compileOverlay}
+                watchFile={watchFile}
+              />
             )
 
           return (
