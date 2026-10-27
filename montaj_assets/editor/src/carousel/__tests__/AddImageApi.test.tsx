@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, act, waitFor, fireEvent } from '@testing-library/react'
+import { render, act, waitFor } from '@testing-library/react'
 import type { CarouselApi, EditorAdapter, ImageElement, Project, RenderEvent } from '../../types'
 import CarouselEditor from '../CarouselEditor'
 
