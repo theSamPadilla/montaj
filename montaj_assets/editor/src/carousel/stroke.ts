@@ -1,4 +1,5 @@
 import type { CarouselElement } from '../types'
+import { shippedTemplateKey } from './shippedTemplate'
 
 // The element toolbar's stroke control (§587 round 2, F-F): which shipped
 // templates take it, and what their stroke props read as now. Pure.
@@ -68,7 +69,11 @@ const TEMPLATES: Record<string, StrokeTemplate> = {
   'frame-double': shape('roundJoins', false, 4),
 }
 
-const templateName = (template: string) => (template.split('/').pop() ?? '').replace(/\.[jt]sx?$/, '')
+/** The shipped template's name; null for a project overlay that only shares a file name with one. */
+const templateName = (template: string) => {
+  const key = shippedTemplateKey(template)
+  return key ? (key.split('/').pop() ?? '').replace(/\.jsx$/, '') : ''
+}
 
 /** The stroke as the control shows it. */
 export interface StrokeState {

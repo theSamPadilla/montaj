@@ -22,7 +22,7 @@ const TEMPLATES: Record<string, Template> = {
 }
 
 const item = (id: string, template: string, extra: Partial<VisualItem>, props: Record<string, unknown>) =>
-  ({ id, type: 'overlay', src: `/rt/templates/overlays/${template}/${template}.jsx`, start: 0, end: 10, offsetX: 0, offsetY: 0, scale: 0.4, rotation: 0, props, ...extra }) as unknown as VisualItem
+  ({ id, type: 'overlay', src: `/rt/render/templates/overlays/${template}/${template}.jsx`, start: 0, end: 10, offsetX: 0, offsetY: 0, scale: 0.4, rotation: 0, props, ...extra }) as unknown as VisualItem
 
 const initial = {
   version: '1', id: 'v', name: 'Video live resize', status: 'draft',

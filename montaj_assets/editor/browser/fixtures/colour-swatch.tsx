@@ -18,7 +18,7 @@ const photo = `data:image/svg+xml,${encodeURIComponent(
 const image: ImageElement = { id: 'p', type: 'image', src: photo, x: 80, y: 80, w: 300, h: 300, rotation: 0 }
 const rect: OverlayElement = {
   id: 'r', type: 'overlay', x: 540, y: 600, w: 360, h: 360, rotation: 0,
-  overlay: { template: '/rt/templates/overlays/shape-rect/shape-rect.jsx', props: { fill: '#bdbdbd', stroke: '#111111', strokeWidth: '0' } },
+  overlay: { template: '/rt/render/templates/overlays/shape-rect/shape-rect.jsx', props: { fill: '#bdbdbd', stroke: '#111111', strokeWidth: '0' } },
 } as OverlayElement
 
 const project = {

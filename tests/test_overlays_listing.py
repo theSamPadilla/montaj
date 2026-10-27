@@ -258,3 +258,15 @@ def test_sidecar_aspect_of_the_wrong_type_is_omitted(tmp_path, bad):
     from serve.routes.overlays import scan_overlays
     _write_overlay(tmp_path, "pill", {"description": "d", "props": [], "aspect": bad})
     assert "aspect" not in scan_overlays(tmp_path)[0]
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
+def test_sidecar_non_finite_numbers_are_omitted(tmp_path, bad):
+    """Python's json parses Infinity and NaN, but the response cannot carry them."""
+    from serve.routes.overlays import scan_overlays
+    _write_overlay(tmp_path, "pill", {"description": "d", "props": [], "aspect": bad, "durationSeconds": bad, "fps": bad})
+    e = scan_overlays(tmp_path)[0]
+    for k in ("aspect", "durationSeconds", "fps"):
+        assert k not in e
+    import json
+    json.dumps(e, allow_nan=False)

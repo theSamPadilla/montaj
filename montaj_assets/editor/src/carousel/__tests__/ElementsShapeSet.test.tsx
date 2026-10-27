@@ -15,7 +15,7 @@ vi.mock('../imageGeometry', async (importOriginal) => {
 
 type Sidecar = Omit<GlobalOverlay, 'name' | 'jsxPath'>
 const FILES = import.meta.glob('../../../../render/templates/overlays/*/*.json', { eager: true, import: 'default' }) as Record<string, Sidecar>
-const jsx = (name: string) => `/rt/templates/overlays/${name}/${name}.jsx`
+const jsx = (name: string) => `/rt/render/templates/overlays/${name}/${name}.jsx`
 // As serve lists them: sorted by folder name, the sidecar's fields, its jsx path.
 const SYSTEM: GlobalOverlay[] = Object.entries(FILES)
   .flatMap(([p, s]) => {

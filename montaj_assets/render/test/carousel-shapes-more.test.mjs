@@ -71,6 +71,25 @@ const GREEN = [0, 170, 0]
 const BLACK = [0, 0, 0]
 const WHITE = [255, 255, 255]
 
+// [template, box w, box h, inside point, outside point], each point in slide px.
+const REST = [
+  ['arrow-chevron', 240, 240, [220, 150], [60, 150]],
+  ['arrow-double', 240, 120, [410, 90], [410, 40]],
+  ['callout-box', 240, 160, [670, 90], [560, 185]],
+  ['callout-speech-rect', 240, 192, [930, 100], [1030, 215]],
+  ['callout-thought', 240, 192, [150, 360], [250, 470]],
+  ['shape-diamond', 240, 240, [410, 410], [300, 300]],
+  ['shape-octagon', 240, 240, [670, 410], [555, 295]],
+  ['shape-pill', 240, 120, [930, 350], [815, 295]],
+  ['shape-plus', 240, 240, [150, 670], [40, 560]],
+  ['shape-cross', 240, 240, [410, 600], [300, 560]],
+  ['shape-x', 240, 240, [670, 670], [670, 570]],
+  ['shape-semicircle', 240, 120, [930, 640], [820, 560]],
+  ['shape-blob-2', 240, 240, [150, 930], [35, 815]],
+  ['shape-blob-3', 240, 240, [410, 930], [295, 815]],
+  ['shape-blob-4', 240, 240, [670, 930], [555, 815]],
+]
+
 test('the new shapes, arrows, lines and callouts draw in the carousel export', { timeout: 120_000 }, () => {
   const el = (id, template, x, y, w, h, props) => ({ id, type: 'overlay', x, y, w, h, rotation: 0, frame: 59, overlay: { template: tpl(template), props } })
   const project = {
@@ -92,6 +111,12 @@ test('the new shapes, arrows, lines and callouts draw in the carousel export', {
         el('hex', 'shape-hexagon', 390, 750, 300, 300, { fill: '#ffffff', stroke: '#000000', strokeWidth: 12, strokeStyle: 'dotted' }),
         el('check', 'shape-check', 750, 750, 300, 300, { fill: '#00aa00', strokeWidth: 0 }),
       ],
+    }, {
+      // The rest of the set, in a 4-wide grid of 240 px cells every 260 px (the second
+      // slide: one inside and one outside point each, in the order below).
+      id: 'rest',
+      base_color: '#ffffff',
+      elements: REST.map(([name, w, h], i) => el(name, name, 30 + (i % 4) * 260, 30 + Math.floor(i / 4) * 260, w, h, { fill: '#ff0000', strokeWidth: 0 })),
     }],
   }
   const dir = mkdtempSync(join(tmpdir(), 'montaj-carousel-shapes-more-'))
@@ -161,6 +186,13 @@ test('the new shapes, arrows, lines and callouts draw in the carousel export', {
     at(862, 1000, GREEN, 'checkmark bend')
     at(900, 800, WHITE, 'checkmark, inside its V')
     at(756, 756, WHITE, 'checkmark box, top left')
+
+    // The rest of the set: each template paints inside its outline and not outside it.
+    const rest = decodePng(readFileSync(join(dir, 'render', 'slide_02.png')))
+    for (const [name, , , inside, outside] of REST) {
+      assert.ok(near(rest.px(...inside), RED), `${name}: inside at ${inside}, got ${rest.px(...inside)}`)
+      assert.ok(near(rest.px(...outside), WHITE), `${name}: outside at ${outside}, got ${rest.px(...outside)}`)
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

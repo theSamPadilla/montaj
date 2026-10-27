@@ -5,7 +5,7 @@
     { "name": "fill",        "type": "string", "default": "#bdbdbd", "format": "color" },
     { "name": "stroke",      "type": "string", "default": "#111111", "format": "color" },
     { "name": "strokeWidth", "type": "int", "default": 0 },
-    { "name": "points", "type": "int", "default": 6 },
+    { "name": "points", "type": "int", "default": 5 },
     { "name": "strokeStyle", "type": "string", "default": "solid", "enum": ["solid", "long-dash", "short-dash", "dotted"] },
     { "name": "roundJoins", "type": "bool", "default": true }
   ]

@@ -1,6 +1,7 @@
 import type { CarouselElement, Slide } from '../types'
 import { isLocked } from './lock'
 import { isTextOverlay } from './textStyle'
+import { shippedTemplateKey } from './shippedTemplate'
 
 // The colour panel's data rules (§587 M5): which colours a carousel uses, and
 // the project-wide replace. Pure, so one mutation can apply them.
@@ -132,7 +133,9 @@ export interface ElementColourTarget {
 /** The kind of a shipped shape template, from its path (`…/shape-rect/shape-rect.jsx`).
  *  A block arrow (`arrow-*`) or a callout (`callout-*`) is filled like a shape. */
 export function shapeKind(template: string): 'shape' | 'line' | 'frame' | null {
-  const base = (template.split('/').pop() ?? '').replace(/\.[jt]sx?$/, '')
+  const key = shippedTemplateKey(template)
+  if (!key) return null
+  const base = (key.split('/').pop() ?? '').replace(/\.jsx$/, '')
   const m = /^(shape|line|frame|arrow|callout)-/.exec(base)
   if (!m) return null
   return m[1] === 'arrow' || m[1] === 'callout' ? 'shape' : (m[1] as 'shape' | 'line' | 'frame')

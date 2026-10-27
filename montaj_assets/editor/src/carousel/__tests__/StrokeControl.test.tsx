@@ -19,7 +19,7 @@ interface FakeAdapter extends EditorAdapter<Project> {
 
 const shape = (id: string, template: string, props: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
   id, type: 'overlay', x: 600, y: 600, w: 200, h: 200, rotation: 0, ...extra,
-  overlay: { template: `/rt/templates/overlays/${template}/${template}.jsx`, props },
+  overlay: { template: `/rt/render/templates/overlays/${template}/${template}.jsx`, props },
 })
 
 function makeProject(): Project {
