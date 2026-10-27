@@ -70,10 +70,10 @@ const BLACK = [0, 0, 0]
 const WHITE = [255, 255, 255]
 
 test('numeric props of the shipped shapes, lines and frames are int, with a number default (the editor steps them)', () => {
-  const NUMERIC = new Set(['strokeWidth', 'headLength', 'shaftWidth', 'points', 'cornerRadius', 'innerRadius', 'dash', 'gap', 'cornerLength'])
+  const NUMERIC = new Set(['strokeWidth', 'headLength', 'shaftWidth', 'points', 'cornerRadius', 'innerRadius', 'dash', 'gap', 'cornerLength', 'thickness'])
   let seen = 0
   for (const dir of readdirSync(TEMPLATES)) {
-    if (!/^(shape|frame)-/.test(dir) && !/^line-(arrow|dashed|straight)$/.test(dir)) continue
+    if (!/^(shape|frame|arrow|callout)-/.test(dir) && !/^line-(arrow|dashed|straight|dot-ends|bar-ends)$/.test(dir)) continue
     const sidecar = JSON.parse(readFileSync(join(TEMPLATES, dir, `${dir}.json`), 'utf8'))
     for (const p of sidecar.props) {
       if (!NUMERIC.has(p.name)) continue
@@ -82,7 +82,7 @@ test('numeric props of the shipped shapes, lines and frames are int, with a numb
       assert.equal(typeof p.default, 'number', `${dir}.${p.name} default`)
     }
   }
-  assert.ok(seen >= 20, `only ${seen} numeric props found`)
+  assert.ok(seen >= 55, `only ${seen} numeric props found`)
 })
 
 test('the shape, ellipse and dashed line templates draw in the carousel export', { timeout: 120_000 }, () => {

@@ -8,7 +8,7 @@ import OverlayErrorBoundary from './OverlayErrorBoundary'
 import { ensureGoogleFontsLoaded } from '../lib/google-fonts'
 import { TEXT_PRESETS, newTextElement, type TextPresetId } from './newText'
 import { railField, railKeycap, railNote, railPrimaryBtn, railTile, railTitle } from './railStyles'
-import { ELEMENT_CATEGORIES, elementCategory, loadOverlays, newOverlayElement, OVERLAY_BOX, overlayTileLabel, TEMPLATE_DND_MIME, type ElementCategory } from './overlayElement'
+import { aspectBox, ELEMENT_CATEGORIES, elementAspect, elementCategory, loadOverlays, newOverlayElement, orderElements, OVERLAY_BOX, overlayTileLabel, TEMPLATE_DND_MIME, type ElementCategory } from './overlayElement'
 
 // §587 M4b: the Text, Elements and AI image rail panels. Each adds to the slide
 // it was opened for through `onAddElement` (the editor's own add, which applies
@@ -107,17 +107,21 @@ function PreviewSlot({ shown, ...thumb }: { shown: boolean; overlay: GlobalOverl
   return <div aria-hidden="true" className="rounded-md bg-[var(--editor-bg)]" style={{ width: OVERLAY_BOX.w * PREVIEW_SCALE, height: OVERLAY_BOX.h * PREVIEW_SCALE }} />
 }
 
-// §587: the shipped shapes, lines and frames, drawn small in their own tiles.
+// §587: the shipped shapes, arrows, lines, frames and callouts, drawn small in their own tiles.
 const SHAPE_TILE = 48
 const SHAPE_SECTIONS: Record<ElementCategory, { title: string; preview: { w: number; h: number } }> = {
   shape: { title: 'Shapes', preview: { w: 100, h: 100 } },
+  arrow: { title: 'Arrows', preview: { w: 100, h: 100 } },
   line: { title: 'Lines', preview: { w: 200, h: 40 } },
   frame: { title: 'Frames', preview: { w: 100, h: 100 } },
+  callout: { title: 'Callouts', preview: { w: 100, h: 100 } },
 }
 
-/** A shipped shape's thumbnail: the template itself at its defaults, in a small box of its kind's shape. */
+/** A shipped shape's thumbnail: the template itself at its defaults, in a small box of its kind's shape (and its own aspect). */
 const ShapeThumb = memo(function ShapeThumb({ overlay, projectId, adapter }: { overlay: GlobalOverlay; projectId: string; adapter: EditorAdapter<Project> }) {
-  const { w, h } = SHAPE_SECTIONS[elementCategory(overlay) ?? 'shape'].preview
+  const category = elementCategory(overlay) ?? 'shape'
+  const section = SHAPE_SECTIONS[category].preview
+  const { w, h } = category === 'line' || category === 'frame' ? section : aspectBox(section.w, elementAspect(overlay))
   const scale = Math.min(SHAPE_TILE / w, SHAPE_TILE / h)
   const slide = useMemo<Slide>(() => {
     const el = newOverlayElement({ ...overlay, category: undefined }, [w, h])
@@ -199,7 +203,7 @@ export const ElementsPanel = memo(function ElementsPanel({ projectId, profile, w
         </button>
       )}
       {ELEMENT_CATEGORIES.map((category) => {
-        const list = shapes.filter((o) => elementCategory(o) === category)
+        const list = orderElements(shapes.filter((o) => elementCategory(o) === category))
         if (list.length === 0) return null
         return (
           <section key={category} className="flex flex-col gap-2">

@@ -219,3 +219,42 @@ def test_system_overlays_list_the_shapes_lines_and_frames_by_category():
     assert by_name["frame-border"]["category"] == "frame"
     # the templates without one are listed as before
     assert "category" not in by_name["static-text"]
+
+
+# ── §587 R2 F-I: arrows and callouts, and a shape's own aspect ────────────────
+
+def test_system_overlays_list_arrows_and_callouts_by_category():
+    entries = client.get("/api/overlays/system").json()
+    by_name = {e.get("name"): e for e in entries}
+    # the block arrow moved to Arrows; the arrow line stays a line
+    assert by_name["shape-arrow"]["category"] == "arrow"
+    assert by_name["arrow-curved"]["category"] == "arrow"
+    assert by_name["line-arrow"]["category"] == "line"
+    assert by_name["callout-speech-round"]["category"] == "callout"
+    assert by_name["shape-heart"]["category"] == "shape"
+    assert by_name["line-dot-ends"]["category"] == "line"
+
+
+@pytest.mark.parametrize("category", ["arrow", "callout"])
+def test_sidecar_new_categories_are_passed_through(tmp_path, category):
+    from serve.routes.overlays import scan_overlays
+    _write_overlay(tmp_path, "blob", {"description": "d", "props": [], "category": category})
+    assert scan_overlays(tmp_path)[0]["category"] == category
+
+
+def test_sidecar_aspect_is_passed_through(tmp_path):
+    from serve.routes.overlays import scan_overlays
+    _write_overlay(tmp_path, "pill", {"description": "d", "props": [], "category": "shape", "aspect": 2})
+    _write_overlay(tmp_path, "tall", {"description": "d", "props": [], "category": "shape", "aspect": 0.5})
+    e = {x["name"]: x for x in scan_overlays(tmp_path)}
+    assert e["pill"]["aspect"] == 2
+    assert e["tall"]["aspect"] == 0.5
+    pill = client.get("/api/overlays/system").json()
+    assert {x["name"]: x for x in pill}["shape-pill"]["aspect"] == 2
+
+
+@pytest.mark.parametrize("bad", [0, -1, "2", True, None, [2]])
+def test_sidecar_aspect_of_the_wrong_type_is_omitted(tmp_path, bad):
+    from serve.routes.overlays import scan_overlays
+    _write_overlay(tmp_path, "pill", {"description": "d", "props": [], "aspect": bad})
+    assert "aspect" not in scan_overlays(tmp_path)[0]

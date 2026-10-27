@@ -129,11 +129,13 @@ export interface ElementColourTarget {
   value: string
 }
 
-/** The kind of a shipped shape template, from its path (`…/shape-rect/shape-rect.jsx`). */
+/** The kind of a shipped shape template, from its path (`…/shape-rect/shape-rect.jsx`).
+ *  A block arrow (`arrow-*`) or a callout (`callout-*`) is filled like a shape. */
 export function shapeKind(template: string): 'shape' | 'line' | 'frame' | null {
   const base = (template.split('/').pop() ?? '').replace(/\.[jt]sx?$/, '')
-  const m = /^(shape|line|frame)-/.exec(base)
-  return m ? (m[1] as 'shape' | 'line' | 'frame') : null
+  const m = /^(shape|line|frame|arrow|callout)-/.exec(base)
+  if (!m) return null
+  return m[1] === 'arrow' || m[1] === 'callout' ? 'shape' : (m[1] as 'shape' | 'line' | 'frame')
 }
 
 /** A prop value that draws a colour: a hex that is not fully transparent. */
