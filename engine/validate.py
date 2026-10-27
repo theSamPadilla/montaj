@@ -517,6 +517,15 @@ def validate_project(path):
                     frame = el.get("frame")
                     if not isinstance(frame, (int, float)) or frame < 0:
                         fail("missing_field", f"slides[{si}].elements[{ei}].frame must be a number >= 0")
+                    # §587 r3: the element's own font files.
+                    font_files = el.get("fontFiles")
+                    if font_files is not None and (not isinstance(font_files, list) or not all(
+                        isinstance(f, dict)
+                        and isinstance(f.get("family"), str) and f["family"].strip()
+                        and isinstance(f.get("src"), str) and f["src"]
+                        for f in font_files
+                    )):
+                        fail("invalid_field", f"slides[{si}].elements[{ei}].fontFiles must be a list of {{family, src}} non-empty strings")
 
     else:
         for field in ("version", "id", "status", "workflow", "editingPrompt", "settings", "tracks"):

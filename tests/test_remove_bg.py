@@ -691,6 +691,66 @@ def test_image_that_does_not_decode_fails_with_json(stubbed, monkeypatch, capsys
     assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])["error"] == "invalid_image"
 
 
+def test_image_out_that_is_not_png_never_overwrites_an_existing_png(stubbed, monkeypatch, capsys, tmp_path):
+    mod, rec, _ = stubbed
+    src = _photo(tmp_path / "photo.jpg")
+    (tmp_path / "cutout.png").write_bytes(b"keep me")
+    res = _run_main(mod, monkeypatch, capsys, "--input", str(src), "--out", str(tmp_path / "cutout.mov"))
+    assert res["out"] == str(tmp_path / "cutout-2.png")
+    assert (tmp_path / "cutout.png").read_bytes() == b"keep me"
+    res = _run_main(mod, monkeypatch, capsys, "--input", str(src), "--out", str(tmp_path / "cutout.mov"))
+    assert res["out"] == str(tmp_path / "cutout-3.png")
+    assert (tmp_path / "cutout-2.png").is_file()
+
+
+@pytest.mark.parametrize("name, fmt", [("p.apng", "PNG"), ("p.ico", "ICO"), ("p.dat", "PNG")])
+def test_still_is_detected_by_content_not_extension(name, fmt, stubbed, monkeypatch, capsys, tmp_path):
+    from PIL import Image
+    mod, rec, _ = stubbed
+    src = tmp_path / name
+    Image.new("RGB", (32, 32), (200, 10, 10)).save(src, format=fmt)
+    res = _run_main(mod, monkeypatch, capsys, "--input", str(src))
+    assert res["out"] == str(tmp_path / f"{src.stem}-cutout.png")
+    assert len(rec.calls) == 1
+
+
+def test_svg_input_fails_with_json(stubbed, monkeypatch, capsys, tmp_path):
+    mod, _, _ = stubbed
+    svg = tmp_path / "a.svg"
+    svg.write_text("<svg xmlns='http://www.w3.org/2000/svg' width='4' height='4'/>")
+    monkeypatch.setattr(sys, "argv", ["remove_bg.py", "--input", str(svg)])
+    with pytest.raises(SystemExit):
+        mod.main()
+    assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])["error"] == "invalid_image"
+
+
+def test_huge_still_is_matted_on_a_capped_copy_and_output_stays_source_sized(stubbed, monkeypatch, capsys, tmp_path):
+    from PIL import Image
+    mod, rec, _ = stubbed
+    rec.pha = _left_half
+    src = tmp_path / "huge.png"
+    Image.new("RGB", (5000, 3000), (90, 120, 150)).save(src)
+    res = _run_main(mod, monkeypatch, capsys, "--input", str(src))
+    assert (res["width"], res["height"]) == (5000, 3000)
+    _, _, h, w = rec.calls[0]["src_shape"]
+    assert max(h, w) <= 4096 and abs(w / h - 5000 / 3000) < 0.01
+    with Image.open(res["out"]) as im:
+        assert im.size == (5000, 3000)
+        a = np.asarray(im)[..., 3]
+    assert a[:, :2400].min() == 255 and a[:, 2600:].max() == 0
+
+
+def test_decompression_bomb_fails_with_json(stubbed, monkeypatch, capsys, tmp_path):
+    from PIL import Image
+    mod, _, _ = stubbed
+    src = _photo(tmp_path / "bomb.png")
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100)
+    monkeypatch.setattr(sys, "argv", ["remove_bg.py", "--input", str(src)])
+    with pytest.raises(SystemExit):
+        mod.main()
+    assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])["error"] == "invalid_image"
+
+
 @pytest.mark.parametrize("w, h, want", [(409, 512, 1.0), (300, 200, 1.0), (4000, 3000, 0.128), (1080, 1920, 0.2667)])
 def test_image_ratio_mattes_near_512(w, h, want):
     """A still mattes best with RVM's own pass near 512 px on the long side
