@@ -107,15 +107,9 @@ def _matches(seq, want, spaceless):
     return out
 
 
-def sayings(project, project_dir, phrase, language="en", track_id=None):
-    """[(unit index, start, end, text)] of every saying of `phrase`, plus the units, the selection and warnings."""
+def prepare(project, project_dir, language="en", track_id=None):
+    """The speech track read once, as sayings reads it, for several phrases (phrase-times: one read for every anchor)."""
     is_filler = speech_units.filler_test(language or "en")
-    spaceless = (language or "").split("-")[0].lower() in speech_units.NON_SPACED
-    # accents fold in spaced languages only: in Japanese a voiced mark is a different letter (が is not か)
-    fk = (lambda t: t) if spaceless else fold
-    want = tokens(phrase, is_filler, folded=not spaceless)
-    if not want:
-        raise PhraseNotFound("The phrase has no words.")
     if track_id is None:
         track_id = speech_units.speech_track_id(project, project_dir)
     d = speech_text.derive(project, project_dir, track=track_id)
@@ -128,7 +122,21 @@ def sayings(project, project_dir, phrase, language="en", track_id=None):
     speech_units.mark_made_up_tails(built, d.inside_words)
     units = [u for u, _, _ in built]
     sel = select(units, is_filler) if units else None
-    items = _items(project)
+    return {"language": language, "d": d, "built": built, "units": units, "sel": sel, "items": _items(project)}
+
+
+def sayings(project, project_dir, phrase, language="en", track_id=None, prepared=None):
+    """[(unit index, start, end, text)] of every saying of `phrase`, plus the units, the selection and warnings.
+    prepared: prepare()'s read of the same project, language and track, reused."""
+    is_filler = speech_units.filler_test(language or "en")
+    spaceless = (language or "").split("-")[0].lower() in speech_units.NON_SPACED
+    # accents fold in spaced languages only: in Japanese a voiced mark is a different letter (が is not か)
+    fk = (lambda t: t) if spaceless else fold
+    want = tokens(phrase, is_filler, folded=not spaceless)
+    if not want:
+        raise PhraseNotFound("The phrase has no words.")
+    pr = prepared or prepare(project, project_dir, language, track_id)
+    d, built, units, sel, items = pr["d"], pr["built"], pr["units"], pr["sel"], pr["items"]
     found = []
     for k, (u, rows, _) in enumerate(built):
         if u.fixed or u.madeup:
@@ -165,11 +173,11 @@ def _line_of(sel, why, units):
     return out
 
 
-def find(project, project_dir, phrase, take="clean", language="en", track_id=None):
+def find(project, project_dir, phrase, take="clean", language="en", track_id=None, prepared=None):
     """The saying of `phrase` the `take` rule picks in the earliest line that says it: a Found. Raises PhraseNotFound."""
     if take not in TAKES:
         raise PhraseNotFound(f"take must be one of {', '.join(TAKES)}.")
-    found, units, sel, warnings = sayings(project, project_dir, phrase, language, track_id)
+    found, units, sel, warnings = sayings(project, project_dir, phrase, language, track_id, prepared)
     if not found:
         raise PhraseNotFound(f'"{phrase}" is not said on the speech track. {NOT_FOUND_HINT}')
     kept = set(sel.kept) if sel else set()

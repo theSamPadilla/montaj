@@ -4451,6 +4451,56 @@ async def project_spine(project_id: str, project_dir: Path = Depends(get_project
     return await asyncio.to_thread(build)
 
 
+@router.post("/projects/{project_id}/phrase-times")
+async def phrase_times(project_id: str, request: Request, project_dir: Path = Depends(get_project_dir)):
+    """Word anchors to timeline seconds, as place reads a phrase (lib/phrase_at; run 5): body `{"anchors": [{phrase or
+    word, occurrence?, take?}]}`. occurrence n is the nth saying in timeline order (default 1); take ("clean", "first",
+    "last") picks by place's rule instead. Answers `{"times": [{start, end, text, said} or {error}]}` in order, one bad
+    anchor never failing the others. The speech track is read once. Read-only, no lock; in a thread."""
+    from lib import phrase_at
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    anchors = body.get("anchors") if isinstance(body, dict) else None
+    if not isinstance(anchors, list) or not anchors or len(anchors) > 64:
+        raise HTTPException(422, detail={"error": "invalid_anchors", "message": "anchors is a list of 1 to 64 {phrase or word, occurrence or take}"})
+
+    def build():
+        try:
+            project = json.loads((project_dir / "project.json").read_text())
+        except (OSError, ValueError):
+            raise HTTPException(404, detail={"error": "not_found", "message": "project.json is not readable"})
+        language = ((project.get("settings") or {}).get("language") or "en") if isinstance(project, dict) else "en"
+        if not language or language == "auto":
+            language = "en"
+        prepared = phrase_at.prepare(project, str(project_dir), language)
+        out = []
+        for a in anchors:
+            phrase = (a.get("phrase") or a.get("word")) if isinstance(a, dict) else None
+            if not isinstance(phrase, str) or not phrase.strip():
+                out.append({"error": "an anchor names a phrase or a word"})
+                continue
+            try:
+                if a.get("take") is not None:
+                    f = phrase_at.find(project, str(project_dir), phrase, a["take"], language, prepared=prepared)
+                    out.append({"start": round(f.start, 3), "end": round(f.end, 3), "text": f.text, "said": f.said})
+                    continue
+                found, _, _, _ = phrase_at.sayings(project, str(project_dir), phrase, language, prepared=prepared)
+                n = a.get("occurrence", 1)
+                if not found:
+                    out.append({"error": f'"{phrase}" is not said on the speech track. {phrase_at.NOT_FOUND_HINT}'})
+                elif not isinstance(n, int) or isinstance(n, bool) or n < 1 or n > len(found):
+                    out.append({"error": f'"{phrase}" is said {len(found)} times; occurrence is 1 to {len(found)}'})
+                else:
+                    _, t0, t1, text = found[n - 1]
+                    out.append({"start": round(t0, 3), "end": round(t1, 3), "text": text, "said": len(found)})
+            except phrase_at.PhraseNotFound as e:
+                out.append({"error": str(e)})
+        return {"times": out}
+    return await asyncio.to_thread(build)
+
+
 @router.get("/projects/{project_id}/shots")
 async def list_shots(project_id: str, project_dir: Path = Depends(get_project_dir)):
     """The labelled shots of the project's sources (the `shots` step; lib/shots.py): `{"shots": {clip id: {"src",
