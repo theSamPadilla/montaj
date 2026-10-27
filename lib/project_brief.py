@@ -263,6 +263,8 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
                      f"the source).{seen}")
             W += [f"- {sh['n']}: {sh['start']:.1f}-{sh['end']:.1f}" + (f" {sh['label']}" if sh.get("label") else "")
                   for sh in shots]
+            W.append(f"Add b-roll by shot: edit_timeline {{op: \"add\", item: {{source: \"{s.get('id', '')}\", shot: n, "
+                     "start}}, which takes the shot's span; for a closer look at a moment, snapshot the clip.")
             bare = sum(1 for sh in shots if not sh.get("label"))
             if bare:
                 W.append(f"{bare} of its shots have no label yet: name them once with `shots` (labels) and every later "

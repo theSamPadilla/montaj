@@ -103,6 +103,9 @@ def test_a_long_b_roll_gets_its_shots_and_one_sheet_a_short_one_does_not(proj):
     text = got["text"]
     assert "**clip-1 demo.mov**, 74.7 s, 3 shots" in text and "- 2: 4.9-12.6 car dent" in text, text
     assert "2 of its shots have no label yet" in text, text
+    # how to use them without looking again: add b-roll by shot; snapshot is the one closer look
+    assert 'edit_timeline {op: "add", item: {source: "clip-1", shot: n, start}}' in text, text
+    assert "snapshot" in text.split("## B-roll")[1].split("##")[0]
     assert "**clip-2 short.mov**, 5.0 s: one shot." in text
 
 
