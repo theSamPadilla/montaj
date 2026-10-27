@@ -1,10 +1,5 @@
 import type { CarouselBrand, GlobalOverlay, OverlayElement } from '../types'
 
-/**
- * A new text box for the host's default text overlay `tpl`, centred on the
- * slide, its standard text props seeded from the template's declared defaults.
- * Shared by the "+ Text" button and the T key.
- */
 export type TextPresetId = 'heading' | 'subheading' | 'body'
 
 /** Each preset: its text, size as a share of the slide width, weight and box height as a share of the slide height. */
@@ -14,8 +9,13 @@ export const TEXT_PRESETS: Record<TextPresetId, { label: string; text: string; s
   body: { label: 'Add body text', text: 'Body text', size: 0.035, weight: '400', box: 0.1 },
 }
 
-/** A preset's text in the brand's fonts: heading and subheading take the
- *  heading font, body the body font, each falling back to the other. */
+/**
+ * A new text box for the host's default text overlay `tpl`, centred on the
+ * slide, its standard text props seeded from the template's declared defaults.
+ * Shared by the "+ Text" button and the T key.
+ * With a preset and brand fonts: heading and subheading take the heading font,
+ * body the body font, each falling back to the other.
+ */
 export function newTextElement(tpl: GlobalOverlay, resolution: readonly [number, number], preset?: TextPresetId, fonts?: CarouselBrand['fonts']): OverlayElement {
   const props: Record<string, unknown> = Object.fromEntries(
     tpl.props.filter(p => p.default !== undefined).map(p => [p.name, p.default]),
