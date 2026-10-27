@@ -1,10 +1,11 @@
 import { useEffect, useRef, type ReactNode } from 'react'
-import { ArrowLeft, ArrowRight, Bold, Copy, Crop, Italic, Lock, LockOpen, Replace, Trash2 } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Bold, Copy, Crop, Italic, Lock, LockOpen, Replace, Trash2, Underline } from 'lucide-react'
 import type { CarouselElement, GlobalOverlay, OverlayElement } from '../types'
 import type { ReorderDirection } from '../state/project-reducer'
 import { cn, NumberField, Slider, Switch } from '../ui'
 import { FontFamilyPicker, FontSizePicker } from '../text/FontPicker'
-import { caseLabel, TEXT_ALIGNS, TextBackgroundControl, TextColorControl, textFormatting } from '../text/TextFormattingToolbar'
+import { caseLabel, keepEditProps, TEXT_ALIGNS, TextBackgroundControl, TextColorControl, textFormatting } from '../text/TextFormattingToolbar'
+import { runsOf, supportsRuns, type BaseTextStyle, type RunPatch } from '../text/runs'
 import { supportsEffects, supportsFit, TextEffectControls } from '../text/TextEffectControls'
 import { AlignControls, type AlignPatch } from './AlignControls'
 import { cropBlockedReason, HideToggle, LayerOrderButtons, OverlayPropsSection, schemaPropsFor, TEXT_CONTROL_PROPS, useReplaceImagePicker } from './ElementControls'
@@ -77,6 +78,10 @@ export interface ElementToolbarProps {
   onCommitPropPreview?: () => void
   /** Escape in the weight field: drop the preview, write nothing. */
   onCancelPropPreview?: () => void
+  /** The text range selected in the open inline edit, and what it shows (§587 round 3). */
+  textRange?: BaseTextStyle | null
+  /** Bold, italic, underline: the selected range, else the whole element. Absent: the props are written as before. */
+  onTextStyle?: (patch: RunPatch) => void
 }
 
 // Montaj's tools: 10px squares, muted at rest, ink on hover; on = the brand tint.
@@ -116,6 +121,8 @@ function TextGroup({
   brandGoogleFonts,
   onSetFont,
   swatch,
+  textRange,
+  onTextStyle,
 }: {
   slideId: string
   element: OverlayElement
@@ -129,8 +136,18 @@ function TextGroup({
   onSetFont?: (fontFamily: string, googleFonts: string[]) => void
   /** The colour swatch, before Effects; outside the fieldset, so a locked element's still opens the panel. */
   swatch?: ReactNode
+  textRange?: BaseTextStyle | null
+  onTextStyle?: (patch: RunPatch) => void
 }) {
   const fmt = textFormatting(slideId, element, update)
+  // A range selected in the inline edit: the buttons show and style it alone.
+  const range = textRange ?? null
+  const bold = range ? range.bold : fmt.boldActive
+  const italic = range ? range.italic : fmt.italicActive
+  const runs = runsOf(element.overlay.props)
+  const underline = range ? range.underline : runs.length > 0 && runs.every((r) => r.u === 1)
+  const colour = range ? range.color : fmt.colorValue
+  const keep = keepEditProps(!!range)
   const { supported } = fmt
   const alignAt = Math.max(0, TEXT_ALIGNS.findIndex((a) => a.value === fmt.currentAlign))
   const align = TEXT_ALIGNS[alignAt]
@@ -166,20 +183,25 @@ function TextGroup({
       )}
       {hasStyle && <Sep />}
       {supported.has('color') && (
-        <TextColorControl value={fmt.colorValue} onChange={fmt.setColor} onOpenPanel={onOpenTextColour} className={cn(iconBtn, 'flex-col gap-px', disabled && 'cursor-not-allowed opacity-40')}>
+        <TextColorControl value={colour} onChange={fmt.setColor} onOpenPanel={onOpenTextColour} keepTextEdit={!!range} className={cn(iconBtn, 'flex-col gap-px', disabled && 'cursor-not-allowed opacity-40')}>
           {/* An "A" over a thick bar of the text's colour (§587 R9). */}
           <span aria-hidden="true" className="text-[15px] font-bold leading-none">A</span>
-          <span aria-hidden="true" data-colour-bar className={colourBar} style={{ backgroundColor: fmt.colorValue }} />
+          <span aria-hidden="true" data-colour-bar className={colourBar} style={{ backgroundColor: colour }} />
         </TextColorControl>
       )}
       {supported.has('fontWeight') && (
-        <button type="button" aria-label="Bold" title="Bold" aria-pressed={fmt.boldActive} onClick={fmt.toggleBold} className={cn(iconBtn, fmt.boldActive && onClass)}>
+        <button type="button" aria-label="Bold" title="Bold" aria-pressed={bold} onClick={onTextStyle ? () => onTextStyle({ b: bold ? 0 : 1 }) : fmt.toggleBold} className={cn(iconBtn, bold && onClass)} {...keep}>
           <Bold className="h-4 w-4" aria-hidden="true" />
         </button>
       )}
       {supported.has('fontStyle') && (
-        <button type="button" aria-label="Italic" title="Italic" aria-pressed={fmt.italicActive} onClick={fmt.toggleItalic} className={cn(iconBtn, fmt.italicActive && onClass)}>
+        <button type="button" aria-label="Italic" title="Italic" aria-pressed={italic} onClick={onTextStyle ? () => onTextStyle({ i: italic ? 0 : 1 }) : fmt.toggleItalic} className={cn(iconBtn, italic && onClass)} {...keep}>
           <Italic className="h-4 w-4" aria-hidden="true" />
+        </button>
+      )}
+      {onTextStyle && supportsRuns(element) && (
+        <button type="button" aria-label="Underline" title="Underline" aria-pressed={underline} onClick={() => onTextStyle({ u: underline ? 0 : 1 })} className={cn(iconBtn, underline && onClass)} {...keep}>
+          <Underline className="h-4 w-4" aria-hidden="true" />
         </button>
       )}
       {supported.has('textAlign') && (
@@ -211,9 +233,9 @@ function TextGroup({
 const colourBar = 'mt-[3px] h-[5px] w-[18px] rounded-full shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--editor-text)_20%,transparent)]'
 
 /** The element's colour as a round swatch (§587 R9). A click opens the colour panel on it. */
-function ColourSwatch({ value, label, open, onClick }: { value: string; label: string; open: boolean; onClick: () => void }) {
+function ColourSwatch({ value, label, open, onClick, keepTextEdit }: { value: string; label: string; open: boolean; onClick: () => void; keepTextEdit?: boolean }) {
   return (
-    <button type="button" aria-label="Color" title={label} aria-haspopup="dialog" aria-expanded={open} onClick={onClick} className={cn(iconBtn, open && onClass)}>
+    <button type="button" aria-label="Color" title={label} aria-haspopup="dialog" aria-expanded={open} onClick={onClick} className={cn(iconBtn, open && onClass)} {...keepEditProps(keepTextEdit)}>
       <span
         aria-hidden="true"
         data-colour-swatch
@@ -394,6 +416,8 @@ export default function ElementToolbar({
   onPreviewOverlayProp,
   onCommitPropPreview,
   onCancelPropPreview,
+  textRange,
+  onTextStyle,
 }: ElementToolbarProps) {
   const element = selection.length === 1 ? selection[0] : undefined
   const image = element?.type === 'image' ? element : undefined
@@ -437,9 +461,11 @@ export default function ElementToolbar({
   // The colour swatch: the element's own colour, or the one the open panel is on.
   const colourTarget = element && onOpenElementColour ? elementColourTarget(element) : null
   const colourOpen = colourShown != null
+  const rangeShown = text && textRange && colourTarget?.key === 'color' ? textRange : null
   const swatch = colourTarget && (
     <ColourSwatch
-      value={colourShown ?? colourTarget.value}
+      keepTextEdit={!!rangeShown}
+      value={colourShown ?? rangeShown?.color ?? colourTarget.value}
       label={colourTarget.label}
       open={colourOpen}
       onClick={colourOpen ? () => onCloseColour?.() : run(onOpenElementColour!)}
@@ -455,7 +481,7 @@ export default function ElementToolbar({
       >
         {text && (
           <>
-            <TextGroup slideId={slideId} element={text} update={update} disabled={locked || !canEdit} effectsOpen={popover === 'effects'} onToggleEffects={toggle('effects')} onOpenTextColour={onOpenTextColour && (colourOpen ? () => onCloseColour?.() : run(onOpenTextColour))} brandFont={brandFont} brandGoogleFonts={brandGoogleFonts} onSetFont={onSetFont && ((family, specs) => { beforeAction(); onSetFont(slideId, text.id, family, specs) })} swatch={swatch} />
+            <TextGroup slideId={slideId} element={text} update={update} disabled={locked || !canEdit} effectsOpen={popover === 'effects'} onToggleEffects={toggle('effects')} onOpenTextColour={onOpenTextColour && (colourOpen ? () => onCloseColour?.() : run(onOpenTextColour))} brandFont={brandFont} brandGoogleFonts={brandGoogleFonts} onSetFont={onSetFont && ((family, specs) => { beforeAction(); onSetFont(slideId, text.id, family, specs) })} swatch={swatch} textRange={textRange} onTextStyle={onTextStyle && ((patch) => { beforeAction(); onTextStyle(patch) })} />
             <Sep />
           </>
         )}

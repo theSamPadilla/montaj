@@ -269,7 +269,7 @@ export function useOverlaySchemas(
  *  effect controls): its Edit list leaves them out. */
 export const TEXT_CONTROL_PROPS: ReadonlySet<string> = new Set([
   ...STANDARD_TEXT_PROPS,
-  'effect', 'effectColor', 'effectStrength', 'fit',
+  'effect', 'effectColor', 'effectStrength', 'fit', 'runs',
 ])
 
 function PropEditor({

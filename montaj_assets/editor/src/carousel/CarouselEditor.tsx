@@ -6,7 +6,9 @@ import { IMAGE_DND_MIME } from '../types'
 import type { Asset, SlideNote } from '../schema'
 import { applyTheme, defaultMontajTheme, isLightTheme } from '../theme'
 import { useProjectState } from '../state/use-project-state'
-import SlideCanvas, { type CropExit, type SlideCanvasCropControl } from './SlideCanvas'
+import SlideCanvas, { type CropExit, type InlineTextSession, type SlideCanvasCropControl, type TextRangeInfo } from './SlideCanvas'
+import { setOverlayPropsIn, styleWholeText, type RunPatch } from '../text/runs'
+import { KEEP_TEXT_EDIT } from '../text/InlineTextEditor'
 import SlidePropertyPanel from './SlidePropertyPanel'
 import AddElementMenu from './AddElementMenu'
 import RailLayout from './RailLayout'
@@ -1658,6 +1660,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     isLocked(slidesRef.current.find(s => s.id === slideId)?.elements.find(el => el.id === elementId))
   const updateOverlayProp: typeof state.updateOverlayProp = (slideId, elementId, key, value) =>
     lockedNow(slideId, elementId) ? Promise.resolve() : state.updateOverlayProp(slideId, elementId, key, value)
+  /** Several props in one write, one undo step (`undefined` removes one). */
+  const updateOverlayProps = (slideId: string, elementId: string, patch: Record<string, string | undefined>) =>
+    lockedNow(slideId, elementId) ? Promise.resolve() : state.editSlides(all => setOverlayPropsIn(all, slideId, elementId, patch))
   const updateImageCrop: typeof state.updateImageCrop = (slideId, elementId, crop) =>
     lockedNow(slideId, elementId) ? Promise.resolve() : state.updateImageCrop(slideId, elementId, crop)
   // The gesture writes too: an external save can lock the element while the
@@ -1793,19 +1798,63 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // Any colour control opens it (the OS picker is not used); it takes the side
   // panel until closed or the selection moves.
   // `shown`: the colour the open panel shows now, which the toolbar swatch follows (§587 R9).
-  const [colourOpen, setColourOpen] = useState<{ request: ColourRequest; seq: number; shown?: string } | null>(null)
+  // `range`: the panel colours a text range in the open inline edit, which it keeps open.
+  const [colourOpen, setColourOpen] = useState<{ request: ColourRequest; seq: number; shown?: string; range?: boolean } | null>(null)
   const colourSeq = useRef(0)
-  function openColourPanel(request: ColourRequest) {
+  function openColourPanel(request: ColourRequest, range?: boolean) {
     beforeToolbarAction()
-    setColourOpen({ request, seq: ++colourSeq.current })
+    setColourOpen({ request, seq: ++colourSeq.current, ...(range ? { range } : null) })
   }
+
+  // ── Styled runs (§587 round 3) ──
+  // The open inline text edit, and the range selected in it: the text toolbar's
+  // style buttons and colour style that range alone; with none, the whole element.
+  const textEditRef = useRef<InlineTextSession | null>(null)
+  const [textRange, setTextRange] = useState<TextRangeInfo | null>(null)
+  const rangeEditor = (elementId: string) => {
+    const session = textEditRef.current
+    const editor = session && session.elementId === elementId ? session.editor() : null
+    return editor && editor.range() ? editor : null
+  }
+  /** Bold, italic, underline or a colour for the selected text: its range, else the whole element. */
+  function styleText(patch: RunPatch) {
+    const sel = selectedElements.length === 1 ? selectedElements[0] : undefined
+    if (!selectedSlide || !sel || sel.type !== 'overlay') return
+    const editor = rangeEditor(sel.id)
+    if (editor) editor.applyStyle(patch)
+    else void updateOverlayProps(selectedSlide.id, sel.id, styleWholeText(sel.overlay.props, patch))
+  }
+  // The range going (the edit closed, the selection collapsed) closes a panel colouring it.
+  useEffect(() => {
+    if (!textRange) setColourOpen(o => (o?.range ? null : o))
+  }, [textRange])
   /** Opens the panel on one colour prop of the single selected element (previews transient, one undo step per pick). */
   function openElementColour(pick: (el: CarouselElement) => ElementColourTarget | null) {
     const sel = selectedElements.length === 1 ? selectedElements[0] : undefined
     const target = sel && pick(sel)
     if (!selectedSlide || !sel || !target) return
     const slideId = selectedSlide.id
-    const set = (v: string) => state.previewSlides(all => setOverlayPropIn(all, slideId, sel.id, target.key, v))
+    const text = target.key === 'color' && isTextOverlay(sel)
+    const editor = text ? rangeEditor(sel.id) : null
+    if (editor) {
+      // A range in the open edit: previewed in the editor, one write per pick.
+      openColourPanel({
+        label: target.label,
+        value: textRange?.style.color ?? target.value,
+        alpha: target.alpha,
+        preview: v => editor.previewStyle({ c: v }),
+        commit: v => editor.applyStyle({ c: v }),
+        cancel: () => editor.previewStyle(null),
+      }, true)
+      return
+    }
+    // The whole text: its runs' own colours go with the pick.
+    const set = text
+      ? (v: string) => state.previewSlides(all => {
+          const el = all.find(s => s.id === slideId)?.elements.find(e => e.id === sel.id)
+          return el?.type === 'overlay' ? setOverlayPropsIn(all, slideId, sel.id, styleWholeText(el.overlay.props, { c: v })) : all
+        })
+      : (v: string) => state.previewSlides(all => setOverlayPropIn(all, slideId, sel.id, target.key, v))
     openColourPanel({
       label: target.label,
       value: target.value,
@@ -2034,6 +2083,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 rotateElement={rotateElement}
                 commit={state.commit}
                 updateOverlayProp={updateOverlayProp}
+                updateOverlayProps={updateOverlayProps}
                 updateImageCrop={updateImageCrop}
                 cropElementId={cropElementId}
                 onExitCrop={() => setCropElementId(null)}
@@ -2156,6 +2206,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     rotateElement,
     commit: state.commit,
     updateOverlayProp,
+    updateOverlayProps,
+    textRange: setTextRange,
     updateImageCrop,
     exitCrop: () => setCropElementId(null),
     enterCrop,
@@ -2195,6 +2247,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         watchFile={adapter.watchFile}
         handlers={railHandlersRef}
         cropControlRef={cropControlRef}
+        textEditRef={textEditRef}
         armLayerRef={armLayerRef}
       />
     )
@@ -2418,6 +2471,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             mode={mode}
             onOpenTextColour={openTextColour}
             onOpenElementColour={openSwatchColour}
+            textRange={textRange && textRange.elementId === selectedElementId ? textRange.style : null}
+            onTextStyle={styleText}
             colourShown={colourShown}
             onCloseColour={() => setColourOpen(null)}
             brandFont={brand?.fonts?.heading}
@@ -2430,6 +2485,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         ) : undefined
       }
       colourPanel={colourOpen && (
+        // A panel colouring a text range keeps the inline edit open while it is used.
+        <div style={{ display: 'contents' }} {...(colourOpen.range ? { [KEEP_TEXT_EDIT]: '' } : null)}>
         <ColourPanel
           key={colourOpen.seq}
           request={colourOpen.request}
@@ -2445,6 +2502,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           onDiscardPreview={() => state.discardTransient()}
           onClose={() => setColourOpen(null)}
         />
+        </div>
       )}
       onRailItem={() => setColourOpen(null)}
       notesMode={!notes ? 'hidden' : !notes.enabled ? 'locked' : slots?.carouselNotesPanel ? 'panel' : 'hidden'}

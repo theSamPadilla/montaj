@@ -34,6 +34,8 @@ export function nextCase(current: unknown): TextTransformValue {
 
 export function isStyleProp(key: string): boolean {
   return (
+    // `runs` (§587 round 3) is the text's styled ranges, written by the inline editor.
+    key === 'runs' ||
     key === 'fontWeight' ||
     key === 'fontStyle' ||
     key === 'textTransform' ||
@@ -172,11 +174,17 @@ export const TEXT_ALIGNS: ReadonlyArray<{ value: TextAlignValue; Icon: typeof Al
 ]
 
 /** The text colour: a native colour input over `children` (the swatch the caller draws). */
+/** A button that keeps the inline text edit open: no focus taken on press, marked for the editor. */
+export function keepEditProps(keep: boolean | undefined) {
+  return keep ? { 'data-keep-text-edit': '', onMouseDown: (e: React.MouseEvent) => e.preventDefault() } : {}
+}
+
 export function TextColorControl({
   value,
   onChange,
   onOpenPanel,
   className,
+  keepTextEdit,
   children,
 }: {
   value: string
@@ -184,11 +192,13 @@ export function TextColorControl({
   /** The rail layout: the control opens the colour panel instead of the OS picker. */
   onOpenPanel?: () => void
   className?: string
+  /** A press keeps the inline text edit (and its selection) open: a range is selected. */
+  keepTextEdit?: boolean
   children: ReactNode
 }) {
   if (onOpenPanel) {
     return (
-      <button type="button" className={className} title="Text color" aria-label="Text color" onClick={onOpenPanel}>
+      <button type="button" className={className} title="Text color" aria-label="Text color" onClick={onOpenPanel} {...keepEditProps(keepTextEdit)}>
         {children}
       </button>
     )
