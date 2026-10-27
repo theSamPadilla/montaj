@@ -20,7 +20,7 @@ from lib.common import ffprobe_bin, ff_path
 from lib.speech_lines import load_words, norm, refine, sidecar_for, split_lines
 from lib.speech_units import hardly_speech, made_up
 
-BRIEF_VERSION = 1
+BRIEF_VERSION = 2
 LONG_BROLL_S = 20.0          # b-roll at least this long gets its shots listed and a sheet
 PROFILE_SECTIONS = ("Titles & overlays", "Format")
 LOOKED = ("probe", "snapshot")   # steps whose answer the brief already holds   # the style profile's sections that bear on the edit
@@ -198,8 +198,12 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
     # script -> takes
     script = _script(project.get("editingPrompt"))
     lines = [t for k, t in script if k == "line"]
+    says = {}   # transcript line id -> the script lines it says (numbers from 1)
     if lines and heads:
         said = _said_by(lines, [(letter, lns) for _, letter, lns in heads])
+        for i, ids in said.items():
+            for lid in ids:
+                says.setdefault(lid, []).append(i + 1)
         W += ["## Script → takes",
               "Each script line and the transcript lines (below) that say it, in recording order: retakes and partial "
               "sayings included, so the last one listed is usually the last full saying. \"not recorded as written\": "
@@ -218,11 +222,16 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
     if heads:
         W += ["## Talking-head transcripts",
               "Every line of every take in recording order: its id, its seconds in that source, the words said. "
-              "Retakes, false starts and asides are all here; lines break where the speaker paused.", ""]
+              "Retakes, false starts and asides are all here; lines break where the speaker paused. The words are "
+              "Whisper's; a line that says a script line carries the script's words after ⟶, which are the ones to "
+              "caption and spell by.", ""]
         for s, letter, lns in heads:
             W.append(f"**{letter} = {os.path.basename(s['src'])}** ({s.get('id', '')})")
-            W += [f"- {ln.id} {ln.words[0].start:.1f}-{ln.words[-1].end:.1f} {' '.join(w.text for w in ln.words)}"
-                  for ln in lns]
+            for ln in lns:
+                row = f"- {ln.id} {ln.words[0].start:.1f}-{ln.words[-1].end:.1f} {' '.join(w.text for w in ln.words)}"
+                for n in says.get(ln.id, []):   # the script's own words, so a name Whisper misheard is not retyped
+                    row += f" ⟶ script {n}: \"{lines[n - 1]}\""
+                W.append(row)
             W.append("")
 
     # b-roll shots
@@ -251,9 +260,13 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
             except Exception:  # noqa: BLE001
                 seen = ""
             W.append(f"**{s.get('id', '')} {os.path.basename(s['src'])}**, {dur:.1f} s, {len(shots)} shots (seconds in "
-                     f"the source; `shots` with labels names them).{seen}")
+                     f"the source).{seen}")
             W += [f"- {sh['n']}: {sh['start']:.1f}-{sh['end']:.1f}" + (f" {sh['label']}" if sh.get("label") else "")
                   for sh in shots]
+            bare = sum(1 for sh in shots if not sh.get("label"))
+            if bare:
+                W.append(f"{bare} of its shots have no label yet: name them once with `shots` (labels) and every later "
+                         "read shows them.")
         W.append("")
 
     # steps
@@ -265,16 +278,22 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
         wf = None
     if wf and wf.get("steps"):
         W.append("## Steps, in order")
-        for i, st in enumerate(wf["steps"], 1):
+        looked = [str(st.get("uses") or "").split("/")[-1] for st in wf["steps"]]
+        looked = [u for u in looked if u in LOOKED]
+        if looked:   # what these steps show is above: run 3 spent six snapshots on it
+            W.append(f"({' and '.join(dict.fromkeys(looked))}: this brief covers them with the sources, transcripts and "
+                     "b-roll sheet above, so the first step is the one numbered 1.)")
+        i = 0
+        for st in wf["steps"]:
             uses = str(st.get("uses") or "").split("/")[-1]
             if uses and uses not in skills:
                 skills.append(uses)
-            note = st.get("note") or ""
-            if uses in LOOKED:   # what these steps show is above: run 3 spent six snapshots on it
-                note = "this brief did it (Sources, the transcripts and the b-roll sheet); skip it unless you need a frame"
+            if uses in LOOKED:
+                continue
+            i += 1
+            note = st.get("note") or f"its guide is the {uses} skill in the Recipe below"
             params = st.get("params")
-            W.append(f"{i}. **{st.get('id')}** ({uses})" + (f" with {json.dumps(params)}" if params else "") +
-                     (f": {note}" if note else ""))
+            W.append(f"{i}. **{st.get('id')}** ({uses})" + (f" with {json.dumps(params)}" if params else "") + f": {note}")
         W.append("")
 
     prof = _profile_text(project)

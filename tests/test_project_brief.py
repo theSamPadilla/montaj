@@ -80,6 +80,8 @@ def test_every_take_line_is_listed_with_its_times_retakes_included(proj):
     assert "- A1 0.0-2.6 this may be the funniest demo i've ever seen." in text, text
     assert "- A2 4.0-6.6 this may be the funniest demo i've ever seen." in text, text
     assert "- A3 8.0-11.6 in the demo the robot dents a car and lifts a car." in text, text
+    # Whisper's spelling stands; the script's words for a matched line stand beside it, to caption and cut by
+    assert "- A1 0.0-2.6 this may be the funniest demo i've ever seen. ⟶ script 1: \"This might be the funniest demo I've ever seen.\"" in text, text
 
 
 def test_each_script_line_points_at_the_takes_that_say_it(proj):
@@ -100,6 +102,7 @@ def test_a_long_b_roll_gets_its_shots_and_one_sheet_a_short_one_does_not(proj):
     assert got["sheets"] == [str(d / "render" / "brief" / "shots-clip-1.png")]
     text = got["text"]
     assert "**clip-1 demo.mov**, 74.7 s, 3 shots" in text and "- 2: 4.9-12.6 car dent" in text, text
+    assert "2 of its shots have no label yet" in text, text
     assert "**clip-2 short.mov**, 5.0 s: one shot." in text
 
 
@@ -109,8 +112,11 @@ def test_the_steps_in_order_and_the_skills_they_use(proj):
     steps = got["text"].split("## Steps, in order")[1]
     assert steps.index("**cut_plan** (cut)") < steps.index("**select-takes** (select-takes)") < steps.index("**overlays** (overlay)")
     assert "select-takes" in got["skills"] and "overlay" in got["skills"] and got["skills"][0] == "probe"
-    # looking at the footage is what this brief already did: run 3 spent six snapshots on it
-    assert "1. **probe** (probe): this brief did it" in steps and "2. **snapshot** (snapshot): this brief did it" in steps, steps
+    # looking at the footage is what this brief already did (run 3 spent six snapshots on it): folded, so cut is first
+    assert "probe and snapshot: this brief covers them" in steps, steps
+    assert "1. **cut_plan** (cut)" in steps and "**probe**" not in steps and "**snapshot**" not in steps, steps
+    # a step with no note of its own points at its guide in the recipe, never an empty line
+    assert "**overlays** (overlay) with {\"style\": \"auto\"}: its guide is the overlay skill in the Recipe" in steps, steps
 
 
 def test_the_profile_style_and_its_edit_notes(proj):
