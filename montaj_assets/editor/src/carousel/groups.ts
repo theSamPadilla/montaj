@@ -23,13 +23,16 @@ export function groupMemberIds(elements: readonly CarouselElement[], group: stri
   return elements.filter((el) => groupOf(el) === group).map((el) => el.id)
 }
 
-/** The group `ids` are exactly the members of, in any order; null when they are not one whole group. */
+/**
+ * The group `ids` are exactly the members of, in any order; null when they are
+ * not one whole group. A group of one is no group: it acts as the element alone.
+ */
 export function wholeGroup(elements: readonly CarouselElement[], ids: readonly string[]): string | null {
   if (ids.length === 0) return null
   const first = groupOf(elements.find((el) => el.id === ids[0]))
   if (!first) return null
   const members = groupMemberIds(elements, first)
-  return members.length === new Set(ids).size && ids.every((id) => members.includes(id)) ? first : null
+  return members.length >= 2 && members.length === new Set(ids).size && ids.every((id) => members.includes(id)) ? first : null
 }
 
 /** `ids` with each grouped one replaced by its whole group (back to front), each id once, in order. */
@@ -78,12 +81,14 @@ export function canGroup(elements: readonly CarouselElement[], ids: readonly str
   return picked.length >= 2 && wholeGroup(elements, ids) === null && !picked.some(isLocked)
 }
 
-/** The groups wholly inside `ids`. */
+/** The groups (two or more members) wholly inside `ids`. */
 function groupsIn(elements: readonly CarouselElement[], ids: readonly string[]): string[] {
   const out: string[] = []
   for (const id of ids) {
     const g = groupOf(elements.find((el) => el.id === id))
-    if (g && !out.includes(g) && groupMemberIds(elements, g).every((m) => ids.includes(m))) out.push(g)
+    if (!g || out.includes(g)) continue
+    const members = groupMemberIds(elements, g)
+    if (members.length >= 2 && members.every((m) => ids.includes(m))) out.push(g)
   }
   return out
 }
@@ -137,6 +142,25 @@ export function ungroupElements(elements: CarouselElement[], ids: readonly strin
   })
 }
 
+/**
+ * `elements` without `ids`, save what a lock holds (a locked element, or any
+ * member of a group with a locked member). A member its group's removal leaves
+ * alone loses `group`, in the same write, so no group of one is left behind.
+ * The same array when nothing goes.
+ */
+export function removeElements(elements: CarouselElement[], ids: Iterable<string>): CarouselElement[] {
+  const gone = new Set(ids)
+  const kept = elements.filter((el) => !gone.has(el.id) || heldByLock(elements, el))
+  if (kept.length === elements.length) return elements
+  const touched = new Set(elements.filter((el) => !kept.includes(el)).map(groupOf).filter((g): g is string => !!g))
+  return kept.map((el) => {
+    const g = groupOf(el)
+    if (!g || !touched.has(g) || kept.some((o) => o !== el && groupOf(o) === g)) return el
+    const { group: _group, ...free } = el
+    return free as CarouselElement
+  })
+}
+
 /** `elements` with each group under a new id, the same one for all its members: a copy is its own group. */
 export function freshGroupIds(elements: CarouselElement[], newId: () => string = () => crypto.randomUUID()): CarouselElement[] {
   const ids = new Map<string, string>()
@@ -179,6 +203,19 @@ export function scaleMembers(members: readonly CarouselElement[], from: Box, to:
     }
     return { id: el.id, x: cx - w / 2, y: cy - h / 2, w, h, rotation, ratio: uniform ? sx : 1 }
   })
+}
+
+/**
+ * Where a group turns about: the mean of its members' centres. A turn moves
+ * each centre round this point, so the mean stays put and a turn and its
+ * opposite put every member back (the covered box's centre moves with a turn).
+ */
+export function groupPivot(members: readonly Box[]): { x: number; y: number } {
+  if (members.length === 0) return { x: 0, y: 0 }
+  let x = 0
+  let y = 0
+  for (const m of members) { x += m.x + m.w / 2; y += m.y + m.h / 2 }
+  return { x: x / members.length, y: y / members.length }
 }
 
 /** Each member turned `degrees` clockwise about `center`: its centre goes round it and its own turn adds the same. */

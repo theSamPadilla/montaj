@@ -68,6 +68,11 @@ export default function LayersPanel({
   // Groups (§587): one row each, its members under it while open.
   const grouped = !!onSelectGroup
   const membersOf = (g: string) => rows.filter((el) => groupOf(el) === g)
+  // A group of one is no group: its element is a plain row.
+  const rowGroupOf = (el: CarouselElement | undefined, list: readonly CarouselElement[] = rows) => {
+    const g = groupOf(el)
+    return g && list.filter((o) => groupOf(o) === g).length >= 2 ? g : undefined
+  }
   const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(new Set())
   const selected = new Set(selectedIds)
   const hidden = new Set(hiddenElementIds ?? [])
@@ -113,7 +118,7 @@ export default function LayersPanel({
     const els = live.current.elements
     // A group's rows (§587): its header stands for the whole group, and a drag
     // from outside it lands beside the whole group, the line drawn there.
-    const g = at.id.startsWith('group:') ? at.id.slice(6) : groupOf(els.find((el) => el.id === at!.id))
+    const g = at.id.startsWith('group:') ? at.id.slice(6) : rowGroupOf(els.find((el) => el.id === at!.id), els)
     if (g) {
       const members = [...els].reverse().filter((el) => groupOf(el) === g)
       const inside = ids.every((id) => members.some((m) => m.id === id))
@@ -203,7 +208,7 @@ export default function LayersPanel({
   const display: DisplayRow[] = []
   const shownGroups = new Set<string>()
   for (const el of rows) {
-    const g = grouped ? groupOf(el) : undefined
+    const g = grouped ? rowGroupOf(el) : undefined
     if (!g) { display.push({ kind: 'element', el, member: false }); continue }
     if (shownGroups.has(g)) continue
     shownGroups.add(g)

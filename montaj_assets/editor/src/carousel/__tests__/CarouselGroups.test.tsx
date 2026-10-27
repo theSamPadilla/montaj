@@ -244,25 +244,48 @@ describe('group gestures', () => {
     expect([ua.w, ub.w, ub.overlay.props.fontSize]).toEqual([200, 200, '80'])
   })
 
-  it('the rotate handle turns every member about the group centre, one undo step', async () => {
+  it('the rotate handle turns every member about the mean of their centres, one undo step', async () => {
     const { adapter } = await mount(grouped())
     await click('a')
-    // jsdom lays nothing out: the box's centre is (0, 0) on screen. From above it to its right is a quarter turn.
+    const scale = parseFloat(wrapper('a').style.width) / 200
+    // The box is x 100..600, y 100..300; the pivot is the mean of the centres
+    // (200, 200) and (500, 150): (350, 175). jsdom lays nothing out, so the box
+    // sits at (0, 0) on screen and the pivot at (250, 75) slide px from there.
+    const px = 250 * scale
+    const py = 75 * scale
     const h = groupBox()!.querySelector('[data-testid="group-rotate-handle"]')!
+    // From above the pivot to its right is a quarter turn.
     await act(async () => {
-      pointer(h, 'pointerdown', { clientX: 0, clientY: -100 })
-      pointer(window, 'pointermove', { clientX: 100, clientY: 0 })
-      pointer(window, 'pointerup')
+      pointer(h, 'pointerdown', { clientX: px, clientY: py - 100 })
+      pointer(window, 'pointermove', { clientX: px + 100, clientY: py })
     })
+    // The previewed box turns about the pivot too.
+    expect(groupBox()!.style.transformOrigin).toBe(`${px}px ${py}px`)
+    await act(async () => { pointer(window, 'pointerup') })
     await waitFor(() => expect(adapter.saveCalls.length).toBe(1))
     const [a, b] = els(lastSave(adapter))
     expect([a.rotation, b.rotation]).toEqual([90, 90])
-    // Centre (350, 200): a's centre (200, 200) goes to (350, 50); b's (500, 150) to (400, 350).
-    expect([a.x + a.w / 2, a.y + a.h / 2]).toEqual([350, 50])
-    expect([b.x + b.w / 2, b.y + b.h / 2]).toEqual([400, 350])
+    // a's centre (200, 200) goes to (325, 25); b's (500, 150) to (375, 325).
+    expect([a.x + a.w / 2, a.y + a.h / 2]).toEqual([325, 25])
+    expect([b.x + b.w / 2, b.y + b.h / 2]).toEqual([375, 325])
     await undo()
     await waitFor(() => expect(adapter.saveCalls.length).toBe(2))
     expect(els(lastSave(adapter)).map((e) => e.rotation)).toEqual([0, 0, 0])
+  })
+})
+
+describe('a hidden member', () => {
+  it('stays in the group but out of its box', async () => {
+    const p = grouped()
+    const adapter = makeAdapter(p)
+    render(<CarouselEditor project={p} adapter={adapter} onProjectChange={vi.fn()} layout="rail" lockKey hiddenElementIds={['b']} />)
+    await waitFor(() => expect(document.querySelector('[data-interactive] [data-element-id]')).not.toBeNull())
+    await click('a')
+    const scale = parseFloat(wrapper('a').style.width) / 200
+    expect(groupBox()).not.toBeNull()
+    // a alone: 200 x 200 at (100, 100); b (400..600) is not in it.
+    expect(parseFloat(groupBox()!.style.width)).toBeCloseTo(200 * scale)
+    expect(parseFloat(groupBox()!.style.height)).toBeCloseTo(200 * scale)
   })
 })
 
@@ -301,6 +324,84 @@ describe('lock, copies and delete', () => {
     expect(adapter.saveCalls.length).toBe(0)
   })
 
+  const lockedB = () => {
+    const p = grouped()
+    p.slides![0].elements[1] = { ...p.slides![0].elements[1], locked: true }
+    return p
+  }
+  const enter = async (id: string) => {
+    const w = wrapper(id)
+    const scale = parseFloat(w.style.width) / 200
+    await act(async () => {
+      pointer(w, 'pointerdown', { ...cmd, clientX: 150 * scale, clientY: 150 * scale })
+      pointer(window, 'pointerup')
+      fireEvent.click(w, cmd)
+    })
+  }
+
+  it('arrow keys move no member of a group with a locked member', async () => {
+    const { adapter } = await mount(lockedB())
+    await click('a')
+    await click('c', { shiftKey: true })
+    await key('ArrowRight')
+    await act(async () => { document.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true })) })
+    await waitFor(() => expect(adapter.saveCalls.length).toBe(1))
+    const [a, b, c] = els(lastSave(adapter))
+    expect([a.x, b.x, c.x]).toEqual([100, 400, 701])
+  })
+
+  it('arrow keys move nothing for one member entered in a group with a locked member', async () => {
+    const { adapter } = await mount(lockedB())
+    await enter('a')
+    expect(chromeOutlined('a')).toBe(true)
+    await key('ArrowRight')
+    await act(async () => { document.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true })) })
+    await act(async () => {})
+    expect(adapter.saveCalls.length).toBe(0)
+  })
+
+  it('Delete removes no member of a group with a locked member', async () => {
+    const { adapter } = await mount(lockedB())
+    await click('a')
+    await click('c', { shiftKey: true })
+    await key('Delete')
+    await waitFor(() => expect(adapter.saveCalls.length).toBe(1))
+    expect(els(lastSave(adapter)).map((e) => e.id)).toEqual(['a', 'b'])
+  })
+
+  it('Delete on one entered member of a group with a locked member does nothing', async () => {
+    const { adapter } = await mount(lockedB())
+    await enter('a')
+    await key('Delete')
+    await act(async () => {})
+    expect(adapter.saveCalls.length).toBe(0)
+  })
+
+  it('Align moves no member of a group with a locked member', async () => {
+    const { adapter, r } = await mount(lockedB())
+    await click('a')
+    await click('c', { shiftKey: true })
+    await act(async () => { fireEvent.click(within(toolbar()!).getByRole('button', { name: 'Position' })) })
+    // The covered box is x 100..800: centred, a free a would go to 350 and c goes to 400.
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Align center' })) })
+    await waitFor(() => expect(adapter.saveCalls.length).toBe(1))
+    const [a, b, c] = els(lastSave(adapter))
+    expect([a.x, b.x, c.x]).toEqual([100, 400, 400])
+  })
+
+  it('a drag of one entered member of a group with a locked member moves nothing', async () => {
+    const { adapter } = await mount(lockedB())
+    await enter('a')
+    await act(async () => {
+      pointer(wrapper('a'), 'pointerdown', { clientX: 100, clientY: 100 })
+      pointer(window, 'pointermove', { clientX: 200, clientY: 200 })
+      pointer(window, 'pointerup')
+      fireEvent.click(wrapper('a'))
+    })
+    await act(async () => {})
+    expect(adapter.saveCalls.length).toBe(0)
+  })
+
   it('Cmd+D on a group makes a new group in front of it, one undo step', async () => {
     const { adapter } = await mount(grouped())
     await click('a')
@@ -321,12 +422,59 @@ describe('lock, copies and delete', () => {
     expect(els(lastSave(adapter))).toHaveLength(3)
   })
 
+  it('Delete of one member leaves the other out of any group, in the same undo step', async () => {
+    const { adapter } = await mount(grouped())
+    await enter('a')
+    await key('Delete')
+    await waitFor(() => expect(adapter.saveCalls.length).toBe(1))
+    const left = els(lastSave(adapter))
+    expect(left.map((e) => e.id)).toEqual(['b', 'c'])
+    expect(left.some((e) => 'group' in e)).toBe(false)
+    await click('b')
+    expect(groupBox()).toBeNull()
+    await undo()
+    await waitFor(() => expect(adapter.saveCalls.length).toBe(2))
+    expect(els(lastSave(adapter)).map((e) => [e.id, e.group ?? '-'])).toEqual([['a', 'g'], ['b', 'g'], ['c', '-']])
+  })
+
+  it('a group of one shows no group box', async () => {
+    const p = grouped()
+    p.slides![0].elements.splice(0, 1)
+    await mount(p)
+    await click('b')
+    expect(groupBox()).toBeNull()
+    expect(chromeOutlined('b')).toBe(true)
+  })
+
   it('Delete removes the whole group, one undo step', async () => {
     const { adapter } = await mount(grouped())
     await click('b')
     await key('Delete')
     await waitFor(() => expect(adapter.saveCalls.length).toBe(1))
     expect(els(lastSave(adapter)).map((e) => e.id)).toEqual(['c'])
+  })
+})
+
+describe('the editor never scatters a group', () => {
+  it('the classic panel\'s Bring forward on the front member keeps the group together', async () => {
+    const p = grouped()
+    const adapter = makeAdapter(p)
+    const r = render(<CarouselEditor project={p} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => expect(document.querySelector('[data-interactive] [data-element-id]')).not.toBeNull())
+    const w = wrapper('b')
+    const scale = parseFloat(w.style.width) / 200
+    await act(async () => {
+      pointer(w, 'pointerdown', { ...cmd, clientX: 450 * scale, clientY: 150 * scale })
+      pointer(window, 'pointerup')
+      fireEvent.click(w, cmd)
+    })
+    expect(r.queryByTitle('Bring forward')).not.toBeNull()
+    await act(async () => { fireEvent.click(r.getByTitle('Bring forward')) })
+    await act(async () => {})
+    for (const call of adapter.saveCalls) {
+      const groups = els(call.project).map((e) => e.group ?? '-')
+      expect(groups.join('')).toMatch(/^-*g*-*$/)
+    }
   })
 })
 
@@ -349,6 +497,14 @@ describe('Layers', () => {
     await act(async () => { fireEvent.click(within(memberRow).getByRole('button', { name: /^Select/ })) })
     expect(groupBox()).toBeNull()
     expect(chromeOutlined('a')).toBe(true)
+  })
+
+  it('a group of one is a plain row', async () => {
+    const p = grouped()
+    p.slides![0].elements.splice(0, 1)
+    const { r } = await mount(p)
+    await openLayers(r)
+    expect(rowIds()).toEqual(['c', 'b'])
   })
 
   it('the group row\'s lock locks every member in one step', async () => {

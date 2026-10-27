@@ -9,7 +9,9 @@ import {
   groupElements,
   groupMemberIds,
   groupOf,
+  groupPivot,
   normalizeGroups,
+  removeElements,
   rotateMembers,
   roundedMemberBoxes,
   scaleMembers,
@@ -50,6 +52,30 @@ describe('groupOf / groupMemberIds / wholeGroup', () => {
     expect(wholeGroup(els, ['a', 'c', 'b'])).toBeNull()
     expect(wholeGroup(els, ['a', 'c', 'd', 'e'])).toBeNull()
     expect(wholeGroup(els, [])).toBeNull()
+  })
+
+  it('a group of one is no group', () => {
+    const lone = [el('a', { group: 'g' }), el('b')]
+    expect(wholeGroup(lone, ['a'])).toBeNull()
+    expect(canUngroup(lone, ['a'])).toBe(false)
+  })
+})
+
+describe('removeElements', () => {
+  it('drops the ids, and a member left alone in its group leaves the group', () => {
+    const els = [el('a', { group: 'g' }), el('b', { group: 'g' }), el('c', { group: 'h' }), el('d', { group: 'h' }), el('e', { group: 'h' })]
+    const next = removeElements(els, ['a', 'c'])
+    expect(ids(next)).toEqual(['b', 'd', 'e'])
+    expect(groups(next)).toEqual(['-', 'h', 'h'])
+    expect('group' in next[0]).toBe(false)
+  })
+  it('keeps what a lock holds: a locked element, and every member of a group with a locked member', () => {
+    const els = [el('a', { group: 'g' }), el('b', { group: 'g', locked: true }), el('c', { locked: true }), el('d')]
+    expect(ids(removeElements(els, ['a', 'c', 'd']))).toEqual(['a', 'b', 'c'])
+  })
+  it('the same array when nothing goes', () => {
+    const els = [el('a'), el('b', { locked: true })]
+    expect(removeElements(els, ['b', 'x'])).toBe(els)
   })
 })
 
@@ -210,6 +236,22 @@ describe('rotateMembers', () => {
     expect(out[1].x + 10).toBeCloseTo(50)
     expect(out[1].y + 10).toBeCloseTo(50)
     expect(out[1].rotation).toBe(80)
+  })
+})
+
+describe('groupPivot', () => {
+  it('is the mean of the members\' centres, so a turn there and back puts every member back', () => {
+    const start = [el('a', { x: 0, y: 0, w: 200, h: 40 }), el('b', { x: 300, y: 120, w: 60, h: 300, rotation: 10 }), el('c', { x: 40, y: 500, w: 90, h: 90 })]
+    const p0 = groupPivot(start)
+    expect(p0.x).toBeCloseTo((100 + 330 + 85) / 3)
+    expect(p0.y).toBeCloseTo((20 + 270 + 545) / 3)
+    const turned = rotateMembers(start, p0, 30).map((b, i) => ({ ...start[i], ...b }))
+    const back = rotateMembers(turned, groupPivot(turned), -30)
+    back.forEach((b, i) => {
+      expect(Math.abs(b.x - start[i].x)).toBeLessThan(0.01)
+      expect(Math.abs(b.y - start[i].y)).toBeLessThan(0.01)
+      expect(b.rotation).toBeCloseTo(start[i].rotation ?? 0)
+    })
   })
 })
 
