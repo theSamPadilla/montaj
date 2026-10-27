@@ -721,6 +721,13 @@ export interface CarouselApi {
    * project cannot be edited, and in crop mode.
    */
   addImage(src: string): Promise<void>
+  /**
+   * Makes image `elementId` on the selected slide its background: it covers the
+   * slide with a crop at the slide's aspect centred on the part it showed, goes
+   * to the back and is locked, in one undo step. Does nothing for a locked or
+   * missing image or a project that cannot be edited.
+   */
+  setAsBackground(elementId: string): void
 }
 
 // ── Adapter ────────────────────────────────────────────────────────────────

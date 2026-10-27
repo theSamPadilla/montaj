@@ -10,6 +10,9 @@ import SlideCanvas, { type CropExit, type SlideCanvasCropControl } from './Slide
 import SlidePropertyPanel from './SlidePropertyPanel'
 import AddElementMenu from './AddElementMenu'
 import RailLayout from './RailLayout'
+import LayersPanel from './LayersPanel'
+import BackgroundPanel from './BackgroundPanel'
+import { setImageAsBackground } from './background'
 import StackedSlides, { SlideHeader } from './StackedSlides'
 import SlideGridView from './SlideGridView'
 import { useSlideReorderDrag } from './slideReorderDrag'
@@ -752,6 +755,73 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     void state.editElements(selectedSlide.id, (els) => reorderSelection(els, ids, direction))
   }
 
+  // ── Layers and Background rail panels (§587 M4) ──
+  /** A layer row click: selects the element (a pending crop of another is applied first); additive toggles it in the selection. */
+  function selectLayer(elementId: string, additive: boolean) {
+    if (cropElementId && elementId !== cropElementId) applyCrop()
+    if (!additive) { setSelectedElementId(elementId); return }
+    setSelectedElementIds((prev) => prev.includes(elementId) ? prev.filter((id) => id !== elementId) : [...prev, elementId])
+  }
+  /** A layer row's lock: that element only, one undo step; a pending crop lands first. */
+  function toggleLayerLock(elementId: string) {
+    if (!selectedSlide || !canEdit) return
+    if (cropElementId) flushSync(applyCrop)
+    void state.editElements(selectedSlide.id, (els) => toggleLock(els, [elementId]))
+  }
+  function reorderFromPanel(direction: ReorderDirection) {
+    if (cropElementId) flushSync(applyCrop)
+    moveSelectionInStack(direction)
+  }
+  /** A layer row dropped: `ids` sit just above or below the target row on screen, keeping their own order; one undo step. */
+  function moveLayers(ids: string[], targetId: string, where: 'above' | 'below') {
+    if (!selectedSlide || !canEdit) return
+    if (cropElementId) flushSync(applyCrop)
+    const moving = new Set(ids)
+    if (moving.has(targetId)) return
+    void state.editElements(selectedSlide.id, (els) => {
+      const front = [...els].reverse()
+      const picked = front.filter((el) => moving.has(el.id))
+      const rest = front.filter((el) => !moving.has(el.id))
+      const at = rest.findIndex((el) => el.id === targetId)
+      if (at < 0 || picked.length === 0) return els
+      rest.splice(where === 'above' ? at : at + 1, 0, ...picked)
+      const next = rest.reverse()
+      return next.every((el, i) => el === els[i]) ? els : next
+    })
+  }
+  /** Set image as background (C4): covers the slide, goes to the back, locks; one editElements. */
+  function setAsBackground(elementId: string) {
+    if (!selectedSlide || !canEdit) return
+    if (cropElementId) flushSync(applyCrop)
+    void state.editElements(selectedSlide.id, (els) => setImageAsBackground(els, elementId, w, h))
+  }
+  const setAsBackgroundRef = useRef(setAsBackground)
+  setAsBackgroundRef.current = setAsBackground
+  const selectedImageForBg = selectedElementId ? selectedSlide?.elements.find((el) => el.id === selectedElementId) : undefined
+  const layersPanel = selectedSlide && (
+    <LayersPanel
+      elements={selectedSlide.elements}
+      slideLabel={`Slide ${slides.findIndex((sl) => sl.id === selectedSlide.id) + 1}`}
+      selectedIds={liveSelectedIds}
+      hiddenElementIds={hiddenElementIds}
+      onToggleElementVisibility={onToggleElementVisibility}
+      resolveImageSrc={adapter.resolveImageSrc}
+      canEdit={canEdit}
+      onSelect={selectLayer}
+      onToggleLock={toggleLayerLock}
+      onReorderSelection={reorderFromPanel}
+      onMove={moveLayers}
+    />
+  )
+  const backgroundPanel = selectedSlide && (
+    <BackgroundPanel
+      color={selectedSlide.base_color || '#ffffff'}
+      onColorChange={(v) => { if (cropElementId) flushSync(applyCrop); handleSlideChange({ base_color: v }) }}
+      canSetImage={canEdit && selectedImageForBg?.type === 'image' && !isLocked(selectedImageForBg)}
+      onSetImage={() => { if (selectedElementId) setAsBackground(selectedElementId) }}
+    />
+  )
+
   /** One arrow press: every selected element moves, on screen only. Positions
    *  are the burst's start plus what it has moved so far, so presses that come
    *  faster than a render still add up. */
@@ -1318,7 +1388,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // `addImage`) and withdrawn with null on unmount, like the notes api.
   const addImageRef = useRef(addImage)
   addImageRef.current = addImage
-  const carouselApi = useMemo<CarouselApi>(() => ({ addImage: (src) => addImageRef.current(src) }), [])
+  const carouselApi = useMemo<CarouselApi>(() => ({
+    addImage: (src) => addImageRef.current(src),
+    setAsBackground: (elementId) => setAsBackgroundRef.current(elementId),
+  }), [])
   useEffect(() => {
     if (!onProvideCarouselApi) return
     onProvideCarouselApi(carouselApi)
@@ -1895,6 +1968,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         media: slots?.carouselMediaPanel,
         brand: slots?.carouselBrandPanel,
         notes: slots?.carouselNotesPanel,
+        layers: layersPanel || undefined,
+        background: backgroundPanel || undefined,
         ...railPanels,
       }}
       onBeforeToggle={applyCrop}
