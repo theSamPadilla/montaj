@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Images, Shapes, Type, Palette, Sparkles, Layers, PaintBucket, StickyNote, LayoutGrid, Undo2, Redo2, X, type LucideIcon } from 'lucide-react'
 import type { CarouselRailItemId } from '../types'
+import { ZOOM_MAX, ZOOM_MIN, type ZoomAction } from './zoom'
 import { shortcutText } from '../ui/modifierKeys'
 
 /** The rail's items, in order. Later tasks fill panels through `CarouselEditorProps.railPanels`. */
@@ -40,6 +41,8 @@ export interface RailLayoutProps {
   canRedo: boolean
   /** The canvas area (centred, scrolls on its own). */
   canvas: ReactNode
+  /** The selected element's toolbar, centred along the top of the canvas area (§587 M3). */
+  canvasToolbar?: ReactNode
   /** Panel content per item; a missing one shows the placeholder. */
   panels: Partial<Record<CarouselRailItemId, ReactNode>>
   /** Called before any panel opens or closes (the editor applies a pending crop). */
@@ -51,16 +54,32 @@ export interface RailLayoutProps {
   /** Whether the canvas shows the grid of every slide instead of the stack (§587 M2). */
   gridOpen: boolean
   onToggleGrid: () => void
+  /** The % button's text ("Fit", "Fill", "NN%") and the slider's value (the scale in effect, percent). */
+  zoomLabel: string
+  zoomPercent: number
+  onZoomPercent: (pct: number) => void
+  onZoomAction: (action: ZoomAction) => void
 }
+
+const ZOOM_MENU: ReadonlyArray<{ action: ZoomAction; label: string; keys?: string[] }> = [
+  { action: 'in', label: 'Zoom in', keys: ['⌘', '+'] },
+  { action: 'out', label: 'Zoom out', keys: ['⌘', '−'] },
+  { action: 'fit', label: 'Fit', keys: ['⌘', '0'] },
+  { action: 'fill', label: 'Fill' },
+  { action: '100', label: '100%', keys: ['⌘', '1'] },
+  { action: '200', label: '200%' },
+]
 
 /** The rail layout's shell: top bar, rail + side panel, canvas, right panel, bottom bar. */
 export default function RailLayout({
-  topLeft, topRight, size, onUndo, onRedo, canUndo, canRedo, canvas, panels, onBeforeToggle,
+  topLeft, topRight, size, onUndo, onRedo, canUndo, canRedo, canvas, canvasToolbar, panels, onBeforeToggle,
   slideIds, selectedSlideId, onSelectSlide, onOpenControls, gridOpen, onToggleGrid,
+  zoomLabel, zoomPercent, onZoomPercent, onZoomAction,
 }: RailLayoutProps) {
   const [side, setSide] = useState<Exclude<CarouselRailItemId, 'notes'> | null>(null)
   const [notesOpen, setNotesOpen] = useState(false)
   const [slidesOpen, setSlidesOpen] = useState(false)
+  const [zoomOpen, setZoomOpen] = useState(false)
 
   // The slide list closes on Esc (which it takes, so the canvas keeps its
   // selection) and on a press outside it and its button.
@@ -86,6 +105,29 @@ export default function RailLayout({
       document.removeEventListener('pointerdown', onDown, true)
     }
   }, [slidesOpen])
+
+  const zoomBtnRef = useRef<HTMLButtonElement>(null)
+  const zoomMenuRef = useRef<HTMLUListElement>(null)
+  useEffect(() => {
+    if (!zoomOpen) return
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.stopPropagation()
+      e.preventDefault()
+      setZoomOpen(false)
+    }
+    const onDown = (e: Event) => {
+      const t = e.target
+      if (t instanceof Node && (zoomMenuRef.current?.contains(t) || zoomBtnRef.current?.contains(t))) return
+      setZoomOpen(false)
+    }
+    window.addEventListener('keydown', onKey, true)
+    document.addEventListener('pointerdown', onDown, true)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      document.removeEventListener('pointerdown', onDown, true)
+    }
+  }, [zoomOpen])
 
   function toggle(id: CarouselRailItemId) {
     onBeforeToggle()
@@ -158,7 +200,15 @@ export default function RailLayout({
           </section>
         )}
 
-        <div className="flex-1 min-w-0 min-h-0 flex flex-col">{canvas}</div>
+        {/* The top strip is the element toolbar's: it never covers the slide. */}
+        <div className="relative flex-1 min-w-0 min-h-0 flex flex-col pt-14">
+          {canvasToolbar && (
+            <div className="absolute inset-x-0 top-2 z-30 flex justify-center px-4 pointer-events-none">
+              <div className="pointer-events-auto max-w-full">{canvasToolbar}</div>
+            </div>
+          )}
+          {canvas}
+        </div>
 
         {notesOpen && (
           <aside
@@ -177,7 +227,29 @@ export default function RailLayout({
       </div>
 
       <footer aria-label="Bottom bar" className="relative flex-shrink-0 flex items-center justify-end gap-2 h-11 px-3 border-t border-[var(--editor-border)] bg-[var(--editor-bg)]">
-        <button type="button" className={barBtn} disabled aria-label="Zoom">Fit</button>
+        <input
+          type="range"
+          aria-label="Zoom"
+          className="w-28 accent-[var(--editor-accent)]"
+          min={ZOOM_MIN}
+          max={ZOOM_MAX}
+          step={1}
+          value={Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(zoomPercent)))}
+          disabled={gridOpen}
+          onChange={(e) => onZoomPercent(Number(e.target.value))}
+        />
+        <button
+          ref={zoomBtnRef}
+          type="button"
+          className={`${barBtn} min-w-12`}
+          aria-haspopup="menu"
+          aria-expanded={zoomOpen}
+          aria-label={`Zoom level ${zoomLabel}`}
+          disabled={gridOpen}
+          onClick={() => { onBeforeToggle(); setSlidesOpen(false); setZoomOpen((o) => !o) }}
+        >
+          {zoomLabel}
+        </button>
         <button
           ref={slidesBtnRef}
           type="button"
@@ -185,7 +257,7 @@ export default function RailLayout({
           aria-expanded={slidesOpen}
           aria-haspopup="listbox"
           aria-label={`Slides ${idx + 1} / ${slideIds.length}`}
-          onClick={() => { onBeforeToggle(); setSlidesOpen((o) => !o) }}
+          onClick={() => { onBeforeToggle(); setZoomOpen(false); setSlidesOpen((o) => !o) }}
         >
           Slides {idx + 1} / {slideIds.length}
         </button>
@@ -200,6 +272,23 @@ export default function RailLayout({
           <LayoutGrid size={16} />
         </button>
         <button type="button" className={barBtn} onClick={onOpenControls} aria-label="Controls" title="Editor controls & shortcuts">?</button>
+        {zoomOpen && (
+          <ul ref={zoomMenuRef} role="menu" aria-label="Zoom" className="absolute bottom-12 right-44 min-w-44 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] py-1 shadow-lg z-40">
+            {ZOOM_MENU.map(({ action, label, keys }) => (
+              <li key={action} role="presentation">
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full flex items-center justify-between gap-4 text-left px-3 py-1.5 text-xs text-[var(--editor-text)] hover:bg-[var(--editor-bg)]"
+                  onClick={() => { onZoomAction(action); setZoomOpen(false) }}
+                >
+                  <span>{label}</span>
+                  {keys && <span className="text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">{shortcutText(keys)}</span>}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         {slidesOpen && (
           <ul ref={slidesListRef} role="listbox" aria-label="Slides" className="absolute bottom-12 right-24 max-h-64 overflow-y-auto min-w-32 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] py-1 shadow-lg z-40">
             {slideIds.map((id, i) => (
