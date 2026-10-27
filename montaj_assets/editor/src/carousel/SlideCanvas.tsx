@@ -1,3 +1,4 @@
+import { Check, Image as ImageIcon, Type as TypeIcon, Shapes } from 'lucide-react'
 import { useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from 'react'
 import type { Slide, CarouselElement, OverlayElement, ImageElement, OverlayFactory } from '../types'
 import OverlayErrorBoundary from './OverlayErrorBoundary'
@@ -97,6 +98,15 @@ function OverlayElementView({
 }
 
 // ── SlideCanvas ───────────────────────────────────────────────────────────────
+
+/** One row of the pick list: what the element is called. Text: its text; image: its file; overlay: its template. */
+function pickName(el: CarouselElement): { name: string; Icon: typeof TypeIcon } {
+  if (el.type === 'image') return { name: el.src.split(/[\\/]/).pop() || el.src, Icon: ImageIcon }
+  const t = el.overlay.props.text
+  if (typeof t === 'string' && t.trim()) return { name: t.trim(), Icon: TypeIcon }
+  const base = el.overlay.template.split(/[\\/]/).pop() ?? el.overlay.template
+  return { name: base.replace(/\.[jt]sx?$/, ''), Icon: Shapes }
+}
 
 /** The lock badge's diameter, in display pixels. */
 const LOCK_BADGE_SIZE = 24
@@ -237,6 +247,12 @@ interface Props {
    * → they clip at the slide edge.
    */
   margin?: number
+
+  /**
+   * The Cmd-click pick list (§587 M8, rail layout): a Cmd-press (Ctrl off a
+   * Mac) also lists every element under the pointer. Absent → no list.
+   */
+  pickList?: boolean
 }
 
 // Plain default for the inline editor when we can't read the rendered text's
@@ -334,6 +350,7 @@ export default function SlideCanvas({
   onDrop,
   children,
   margin = 0,
+  pickList = false,
 }: Props) {
   const sid = slideId ?? slide.id
   const resolveSrc = resolveImageSrc ?? ((el: ImageElement) => resolveAssetDefault(el.src))
@@ -621,7 +638,64 @@ export default function SlideCanvas({
     const next = nextLayerDown(elementsAt(slidePoint(e), slide.elements, hiddenSet), selectedIds)
     if (cropRef.current) leaveCrop('apply').catch(() => {})
     if (next) onSelect?.(next)
+    if (pickList) {
+      const ids = elementsAt(slidePoint(e), slide.elements, hiddenSet)
+      const at = slidePoint(e)
+      setPick(ids.length ? { ids, x: at.x, y: at.y } : null)
+    }
   }
+
+  // The pick list (§587 M8): the ids under the last Cmd-press, front to back,
+  // and the press in slide units. Selection only; nothing here is saved.
+  const [pick, setPick] = useState<{ ids: string[]; x: number; y: number } | null>(null)
+  const pickIds = pick ? pick.ids.filter((id) => slide.elements.some((el) => el.id === id)) : []
+  const pickOpen = pick !== null && pickIds.length > 0
+  const pickIdsRef = useRef(pickIds)
+  pickIdsRef.current = pickIds
+  const pickSelectedRef = useRef<string[]>(selectedIds)
+  pickSelectedRef.current = selectedIds
+  const pickSelect = (id: string) => {
+    if (cropRef.current) leaveCrop('apply').catch(() => {})
+    onSelect?.(id)
+  }
+  const pickSelectRef = useRef(pickSelect)
+  pickSelectRef.current = pickSelect
+  // Esc, Enter close it; Up and Down move the tick. A press elsewhere, a
+  // scroll or a zoom closes it.
+  useEffect(() => {
+    if (!pickOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' || e.key === 'Enter') {
+        e.preventDefault()
+        e.stopPropagation()
+        setPick(null)
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        e.stopPropagation()
+        const ids = pickIdsRef.current
+        const at = ids.findIndex((id) => pickSelectedRef.current.includes(id))
+        const to = Math.max(0, Math.min(ids.length - 1, (at < 0 ? 0 : at) + (e.key === 'ArrowDown' ? 1 : -1)))
+        pickSelectRef.current(ids[to])
+      }
+    }
+    const close = () => setPick(null)
+    const onDown = (e: Event) => {
+      if (e.target instanceof Element && e.target.closest('[data-pick-list]')) return
+      setPick(null)
+    }
+    // Capture: a Cmd-press that follows on the canvas opens it again after.
+    window.addEventListener('keydown', onKey, true)
+    window.addEventListener('pointerdown', onDown, true)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('wheel', close, { capture: true, passive: true })
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('pointerdown', onDown, true)
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('wheel', close, true)
+    }
+  }, [pickOpen])
+  useEffect(() => { setPick(null) }, [scale])
 
   // The selected element a press at `e` is inside (frontmost first), when it is
   // not in crop: pressing inside it acts on it, whatever lies on top (§586 M1).
@@ -1208,6 +1282,67 @@ export default function SlideCanvas({
               />
             ))}
 
+            {/* The pick list (§587 M8), anchored at the Cmd-press. */}
+            {pickOpen && pick && (
+              <div
+                data-pick-list=""
+                role="listbox"
+                aria-label="Layers here"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  position: 'absolute',
+                  left: pick.x * scale + 8,
+                  top: pick.y * scale + 8,
+                  minWidth: 140,
+                  maxWidth: 220,
+                  padding: 4,
+                  background: 'var(--editor-surface)',
+                  color: 'var(--editor-text)',
+                  border: '1px solid color-mix(in srgb, var(--editor-text) 15%, transparent)',
+                  borderRadius: 8,
+                  boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+                  fontSize: 12,
+                  zIndex: 1000,
+                  pointerEvents: 'auto',
+                }}
+              >
+                {pickIds.map((id) => {
+                  const el = slide.elements.find((x) => x.id === id)
+                  if (!el) return null
+                  const { name, Icon } = pickName(el)
+                  const on = selectedIds.includes(id)
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      role="option"
+                      data-pick-row={id}
+                      aria-selected={on}
+                      onClick={(e) => { e.stopPropagation(); swallowClickRef.current = false; pickSelect(id); setPick(null) }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        width: '100%',
+                        padding: '4px 6px',
+                        border: 0,
+                        borderRadius: 4,
+                        background: on ? 'color-mix(in srgb, var(--editor-selection) 15%, transparent)' : 'transparent',
+                        color: 'inherit',
+                        textAlign: 'left',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <Icon size={13} aria-hidden="true" style={{ flex: 'none', opacity: 0.7 }} />
+                      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+                      {on && <Check size={13} aria-hidden="true" style={{ flex: 'none', color: 'var(--editor-selection)' }} />}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+
             {slide.elements.map((element) => {
               if (hiddenSet?.has(element.id)) return null
               // Outlined when selected at all; handles only for the one selected element.
@@ -1215,7 +1350,8 @@ export default function SlideCanvas({
               const isSelected = selectedElementId === element.id
               const locked = isLocked(element)
               const inCrop = cropSession?.elementId === element.id
-              if (!isOutlined && !isSelected && !inCrop) return null
+              const picked = pickOpen && !isOutlined && pickIds.includes(element.id)
+              if (!isOutlined && !isSelected && !inCrop && !picked) return null
               const isRotated = (element.rotation ?? 0) !== 0
 
               return (
@@ -1232,7 +1368,7 @@ export default function SlideCanvas({
                     height: element.h * scale,
                     transform: buildElementTransform(element.x, element.y, scale, element.rotation),
                     transformOrigin: 'center center',
-                    outline: '1px solid var(--editor-selection)',
+                    outline: `1px ${picked ? 'dashed' : 'solid'} var(--editor-selection)`,
                     pointerEvents: 'none',
                   }}
                 >

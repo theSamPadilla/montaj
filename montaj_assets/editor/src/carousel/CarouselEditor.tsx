@@ -1952,6 +1952,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           onToggleSelect={active ? toggleSelect : (elId) => { activateSlide(id); toggleSelect(elId) }}
           onSelectMany={active ? selectBand : (ids) => { activateSlide(id); selectBand(ids) }}
           scale={railScale}
+          pickList
           resolveImageSrc={adapter.resolveImageSrc}
           compileOverlay={(t) => adapter.compileOverlay(t)}
           watchFile={adapter.watchFile}
