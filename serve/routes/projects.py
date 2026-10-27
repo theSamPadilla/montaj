@@ -4411,6 +4411,27 @@ async def list_generated(project_id: str, project_dir: Path = Depends(get_projec
     return {"dir": str(project_dir), "generated": await asyncio.to_thread(provenance.generated, project_dir)}
 
 
+@router.get("/projects/{project_id}/brief")
+async def project_brief(project_id: str, project_dir: Path = Depends(get_project_dir)):
+    """The project brief (lib/project_brief.py, PL89): what the AI's first decisions need, in one read: each source's
+    role, every take's transcript, the script mapped to the takes, a long b-roll's shots and their sheet, the workflow's
+    steps and the profile's style. `{"text", "sheets": [png paths], "skills": [skill names the steps use], "stamp"}`.
+    Cached under render/brief/ by a stamp of what it reads, so a later read of an unchanged project is free; the first
+    measures each talking head's silences and a long b-roll's shots (a few seconds). Read-only on project.json; in a
+    thread."""
+    from lib import project_brief
+
+    def build():
+        try:
+            project = json.loads((project_dir / "project.json").read_text())
+        except (OSError, ValueError):
+            raise HTTPException(404, detail={"error": "not_found", "message": "project.json is not readable"})
+        if not isinstance(project, dict):
+            raise HTTPException(422, detail={"error": "invalid_project", "message": "project.json is not an object"})
+        return project_brief.brief(project, str(project_dir), str(MONTAJ_ROOT))
+    return await asyncio.to_thread(build)
+
+
 @router.get("/projects/{project_id}/shots")
 async def list_shots(project_id: str, project_dir: Path = Depends(get_project_dir)):
     """The labelled shots of the project's sources (the `shots` step; lib/shots.py): `{"shots": {clip id: {"src",

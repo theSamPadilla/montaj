@@ -38,3 +38,41 @@ def tile_sheet(frame_paths, times, cols, tile_width, out, label_px=None, box_hei
         draw.text((x + 2, y + tile_h + 3), t if isinstance(t, str) else f"{t:.2f}s", fill=(0, 0, 0), font=font)
     os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
     sheet.save(out)
+
+
+# One legible look sheet (orientation plan, Sam 2026-10-26). Every sheet the agent looks at (snapshot, shots,
+# sample_frame, contact_sheet, the brief's first looks) is laid out for LOOK_WIDTH, the size the app delivers it at
+# whole, so it never needs a full-size fetch: landscape tiles 4 across, portrait 6, more columns when a long list would
+# make the sheet much taller than wide, labels sized to read at that width.
+LOOK_WIDTH = 1280
+LOOK_MAX_HEIGHT = 1440
+LOOK_LABEL_PX = 22
+_LOOK_MAX_COLS = 8
+
+
+def look_layout(n, aspect=16 / 9, cols=None):
+    """(cols, tile_width, label_px) for `n` tiles of `aspect` (width / height) on a LOOK_WIDTH sheet. `cols` forces the
+    column count (a row a clip)."""
+    n = max(1, int(n))
+    label_h = max(LABEL_H, int(LOOK_LABEL_PX * 1.3))
+    if cols is None:
+        cols = min(n, 6 if aspect < 1 else 4)
+        while cols < min(n, _LOOK_MAX_COLS):
+            tile_w = (LOOK_WIDTH - (cols + 1) * GUTTER) // cols
+            rows = -(-n // cols)
+            if rows * (tile_w / aspect + label_h + GUTTER) <= LOOK_MAX_HEIGHT:
+                break
+            cols += 1
+    cols = max(1, int(cols))
+    return cols, (LOOK_WIDTH - (cols + 1) * GUTTER) // cols, LOOK_LABEL_PX
+
+
+def look_sheet(frame_paths, labels, out, cols=None, box=False):
+    """`frame_paths` tiled into one LOOK_WIDTH sheet, each with its label (a time in seconds or text). `box`: every tile
+    fitted whole into a square box (frames of mixed shapes: a vertical take beside a landscape recording)."""
+    from PIL import Image
+    with Image.open(frame_paths[0]) as im:
+        aspect = 1.0 if box else im.size[0] / max(1, im.size[1])
+    c, tile_w, label_px = look_layout(len(frame_paths), aspect, cols)
+    tile_sheet(frame_paths, labels, c, tile_w, out, label_px=label_px, box_height=tile_w if box else None)
+    return out

@@ -178,7 +178,7 @@ def label(path, labels):
 def sheet(path, shots, out, scan_path=None):
     """One sheet of `path` (or `scan_path`, same timing): a tile per shot at its middle, labelled "n  start-end"."""
     from concurrent.futures import ThreadPoolExecutor
-    from lib.sheet import tile_sheet
+    from lib.sheet import look_sheet
     src = scan_path or path
     with tempfile.TemporaryDirectory() as work:
         paths = [os.path.join(work, f"s_{s['n']:03d}.png") for s in shots]
@@ -192,7 +192,7 @@ def sheet(path, shots, out, scan_path=None):
         with ThreadPoolExecutor(4) as pool:
             list(pool.map(grab, range(len(shots))))
         labels = [f"{s['n']}  {s['start']:.1f}-{s['end']:.1f}" for s in shots]
-        tile_sheet(paths, labels, min(COLS, len(shots)), TILE_WIDTH, out, label_px=LABEL_PX)
+        look_sheet(paths, labels, out)
     return out
 
 
