@@ -173,6 +173,31 @@ def test_audio_track_into_another_project_is_copied(this, other):
     assert resp.json()["copied"] == [{"from": src, "to": dest}]
 
 
+def test_audio_track_outside_the_workspace_is_copied(this, ws):
+    # The preview serves the workspace only, so a music bed saved from ~/Downloads would play nothing.
+    pid, folder = this
+    src = _file(ws.parent / "Downloads" / "bed.mp3")
+
+    resp = _put(pid, audio={"tracks": [{"id": "music", "src": src, "start": 0.0}]})
+
+    assert resp.status_code == 200, resp.text
+    dest = str(folder / "assets" / "bed.mp3")
+    assert _on_disk(folder)["audio"]["tracks"][0]["src"] == dest
+    assert Path(dest).read_bytes() == Path(src).read_bytes()
+    assert resp.json()["copied"] == [{"from": src, "to": dest}]
+
+
+def test_audio_track_outside_the_workspace_that_is_missing_is_left_alone(this, ws):
+    pid, folder = this
+    src = str(ws.parent / "Downloads" / "gone.mp3")
+
+    resp = _put(pid, audio={"tracks": [{"id": "music", "src": src, "start": 0.0}]})
+
+    assert resp.status_code == 200, resp.text
+    assert _on_disk(folder)["audio"]["tracks"][0]["src"] == src
+    assert not (folder / "assets").exists()
+
+
 # ---------------------------------------------------------------------------
 # 3. The import staging area and uploads.
 # ---------------------------------------------------------------------------
@@ -833,8 +858,8 @@ def test_a_save_with_nothing_to_copy_never_leaves_the_event_loop_and_writes_once
     monkeypatch.setattr(asyncio, "to_thread", no_thread)
     monkeypatch.setattr(projects_mod, "_write_project_json", lambda p, proj: writes.append(p) or real_write(p, proj))
 
-    resp = _put(pid, tracks=_tracks(_video("clip-0", own)),
-                audio={"tracks": [{"id": "old", "src": kept}, {"id": "a", "src": outside}]})
+    resp = _put(pid, tracks=_tracks(_video("clip-0", own), _video("clip-1", outside)),
+                audio={"tracks": [{"id": "old", "src": kept}]})
 
     assert resp.status_code == 200, resp.text
     assert len(writes) == 1
@@ -1320,7 +1345,7 @@ def test_an_outside_path_costs_no_stat_beyond_the_workspace_root(ws, this, monke
     monkeypatch.setattr(os, "stat", spy(os.stat))
 
     is_borrowed = save_media.borrowed(outside, folder, ws)
-    planned = save_media.plan_borrowed_media({}, {"audio": {"tracks": [{"id": "a", "src": outside}]}}, folder, ws)
+    planned = save_media.plan_borrowed_media({}, {"tracks": _tracks(_video("clip-0", outside))}, folder, ws)
     calls = list(seen)
 
     assert is_borrowed is False and planned == {}
