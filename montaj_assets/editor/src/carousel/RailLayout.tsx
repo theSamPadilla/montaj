@@ -49,6 +49,11 @@ export interface RailLayoutProps {
   panels: Partial<Record<CarouselRailItemId, ReactNode>>
   /** Called before any panel opens or closes (the editor applies a pending crop). */
   onBeforeToggle: () => void
+  /** The Notes item: 'panel' opens the right panel, 'locked' calls `onNotesLocked` and opens nothing, 'hidden' removes the item. */
+  notesMode?: 'panel' | 'locked' | 'hidden'
+  onNotesLocked?: () => void
+  /** Each increase opens the Notes panel (a note was just added), closing the side panel. */
+  openNotesSeq?: number
   /** Called when a rail item is pressed (the colour panel, if open, closes). */
   onRailItem?: () => void
   slideIds: string[]
@@ -76,7 +81,7 @@ const ZOOM_MENU: ReadonlyArray<{ action: ZoomAction; label: string; keys?: strin
 
 /** The rail layout's shell: top bar, rail + side panel, canvas, right panel, bottom bar. */
 export default function RailLayout({
-  topLeft, topRight, size, onUndo, onRedo, canUndo, canRedo, canvas, canvasToolbar, colourPanel, panels, onBeforeToggle, onRailItem,
+  topLeft, topRight, size, onUndo, onRedo, canUndo, canRedo, canvas, canvasToolbar, colourPanel, panels, onBeforeToggle, onRailItem, notesMode = 'panel', onNotesLocked, openNotesSeq = 0,
   slideIds, selectedSlideId, onSelectSlide, onOpenControls, gridOpen, onToggleGrid,
   zoomLabel, zoomPercent, onZoomPercent, onZoomAction,
 }: RailLayoutProps) {
@@ -133,7 +138,22 @@ export default function RailLayout({
     }
   }, [zoomOpen])
 
+  const seenSeq = useRef(openNotesSeq)
+  useEffect(() => {
+    if (openNotesSeq === seenSeq.current) return
+    seenSeq.current = openNotesSeq
+    if (notesMode !== 'panel') return
+    onBeforeToggle()
+    onRailItem?.()
+    setNotesOpen(true)
+    setSide(null)
+  }, [openNotesSeq, notesMode, onBeforeToggle, onRailItem])
+
   function toggle(id: CarouselRailItemId) {
+    if (id === 'notes' && notesMode === 'locked') {
+      onNotesLocked?.()
+      return
+    }
     onBeforeToggle()
     onRailItem?.()
     // Notes and the side panel are one "active rail item": opening either closes the other.
@@ -175,7 +195,7 @@ export default function RailLayout({
 
       <div className="flex flex-1 min-h-0">
         <nav aria-label="Editor rail" className="flex-shrink-0 w-[72px] flex flex-col items-stretch gap-1 py-2 border-r border-[var(--editor-border)] bg-[var(--editor-bg)] overflow-y-auto">
-          {CAROUSEL_RAIL_ITEMS.map(({ id, label, icon: Icon }) => {
+          {CAROUSEL_RAIL_ITEMS.filter((i) => i.id !== 'notes' || notesMode !== 'hidden').map(({ id, label, icon: Icon }) => {
             const on = id === 'notes' ? notesOpen : side === id
             return (
               <button
@@ -219,7 +239,7 @@ export default function RailLayout({
           {canvas}
         </div>
 
-        {notesOpen && (
+        {notesOpen && notesMode === 'panel' && (
           <aside
             aria-label={`${notesItem.label} panel`}
             tabIndex={-1}

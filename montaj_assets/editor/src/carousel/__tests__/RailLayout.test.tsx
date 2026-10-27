@@ -45,6 +45,7 @@ afterEach(() => {
 })
 
 const ITEMS = ['Media', 'Elements', 'Text', 'Brand', 'AI image', 'Layers', 'Background', 'Notes']
+const NOTES_SLOT = { carouselNotesPanel: <div data-testid="notes" /> }
 
 function mount(extra: Partial<React.ComponentProps<typeof CarouselEditor>> = {}) {
   const adapter = makeAdapter()
@@ -64,7 +65,7 @@ describe('CarouselEditor layout="rail" shell', () => {
   })
 
   it('renders the top bar, a rail of 8 items and the bottom bar', async () => {
-    const r = mount()
+    const r = mount({ slots: NOTES_SLOT, notes: { enabled: true } })
     await waitFor(() => wrapperOf('el-img'))
     expect(r.getByRole('banner', { name: 'Top bar' })).toBeTruthy()
     const buttons = within(rail(r)).getAllByRole('button')
@@ -128,7 +129,7 @@ describe('CarouselEditor layout="rail" shell', () => {
   })
 
   it('Notes opens the right panel with the host content, not the side panel', async () => {
-    const r = mount({ slots: { carouselNotesPanel: <div data-testid="notes" />, carouselMediaPanel: <div data-testid="media" /> } })
+    const r = mount({ notes: { enabled: true }, slots: { carouselNotesPanel: <div data-testid="notes" />, carouselMediaPanel: <div data-testid="media" /> } })
     await waitFor(() => wrapperOf('el-img'))
     await act(async () => { fireEvent.click(item(r, 'Media')) })
     await act(async () => { fireEvent.click(item(r, 'Notes')) })
@@ -142,7 +143,7 @@ describe('CarouselEditor layout="rail" shell', () => {
   })
 
   it('Notes and a side panel are mutually exclusive', async () => {
-    const r = mount()
+    const r = mount({ slots: NOTES_SLOT, notes: { enabled: true } })
     await waitFor(() => wrapperOf('el-img'))
     await act(async () => { fireEvent.click(item(r, 'Elements')) })
     expect(r.getByRole('region', { name: 'Elements panel' })).toBeTruthy()
@@ -212,5 +213,45 @@ describe('CarouselEditor layout="rail" shell', () => {
     await act(async () => { fireEvent.click(item(r, 'Media')) })
     await waitFor(() => expect(document.querySelector('img[alt="Crop source"]')).toBeNull())
     expect(r.getByTestId('media')).toBeTruthy()
+  })
+
+  it('N opens the Notes panel (closing a side panel) so the new note is on screen', async () => {
+    const onNoteAdded = vi.fn()
+    const r = mount({ slots: { ...NOTES_SLOT, carouselMediaPanel: <div data-testid="media" /> }, notes: { enabled: true, onNoteAdded } })
+    await waitFor(() => wrapperOf('el-img'))
+    await act(async () => { fireEvent.click(item(r, 'Media')) })
+    expect(r.getByTestId('media')).toBeTruthy()
+    const press = async () => { await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', bubbles: true, cancelable: true })) }) }
+    await press()
+    await press()
+    expect(onNoteAdded).toHaveBeenCalledTimes(1)
+    expect(r.getByRole('complementary', { name: 'Notes panel' })).toBeTruthy()
+    expect(r.queryByTestId('media')).toBeNull()
+    expect(item(r, 'Notes').getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('N does not open Notes when the host has no notes panel', async () => {
+    const r = mount({ notes: { enabled: true } })
+    await waitFor(() => wrapperOf('el-img'))
+    const press = async () => { await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', bubbles: true, cancelable: true })) }) }
+    await press()
+    await press()
+    expect(r.queryByRole('complementary', { name: 'Notes panel' })).toBeNull()
+  })
+
+  it('locked notes: the Notes item calls onLocked and opens nothing', async () => {
+    const onLocked = vi.fn()
+    const r = mount({ notes: { enabled: false, onLocked } })
+    await waitFor(() => wrapperOf('el-img'))
+    await act(async () => { fireEvent.click(item(r, 'Notes')) })
+    expect(onLocked).toHaveBeenCalledTimes(1)
+    expect(r.queryByRole('complementary', { name: 'Notes panel' })).toBeNull()
+    expect(item(r, 'Notes').getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('no notes option: the Notes item is hidden', async () => {
+    const r = mount()
+    await waitFor(() => wrapperOf('el-img'))
+    expect(within(rail(r)).getAllByRole('button').map((b) => b.textContent)).toEqual(ITEMS.slice(0, 7))
   })
 })

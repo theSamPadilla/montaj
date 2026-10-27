@@ -1162,6 +1162,13 @@ export interface EditorTheme {
      * accent button. Optional; when absent, `applyTheme` falls back to `text`.
      */
     accentForeground?: string
+    /**
+     * The accent as small text on the surfaces (active rail item, selected
+     * slide). Optional; when absent, `applyTheme` keeps today's indigo-600 for
+     * the stock light theme, derives a darker shade of `accent` that reads at
+     * 4.5:1 on a custom light theme, and uses `accent` itself on dark themes.
+     */
+    accentText?: string
     /** Default text color. */
     text: string
     /** Hairline/divider color. */

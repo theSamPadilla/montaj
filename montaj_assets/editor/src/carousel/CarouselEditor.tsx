@@ -536,6 +536,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // §587 M6: the stacked canvas's zoom (Fit, Fill or a percentage of real size).
   const [zoom, setZoom] = useState<Zoom>(FIT)
 
+  const [openNotesSeq, setOpenNotesSeq] = useState(0)
+
   /** Adds an empty note on `slideId` (at `point`, or about the whole slide)
    *  and returns it as stored: the core of the N flow and `api.add`. */
   const addNoteOn = useCallback((slideId: string, point?: { x: number; y: number }): SlideNote => {
@@ -595,6 +597,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     setArmed(null)
     const note = addNoteOn(slideId, point)
     notesRef.current?.onNoteAdded?.(note)
+    // Rail: show the Notes panel so the new note's text field is on screen.
+    if (railRef.current) setOpenNotesSeq((n) => n + 1)
   }, [addNoteOn, setArmed])
 
   // Disarm when arming no longer makes sense: notes switched off, crop mode,
@@ -2259,6 +2263,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         />
       )}
       onRailItem={() => setColourOpen(null)}
+      notesMode={!notes ? 'hidden' : !notes.enabled ? 'locked' : slots?.carouselNotesPanel ? 'panel' : 'hidden'}
+      onNotesLocked={notes?.onLocked}
+      openNotesSeq={openNotesSeq}
       canvas={railCanvas}
       panels={{
         media: slots?.carouselMediaPanel,

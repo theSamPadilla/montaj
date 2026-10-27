@@ -165,6 +165,35 @@ describe('applyTheme', () => {
     )
   })
 
+  it('accent-text follows the theme: an explicit accentText wins', () => {
+    const el = document.createElement('div')
+    applyTheme(el, { ...lightMontajTheme, colors: { ...lightMontajTheme.colors, accent: '#00b4d8', accentText: '#007a94' } })
+    expect(el.style.getPropertyValue('--editor-accent-text')).toBe('#007a94')
+  })
+
+  it('accent-text derives from a custom light accent, darkened to stay readable', () => {
+    const el = document.createElement('div')
+    applyTheme(el, { ...lightMontajTheme, colors: { ...lightMontajTheme.colors, accent: '#00b4d8' } })
+    const v = el.style.getPropertyValue('--editor-accent-text')
+    expect(v).not.toBe('#4f46e5')
+    expect(v).not.toBe('#00b4d8')
+    const lum = (h: string) => {
+      const c = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255).map((x) => (x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4))
+      return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+    }
+    expect((lum('#ffffff') + 0.05) / (lum(v) + 0.05)).toBeGreaterThanOrEqual(4.5)
+    // hue stays cyan: blue and green channels dominate red
+    expect(parseInt(v.slice(1, 3), 16)).toBeLessThan(parseInt(v.slice(5, 7), 16))
+  })
+
+  it('accent-text stays indigo-600 for the stock light theme and the accent for dark', () => {
+    const el = document.createElement('div')
+    applyTheme(el, lightMontajTheme)
+    expect(el.style.getPropertyValue('--editor-accent-text')).toBe('#4f46e5')
+    applyTheme(el, { ...defaultMontajTheme, colors: { ...defaultMontajTheme.colors, accent: '#00b4d8' } })
+    expect(el.style.getPropertyValue('--editor-accent-text')).toBe('#00b4d8')
+  })
+
   it('falls back accent-foreground to text when the theme omits it', () => {
     const el = document.createElement('div')
     const { accentForeground: _omit, ...colorsWithoutAccentFg } = defaultMontajTheme.colors
