@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, act, waitFor, fireEvent } from '@testing-library/react'
-import type { EditorAdapter, ImageElement, OverlayElement, Project, RenderEvent, Slide, SlideNote } from '../../types'
+import type { EditorAdapter, ImageElement, OverlayElement, Project, RenderEvent, Slide } from '../../types'
+import type { SlideNote } from '../../schema'
 import CarouselEditor from '../CarouselEditor'
 import { shortcutText } from '../../ui/modifierKeys'
 
