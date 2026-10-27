@@ -340,4 +340,16 @@ describe('setImageAsBackground', () => {
     const els = [img('a', { locked: true })]
     expect(setImageAsBackground(els, 'a', 1000, 1000, sq)).toBe(els)
   })
+  it('a second pick replaces the current background, it does not stack', () => {
+    const first = setImageAsBackground([img('a'), img('b', { x: 300 })], 'a', 1000, 1000, sq)
+    const second = setImageAsBackground(first, 'b', 1000, 1000, sq)
+    expect(second.map((e) => e.id)).toEqual(['b'])
+    expect(second[0]).toMatchObject({ x: 0, y: 0, w: 1000, h: 1000, locked: true })
+  })
+  it('keeps a back element that is not a background (unlocked, or not covering the slide)', () => {
+    const unlockedCover = img('a', { x: 0, y: 0, w: 1000, h: 1000 })
+    expect(setImageAsBackground([unlockedCover, img('b')], 'b', 1000, 1000, sq).map((e) => e.id)).toEqual(['b', 'a'])
+    const lockedSmall = img('c', { locked: true, w: 200, h: 200 })
+    expect(setImageAsBackground([lockedSmall, img('b')], 'b', 1000, 1000, sq).map((e) => e.id)).toEqual(['b', 'c'])
+  })
 })
