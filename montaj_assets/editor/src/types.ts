@@ -729,9 +729,17 @@ export interface CarouselApi {
    * the slide; the old centred square when its size cannot be read), and
    * selects it. Resolves when its save settles; a save that fails is shown by
    * the editor, not rejected. Does nothing when no slide is selected, when the
-   * project cannot be edited, and in crop mode.
+   * project cannot be edited, in crop mode and in the slide grid; resolves
+   * `true` when it added the image, `false` when it did nothing.
    */
-  addImage(src: string): Promise<void>
+  addImage(src: string): Promise<boolean>
+  /**
+   * Whether `addImage` would add now, by the same conditions, and if not why:
+   * `crop` (crop mode), `no-slide` (no slide on show), `grid` (the slide grid
+   * is open), `read-only` (the project cannot be edited right now). A host that
+   * copies a file before calling `addImage` checks this first.
+   */
+  canAddImage(): { ok: true } | { ok: false; reason: 'crop' | 'no-slide' | 'grid' | 'read-only' }
   /**
    * Makes image `elementId` on the selected slide its background: it covers the
    * slide with a crop at the slide's aspect centred on the part it showed, goes

@@ -470,6 +470,16 @@ describe('CarouselEditor layout="rail": stacked slides (§587 M2)', () => {
     delete (HTMLElement.prototype as { scrollTo?: unknown }).scrollTo
   })
 
+  it('canAddImage says grid while the grid is open, and addImage adds nothing', async () => {
+    const provide = vi.fn()
+    const { r } = await mount(three(), { onProvideCarouselApi: provide })
+    const api = provide.mock.calls[0][0] as { canAddImage(): unknown; addImage(s: string): Promise<boolean> }
+    expect(api.canAddImage()).toEqual({ ok: true })
+    await act(async () => { fireEvent.click(within(r.getByRole('contentinfo', { name: 'Bottom bar' })).getByRole('button', { name: 'Grid view' })) })
+    expect(api.canAddImage()).toEqual({ ok: false, reason: 'grid' })
+    await act(async () => { expect(await api.addImage('/media/pic.png')).toBe(false) })
+  })
+
   it('the grid add tile adds a slide at the end', async () => {
     const { adapter, r } = await mount(three())
     await act(async () => { fireEvent.click(within(r.getByRole('contentinfo', { name: 'Bottom bar' })).getByRole('button', { name: 'Grid view' })) })
