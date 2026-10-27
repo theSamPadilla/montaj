@@ -398,6 +398,8 @@ describe('Element toolbar: Edit, hide and popover closing (§587 M3)', () => {
     await press(show)
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
     expect(propsOf(last(adapter), 'el-ov').show).toBe('false')
+    // A bool prop saved as the string 'false' reads as off.
+    expect((within(popover(r, 'Edit')).getByRole('checkbox', { name: 'show' }) as HTMLInputElement).checked).toBe(false)
     await undo()
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
     expect(propsOf(last(adapter), 'el-ov').show).toBe(true)

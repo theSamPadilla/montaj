@@ -1668,6 +1668,19 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     lockedNow(slideId, elementId) ? Promise.resolve() : state.resizeElement(slideId, elementId, box)
   const rotateElement: typeof state.rotateElement = (slideId, elementId, rotation) =>
     lockedNow(slideId, elementId) ? Promise.resolve() : state.rotateElement(slideId, elementId, rotation)
+  // A live overlay prop (the toolbar's stroke weight drag): transient until the
+  // release commits it as one undo step. Nothing previewed, nothing committed.
+  const propPreviewOpen = useRef(false)
+  const previewOverlayProp = (slideId: string, elementId: string, key: string, value: string) => {
+    if (lockedNow(slideId, elementId)) return
+    propPreviewOpen.current = true
+    state.previewSlides(all => setOverlayPropIn(all, slideId, elementId, key, value))
+  }
+  const commitPropPreview = () => {
+    if (!propPreviewOpen.current) return
+    propPreviewOpen.current = false
+    void state.commit()
+  }
 
   // Property-panel transform/frame edits → committed mutators.
   function handlePanelElementChange(patch: Partial<CarouselElement>) {
@@ -1829,6 +1842,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     lastSelectionKey.current = selectionKey
     setColourOpen(null)
   }, [selectionKey])
+  // The stroke popover closing or the selection moving mid-edit (a typed weight
+  // whose field unmounts without a blur): keep what was previewed, as one step.
+  useEffect(() => {
+    commitPropPreview()
+  }, [toolbarPopover, selectionKey])
 
   function handleSlideChange(patch: Partial<Slide>) {
     if (selectedSlideId) void state.updateSlide(selectedSlideId, patch)
@@ -2402,6 +2420,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             brandFont={brand?.fonts?.heading}
             brandGoogleFonts={brand?.fonts?.googleFonts}
             onSetFont={setTextFont}
+            onPreviewOverlayProp={previewOverlayProp}
+            onCommitPropPreview={commitPropPreview}
           />
         ) : undefined
       }

@@ -9,6 +9,7 @@
  *   stroke      — stroke colour (default '#111111')
  *   strokeWidth — px, 0 for none (default '0'); drawn inside the box
  *   cornerRadius — px, the outer edge's radius (default '48')
+ *   strokeStyle — 'solid' | 'long-dash' | 'short-dash' | 'dotted' (default 'solid')
  */
 // Values arrive as strings (the prop editor's round trip); parseFloat takes "8" and "8px".
 const num = (v, d) => {
@@ -22,19 +23,40 @@ const side = (v) => {
   const n = num(v, 100)
   return n > 0 ? n : 100
 }
+const r2 = (n) => Math.round(n * 100) / 100
+// The stroke's style (§587): its dashes scale with the width, so a style
+// keeps its look at any weight, and dots are round. A round cap adds half the
+// width to each end of a dash, which the pattern takes back from the dash.
+const DASHES = { 'long-dash': [3, 2], 'short-dash': [1.5, 1] }
+const isOn = (v) => v === true || v === 'true'
+function dashOf(style, sw, round) {
+  if (!(sw > 0)) return undefined
+  if (String(style) === 'dotted') return `0 ${r2(2 * sw)}`
+  const p = DASHES[String(style)]
+  if (!p) return undefined
+  const [d, g] = [p[0] * sw, p[1] * sw]
+  return round ? `${r2(Math.max(0, d - sw))} ${r2(g + sw)}` : `${r2(d)} ${r2(g)}`
+}
+// The stroke's dashes, ends and corners: rounded corners round the dash ends too.
+const strokeLook = (style, sw, round) => ({
+  strokeDasharray: dashOf(style, sw, round),
+  strokeLinecap: round || String(style) === 'dotted' ? 'round' : 'butt',
+  strokeLinejoin: round ? 'round' : 'miter',
+})
 const SVG_STYLE = { position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', display: 'block', overflow: 'visible' }
 
-export default function ShapeRoundedRect({ fill = '#bdbdbd', stroke = '#111111', strokeWidth = '0', cornerRadius = '48', boxWidth, boxHeight }) {
+export default function ShapeRoundedRect({ fill = '#bdbdbd', stroke = '#111111', strokeWidth = '0', cornerRadius = '48', strokeStyle = 'solid', boxWidth, boxHeight }) {
   const W = side(boxWidth)
   const H = side(boxHeight)
   const sw = clamp(num(strokeWidth, 0), 0, Math.min(W, H) / 2)
+  const look = strokeLook(strokeStyle, sw, false)
   const paint = { fill, stroke: sw > 0 ? stroke : 'none', strokeWidth: sw }
   const r = clamp(num(cornerRadius, 48), 0, Math.min(W, H) / 2)
   // The stroke is centred on the path: its outer edge keeps the radius asked for.
   const rx = Math.max(0, r - sw / 2)
   return (
     <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={SVG_STYLE}>
-      <rect x={sw / 2} y={sw / 2} width={Math.max(0, W - sw)} height={Math.max(0, H - sw)} rx={rx} ry={rx} {...paint} />
+      <rect x={sw / 2} y={sw / 2} width={Math.max(0, W - sw)} height={Math.max(0, H - sw)} rx={rx} ry={rx} {...paint} {...look} />
     </svg>
   )
 }
