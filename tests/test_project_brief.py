@@ -62,7 +62,8 @@ class Fns:
                 "shots_fn": lambda src, scan: self.shots.append(src) or [
                     {"n": 1, "start": 0.0, "end": 4.9}, {"n": 2, "start": 4.9, "end": 12.6, "label": "car dent"},
                     {"n": 3, "start": 12.6, "end": 74.7}],
-                "sheet_fn": lambda src, shots, out, scan: (self.sheets.append(out), Path(out).write_bytes(b"png"), out)[2]}
+                "sheet_fn": lambda src, shots, out, scan: (self.sheets.append(out), Path(out).write_bytes(b"png"), out)[2],
+                "heads_fn": lambda frames, labels, out: (self.sheets.append((labels, out)), Path(out).write_bytes(b"jpg"), out)[2]}
 
 
 def test_sources_have_their_role_length_fps_and_picture(proj):
@@ -73,25 +74,29 @@ def test_sources_have_their_role_length_fps_and_picture(proj):
     assert "| clip-2 | short.mov | b-roll | 5.0 s |" in text, text
 
 
-def test_every_take_line_is_listed_with_its_times_retakes_included(proj):
-    p, d = proj
-    text = pb.build(p, str(d), str(ROOT), **Fns().kw())["text"]
-    assert "**A = talk.mov** (clip-0)" in text
-    assert "- A1 0.0-2.6 this may be the funniest demo i've ever seen." in text, text
-    assert "- A2 4.0-6.6 this may be the funniest demo i've ever seen." in text, text
-    assert "- A3 8.0-11.6 in the demo the robot dents a car and lifts a car." in text, text
-    # Whisper's spelling stands; the script's words for a matched line stand beside it, to caption and cut by
-    assert "- A1 0.0-2.6 this may be the funniest demo i've ever seen. ⟶ script 1: \"This might be the funniest demo I've ever seen.\"" in text, text
-
-
-def test_each_script_line_points_at_the_takes_that_say_it(proj):
+def test_each_script_line_lists_its_takes_with_times_and_words(proj):
+    # Sam (2026-10-26): the full take transcripts live in cut's plan; the brief maps each script line to its takes,
+    # one short line each, retakes included, in recording order
     p, d = proj
     text = pb.build(p, str(d), str(ROOT), **Fns().kw())["text"]
     assert "**<Hook>**" in text and "**<Setup>**" in text
-    assert "1. This might be the funniest demo I've ever seen. → A1, A2" in text, text
-    assert "2. In the demo, it dents cars and lifts a car. → A3" in text, text
-    assert "3. A line nobody ever recorded here. → not recorded as written" in text, text
+    hook = text.split("1. This might be the funniest demo I've ever seen.")[1].split("2. ")[0]
+    assert "   - A1 0.0-2.6: \"this may be the funniest demo i've ever seen.\"" in hook, hook
+    assert "   - A2 4.0-6.6: \"this may be the funniest demo i've ever seen.\"" in hook, hook
+    assert "   - A3 8.0-11.6: \"in the demo the robot dents a car and lifts a car.\"" in text.split("2. In the demo")[1], text
+    assert "3. A line nobody ever recorded here.\n   - not recorded as written" in text, text
+    assert "## Talking-head transcripts" not in text, "the full transcripts are cut's plan's"
     assert "make it look great" not in text.split("## Script")[1], "the notes after ----- are not script"
+
+
+def test_lines_the_script_does_not_have_are_listed_too(proj):
+    # the kung fu takes end with an aside and an outro the script leaves out ("follow for more"): named, so not kept
+    p, d = proj
+    _sidecar(d / "talk.json", [(0.0, "this may be the funniest demo i've ever seen."),
+                               (8.0, "in the demo the robot dents a car and lifts a car."),
+                               (13.0, "make sure to follow for more.")])
+    text = pb.build(p, str(d), str(ROOT), **Fns().kw())["text"]
+    assert "Not in the script:" in text and "- A3 13.0-14.8: \"make sure to follow for more.\"" in text, text
 
 
 def test_a_long_b_roll_gets_its_shots_and_one_sheet_a_short_one_does_not(proj):
@@ -99,7 +104,7 @@ def test_a_long_b_roll_gets_its_shots_and_one_sheet_a_short_one_does_not(proj):
     f = Fns()
     got = pb.build(p, str(d), str(ROOT), **f.kw())
     assert f.shots == [str(d / "demo.mov")], "only the long b-roll is scanned"
-    assert got["sheets"] == [str(d / "render" / "brief" / "shots-clip-1.png")]
+    assert got["sheets"][1:] == [str(d / "render" / "brief" / "shots-clip-1.jpg")]
     text = got["text"]
     assert "**clip-1 demo.mov**, 74.7 s, 3 shots" in text and "- 2: 4.9-12.6 car dent" in text, text
     assert "2 of its shots have no label yet" in text, text
@@ -159,8 +164,22 @@ def test_the_route_answers_the_brief(proj, monkeypatch):
     monkeypatch.setattr(pb, "_silences", f.kw()["silences_fn"])
     monkeypatch.setattr(pb.shots_lib, "shots_for", lambda src, scan_path=None: {"shots": [{"n": 1, "start": 0, "end": 74.7}]})
     monkeypatch.setattr(pb.shots_lib, "sheet", lambda src, shots, out, scan_path=None: (Path(out).write_bytes(b"png"), out)[1])
+    monkeypatch.setattr(pb, "_heads_sheet", lambda frames, labels, out: (Path(out).write_bytes(b"jpg"), out)[1])
     r = TestClient(app).get(f"/api/projects/{p['id']}/brief")
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["text"].startswith("# Kung Fu") and body["sheets"] == [str(d / "render" / "brief" / "shots-clip-1.png")]
+    assert body["text"].startswith("# Kung Fu") and body["sheets"][-1] == str(d / "render" / "brief" / "shots-clip-1.jpg")
     assert "select-takes" in body["skills"]
+
+
+def test_one_sheet_shows_every_talking_head_labelled_by_letter_and_clip(proj):
+    # Sam (2026-10-26): the brief carries the first looks; a frame of each take, so no snapshot is needed before cut
+    p, d = proj
+    f = Fns()
+    got = pb.build(p, str(d), str(ROOT), **f.kw())
+    heads = [x for x in f.sheets if isinstance(x, tuple)]
+    assert len(heads) == 1
+    labels, out = heads[0]
+    assert labels == ["A  clip-0 talk.mov"] and out == str(d / "render" / "brief" / "talking-heads.jpg")
+    assert got["sheets"][0] == out, "the talking heads first, then the b-roll"
+    assert "The first sheet with this brief shows a frame of each talking head" in got["text"], got["text"]

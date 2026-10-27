@@ -20,7 +20,7 @@ from lib.common import ffprobe_bin, ff_path
 from lib.speech_lines import load_words, norm, refine, sidecar_for, split_lines
 from lib.speech_units import hardly_speech, made_up
 
-BRIEF_VERSION = 2
+BRIEF_VERSION = 4
 LONG_BROLL_S = 20.0          # b-roll at least this long gets its shots listed and a sheet
 PROFILE_SECTIONS = ("Titles & overlays", "Format")
 LOOKED = ("probe", "snapshot")   # steps whose answer the brief already holds   # the style profile's sections that bear on the edit
@@ -39,6 +39,26 @@ def _probe(path):
         return (round(fps, 2) if fps else None), s.get("color_transfer")
     except (OSError, ValueError, subprocess.SubprocessError, ZeroDivisionError):
         return None, None
+
+
+HEAD_TILE_W, HEAD_TILE_H, HEAD_COLS, HEAD_LABEL_PX = 300, 533, 5, 26   # a 9:16 tile a viewer reads at 768 px
+
+
+def _heads_sheet(frames, labels, out):
+    """One sheet of `frames` ([(media path, seconds)]), each tile labelled: the talking heads at a glance."""
+    import tempfile
+    from lib.common import ffmpeg_bin
+    from lib.sheet import tile_sheet
+    with tempfile.TemporaryDirectory() as work:
+        paths = []
+        for i, (media, t) in enumerate(frames):
+            p = os.path.join(work, f"h_{i:03d}.png")
+            subprocess.run([ffmpeg_bin(), "-nostdin", "-v", "error", "-y", "-ss", f"{max(0.0, t):.3f}", "-i", ff_path(media),
+                            "-frames:v", "1", "-vf", f"scale={HEAD_TILE_W * 2}:-2", p], check=True, timeout=60)
+            paths.append(p)
+        tile_sheet(paths, labels, min(HEAD_COLS, len(paths)), HEAD_TILE_W, out, label_px=HEAD_LABEL_PX,
+                   box_height=HEAD_TILE_H)
+    return out
 
 
 def _silences(path):
@@ -160,8 +180,10 @@ def _status_line(project):
     return head + f" The timeline holds {items} items laid by Montaj before you, not an edit: cut rebuilds the spine from the plan."
 
 
-def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None, shots_fn=None, sheet_fn=None):
+def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None, shots_fn=None, sheet_fn=None,
+          heads_fn=None):
     """The brief's text, sheets and skills, computed (no cache)."""
+    heads_fn = heads_fn or _heads_sheet
     probe_fn = probe_fn or _probe
     silences_fn = silences_fn or _silences
     shots_fn = shots_fn or (lambda src, scan: shots_lib.shots_for(src, scan_path=scan)["shots"])
@@ -193,21 +215,36 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
             rolls.append(s)
             role = "b-roll" + (" (no speech)" if words else "")
         rows.append(f"| {s.get('id', '')} | {os.path.basename(s['src'])} | {role} | {dur:.1f} s | {fps or '?'} | {pic.strip()} |")
-    W += ["## Sources", "| id | file | role | length | fps | picture |", "|---|---|---|---|---|---|", *rows, ""]
+    W += ["## Sources", "| id | file | role | length | fps | picture |", "|---|---|---|---|---|---|", *rows]
+    sheets = []
+    if heads:   # Sam (2026-10-26): the first looks come with the brief; a frame of each take, mid its first line
+        out = os.path.join(project_dir, "render", "brief", "talking-heads.jpg")
+        frames = [(s.get("proxySrc") or s["src"], (lns[0].words[0].start + lns[0].words[-1].end) / 2 if lns else 0.0)
+                  for s, _, lns in heads]
+        labels = [f"{letter}  {s.get('id', '')} {os.path.basename(s['src'])}" for s, letter, _ in heads]
+        try:
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            sheets.append(heads_fn(frames, labels, out))
+            W.append("The first sheet with this brief shows a frame of each talking head, labelled by letter and clip.")
+        except Exception:  # noqa: BLE001: no sheet, the brief still answers
+            pass
+    W.append("")
 
-    # script -> takes
+    # script -> takes: each script line, then every take line that says it (the full transcripts are cut's plan's)
     script = _script(project.get("editingPrompt"))
     lines = [t for k, t in script if k == "line"]
-    says = {}   # transcript line id -> the script lines it says (numbers from 1)
+    by_id = {ln.id: ln for _, _, lns in heads for ln in lns}
+
+    def take(lid):
+        ln = by_id[lid]
+        return f"   - {lid} {ln.words[0].start:.1f}-{ln.words[-1].end:.1f}: \"{' '.join(w.text for w in ln.words)}\""
     if lines and heads:
         said = _said_by(lines, [(letter, lns) for _, letter, lns in heads])
-        for i, ids in said.items():
-            for lid in ids:
-                says.setdefault(lid, []).append(i + 1)
         W += ["## Script → takes",
-              "Each script line and the transcript lines (below) that say it, in recording order: retakes and partial "
-              "sayings included, so the last one listed is usually the last full saying. \"not recorded as written\": "
-              "find it in the transcripts by meaning. This is a pointer, not a choice: the takes are yours to pick.", ""]
+              "Each script line, then every take line that says it in recording order: id (cut's plan uses it), seconds "
+              "in its source, the words Whisper heard. Retakes and partial sayings are all listed, so the last one is "
+              "usually the last full saying. Caption and spell by the script's words, not Whisper's. \"not recorded as "
+              "written\": look for it by meaning in cut's plan. The takes are yours to pick.", ""]
         k = 0
         for kind, text in script:
             if kind == "section":
@@ -215,27 +252,20 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
                 continue
             ids = said[k]
             k += 1
-            W.append(f"{k}. {text} → " + (", ".join(ids) if ids else "not recorded as written"))
+            W.append(f"{k}. {text}")
+            W += [take(lid) for lid in ids] or ["   - not recorded as written"]
+        used = {lid for ids in said.values() for lid in ids}
+        rest = [lid for lid in by_id if lid not in used]
+        if rest:   # asides, an outro, false starts with no script words: named so none is kept by accident
+            W += ["", "**Not in the script:** take lines no script line matches (asides, an outro, a false start)."]
+            W += [take(lid)[2:] for lid in rest]
+        W.append("")
+    elif heads:   # no script: the takes as they were recorded
+        W += ["## Takes", "Every take line in recording order: id, seconds in its source, words."]
+        W += [take(lid)[2:] for lid in by_id]
         W.append("")
 
-    # every take's words
-    if heads:
-        W += ["## Talking-head transcripts",
-              "Every line of every take in recording order: its id, its seconds in that source, the words said. "
-              "Retakes, false starts and asides are all here; lines break where the speaker paused. The words are "
-              "Whisper's; a line that says a script line carries the script's words after ⟶, which are the ones to "
-              "caption and spell by.", ""]
-        for s, letter, lns in heads:
-            W.append(f"**{letter} = {os.path.basename(s['src'])}** ({s.get('id', '')})")
-            for ln in lns:
-                row = f"- {ln.id} {ln.words[0].start:.1f}-{ln.words[-1].end:.1f} {' '.join(w.text for w in ln.words)}"
-                for n in says.get(ln.id, []):   # the script's own words, so a name Whisper misheard is not retyped
-                    row += f" ⟶ script {n}: \"{lines[n - 1]}\""
-                W.append(row)
-            W.append("")
-
     # b-roll shots
-    sheets = []
     long_rolls = [s for s in rolls if float(s.get("sourceDuration") or 0) >= LONG_BROLL_S]
     if rolls:
         W.append("## B-roll")
@@ -252,7 +282,7 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
             if not shots:
                 W.append(f"**{s.get('id', '')} {os.path.basename(s['src'])}**, {dur:.1f} s: its shots could not be found.")
                 continue
-            out = os.path.join(project_dir, "render", "brief", f"shots-{s.get('id') or len(sheets)}.png")
+            out = os.path.join(project_dir, "render", "brief", f"shots-{s.get('id') or len(sheets)}.jpg")
             try:
                 os.makedirs(os.path.dirname(out), exist_ok=True)
                 sheets.append(sheet_fn(s["src"], shots, out, scan))
