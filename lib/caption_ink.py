@@ -34,6 +34,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from lib import look_check as lc
+from lib.caption_marks import carry_stamp
 from lib.caption_translation import mint_ids
 from lib import project_revisions
 from lib.proc import detached_kwargs, kill_tree
@@ -659,6 +660,7 @@ def split_pieces(seg, labels):
         part["start"] = seg["start"] if n == 0 else words[first]["start"]
         part["end"] = seg["end"] if n == len(runs) - 1 else words[past - 1]["end"]
         part["text"] = " ".join(_word_text(w) for w in part["words"])
+        carry_stamp(part, [seg])   # a piece of a generated line is generated too (§585)
         if n:
             part.pop("id", None)
         if part["end"] - part["start"] < MIN_PIECE_S - 1e-9:

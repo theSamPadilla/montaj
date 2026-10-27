@@ -239,3 +239,13 @@ describe('repairCaptionWords — §244 translations', () => {
     expect(out.segments[1]).toBe(captions.segments[1])
   })
 })
+
+describe('repairCaptionWords keeps the AI stamp (§585)', () => {
+  it('leaves auto byte for byte on a repaired segment', () => {
+    const seg = { id: 's1', text: 'hello big world', start: 0, end: 2, auto: 'abc123def456',
+      words: [{ word: 'hello', start: 0, end: 1 }, { word: 'world', start: 1, end: 2 }] } as unknown as CaptionSegment
+    const out = repairCaptionWords(makeCaptions([seg]))
+    expect(out).not.toBeNull()
+    expect((out!.segments[0] as unknown as { auto?: string }).auto).toBe('abc123def456')
+  })
+})

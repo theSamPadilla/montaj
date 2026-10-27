@@ -53,6 +53,7 @@ from lib.overlay_validation import overlay_item_errors
 from lib import shots as _shots
 from lib.caption_profile_look import caption_words_args, resolve_style_and_look
 from lib.caption_script import script_of, spell_from_script
+from lib.caption_marks import stamp_all
 from lib.caption_translation import TranslationError, apply_show, apply_translation, show_new_language, finish_regenerated_track, is_translation, merge_caption_theme as _lib_merge_caption_theme, record_source_language
 from lib.project_tracks import normalize_tracks, track_items
 from lib.path_match import spaced_twins
@@ -6315,6 +6316,9 @@ async def _run_caption_pipeline(
         # Theme carried forward, ids minted, translated rows kept and re-cut at
         # their phrase boundaries (lib/caption_translation.py).
         track = finish_regenerated_track(prev, track)
+        # §585: every line written here is stamped as generated; the editor's Regenerate (a person pressed it)
+        # replaces the person's lines as it always has, so nothing is kept here.
+        stamp_all(track.get("segments") or [])
         record_source_language(track, language, project_dir / "_caption_words.json")
         project["captions"] = track
         text = _write_project_json(project_path, project)

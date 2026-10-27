@@ -38,6 +38,8 @@ from serve.caption_job import build_audio_mix_spec, caption_input_change, captio
 from lib.project_revisions import engine_guard_enabled  # noqa: E402
 from lib import caption_ink  # noqa: E402
 from lib.caption_script import script_of, spell_from_script  # noqa: E402
+from lib.caption_marks import keep_persons, stamp_all, stamped  # noqa: E402
+from lib.project_versions import commit_version  # noqa: E402
 from lib.caption_profile_look import caption_words_args, resolve_style_and_look  # noqa: E402
 from serve.caption_theme import seed_prev  # noqa: E402
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, update_project  # noqa: E402
@@ -45,6 +47,7 @@ from lib.sync_clash import SyncConflict, exit_refused  # noqa: E402
 
 # The whisper run before this write took minutes: a short lock wait must not throw it away.
 STEP_LOCK_TIMEOUT = 30.0
+VERSION_MESSAGE = "version: before captions"   # the captions step's, so both read alike in the history
 
 
 def resolve_style(args_style, project: dict) -> str:
@@ -84,6 +87,8 @@ def main():
     parser.add_argument("--language", default="auto",
                         help="Language code (e.g. en, es), or 'auto' to detect")
     parser.add_argument("--style", default=None, help="Caption animation style")
+    parser.add_argument("--replace-edited", action="store_true",
+                        help="Replace the lines a person made or edited too (only when they ask)")
     parser.add_argument("--script", default=None,
                         help="The script the speaker read (default: the project's editingPrompt; \"\" for none): caption "
                              "words take its spelling on the transcript's timings")
@@ -171,12 +176,26 @@ def main():
         # would undo that.
         written = {}
 
+        # A track made before stamps cannot be judged line by line (§585): save a version first, so a person's
+        # earlier edits can be got back, and say so in the answer.
+        prior = list((project.get("captions") or {}).get("segments") or [])
+        lines = [s for s in prior if isinstance(s, dict) and not (isinstance(s.get("lang"), str) and isinstance(s.get("translationOf"), list))]
+        unguarded = bool(lines) and not stamped(lines) and not args.replace_edited
+        if unguarded:
+            commit_version(d, VERSION_MESSAGE)
+
         def apply(fresh):
             if fingerprint is not None:
                 change = caption_input_change(fingerprint, fresh)
                 if change is not None:
                     fail("project_changed", change["message"])
+            prev_lines = list((fresh.get("captions") or {}).get("segments") or [])
             done = finish_regenerated_track(seed_prev(fresh.get("captions") or {}, look), dict(track))
+            stamp_all(done.get("segments") or [])   # every line this run writes is the AI's (§585)
+            if not args.replace_edited:
+                # A line the person made or edited is theirs: it stays, and the new lines go around it.
+                done["segments"], kept = keep_persons(prev_lines, done.get("segments") or [])
+                written["kept"] = [{"id": k.get("id"), "text": k.get("text")} for k in kept]
             record_source_language(done, args.language, words_json_path)
             fresh["captions"] = done
             written["track"] = done
@@ -198,6 +217,10 @@ def main():
         answer = dict(track)
         if corrected is not None:
             answer["corrected"] = corrected
+        if written.get("kept"):
+            answer["keptYours"] = written["kept"]
+        if unguarded:
+            answer["unguarded"] = True
         if warnings:
             answer["warnings"] = warnings
         print(json.dumps(answer))

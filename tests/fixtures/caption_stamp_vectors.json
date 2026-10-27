@@ -1,0 +1,67 @@
+[
+ {
+  "name": "plain",
+  "text": "hello there",
+  "stamp": "12998c017066"
+ },
+ {
+  "name": "spaces",
+  "text": "  hello \t there \n",
+  "stamp": "12998c017066"
+ },
+ {
+  "name": "nbsp",
+  "text": "hello\u00a0there",
+  "stamp": "12998c017066"
+ },
+ {
+  "name": "narrow-nbsp",
+  "text": "hello\u202fthere",
+  "stamp": "12998c017066"
+ },
+ {
+  "name": "nel",
+  "text": "hello\u0085there",
+  "stamp": "12998c017066"
+ },
+ {
+  "name": "bom",
+  "text": "\ufeffhello there",
+  "stamp": "12998c017066"
+ },
+ {
+  "name": "unit-sep",
+  "text": "hello\u001fthere",
+  "stamp": "12998c017066"
+ },
+ {
+  "name": "nfd-e",
+  "text": "cafe\u0301",
+  "stamp": "81ef060bcd98"
+ },
+ {
+  "name": "nfc-e",
+  "text": "caf\u00e9",
+  "stamp": "850f7dc43910"
+ },
+ {
+  "name": "empty",
+  "text": "",
+  "stamp": "e3b0c44298fc"
+ },
+ {
+  "name": "only-space",
+  "text": "   ",
+  "stamp": "e3b0c44298fc"
+ },
+ {
+  "name": "non-string-0",
+  "text": 0,
+  "stamp": "e3b0c44298fc"
+ },
+ {
+  "name": "null",
+  "text": null,
+  "stamp": "e3b0c44298fc"
+ }
+]
