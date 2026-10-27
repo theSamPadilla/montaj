@@ -229,13 +229,15 @@ export default function RailLayout({
           </section>
         )}
 
-        {/* The top strip is the element toolbar's: it never covers the slide. */}
-        <div className="relative flex-1 min-w-0 min-h-0 flex flex-col pt-14">
-          {canvasToolbar && (
-            <div className="absolute inset-x-0 top-2 z-30 flex justify-center px-4 pointer-events-none">
-              <div className="pointer-events-auto max-w-full">{canvasToolbar}</div>
-            </div>
-          )}
+        {/* The top strip is the element toolbar's (§587 R8): a row of its own
+            above the canvas, outside the stack's scroll, so the slides scroll
+            under it and it never moves. It keeps one toolbar row's height
+            with nothing selected and grows when the toolbar wraps, so it
+            never covers a slide. Its popovers hang below it, over the canvas. */}
+        <div className="relative flex-1 min-w-0 min-h-0 flex flex-col">
+          <div data-toolbar-strip="" className="relative z-30 flex-shrink-0 flex justify-center min-h-14 px-4 pt-2 pb-1">
+            {canvasToolbar && <div className="max-w-full">{canvasToolbar}</div>}
+          </div>
           {canvas}
         </div>
 

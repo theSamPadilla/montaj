@@ -2266,6 +2266,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           scale={railScale}
           renderHeader={renderRailHeader}
           renderSlide={renderRailSlide}
+          selectedElementIds={liveSelectedIds}
+          // Scrolled far out of view, the selection goes, as a press on another slide takes it.
+          onSelectionScrolledAway={() => { applyCrop(); setSelectedElementId(null) }}
         />
       )}
       {errorBanner}
