@@ -55,11 +55,12 @@ const D = at(4) // a 4 s overlay
   assert.ok(Array.from({ length: 20 }, (_, k) => motion(at(0.6 + k * 0.12), fps, D, { hold: 'none' }).scale).every((s) => s === 1), 'hold none: still')
 }
 {
-  // exit: fades over the last 120 ms, gone at the last frame
-  assert.equal(motion(D - at(0.12), fps, D).opacity, 1, 'exit: whole until its last 120 ms')
-  assert.equal(motion(D, fps, D).opacity, 0, 'exit: gone at the end')
-  assert.ok(motion(D - at(0.06), fps, D).opacity < 1, 'exit: on its way out')
-  assert.equal(motion(D, fps, D, { exit: 'none' }).opacity, 1, 'exit none: holds to the cut')
+  // exit: fades over the last 120 ms, gone at the last frame drawn. An item of D frames draws frames 0 to D - 1
+  // (render.js: frameCount = round((end - start) * fps)); timed to frame D, the exit stopped at 62% and hard-cut (PL89 review)
+  assert.equal(motion(D - 1 - at(0.12), fps, D).opacity, 1, 'exit: whole until its last 120 ms')
+  assert.equal(motion(D - 1, fps, D).opacity, 0, 'exit: gone on the last frame drawn')
+  assert.ok(motion(D - 1 - at(0.06), fps, D).opacity < 1, 'exit: on its way out')
+  assert.equal(motion(D - 1, fps, D, { exit: 'none' }).opacity, 1, 'exit none: holds to the cut')
 }
 {
   // rise and slides move, and land at 0

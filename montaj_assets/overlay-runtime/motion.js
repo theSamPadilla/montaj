@@ -100,7 +100,8 @@ export function motion(frame, fps, duration, opts = {}) {
   if (!E) throw new Error(`motion: enter is one of ${Object.keys(ENTERS).join(', ')}`)
   if (!X) throw new Error(`motion: exit is one of ${Object.keys(EXITS).join(', ')}`)
   if (!H) throw new Error(`motion: hold is one of ${Object.keys(HOLDS).join(', ')}`)
-  const t = frame / fps, end = duration / fps
+  // the last frame drawn is duration - 1 (frames 0 to duration - 1), so the exit lands there, not a frame past it
+  const t = frame / fps, end = Math.max(0, duration - 1) / fps
   let tin = opts.in ?? E.in, tout = opts.out ?? X.out
   const room = Math.max(0, end - delay)
   if (tin + tout > room) {   // a short beat: both shrink to fit

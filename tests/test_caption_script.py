@@ -221,3 +221,31 @@ def test_an_empty_script_turns_it_off_and_no_prompt_answers_no_count(tmp_path, m
 def test_no_prompt_and_no_script_answers_no_count(tmp_path, monkeypatch, capsys):
     out = _step_run(tmp_path, monkeypatch, capsys, [], {})
     assert "corrected" not in out
+
+
+# PL89 review (M4): the editing prompt is the script plus instructions. Captions spell from the script part only, and a
+# word said twice is one word only where the script has it, once, at that place: "had had", "no no" said and not in the
+# script are the speaker's words, both kept.
+def test_the_script_is_the_prompts_script_part_without_its_notes_or_lead_in():
+    from lib.caption_script import script_of
+    prompt = ("Edit this video to follow the script:\n<Hook>\nThis might be the funniest demo.\n<Play the clip>\n"
+              "Yeah, I don't think so.\n-----\nYou have context, just make it look awesome in the video.")
+    got = script_of({"editingPrompt": prompt})
+    assert "This might be the funniest demo." in got and "Yeah, I don't think so." in got
+    assert "awesome" not in got and "context" not in got, got
+    assert "Edit this video" not in got and "Hook" not in got and "Play the clip" not in got, got
+    assert script_of({"editingPrompt": "Tight cuts, remove filler.\n"}) == "Tight cuts, remove filler.", "no ----- line: the whole prompt"
+
+
+def test_a_doubled_word_the_script_does_not_have_there_is_kept_twice():
+    out, n = align(W(("we", 0.0, 0.2), ("had", 0.2, 0.4), ("had", 0.4, 0.6)), "We")
+    assert words_of(out) == ["We", "had", "had"] and n == 0, words_of(out)
+    out, n = align(W(("robot", 0.0, 0.2), ("no", 0.2, 0.4), ("no", 0.4, 0.6), ("fell", 0.6, 1.0)), "robot fell")
+    assert words_of(out) == ["robot", "no", "no", "fell"] and n == 0, words_of(out)
+
+
+def test_a_stutter_before_a_script_word_is_still_one_word():
+    heard = W(("the", 0.0, 0.1), ("the", 0.15, 0.3), ("robot", 0.3, 0.7), ("so", 0.8, 0.9), ("so", 0.95, 1.1))
+    out, n = align(heard, "the robot")
+    assert words_of(out) == ["the", "robot", "so", "so"], words_of(out)
+    assert out[0]["start"] == 0.0 and n == 1

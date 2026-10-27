@@ -163,32 +163,38 @@ def align(heard, script):
     hk = [_key(w.get("word", "")) for w in heard]
     sk = [_key(t) for t in tokens]
     out, corrected = [], 0
+    scripted = []      # per word in `out`: laid from a script word (the script has it there, once)
     starts_at = None   # a stutter before the word it repeats: that word starts at the first saying
+    opcodes = SequenceMatcher(None, hk, sk, autojunk=False).get_opcodes()
+    in_script = {i for op, i1, i2, _, _ in opcodes if op == "equal" for i in range(i1, i2)}
 
-    def put(w):
+    def put(w, laid=False):
         nonlocal starts_at
         if starts_at is not None:
             w["start"], starts_at = starts_at, None
         out.append(w)
+        scripted.append(laid)
 
-    for op, i1, i2, j1, j2 in SequenceMatcher(None, hk, sk, autojunk=False).get_opcodes():
+    for op, i1, i2, j1, j2 in opcodes:
         if op == "equal":
             for h, s in zip(heard[i1:i2], tokens[j1:j2]):
                 w = copy.deepcopy(h)
                 w["word"] = s
-                put(w)
+                put(w, laid=True)
         elif op == "replace":
             words, n = _replace(heard[i1:i2], tokens[j1:j2])
             for w in words:
                 put(w)
             corrected += n
         elif op == "delete":
+            # a word said twice is one word only where the script has it once, at that place (PL89 review: "had had",
+            # "no no" said and not in the script are the speaker's words, both kept)
             for i in range(i1, i2):
                 h = heard[i]
-                if out and starts_at is None and _key(out[-1]["word"]) == hk[i]:   # said twice: the first saying runs on
+                if out and scripted[-1] and starts_at is None and _key(out[-1]["word"]) == hk[i]:   # the first saying runs on
                     out[-1]["end"] = h["end"]
                     corrected += 1
-                elif i == i2 - 1 and i2 < len(heard) and hk[i2] == hk[i]:          # said twice: the next saying starts here
+                elif i == i2 - 1 and i2 in in_script and hk[i2] == hk[i]:   # the next saying starts here
                     starts_at = h["start"] if starts_at is None else starts_at
                     corrected += 1
                 else:
@@ -202,7 +208,13 @@ def script_of(project) -> str:
     for, which holds the script when they gave one), with its <section> and <stage direction> tags left out. Its
     instructions do not get into the captions: only heard words that read or sound like a script word change."""
     prompt = project.get("editingPrompt")
-    return re.sub(r"<[^>]*>", " ", prompt) if isinstance(prompt, str) else ""
+    if not isinstance(prompt, str):
+        return ""
+    # PL89 review: only the script. The notes after a "-----" line and a lead-in like "Edit this video to follow the
+    # script:" are instructions; their words took the captions' spelling ("video." broke a caption mid-sentence).
+    script = re.split(r"(?m)^\s*-{3,}\s*$", prompt, maxsplit=1)[0]
+    script = re.sub(r"(?i)\A\s*edit this video[^\n]*:\s*\n", "", script)
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]*>", " ", script)).strip()
 
 
 def spell_from_script(words_json_path, script) -> int:
