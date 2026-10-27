@@ -132,6 +132,9 @@ export function clipGain(
   return muted ? 0 : volume
 }
 
+/** How long a press of play at the end waits for its seek to 0 to land. */
+const PLAY_FROM_START_MS = 500
+
 export function useVideoPlayback(
   project: Project,
   currentTime: number,
@@ -183,12 +186,14 @@ export function useVideoPlayback(
   const videoGainRef  = useRef<[GainNode | null, GainNode | null]>([null, null])
   const [isPlaying, setIsPlaying] = useState(false)
   const isPlayingRef = useRef(false)
-  // Bumped by every press of play or pause: a play() waiting on `canplay`
-  // only fires if no press came after it (see `playOrWait`).
+  // Bumped by every press of play or pause and every scrub: a play() waiting
+  // on `canplay` only fires if nothing came after it (see `playOrWait`).
   const playIntentRef = useRef(0)
   // A press of play at the end rewinds first and plays once the seek to 0
   // has landed (see `togglePlay` and the effect after the scrub effect).
-  const playFromStartRef = useRef(false)
+  // Holds the press's time; the play only follows a seek that lands within
+  // PLAY_FROM_START_MS (a dropped seek, e.g. under hover-scrub, never fires later).
+  const playFromStartRef = useRef<number | null>(null)
   const togglePlayRef = useRef<() => void>(() => {})
   // Keep ref in sync so effects with narrow deps can read current playing state
   useEffect(() => { isPlayingRef.current = isPlaying }, [isPlaying])
@@ -326,9 +331,14 @@ export function useVideoPlayback(
       const e = err as { name?: string; message?: string } | null
       console.warn(`[montaj] play() refused on the preview (${e?.name ?? 'Error'}: ${e?.message ?? String(err)}); src: ${video.currentSrc || video.src || 'none'}`)
       if (video.error) return
+      const armedSrc = video.currentSrc || video.src
       const onCanPlay = () => {
         video.removeEventListener('canplay', onCanPlay)
-        if (intent === playIntentRef.current && video === getActiveVideo() && video.paused) {
+        // Only the same press, on the same slot and source, still paused,
+        // outside a gap: a scrub (which bumps the intent), a clip switch or
+        // the hook's own pause has since decided otherwise.
+        if (intent === playIntentRef.current && video === getActiveVideo() && video.paused
+          && !inGapRef.current && (video.currentSrc || video.src) === armedSrc) {
           video.play().catch((again: unknown) => {
             const a = again as { name?: string; message?: string } | null
             console.warn(`[montaj] play() refused again once the clip could play (${a?.name ?? 'Error'}: ${a?.message ?? String(again)})`)
@@ -784,6 +794,7 @@ export function useVideoPlayback(
   useEffect(() => {
     if (Math.abs(currentTime - lastTimeRef.current) < 0.05) return
     cancelGap()
+    playIntentRef.current++
     lastTimeRef.current = currentTime
     mixerRef.current?.seek(currentTime)
     const idx = clips.findIndex(c => currentTime >= c.start && currentTime < c.end)
@@ -870,9 +881,10 @@ export function useVideoPlayback(
   // The second half of a press of play at the end: the scrub effect above has
   // just moved to 0 (it runs first, being declared first), so play from there.
   useEffect(() => {
-    if (!playFromStartRef.current || currentTime > 0.05) return
-    playFromStartRef.current = false
-    togglePlayRef.current()
+    const pressedAt = playFromStartRef.current
+    if (pressedAt === null || currentTime > 0.05) return
+    playFromStartRef.current = null
+    if (performance.now() - pressedAt <= PLAY_FROM_START_MS) togglePlayRef.current()
   }, [currentTime])
 
   const handleTimeUpdate = useCallback(() => {
@@ -1127,7 +1139,7 @@ export function useVideoPlayback(
           } else if (t >= 0.05) {
             // At the end: nowhere to run. Seek to 0 through the store (the
             // scrub effect loads the first clip) and play once it lands.
-            playFromStartRef.current = true
+            playFromStartRef.current = performance.now()
             onTimeUpdate(0)
           }
           return

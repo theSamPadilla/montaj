@@ -16,6 +16,7 @@ import { useEnginePlayback, type EnginePlayback } from './useEnginePlayback'
 import EngineSurface from './EngineSurface'
 import { checkProjectShapeEligibility, evaluateEngineEligibility, engineRequiredReason } from '../../engine/eligibility'
 import type { AcquiredDemux, MixerScrub } from '../../engine'
+import { transportEndFor } from '../../engine/scheduler'
 import { useMissingClips, missingClipAt, missingClipsAhead, missingDetail, MISSING_TITLE } from '../missingClips'
 import { usePlaybackTime, type PlaybackClock } from '../playback-clock'
 import { gateTimeSink, handOverToHover, useHoverScrubTime, type HoverScrub } from '../hover-scrub'
@@ -577,7 +578,9 @@ function PreviewSurface({
   const guardedTogglePlay = useCallback(() => {
     const g = guardRef.current
     if (!g.isPlaying && g.missingIds.size > 0) {
-      const blocking = missingClipsAhead(g.project, g.missingIds, g.currentTime)
+      // At the end, play runs again from the start: check from there.
+      const from = g.currentTime >= transportEndFor(g.project) - 1e-3 ? 0 : g.currentTime
+      const blocking = missingClipsAhead(g.project, g.missingIds, from)
       if (blocking.length > 0) {
         const notice = { title: MISSING_TITLE, detail: missingDetail(blocking) }
         if (g.notifyMissing) g.notifyMissing(notice)
@@ -707,6 +710,9 @@ function PreviewSurface({
   })
 
   const onXfMoveDown = (e: ReactPointerEvent) => {
+    // Primary button only, as the play toggle's onClick: a right-click (or a
+    // Ctrl-click, the Mac's) neither moves the clip nor plays.
+    if (e.button !== 0 || e.ctrlKey) return
     e.stopPropagation(); e.currentTarget.setPointerCapture?.(e.pointerId)
     xfDragRef.current = { kind: 'move', startClient: { x: e.clientX, y: e.clientY }, start: baseXf }
   }

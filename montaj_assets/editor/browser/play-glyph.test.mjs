@@ -206,6 +206,19 @@ for (const engine of [true, false]) {
     await page.close()
   })
 
+  test(`${path}: a right-click on the selected clip neither plays nor moves it`, async () => {
+    const page = await open(`engine=${engine ? 1 : 0}&kind=video`)
+    await frames(page)
+    await page.evaluate(() => window.__select('c1'))
+    await frames(page)
+    const g = await glyph(page)
+    await page.mouse.click(g.x + 40, g.y + 40, { button: 'right' })
+    await new Promise((r) => setTimeout(r, 400))
+    const state = await page.evaluate(() => ({ offsetX: window.__project.tracks[0][0].offsetX ?? 0, playing: window.__playing }))
+    assert.deepEqual(state, { offsetX: 0, playing: false })
+    await page.close()
+  })
+
   test(`${path}: dragging the selected clip still moves it and does not play`, async () => {
     const page = await open(`engine=${engine ? 1 : 0}&kind=video`)
     await frames(page)
