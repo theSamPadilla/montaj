@@ -16,9 +16,9 @@ import re
 import subprocess
 
 from lib import shots as shots_lib
+from lib import transcripts
 from lib.common import ffprobe_bin, ff_path
-from lib.speech_lines import load_words, norm, refine, sidecar_for, split_lines
-from lib.speech_units import hardly_speech, made_up
+from lib.speech_lines import norm, sidecar_for
 
 BRIEF_VERSION = 4
 LONG_BROLL_S = 20.0          # b-roll at least this long gets its shots listed and a sheet
@@ -193,25 +193,21 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
     W.append("")
 
     # sources and their roles (cut's own speech test)
-    heads, rolls, rows = [], [], []
+    # the one transcript reader (lib/transcripts.py): the same lettering, refinement and cache as the transcripts step
+    heads = transcripts.talking_heads(project, project_dir, silences_fn=silences_fn)
+    letter_of = {s["src"]: letter for s, letter, _ in heads}
+    rolls, rows = [], []
     for s in _sources(project, project_dir):
         sc = sidecar_for(s)
-        words = load_words(sc) if sc else []
         dur = float(s.get("sourceDuration") or 0)
-        raw = [{"text": w.text, "start": w.start, "end": w.end} for w in words]
-        talk = bool(words) and not hardly_speech(raw, dur or (words[-1].end if words else 0)) and not made_up(raw)
         fps, trc = probe_fn(s["src"])
         pic = (f"{s['sourceWidth']}x{s['sourceHeight']}" if s.get("sourceWidth") else "")
         pic += " HDR" if trc in _HDR else ""
-        if talk:
-            letter = chr(ord("A") + len(heads)) if len(heads) < 26 else f"S{len(heads)}"
-            media = s.get("proxySrc") or s["src"]
-            refined, _ = refine(words, silences_fn(media))
-            heads.append((s, letter, split_lines(letter, refined)))
-            role = f"talking head {letter}"
+        if s["src"] in letter_of:
+            role = f"talking head {letter_of[s['src']]}"
         else:
             rolls.append(s)
-            role = "b-roll" + (" (no speech)" if words else "")
+            role = "b-roll" + (" (no speech)" if sc else "")
         rows.append(f"| {s.get('id', '')} | {os.path.basename(s['src'])} | {role} | {dur:.1f} s | {fps or '?'} | {pic.strip()} |")
     W += ["## Sources", "| id | file | role | length | fps | picture |", "|---|---|---|---|---|---|", *rows]
     sheets = []

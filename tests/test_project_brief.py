@@ -149,7 +149,8 @@ def test_a_second_read_is_cached_and_a_change_reads_again(proj):
     assert again == first and len(f.silences) == 1 and len(f.shots) == 1, "the second read measured nothing"
     p["editingPrompt"] = PROMPT.replace("lifts a car", "lifts a truck")
     changed = pb.brief(p, str(d), str(ROOT), **f.kw())
-    assert changed["stamp"] != first["stamp"] and len(f.silences) == 2
+    # the brief is built again; the transcripts are not measured again (lib/transcripts caches each source)
+    assert changed["stamp"] != first["stamp"] and len(f.silences) == 1
 
 
 def test_the_route_answers_the_brief(proj, monkeypatch):
