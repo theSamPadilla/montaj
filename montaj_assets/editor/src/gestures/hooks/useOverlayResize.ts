@@ -12,7 +12,8 @@ export type UseOverlayResizeArgs = {
   scale: number;
   // Called on every pointer move with the new box, current rotation and the
   // gesture. Use for cheap, side-effect-only previews (e.g. direct DOM
-  // mutation) — do NOT trigger React state updates here.
+  // mutation) — do NOT re-render the canvas here. What must re-render (an
+  // overlay drawn from its box) subscribes to its own live size instead.
   onPreview: (
     elementId: string,
     box: { x: number; y: number; w: number; h: number },
