@@ -140,6 +140,23 @@ def test_null_skips_a_slide_and_long_copy_gets_the_tables_smaller_size(tmp_path)
     assert (props["fontSize"], props["minFontSize"]) == ("50", "44")
 
 
+
+def test_a_new_headline_drops_the_old_texts_styled_runs_and_the_same_text_keeps_them(tmp_path):
+    """A headline's `runs` (one word styled, §587 round 3) spell its old text: a step that rewrites the text drops them."""
+    d = make_carousel(tmp_path)
+    run(d, headlines=json.dumps(HEADS))
+    p = proj(d)
+    for i in (0, 1, 2):
+        props = headline(p["slides"][i])["overlay"]["props"]
+        props["runs"] = json.dumps([{"t": props["text"], "c": "#ff0000"}])
+    (d / "project.json").write_text(json.dumps(p))
+    run(d, headlines=json.dumps(["A new hook", HEADS[1]]))
+    run(d, edit=json.dumps({"slide": 3, "headline": "Shorter"}))
+    after = proj(d)["slides"]
+    assert "runs" not in headline(after[0])["overlay"]["props"], "headlines: new text, stale runs"
+    assert "runs" not in headline(after[2])["overlay"]["props"], "edit: new text, stale runs"
+    assert headline(after[1])["overlay"]["props"]["runs"] == json.dumps([{"t": HEADS[1], "c": "#ff0000"}]), "the same text keeps its runs"
+
 # ── edit ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 def test_an_edit_changes_only_that_slide_and_leaves_the_notes(tmp_path):

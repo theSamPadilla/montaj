@@ -83,6 +83,7 @@ function survey(png) {
 }
 
 const TEXT = 'ink ink ink RED'
+const EMOJI_TEXT = 'ink ink ink \u{1F600}'
 const BOX = { x: 90, y: 340, w: 900, h: 400 }
 const slide = (id, extra) => ({
   id,
@@ -97,7 +98,7 @@ const slide = (id, extra) => ({
   }],
 })
 
-test('static-text runs: the red word is red in the export, fits like the plain text, and stale runs are ignored', { timeout: 120_000 }, () => {
+test('static-text runs: the red word is red in the export, fits like the plain text, and stale runs or runs splitting an emoji are ignored', { timeout: 120_000 }, () => {
   const project = {
     projectType: 'carousel',
     settings: { resolution: [1080, 1080] },
@@ -107,6 +108,9 @@ test('static-text runs: the red word is red in the export, fits like the plain t
       slide('plain', {}),
       slide('stale', { runs: JSON.stringify([{ t: 'ink', c: '#ff0000' }]) }),
       slide('bold', { runs: JSON.stringify([{ t: 'ink ink ink ' }, { t: 'RED', c: '#ff0000', b: 1, u: 1 }]) }),
+      // A boundary between an emoji's two halves: ignored, as the editor ignores it.
+      slide('emoji', { text: EMOJI_TEXT }),
+      slide('split', { text: EMOJI_TEXT, runs: JSON.stringify([{ t: EMOJI_TEXT.slice(0, -1), c: '#ff0000' }, { t: EMOJI_TEXT.slice(-1) }]) }),
     ],
   }
   const dir = mkdtempSync(join(tmpdir(), 'montaj-static-text-runs-'))
@@ -125,6 +129,7 @@ test('static-text runs: the red word is red in the export, fits like the plain t
     assert.deepEqual(red.box, plain.box, 'a colour run changed where the text fits')
 
     assert.ok(file(3).equals(file(2)), 'runs that do not spell the text must draw exactly as the plain text')
+    assert.ok(file(6).equals(file(5)), 'runs that split an emoji must draw exactly as the plain text')
 
     assert.ok(bold.red > red.red * 1.15, `the bold, underlined word has no more ink: ${bold.red} vs ${red.red}`)
     assert.ok(bold.box.left >= BOX.x && bold.box.right < BOX.x + BOX.w && bold.box.top >= BOX.y && bold.box.bottom < BOX.y + BOX.h,

@@ -24,7 +24,8 @@
  *                   [{"t":"Make it "},{"t":"red","c":"#ff0000","b":1}]. `t` the
  *                   run's text, `c` a hex colour, `b`/`i`/`u` 1 (bold, italic,
  *                   underline on) or 0 (off); absent = the element's own. Used
- *                   only when the runs spell `text` exactly; otherwise ignored.
+ *                   only when the runs spell `text` exactly and no boundary
+ *                   splits an emoji's two halves; otherwise ignored.
  *
  * Effects are sized in em, so they follow the size the text is drawn at,
  * fitted or not. Fit measures the laid-out text in the browser (a callback
@@ -54,6 +55,10 @@ function decodeRuns(raw, text) {
   try { list = JSON.parse(raw) } catch { return null }
   if (!Array.isArray(list) || !list.every(r => r && typeof r === 'object' && typeof r.t === 'string')) return null
   if (list.map(r => r.t).join('') !== String(text)) return null
+  // A boundary between an emoji's two UTF-16 halves would draw each half alone.
+  for (let i = 0; i < list.length - 1; i++) {
+    if (/[\uD800-\uDBFF]$/.test(list[i].t) && /^[\uDC00-\uDFFF]/.test(list.slice(i + 1).map(r => r.t).join(''))) return null
+  }
   return list.filter(r => r.t !== '')
 }
 
