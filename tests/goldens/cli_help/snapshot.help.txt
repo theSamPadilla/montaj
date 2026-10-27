@@ -1,13 +1,15 @@
-usage: montaj snapshot [-h] [--cols COLS] [--rows ROWS] [--start START]
-                       [--end END] [--frames FRAMES] [--at AT] [--json]
-                       [--out PATH] [--quiet]
-                       input
-
-positional arguments:
-  input            Source video file
+usage: montaj snapshot [-h] [--input INPUT] [--inputs INPUTS] [--names NAMES]
+                       [--cols COLS] [--rows ROWS] [--start START] [--end END]
+                       [--frames FRAMES] [--at AT] [--json] [--out PATH]
+                       [--quiet]
 
 options:
   -h, --help       show this help message and exit
+  --input INPUT    Source video file
+  --inputs INPUTS  Several clips: ONE sheet, a row per clip (cols frames each,
+                   default 6), each tile labelled with its name and time. At
+                   most 12.
+  --names NAMES    A label per inputs clip (its clip id).
   --cols COLS      Grid columns (grid mode, or a sheet of several at)
   --rows ROWS      Grid rows (grid mode)
   --start START    Window start in seconds (grid / all-frames mode)

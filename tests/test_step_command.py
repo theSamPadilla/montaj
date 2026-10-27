@@ -89,8 +89,8 @@ PARITY = [
     ("analyze-media", "analyze-media",
      ["/media.mp4", "--prompt", "describe", "--model", "gemini-2.5-pro", "--json-output"],
      ["--input", "/media.mp4", "--prompt", "describe", "--model", "gemini-2.5-pro", "--json-output"], False, False),
-    ("snapshot", "snapshot",
-     ["/in.mp4", "--cols", "4", "--rows", "2", "--start", "1", "--end", "5", "--frames", "all", "--at", "3"],
+    ("snapshot", "snapshot",  # input is optional since one sheet of several clips (inputs): a flag, not a positional
+     ["--input", "/in.mp4", "--cols", "4", "--rows", "2", "--start", "1", "--end", "5", "--frames", "all", "--at", "3"],
      ["--input", "/in.mp4", "--cols", "4", "--rows", "2", "--start", "1.0", "--end", "5.0", "--frames", "all", "--at", "3.0"], False, False),
     ("filler", "filler",  # step_name quirk → rm_fillers
      ["/in.mp4", "--model", "medium", "--language", "es"],
