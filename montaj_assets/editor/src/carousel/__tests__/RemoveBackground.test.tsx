@@ -143,6 +143,38 @@ describe('Remove background (§587 R3)', () => {
     expect(removeBg(r)!.disabled).toBe(false)
   })
 
+  it('a cutout save that fails goes to onError', async () => {
+    const adapter = makeAdapter(vi.fn(async () => ({ path: CUTOUT })))
+    adapter.saveProject = vi.fn(async () => { throw new Error('disk full') })
+    const { r, onError } = await mount(adapter)
+    await press(removeBg(r)!)
+    await waitFor(() => expect(onError).toHaveBeenCalledTimes(1))
+    expect(onError.mock.calls[0][0]).toMatchObject({ title: "Couldn't remove the background" })
+  })
+
+  it('an answer without a path goes to onError and writes nothing', async () => {
+    const adapter = makeAdapter(vi.fn(async () => ({}) as { path: string }))
+    const { r, onError } = await mount(adapter)
+    await press(removeBg(r)!)
+    await waitFor(() => expect(onError).toHaveBeenCalledTimes(1))
+    expect(onError.mock.calls[0][0]).toMatchObject({ title: "Couldn't remove the background" })
+    await act(async () => { await new Promise((res) => setTimeout(res, 30)) })
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('a write the project drops (it stopped being editable) goes to onError', async () => {
+    const run = deferred<{ path: string }>()
+    const adapter = makeAdapter(vi.fn(() => run.promise))
+    let push!: (p: Project) => void
+    adapter.subscribe = (_id, onFrame) => { push = (p) => onFrame(p); return () => {} }
+    const { r, onError } = await mount(adapter)
+    await press(removeBg(r)!)
+    await act(async () => { push({ ...makeProject(), status: 'rendering' } as unknown as Project) })
+    await act(async () => { run.resolve({ path: CUTOUT }) })
+    await waitFor(() => expect(onError).toHaveBeenCalledTimes(1))
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
   it('is disabled on a locked image', async () => {
     const adapter = makeAdapter(vi.fn(async () => ({ path: CUTOUT })))
     const { r } = await mount(adapter, 'el-img', makeProject(true))

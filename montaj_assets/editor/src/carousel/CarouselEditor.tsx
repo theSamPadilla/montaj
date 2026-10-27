@@ -43,6 +43,7 @@ import { moveToLayer, reorderSelection } from './layerOrder'
 import { canGroup, canUngroup, freshGroupIds, groupBox, groupMemberIds, groupOf, groupElements, selectionAfterPress, ungroupElements, wholeGroup } from './groups'
 import { newTextElement } from './newText'
 import { elementCategory, newOverlayElement, overlayTileLabel, TEMPLATE_DND_MIME } from './overlayElement'
+import { isFontFile } from '../lib/font-files'
 import { applyTextStyle, isTextOverlay, pickTextStyle, type TextStyle } from './textStyle'
 import { Button, ColourPanelContext, type ColourRequest } from '../ui'
 import { shortcutText } from '../ui/modifierKeys'
@@ -783,6 +784,12 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
 
   /** A font pick: `fontFamily` with its `googleFonts` or `fontFiles`, one undo step; a locked text is left alone. */
   function setTextFont(slideId: string, elementId: string, fontFamily: string, googleFonts: string[], fontFiles?: FontFile[]) {
+    // A later pick outdates a custom font's import still running for this element.
+    fontPickTokens.current.set(elementId, (fontPickTokens.current.get(elementId) ?? 0) + 1)
+    writeTextFont(slideId, elementId, fontFamily, googleFonts, fontFiles)
+  }
+  const fontPickTokens = useRef(new Map<string, number>())
+  function writeTextFont(slideId: string, elementId: string, fontFamily: string, googleFonts: string[], fontFiles?: FontFile[]) {
     void state.editElements(slideId, (els) => {
       let changed = false
       const next = els.map((el) => {
@@ -800,8 +807,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   async function pickCustomFont(slideId: string, elementId: string, picked: { family: string; url: string }) {
     const font: CustomFont = customFonts?.find((f) => f === picked) ?? picked
     const key = font.family.toLowerCase()
+    const token = (fontPickTokens.current.get(elementId) ?? 0) + 1
+    fontPickTokens.current.set(elementId, token)
     let src = (project.slides ?? []).flatMap((sl) => sl.elements)
-      .flatMap((el) => (el.type === 'overlay' ? el.fontFiles ?? [] : []))
+      .flatMap((el) => (el.type === 'overlay' && Array.isArray(el.fontFiles) ? el.fontFiles.filter(isFontFile) : []))
       .find((f) => f.family.toLowerCase() === key)?.src
     if (!src) {
       try {
@@ -811,7 +820,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         return
       }
     }
-    if (src) setTextFont(slideId, elementId, customFontValue(font.family), [], [{ family: font.family, src }])
+    if (src && fontPickTokens.current.get(elementId) === token) writeTextFont(slideId, elementId, customFontValue(font.family), [], [{ family: font.family, src }])
   }
 
   /** The lock badge: unlocks one element (not the selection), as its own undo
@@ -1538,6 +1547,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       let path: string
       try {
         ({ path } = await adapter.removeBackground(start.src, project.id))
+        if (typeof path !== 'string' || !path) throw new Error('No cutout came back')
       } catch (e) {
         reportError("Couldn't remove the background", e)
         return
@@ -1547,12 +1557,21 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       if (!mountedRef.current || !live || isLocked(live) || live.src !== start.src) return
       flushNudge()
       const asset: Asset = { id: crypto.randomUUID(), src: path, type: 'image', name: path.split(/[\\/]/).pop() }
-      await state.editElements(slideId, (els) => els.map((el): CarouselElement => {
-        if (el.id !== elementId || el.type !== 'image') return el
-        // `mediaId` named the old file.
-        const { mediaId: _mediaId, ...kept } = el
-        return { ...kept, src: path }
-      }), [asset]).catch(() => {})
+      let applied = false
+      try {
+        await state.editElements(slideId, (els) => els.map((el): CarouselElement => {
+          if (el.id !== elementId || el.type !== 'image') return el
+          applied = true
+          // `mediaId` named the old file.
+          const { mediaId: _mediaId, ...kept } = el
+          return { ...kept, src: path }
+        }), [asset])
+      } catch (e) {
+        reportError("Couldn't remove the background", e)
+        return
+      }
+      // A write the state dropped (the project stopped being editable) is told, not silent.
+      if (!applied && mountedRef.current) reportError("Couldn't remove the background", 'The project could not be changed')
     } finally {
       running(false)
     }

@@ -7,6 +7,16 @@ function text(props: Record<string, unknown>, extra: Partial<OverlayElement> = {
 }
 
 describe('textStyle', () => {
+  it('ignores malformed fontFiles when picking and applying', () => {
+    const bad = [null, { family: 3 }, 'x', { family: 'A' }, { family: 'Ok', src: 'ok.ttf' }] as unknown as OverlayElement['fontFiles']
+    expect(pickTextStyle(text({ text: 'a', fontFamily: 'Ok' }, { fontFiles: bad })).fontFiles).toEqual([{ family: 'Ok', src: 'ok.ttf' }])
+    expect(() => pickTextStyle(text({ text: 'a' }, { fontFiles: 'x' as unknown as OverlayElement['fontFiles'] }))).not.toThrow()
+    const style = { props: { fontFamily: 'Ok' }, fontFiles: bad as unknown as { family: string; src: string }[] }
+    const out = applyTextStyle(text({ text: 'a', fontFamily: 'Inter' }), style)
+    expect(out.fontFiles).toEqual([{ family: 'Ok', src: 'ok.ttf' }])
+    expect(applyTextStyle(text({ text: 'a', fontFamily: 'Inter' }), { props: { fontFamily: 'Ok' }, fontFiles: 'x' as unknown as never }).fontFiles).toBeUndefined()
+  })
+
   it('lists the standard props but the text, plus the effect trio', () => {
     expect([...TEXT_STYLE_PROPS].sort()).toEqual([
       'bgColor', 'color', 'effect', 'effectColor', 'effectStrength', 'fontFamily', 'fontSize', 'fontStyle', 'fontWeight', 'textAlign', 'textTransform',
