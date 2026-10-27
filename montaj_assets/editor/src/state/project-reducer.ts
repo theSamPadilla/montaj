@@ -17,6 +17,7 @@ import type {
   CarouselElement,
 } from '../types'
 import { deepEqual } from './deep-equal'
+import type { Asset } from '../schema'
 
 // The reducer/Action are generic over the host's concrete project type `P`,
 // constrained to the editor-facing `Project` (= EditorProject) slice. A host can
@@ -63,7 +64,7 @@ export type Action<P extends Project = Project> =
   // elements the state holds WHEN THE ACTION IS APPLIED, so a write built from
   // an older view (a key read the render before it, an upload that took time)
   // cannot drop an element that arrived since. The same array back changes nothing.
-  | { type: 'editElements'; slideId: string; edit: (elements: CarouselElement[]) => CarouselElement[] }
+  | { type: 'editElements'; slideId: string; edit: (elements: CarouselElement[]) => CarouselElement[]; assets?: Asset[] }
   // Every slide edited as a whole (§587 M5: "change this colour on every slide"
   // is one mutation, so one undo step). Same rule as `editElements`: `edit` is
   // given the slides the state holds when applied; the same array back changes nothing.
@@ -296,7 +297,10 @@ export function projectReducer<P extends Project>(state: P, action: Action<P>): 
       const elements = action.edit(slide.elements)
       if (elements === slide.elements) return state
       const slides = (state.slides ?? []).map((s): Slide => (s.id === action.slideId ? { ...s, elements } : s))
-      return { ...state, slides }
+      // `assets` (new files) join `project.assets` in the same step, skipping a `src` already there.
+      const have = state.assets ?? []
+      const fresh = (action.assets ?? []).filter((a, i, all) => !have.some((h) => h.src === a.src) && all.findIndex((b) => b.src === a.src) === i)
+      return fresh.length > 0 ? { ...state, slides, assets: [...have, ...fresh] } : { ...state, slides }
     }
 
     case 'editSlides': {

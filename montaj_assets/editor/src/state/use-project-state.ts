@@ -16,6 +16,7 @@ import { useCallback } from 'react'
 import { projectReducer, type Action, type ProjectStatus, type ReorderDirection } from './project-reducer'
 import { useProjectSync } from './use-project-sync'
 import type { Project, Slide, CarouselElement, EditorAdapter } from '../types'
+import type { Asset } from '../schema'
 
 // Re-export so existing consumers (index.ts barrel) keep importing `Connection`
 // from here; the type is now owned by the sync core.
@@ -76,7 +77,7 @@ export interface UseProjectState<P extends Project = Project> {
    * several) instead of `updateSlide({ elements })`, which writes the caller's
    * copy of the list over whatever arrived since.
    */
-  editElements: (slideId: string, edit: (elements: CarouselElement[]) => CarouselElement[]) => Promise<void>
+  editElements: (slideId: string, edit: (elements: CarouselElement[]) => CarouselElement[], assets?: Asset[]) => Promise<void>
   /**
    * Edits every slide at once (§587 M5): one save and one undo step, gated like
    * every slide edit; an edit that returns the same array writes nothing.
@@ -286,8 +287,8 @@ export function useProjectState<P extends Project = Project>(
   )
 
   const editElements = useCallback(
-    (slideId: string, edit: (elements: CarouselElement[]) => CarouselElement[]) =>
-      mutate({ type: 'editElements', slideId, edit }),
+    (slideId: string, edit: (elements: CarouselElement[]) => CarouselElement[], assets?: Asset[]) =>
+      mutate({ type: 'editElements', slideId, edit, assets }),
     [mutate],
   )
 
