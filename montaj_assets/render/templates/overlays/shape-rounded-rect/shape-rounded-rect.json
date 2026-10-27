@@ -4,7 +4,7 @@
   "props": [
     { "name": "fill",        "type": "string", "default": "#bdbdbd", "format": "color" },
     { "name": "stroke",      "type": "string", "default": "#111111", "format": "color" },
-    { "name": "strokeWidth", "type": "string", "default": "0" },
-    { "name": "cornerRadius", "type": "string", "default": "48" }
+    { "name": "strokeWidth", "type": "int", "default": 0 },
+    { "name": "cornerRadius", "type": "int", "default": 48 }
   ]
 }

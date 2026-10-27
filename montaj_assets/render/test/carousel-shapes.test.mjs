@@ -7,7 +7,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -69,6 +69,22 @@ const GREEN = [0, 170, 0]
 const BLACK = [0, 0, 0]
 const WHITE = [255, 255, 255]
 
+test('numeric props of the shipped shapes, lines and frames are int, with a number default (the editor steps them)', () => {
+  const NUMERIC = new Set(['strokeWidth', 'headLength', 'shaftWidth', 'points', 'cornerRadius', 'innerRadius', 'dash', 'gap', 'cornerLength'])
+  let seen = 0
+  for (const dir of readdirSync(TEMPLATES)) {
+    if (!/^(shape|frame)-/.test(dir) && !/^line-(arrow|dashed|straight)$/.test(dir)) continue
+    const sidecar = JSON.parse(readFileSync(join(TEMPLATES, dir, `${dir}.json`), 'utf8'))
+    for (const p of sidecar.props) {
+      if (!NUMERIC.has(p.name)) continue
+      seen++
+      assert.equal(p.type, 'int', `${dir}.${p.name}`)
+      assert.equal(typeof p.default, 'number', `${dir}.${p.name} default`)
+    }
+  }
+  assert.ok(seen >= 20, `only ${seen} numeric props found`)
+})
+
 test('the shape, ellipse and dashed line templates draw in the carousel export', { timeout: 120_000 }, () => {
   const project = {
     projectType: 'carousel',
@@ -81,9 +97,9 @@ test('the shape, ellipse and dashed line templates draw in the carousel export',
         { id: 'rect', type: 'overlay', x: 100, y: 100, w: 300, h: 300, rotation: 0, frame: 59,
           overlay: { template: tpl('shape-rect'), props: { fill: '#ff0000', stroke: '#000000', strokeWidth: '20' } } },
         { id: 'ellipse', type: 'overlay', x: 600, y: 100, w: 300, h: 300, rotation: 0, frame: 59,
-          overlay: { template: tpl('shape-ellipse'), props: { fill: '#0000ff', stroke: '#111111', strokeWidth: '0' } } },
+          overlay: { template: tpl('shape-ellipse'), props: { fill: '#0000ff', stroke: '#111111', strokeWidth: 0 } } },
         { id: 'line', type: 'overlay', x: 100, y: 700, w: 880, h: 54, rotation: 0, frame: 59,
-          overlay: { template: tpl('line-dashed'), props: { stroke: '#00aa00', strokeWidth: '8', dash: '24', gap: '16', arrowhead: 'none' } } },
+          overlay: { template: tpl('line-dashed'), props: { stroke: '#00aa00', strokeWidth: 8, dash: 24, gap: 16, arrowhead: 'none' } } },
       ],
     }],
   }

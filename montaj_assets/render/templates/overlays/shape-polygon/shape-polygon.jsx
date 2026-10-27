@@ -4,7 +4,7 @@
  * A carousel element (Elements panel, §587). No animation. An SVG that fills
  * the element box (inset:0); its viewBox is the box, so sizes are slide px.
  *
- * Props (strings):
+ * Props:
  *   fill        — fill colour (default '#bdbdbd')
  *   stroke      — stroke colour (default '#111111')
  *   strokeWidth — px, 0 for none (default '0'); drawn inside the box

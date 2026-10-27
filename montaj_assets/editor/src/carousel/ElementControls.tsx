@@ -372,12 +372,15 @@ export function schemaPropsFor(schema: GlobalOverlay | null | undefined, exclude
   return (schema?.props ?? []).filter(prop => !exclude?.has(prop.name))
 }
 
-/** An overlay's Frame and its schema-driven props. */
+/** An overlay's Frame (not a shape's) and its schema-driven props. */
 export function OverlayPropsSection({ element, schema, loading, onElementChange, exclude }: OverlayPropsSectionProps) {
   const props = schemaPropsFor(schema, exclude)
+  // A shipped shape, line or frame does not animate: its Frame does nothing.
+  // Not shown while the schema loads either, so it does not flash and go.
+  const showFrame = !loading && !(schema && elementCategory(schema) !== null)
   return (
     <>
-      <div className="grid grid-cols-2 gap-3">
+      {showFrame && <div className="grid grid-cols-2 gap-3">
         {numInput(
           'Frame',
           element.frame,
@@ -388,7 +391,7 @@ export function OverlayPropsSection({ element, schema, loading, onElementChange,
           },
           { min: 0 },
         )}
-      </div>
+      </div>}
 
       {loading && (
         <Loader size="sm" label="Loading overlay props" />

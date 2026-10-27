@@ -17,7 +17,7 @@ type DropAt = { id: string; where: 'above' | 'below' }
 const iconBtn = railIconBtn
 
 /** A layer row's label: a text's words, an image's file name, an overlay's template name. */
-export function layerName(el: CarouselElement): string {
+export function layerName(el: CarouselElement, overlayLabel?: (template: string) => string | undefined): string {
   if (el.type === 'image') {
     const file = el.src.split(/[\\/]/).pop() ?? el.src
     try { return decodeURIComponent(file) || 'Image' } catch { return file || 'Image' }
@@ -26,7 +26,8 @@ export function layerName(el: CarouselElement): string {
     const t = String(el.overlay.props.text).replace(/\s+/g, ' ').trim()
     return t || 'Text'
   }
-  return (el as OverlayElement).overlay.template || 'Element'
+  const template = (el as OverlayElement).overlay.template
+  return overlayLabel?.(template) || template || 'Element'
 }
 
 export interface LayersPanelProps {
@@ -38,6 +39,8 @@ export interface LayersPanelProps {
   /** Absent: no eye toggle. */
   onToggleElementVisibility?: (elementId: string) => void
   resolveImageSrc: (el: ImageElement) => string
+  /** A shipped shape, line or frame's tile label, by its template path; undefined for any other template. */
+  overlayLabel?: (template: string) => string | undefined
   canEdit: boolean
   /** A plain click selects the row; Shift/Cmd/Ctrl-click toggles it in the selection. */
   onSelect: (elementId: string, additive: boolean) => void
@@ -49,7 +52,7 @@ export interface LayersPanelProps {
 
 /** The Layers rail panel (§587 M4): the active slide's elements front to back. */
 export default function LayersPanel({
-  elements, slideLabel, selectedIds, hiddenElementIds, onToggleElementVisibility, resolveImageSrc, canEdit,
+  elements, slideLabel, selectedIds, hiddenElementIds, onToggleElementVisibility, resolveImageSrc, overlayLabel, canEdit,
   onSelect, onToggleLock, onReorderSelection, onMove,
 }: LayersPanelProps) {
   const rows = [...elements].reverse()
@@ -184,7 +187,7 @@ export default function LayersPanel({
           const on = selected.has(el.id)
           const locked = isLocked(el)
           const isHidden = hidden.has(el.id)
-          const name = layerName(el)
+          const name = layerName(el, overlayLabel)
           return (
             <li
               key={el.id}

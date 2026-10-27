@@ -36,7 +36,7 @@ import { COPY_OFFSET, cloneElement, copyElements, duplicateCopies, insertCopies,
 import { isLocked, toggleLock } from './lock'
 import { moveToLayer, reorderSelection } from './layerOrder'
 import { newTextElement } from './newText'
-import { newOverlayElement, TEMPLATE_DND_MIME } from './overlayElement'
+import { elementCategory, newOverlayElement, overlayTileLabel, TEMPLATE_DND_MIME } from './overlayElement'
 import { applyTextStyle, isTextOverlay, pickTextStyle, type TextStyle } from './textStyle'
 import { Button, ColourPanelContext, type ColourRequest } from '../ui'
 import { shortcutText } from '../ui/modifierKeys'
@@ -824,6 +824,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       hiddenElementIds={hiddenElementIds}
       onToggleElementVisibility={onToggleElementVisibility}
       resolveImageSrc={adapter.resolveImageSrc}
+      overlayLabel={(t) => { const o = overlaySchemas.get(t); return o && elementCategory(o) ? overlayTileLabel(o) : undefined }}
       canEdit={canEdit}
       onSelect={selectLayer}
       onToggleLock={toggleLayerLock}

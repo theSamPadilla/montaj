@@ -7,7 +7,7 @@ import OverlayErrorBoundary from './OverlayErrorBoundary'
 import { ensureGoogleFontsLoaded } from '../lib/google-fonts'
 import { TEXT_PRESETS, newTextElement, type TextPresetId } from './newText'
 import { railField, railKeycap, railNote, railPrimaryBtn, railSecondaryBtn, railTile, railTitle } from './railStyles'
-import { ELEMENT_CATEGORIES, elementCategory, loadOverlays, newOverlayElement, OVERLAY_BOX, TEMPLATE_DND_MIME, type ElementCategory } from './overlayElement'
+import { ELEMENT_CATEGORIES, elementCategory, loadOverlays, newOverlayElement, OVERLAY_BOX, overlayTileLabel, TEMPLATE_DND_MIME, type ElementCategory } from './overlayElement'
 
 // §587 M4b: the Text, Elements and AI image rail panels. Each adds to the slide
 // it was opened for through `onAddElement` (the editor's own add, which applies
@@ -132,8 +132,6 @@ const ShapeThumb = memo(function ShapeThumb({ overlay, projectId, adapter }: { o
   )
 })
 
-/** What a shipped template is called on its tile: its sidecar's description, else its folder name. */
-const shapeLabel = (overlay: GlobalOverlay) => overlay.description?.trim() || overlay.name
 
 export interface ElementsPanelProps {
   projectId: string
@@ -214,8 +212,8 @@ export const ElementsPanel = memo(function ElementsPanel({ projectId, profile, w
                   type="button"
                   disabled={!slideId}
                   draggable={!!slideId}
-                  aria-label={shapeLabel(overlay)}
-                  title={shapeLabel(overlay)}
+                  aria-label={overlayTileLabel(overlay)}
+                  title={overlayTileLabel(overlay)}
                   onClick={() => slideId && onAddElement(slideId, newOverlayElement(overlay, [width, height]))}
                   onDragStart={(e) => {
                     e.dataTransfer.setData(TEMPLATE_DND_MIME, overlay.jsxPath)

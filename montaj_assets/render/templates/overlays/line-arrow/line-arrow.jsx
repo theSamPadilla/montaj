@@ -4,7 +4,7 @@
  * A carousel element (Elements panel, §587). No animation. An SVG that fills
  * the element box (inset:0); its viewBox is the box, so sizes are slide px.
  *
- * Props (strings):
+ * Props:
  *   stroke      — line colour (default '#111111')
  *   strokeWidth — px, at most the box height (default '8')
  *   arrowhead   — 'none' | 'end' | 'start' | 'both' (default 'end')
@@ -40,10 +40,9 @@ export default function LineArrow({ stroke = '#111111', strokeWidth = '8', arrow
   const x0 = atStart ? hl - 0.5 : 0
   const x1 = atEnd ? W - hl + 0.5 : W
 
-  const dashArray = undefined
   return (
     <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={SVG_STYLE}>
-      {sw > 0 && x1 > x0 && <line x1={x0} y1={y} x2={x1} y2={y} stroke={stroke} strokeWidth={sw} strokeDasharray={dashArray} />}
+      {sw > 0 && x1 > x0 && <line x1={x0} y1={y} x2={x1} y2={y} stroke={stroke} strokeWidth={sw} />}
       {atEnd && <polygon points={`${r2(W)},${r2(y)} ${r2(W - hl)},${r2(y - hw)} ${r2(W - hl)},${r2(y + hw)}`} fill={stroke} />}
       {atStart && <polygon points={`0,${r2(y)} ${r2(hl)},${r2(y - hw)} ${r2(hl)},${r2(y + hw)}`} fill={stroke} />}
     </svg>
