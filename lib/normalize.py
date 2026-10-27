@@ -104,6 +104,26 @@ reverse import would cycle. Also mirrored by SEEK_PREROLL_S in
 montaj_assets/render/sample-frame.js — keep all three equal (2.0)."""
 
 
+def _is_picture_free_video(stream) -> bool:
+    """A video stream that is footage: not the cover art an audio file carries
+    (an attached picture, e.g. an MP3's 360x360 mjpeg)."""
+    return stream.get("codec_type") == "video" and not (stream.get("disposition") or {}).get("attached_pic")
+
+
+def is_audio_only(path) -> bool:
+    """True when `path` has an audio stream and no footage: an audio file,
+    whether or not it carries cover art. False when it cannot be read."""
+    cmd = [ffprobe_bin(), "-v", "quiet", "-show_entries", "stream=codec_type:stream_disposition=attached_pic",
+           "-of", "json", ff_path(path)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        streams = json.loads(r.stdout).get("streams", []) if r.returncode == 0 else []
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    return (any(s.get("codec_type") == "audio" for s in streams)
+            and not any(_is_picture_free_video(s) for s in streams))
+
+
 def probe_video(path):
     """Return dict with codec, width, height, pix_fmt, color_transfer, fps, has_audio,
     audio_sample_rate, max_keyframe_interval, rotation, display_width, display_height,
@@ -131,7 +151,7 @@ def probe_video(path):
     cmd = [
         ffprobe_bin(), "-v", "quiet",
         "-show_entries",
-        "stream=codec_type,codec_name,width,height,pix_fmt,color_transfer,r_frame_rate,avg_frame_rate,sample_rate:format_tags=creation_time",
+        "stream=codec_type,codec_name,width,height,pix_fmt,color_transfer,r_frame_rate,avg_frame_rate,sample_rate:stream_disposition=attached_pic:format_tags=creation_time",
         "-of", "json", ff_path(path),
     ]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
@@ -141,7 +161,7 @@ def probe_video(path):
     streams = probed.get("streams", [])
     if not streams:
         return None
-    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    video = next((s for s in streams if _is_picture_free_video(s)), None)
     if not video:
         return None
     audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
