@@ -739,6 +739,13 @@ export interface CarouselApi {
    * missing image or a project that cannot be edited.
    */
   setAsBackground(elementId: string): Promise<void>
+  /**
+   * Makes the image at `src` (a host path) the selected slide's background:
+   * it is added as `setAsBackground` leaves an image (covering, at the back,
+   * locked), in one undo step. Does nothing when no slide is selected, when
+   * the project cannot be edited, and in crop mode.
+   */
+  setBackgroundImage(src: string): Promise<void>
 }
 
 // ── Adapter ────────────────────────────────────────────────────────────────
@@ -1268,6 +1275,8 @@ export interface EditorSlots {
   carouselMediaPanel?: ReactNode
   /** `layout="rail"` only: the Brand rail item's side panel. */
   carouselBrandPanel?: ReactNode
+  /** `layout="rail"`: the images row under the colours in the Background panel (the host's Library, brand kit). */
+  carouselBackgroundImages?: ReactNode
   /** `layout="rail"` only: the Notes rail item's right panel. */
   carouselNotesPanel?: ReactNode
 }

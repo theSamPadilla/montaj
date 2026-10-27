@@ -59,6 +59,8 @@ export interface ElementToolbarProps {
   mode?: 'light' | 'dark'
   /** The text colour opens the colour panel (§587 M5) instead of the OS picker. */
   onOpenTextColour?: () => void
+  /** The profile's font, for the font picker's "Use brand default". */
+  brandFont?: string
 }
 
 const iconBtn =
@@ -93,6 +95,7 @@ function TextGroup({
   effectsOpen,
   onToggleEffects,
   onOpenTextColour,
+  brandFont,
 }: {
   slideId: string
   element: OverlayElement
@@ -101,6 +104,7 @@ function TextGroup({
   effectsOpen: boolean
   onToggleEffects: () => void
   onOpenTextColour?: () => void
+  brandFont?: string
 }) {
   const fmt = textFormatting(slideId, element, update)
   const { supported } = fmt
@@ -116,6 +120,7 @@ function TextGroup({
           value={fmt.fontFamilyValue}
           onChange={fmt.setFontFamily}
           disabled={disabled}
+          brandFont={brandFont}
           className="w-32"
           buttonClassName="flex h-8 w-full items-center gap-1 rounded-full border border-[var(--editor-border)] px-3 text-[13px] text-[var(--editor-text)] hover:bg-[var(--editor-surface)] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)]"
         />
@@ -226,6 +231,7 @@ export default function ElementToolbar({
   onToggleElementVisibility,
   mode = 'dark',
   onOpenTextColour,
+  brandFont,
 }: ElementToolbarProps) {
   const element = selection.length === 1 ? selection[0] : undefined
   const image = element?.type === 'image' ? element : undefined
@@ -275,7 +281,7 @@ export default function ElementToolbar({
       >
         {text && (
           <>
-            <TextGroup slideId={slideId} element={text} update={update} disabled={locked || !canEdit} effectsOpen={popover === 'effects'} onToggleEffects={toggle('effects')} onOpenTextColour={onOpenTextColour && run(onOpenTextColour)} />
+            <TextGroup slideId={slideId} element={text} update={update} disabled={locked || !canEdit} effectsOpen={popover === 'effects'} onToggleEffects={toggle('effects')} onOpenTextColour={onOpenTextColour && run(onOpenTextColour)} brandFont={brandFont} />
             <Sep />
           </>
         )}

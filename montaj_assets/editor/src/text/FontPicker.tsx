@@ -158,9 +158,11 @@ type FontFamilyPickerProps = {
   disabled?: boolean
   className?: string
   buttonClassName?: string
+  /** The linked profile's font (a CSS font-family value): leads the list as "Use brand default". */
+  brandFont?: string
 }
 
-export function FontFamilyPicker({ value, onChange, disabled, className, buttonClassName }: FontFamilyPickerProps) {
+export function FontFamilyPicker({ value, onChange, disabled, className, buttonClassName, brandFont }: FontFamilyPickerProps) {
   const [open, setOpen] = useState(false)
   const wrapperRef = useRef<HTMLDivElement | null>(null)
 
@@ -208,6 +210,22 @@ export function FontFamilyPicker({ value, onChange, disabled, className, buttonC
           className="absolute right-0 z-50 mt-1 max-h-80 w-60 overflow-y-auto rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] shadow-xl ring-1 ring-black/20"
         >
           <ul className="py-1">
+            {brandFont && (
+              <li>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={false}
+                  onClick={() => {
+                    onChange(brandFont)
+                    setOpen(false)
+                  }}
+                  className="mx-1 flex w-[calc(100%-0.5rem)] items-center rounded-md border border-[var(--editor-accent)] bg-[color-mix(in_srgb,var(--editor-accent)_15%,transparent)] px-3 py-2 text-left text-[15px] font-medium leading-tight text-[var(--editor-text)] hover:bg-[color-mix(in_srgb,var(--editor-accent)_25%,transparent)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)]"
+                >
+                  Use brand default
+                </button>
+              </li>
+            )}
             {FONT_OPTIONS.map((opt) => {
               const isActive = opt.value === current?.value
               return (
