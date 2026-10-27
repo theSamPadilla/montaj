@@ -785,8 +785,22 @@ export default function SlideCanvas({
     setEditingId(element.id)
   }
 
+  // The editor reports its range on every selection change; the host hears only
+  // a change of element or style, so moving the selection inside one style
+  // re-renders nothing.
+  const lastTextRange = useRef<TextRangeInfo | null>(null)
+  function reportTextRange(range: TextRangeInfo | null) {
+    const last = lastTextRange.current
+    const same = range === null ? last === null : last !== null && last.slideId === range.slideId && last.elementId === range.elementId
+      && last.style.bold === range.style.bold && last.style.italic === range.style.italic
+      && last.style.underline === range.style.underline && last.style.color === range.style.color
+    if (same) return
+    lastTextRange.current = range
+    onTextRange?.(range)
+  }
+
   function endTextEdit() {
-    onTextRange?.(null)
+    reportTextRange(null)
     setEditingId(null)
     setEditRect(null)
     setEditStyle(null)
@@ -1501,7 +1515,7 @@ export default function SlideCanvas({
               onChange={() => {}}
               onCommit={(value, runs, base) => commitTextEdit(el, value, runs, base)}
               onWrite={(value, runs, base) => void writeText(el, value, runs, base)}
-              onRangeStyle={styled && onTextRange ? (style) => onTextRange(style ? { slideId: sid, elementId: el.id, style } : null) : undefined}
+              onRangeStyle={styled && onTextRange ? (style) => reportTextRange(style ? { slideId: sid, elementId: el.id, style } : null) : undefined}
               onCancel={endTextEdit}
             />
           )

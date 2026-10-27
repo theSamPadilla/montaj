@@ -1,16 +1,20 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useRef, type Ref } from 'react'
 import {
   baseTextStyle,
+  cleanPatch,
   diffEdit,
   encodeRuns,
+  liftShared,
   normalizeRuns,
   rangeStyle,
+  rebaseRuns,
   spliceRuns,
   styleRange,
   type BaseTextStyle,
   type Run,
   type RunPatch,
 } from './runs'
+import { matchesRedo, matchesUndo } from '../video/keymap'
 
 // The inline text editor: a contenteditable over the text, drawing the text's
 // styled runs (§587 round 3), so a word turned red shows red while editing (a
@@ -18,7 +22,8 @@ import {
 // bold). The editor keeps its own model, the text and its runs; the DOM is
 // read back after every input and the change re-applied to the model, so runs
 // stay aligned whatever the browser did. Paste, Enter and the browser's own
-// formatting are taken over; typing is left to the browser.
+// formatting are taken over; typing is left to the browser. So is undo: the
+// browser's own history breaks on every repaint, so the editor keeps its own.
 
 export interface InlineTextEditorHandle {
   /** The selected range in the text, or null when nothing is selected. */
@@ -39,7 +44,10 @@ export type InlineTextEditorProps = {
   styled?: boolean
   rect: { left: number; top: number; width: number; height: number }
   styleSnapshot: Partial<CSSStyleDeclaration>
-  /** The edit ends with a change: the text, its runs and the `base` they are relative to. */
+  /**
+   * The edit ends with a change: the text, its runs and the `base` they are
+   * relative to, the element's style as this edit last wrote it.
+   */
   onCommit: (value: string, runs: Run[], base: BaseTextStyle) => void
   onCancel: () => void
   onChange: (value: string) => void
@@ -55,6 +63,12 @@ export const KEEP_TEXT_EDIT = 'data-keep-text-edit'
 const inKeepZone = (n: EventTarget | null) => n instanceof Element && !!n.closest(`[${KEEP_TEXT_EDIT}]`)
 
 const PLAIN: BaseTextStyle = baseTextStyle({})
+
+/** One step of the editor's own undo: the text, its runs and where the selection was. */
+type Snapshot = { text: string; runs: Run[]; sel: { start: number; end: number } | null }
+const HISTORY_CAP = 100
+// Typing within this long of the last typed change joins its undo step.
+const TYPING_JOIN_MS = 1000
 
 /** A run's look in the editor; underline is drawn per run, since a child cannot take back its parent's. */
 function paintRun(span: HTMLSpanElement, r: Run, base: BaseTextStyle) {
@@ -136,11 +150,17 @@ export function InlineTextEditor({
     text: initialValue,
     runs: initialRuns ?? (initialValue ? [{ t: initialValue }] : []),
   })
-  const written = useRef({ text: initialValue, runs: encodeRuns(initialRuns ?? null) })
   // The runs are relative to the element's style as it was when the edit began.
   const own = useRef(base).current
+  const written = useRef({ text: initialValue, runs: encodeRuns(normalizeRuns(initialRuns ?? [], own)) })
+  // The element's style as this edit last wrote it: a style moved onto the
+  // element (select all, Bold) changes it, and later writes are relative to it.
+  const wrote = useRef(own)
   // The last selected range (kept while the colour panel has the focus).
   const range = useRef<{ start: number; end: number } | null>(null)
+  // The last selection, a caret included: where an undo puts it back.
+  const caret = useRef<{ start: number; end: number } | null>(null)
+  const history = useRef<{ past: Snapshot[]; future: Snapshot[]; typedAt: number }>({ past: [], future: [], typedAt: 0 })
   const composing = useRef(false)
   // A press that keeps the edit open: the blur that follows it does not end it.
   const keepPress = useRef(false)
@@ -210,8 +230,37 @@ export function InlineTextEditor({
   function trackSelection() {
     if (!ref.current || document.activeElement !== ref.current) return
     const at = selection()
+    caret.current = at
     range.current = at && at.end > at.start ? at : null
     reportRange()
+  }
+
+  /** Keeps the model as it is now as an undo step; typing close together is one step. */
+  function remember(typing = false) {
+    const h = history.current
+    const now = Date.now()
+    const joins = typing && h.typedAt > 0 && now - h.typedAt < TYPING_JOIN_MS
+    h.typedAt = typing ? now : 0
+    h.future = []
+    if (joins) return
+    h.past.push({ ...model.current, sel: caret.current })
+    if (h.past.length > HISTORY_CAP) h.past.shift()
+  }
+
+  /** Undo (`back`) or redo inside the edit; nothing when there is no step. */
+  function stepHistory(back: boolean) {
+    const h = history.current
+    const snap = (back ? h.past : h.future).pop()
+    if (!snap) return
+    ;(back ? h.future : h.past).push({ ...model.current, sel: caret.current ?? selection() })
+    h.typedAt = 0
+    const changed = snap.text !== model.current.text
+    model.current = { text: snap.text, runs: snap.runs }
+    paint()
+    const end = snap.text.length
+    select(snap.sel ? { start: Math.min(snap.sel.start, end), end: Math.min(snap.sel.end, end) } : { start: end, end })
+    if (changed) latest.current.onChange(snap.text)
+    trackSelection()
   }
 
   /** The model takes the text the DOM now holds; runs follow the edit. */
@@ -221,8 +270,9 @@ export function InlineTextEditor({
     const next = readText(root)
     const before = model.current.text
     if (next !== before) {
-      const caret = selection()?.end
-      const { start, end, insert } = diffEdit(before, next, caret)
+      remember(true)
+      const at = selection()?.end
+      const { start, end, insert } = diffEdit(before, next, at)
       model.current = { text: next, runs: spliceRuns(model.current.runs, start, end, insert) }
       latest.current.onChange(next)
     }
@@ -233,6 +283,7 @@ export function InlineTextEditor({
   /** Replaces the selection with `insert` through the model (paste, newline). */
   function insertText(insert: string) {
     const at = selection() ?? { start: model.current.text.length, end: model.current.text.length }
+    remember()
     const { text, runs } = model.current
     model.current = { text: text.slice(0, at.start) + insert + text.slice(at.end), runs: spliceRuns(runs, at.start, at.end, insert) }
     latest.current.onChange(model.current.text)
@@ -243,12 +294,20 @@ export function InlineTextEditor({
 
   function applyStyle(patch: RunPatch) {
     const at = range.current
-    if (!latest.current.styled || !at) return
+    const clean = cleanPatch(patch)
+    if (!latest.current.styled || !at || Object.keys(clean).length === 0) return
     const { text, runs } = model.current
-    model.current = { text, runs: normalizeRuns(styleRange(runs, at.start, at.end, patch), own) }
+    const next = normalizeRuns(styleRange(runs, at.start, at.end, clean), own)
+    if (encodeRuns(next) === encodeRuns(normalizeRuns(runs, own))) return paint()
+    remember()
+    model.current = { text, runs: next }
     paint()
-    written.current = { text, runs: encodeRuns(model.current.runs) }
-    latest.current.onWrite?.(text, model.current.runs, own)
+    written.current = { text, runs: encodeRuns(next) }
+    // Written relative to the element as this edit last left it; a style the
+    // write moves onto the element is the base of the next one.
+    const rel = rebaseRuns(next, own, wrote.current)
+    latest.current.onWrite?.(text, rel, wrote.current)
+    wrote.current = liftShared(rel, wrote.current).base
     reportRange()
   }
 
@@ -271,7 +330,10 @@ export function InlineTextEditor({
     // The browser's own formatting (and its paragraphs) are not the text's.
     const onBeforeInput = (e: InputEvent) => {
       if (e.inputType.startsWith('format')) e.preventDefault()
-      else if (e.inputType === 'insertParagraph' || e.inputType === 'insertLineBreak') {
+      else if (e.inputType === 'historyUndo' || e.inputType === 'historyRedo') {
+        e.preventDefault()
+        stepHistory(e.inputType === 'historyUndo')
+      } else if (e.inputType === 'insertParagraph' || e.inputType === 'insertLineBreak') {
         e.preventDefault()
         insertText('\n')
       }
@@ -305,15 +367,26 @@ export function InlineTextEditor({
   function settle() {
     if (settled.current) return
     settled.current = true
+    // Ended in the middle of a composition: the composed text is the person's.
+    if (composing.current) {
+      composing.current = false
+      readBack()
+    }
     const { text, runs } = model.current
     if (text === written.current.text && encodeRuns(normalizeRuns(runs, own)) === written.current.runs) latest.current.onCancel()
-    else latest.current.onCommit(text, runs, own)
+    else latest.current.onCommit(text, rebaseRuns(runs, own, wrote.current), wrote.current)
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
     // The editor's keys are its own: none reach the canvas's shortcuts.
     e.stopPropagation()
-    if (e.key === 'Escape') {
+    // An IME's keys (the Enter or Esc that confirms a composition) are the IME's.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return
+    if (matchesUndo(e.nativeEvent) || matchesRedo(e.nativeEvent)) {
+      // The edit's own undo; the editor-wide one waits until the edit ends.
+      e.preventDefault()
+      stepHistory(matchesUndo(e.nativeEvent))
+    } else if (e.key === 'Escape') {
       // Esc keeps what was typed, exactly like a click away.
       e.preventDefault()
       settle()

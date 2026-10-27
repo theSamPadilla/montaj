@@ -374,6 +374,7 @@ def _set_headline(slide, text, *, style, width, height, runtime_dir, project_dir
         if props.get("text") != text:
             start, floor = _sizes(text)
             props.update({"text": text, TEXT_KEY: text, "fontSize": str(start), "minFontSize": str(floor)})
+            props.pop("runs", None)   # styled runs spell the old text
         if style:
             props.update(PRESETS[_style_for(style, slide, _box_of(el), project_dir)])
         if el == els[i]:
@@ -407,6 +408,7 @@ def _edit(slide, edit, *, width, height, runtime_dir, project_dir=None, n=None):
         if t != props.get("text"):
             start, floor = _sizes(t)
             props.update({"text": t, TEXT_KEY: t, "fontSize": str(start), "minFontSize": str(floor)})
+            props.pop("runs", None)   # styled runs spell the old text
     if edit.get("style") is not None:
         props.update(PRESETS[_style_for(edit["style"], slide, _box_of(el), project_dir)])
     if edit.get("color") is not None:

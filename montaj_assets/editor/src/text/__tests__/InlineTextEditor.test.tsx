@@ -206,6 +206,113 @@ describe('InlineTextEditor', () => {
     keep.remove()
   })
 
+  it('11. Enter or Esc that confirms an IME composition neither commits nor closes', () => {
+    const onCommit = vi.fn()
+    const onCancel = vi.fn()
+    const { editor } = renderEditor({ onCommit, onCancel })
+    fireEvent.compositionStart(editor)
+    fireEvent.keyDown(editor, { key: 'Enter', keyCode: 229 })
+    fireEvent.keyDown(editor, { key: 'Escape', isComposing: true })
+    fireEvent.keyDown(editor, { key: 'Enter', isComposing: true })
+    expect(onCommit).not.toHaveBeenCalled()
+    expect(onCancel).not.toHaveBeenCalled()
+    expect(editor.isConnected).toBe(true)
+  })
+
+  it('11b. a blur in the middle of a composition keeps the composed text', () => {
+    const onCommit = vi.fn()
+    const { editor } = renderEditor({ onCommit })
+    fireEvent.compositionStart(editor)
+    // The IME has put its text in the DOM; compositionend has not come.
+    editor.querySelector('span')!.textContent = 'helloに'
+    fireEvent.input(editor)
+    fireEvent.blur(editor)
+    expect(onCommit).toHaveBeenCalledTimes(1)
+    expect(onCommit.mock.calls[0][0]).toBe('helloに')
+  })
+
+  it('12. opening and closing on runs with a redundant style writes nothing', () => {
+    const onCommit = vi.fn()
+    const onCancel = vi.fn()
+    // An AI wrote b:0 on a regular element: the same look as no run at all.
+    const { editor } = renderEditor({ initialValue: 'ab', initialRuns: [{ t: 'a', b: 0 }, { t: 'b' }], onCommit, onCancel })
+    fireEvent.keyDown(editor, { key: 'Enter' })
+    expect(onCommit).not.toHaveBeenCalled()
+    expect(onCancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('13. a colour that is not hex from the colour panel is not written', () => {
+    const onWrite = vi.fn()
+    const handle = { current: null as import('../InlineTextEditor').InlineTextEditorHandle | null }
+    const { editor } = renderEditor({ initialValue: 'hello', styled: true, onWrite, handleRef: handle })
+    selectRange(editor, 0, 2)
+    handle.current!.applyStyle({ c: 'red' })
+    expect(onWrite).not.toHaveBeenCalled()
+    handle.current!.applyStyle({ c: '#FF0000' })
+    expect(onWrite).toHaveBeenCalledWith('hello', [{ t: 'he', c: '#ff0000' }, { t: 'llo' }], expect.anything())
+  })
+
+  it('14. a style write moves the edit\'s base: bold all, then one word regular, keeps the element bold', () => {
+    const onWrite = vi.fn()
+    const { editor } = renderEditor({ initialValue: 'ab', styled: true, onWrite })
+    selectRange(editor, 0, 2)
+    fireEvent.keyDown(editor, { key: 'b', metaKey: true })
+    // The first write is relative to the style the edit began with: every char bold.
+    expect(onWrite).toHaveBeenLastCalledWith('ab', [{ t: 'ab', b: 1 }], expect.objectContaining({ bold: false }))
+    // The element is now bold: the next write is relative to that.
+    const text = editor.querySelector('span')!.firstChild!
+    const r = document.createRange()
+    r.setStart(text, 1)
+    r.setEnd(text, 2)
+    window.getSelection()!.removeAllRanges()
+    window.getSelection()!.addRange(r)
+    document.dispatchEvent(new Event('selectionchange'))
+    fireEvent.keyDown(editor, { key: 'b', metaKey: true })
+    expect(onWrite).toHaveBeenLastCalledWith('ab', [{ t: 'a' }, { t: 'b', b: 0 }], expect.objectContaining({ bold: true }))
+  })
+
+  describe('15. undo inside the editor', () => {
+    const undoKey = (editor: HTMLElement, shift = false) => {
+      const ev = new KeyboardEvent('keydown', { key: shift ? 'Z' : 'z', metaKey: true, shiftKey: shift, bubbles: true, cancelable: true })
+      editor.dispatchEvent(ev)
+      return ev
+    }
+
+    it('Cmd+Z takes back a style, Cmd+Shift+Z puts it back; neither reaches the editor-wide undo', () => {
+      const onWrite = vi.fn()
+      const outer = vi.fn()
+      const { editor } = renderEditor({ initialValue: 'hello', styled: true, onWrite })
+      document.body.addEventListener('keydown', outer)
+      selectRange(editor, 0, 2)
+      fireEvent.keyDown(editor, { key: 'b', metaKey: true })
+      expect(editor.querySelector('span')!.style.fontWeight).toBe('700')
+      const ev = undoKey(editor)
+      expect(ev.defaultPrevented).toBe(true)
+      expect(editor.querySelectorAll('span')).toHaveLength(1)
+      expect(editor.querySelector('span')!.style.fontWeight).toBe('')
+      undoKey(editor, true)
+      expect(editor.querySelector('span')!.style.fontWeight).toBe('700')
+      expect(outer).not.toHaveBeenCalled()
+      document.body.removeEventListener('keydown', outer)
+    })
+
+    it('the browser\'s own undo (historyUndo) is taken over, and typing undoes to the text before it', () => {
+      const onChange = vi.fn()
+      const onCommit = vi.fn()
+      const { editor } = renderEditor({ initialValue: 'hello', onChange, onCommit })
+      type(editor, 'hello!')
+      const ev = new InputEvent('beforeinput', { inputType: 'historyUndo', bubbles: true, cancelable: true })
+      editor.dispatchEvent(ev)
+      expect(ev.defaultPrevented).toBe(true)
+      expect(editor.textContent).toBe('hello')
+      expect(onChange).toHaveBeenLastCalledWith('hello')
+      editor.dispatchEvent(new InputEvent('beforeinput', { inputType: 'historyRedo', bubbles: true, cancelable: true }))
+      expect(editor.textContent).toBe('hello!')
+      fireEvent.keyDown(editor, { key: 'Enter' })
+      expect(onCommit.mock.calls[0][0]).toBe('hello!')
+    })
+  })
+
   it('10. pointer events do not bubble to parent', () => {
     const parentPointerDown = vi.fn()
     const parentPointerMove = vi.fn()

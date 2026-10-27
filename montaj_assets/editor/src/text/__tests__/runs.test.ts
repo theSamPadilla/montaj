@@ -4,9 +4,11 @@ import {
   decodeRuns,
   diffEdit,
   encodeRuns,
+  liftShared,
   mergeRuns,
   normalizeRuns,
   rangeStyle,
+  rebaseRuns,
   runsPatch,
   spliceRuns,
   styleRange,
@@ -171,14 +173,79 @@ describe('runs: an edit\'s writes', () => {
     expect(runsPatch(props, 'Hello', [{ t: 'Hello' }], base)).toEqual({ text: 'Hello' })
   })
 
-  it('runs written against the style the edit began with stay right after the element changed', () => {
-    // Bold was moved onto the element by an earlier write; now one word is regular again.
+  it('runs written against the style the edit last wrote stay right after the element changed', () => {
+    // Bold was moved onto the element by an earlier write of this edit (so the
+    // editor passes that as its base); now one word is regular again.
     const now = { ...props, fontWeight: '700' }
-    expect(runsPatch(now, 'ab', [{ t: 'a', b: 1 }, { t: 'b' }], base))
+    expect(runsPatch(now, 'ab', [{ t: 'a' }, { t: 'b', b: 0 }], { ...base, bold: true }))
       .toEqual({ text: 'ab', runs: '[{"t":"a"},{"t":"b","b":0}]' })
+  })
+
+  it('a plain commit writes only the text when the live style changed during the edit (the AI saved it)', () => {
+    const live = { ...props, text: 'Make it red', fontWeight: '700', color: '#0000ff' }
+    expect(runsPatch(live, 'Make it red!', [{ t: 'Make it red!' }], base)).toEqual({ text: 'Make it red!' })
+  })
+
+  it('a styled word with a changed live style: only the word\'s own style is written, the rest follows the element', () => {
+    const live = { ...props, fontWeight: '700', color: '#0000ff' }
+    expect(runsPatch(live, 'Make it red', [{ t: 'Make it ' }, { t: 'red', c: '#ff0000' }], base))
+      .toEqual({ text: 'Make it red', runs: '[{"t":"Make it "},{"t":"red","c":"#ff0000"}]' })
+  })
+
+  it('a style the edit gave every char still moves onto the element, over a changed live style', () => {
+    const live = { ...props, color: '#0000ff' }
+    expect(runsPatch(live, 'ab', [{ t: 'ab', b: 1 }], base)).toEqual({ text: 'ab', fontWeight: '700' })
+  })
+
+  it('liftShared moves a style every char has onto the base, the runs relative to it', () => {
+    expect(liftShared([{ t: 'ab', b: 1, c: '#ff0000' }], base)).toEqual({ base: { ...base, bold: true, color: '#ff0000' }, runs: [{ t: 'ab' }] })
+    expect(liftShared([{ t: 'a', b: 1 }, { t: 'b' }], base)).toEqual({ base, runs: [{ t: 'a', b: 1 }, { t: 'b' }] })
+  })
+
+  it('rebaseRuns re-expresses runs against another base, keeping what each char shows', () => {
+    expect(rebaseRuns([{ t: 'a', b: 1 }, { t: 'b' }], base, { ...base, bold: true })).toEqual([{ t: 'a' }, { t: 'b', b: 0 }])
+    expect(rebaseRuns([{ t: 'ab' }], base, base)).toEqual([{ t: 'ab' }])
   })
 
   it('removes runs the edit left with no style', () => {
     expect(runsPatch({ ...props, runs: '[{"t":"ab","u":1}]', text: 'ab' }, 'ab', [{ t: 'ab' }], base)).toEqual({ text: 'ab', runs: undefined })
+  })
+})
+
+describe('runs: surrogate pairs (an emoji) are never split', () => {
+  const E = '\u{1F600}' // two UTF-16 units
+
+  it('decode ignores runs whose boundary splits a pair', () => {
+    expect(decodeRuns(JSON.stringify([{ t: 'a' + E[0] }, { t: E[1], c: '#ff0000' }]), 'a' + E)).toBeNull()
+    expect(decodeRuns(JSON.stringify([{ t: 'a' }, { t: E, c: '#ff0000' }]), 'a' + E)).toEqual([{ t: 'a' }, { t: E, c: '#ff0000' }])
+  })
+
+  it('styleRange snaps a range that ends or starts inside a pair to the whole emoji', () => {
+    const runs: Run[] = [{ t: 'a' + E + 'b' }]
+    expect(styleRange(runs, 0, 2, { b: 1 })).toEqual([{ t: 'a' + E, b: 1 }, { t: 'b' }])
+    expect(styleRange(runs, 2, 4, { b: 1 })).toEqual([{ t: 'a' }, { t: E + 'b', b: 1 }])
+  })
+
+  it('spliceRuns never leaves a pair in two styles, and never moves the edit (the text is what the DOM holds)', () => {
+    // Runs handed in split (not through decode): the result joins the pair in its high half's style.
+    const out = spliceRuns([{ t: 'a' + E[0], c: '#ff0000' }, { t: E[1] + 'b' }], 4, 4, 'X')
+    expect(out).toEqual([{ t: 'a' + E, c: '#ff0000' }, { t: 'bX' }])
+    // An edit that replaces one half of a pair keeps its text exactly.
+    expect(spliceRuns([{ t: 'a', c: '#ff0000' }, { t: E }], 1, 2, '\uD801').map((r) => r.t).join('')).toBe('a\uD801' + E[1])
+  })
+})
+
+describe('runs: colours', () => {
+  it('keeps an element colour that is not hex, so a word set to #111111 is not dropped', () => {
+    expect(baseTextStyle({ color: 'white' }).color).toBe('white')
+    expect(baseTextStyle({ color: ' rgb(1, 2, 3) ' }).color).toBe('rgb(1, 2, 3)')
+    const base = baseTextStyle({ color: 'white' })
+    expect(normalizeRuns([{ t: 'a', c: '#111111' }, { t: 'b' }], base)).toEqual([{ t: 'a', c: '#111111' }, { t: 'b' }])
+  })
+
+  it('styleRange ignores a colour that is not hex', () => {
+    expect(styleRange([{ t: 'ab' }], 0, 1, { c: 'red' })).toEqual([{ t: 'ab' }])
+    expect(styleRange([{ t: 'ab' }], 0, 1, { c: 'url(x)', b: 1 })).toEqual([{ t: 'a', b: 1 }, { t: 'b' }])
+    expect(styleRange([{ t: 'ab' }], 0, 1, { c: '#FF0000' })).toEqual([{ t: 'a', c: '#ff0000' }, { t: 'b' }])
   })
 })

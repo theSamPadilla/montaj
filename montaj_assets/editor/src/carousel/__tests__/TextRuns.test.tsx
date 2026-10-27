@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { Profiler } from 'react'
 import { render, act, waitFor, fireEvent, within } from '@testing-library/react'
 import type { EditorAdapter, ImageElement, Project, RenderEvent } from '../../types'
 import CarouselEditor from '../CarouselEditor'
@@ -206,5 +207,31 @@ describe('Styled runs from the inline editor (§587 round 3)', () => {
     const props = propsOf(last(adapter), 'el-runs')
     expect(props.text).toBe('ab cxd')
     expect(props.runs).toBe('[{"t":"ab "},{"t":"cxd","c":"#ff0000","b":1}]')
+  })
+
+  it('moving the selection inside the editor, the style the same, does not re-render the editor', async () => {
+    const adapter = makeAdapter()
+    let renders = 0
+    const r = render(
+      <Profiler id="editor" onRender={() => { renders++ }}>
+        <CarouselEditor project={makeProject()} adapter={adapter} onProjectChange={vi.fn()} layout="rail" />
+      </Profiler>,
+    )
+    await waitFor(() => expect(document.querySelector('[data-element-id="el-t"]')).not.toBeNull())
+    const editor = await edit(r, 'el-t')
+    await selectWord(editor, 'Make')
+    const before = renders
+    for (const word of ['it', 'red', 'Make it', 'ke i']) await selectWord(editor, word)
+    expect(renders).toBe(before)
+    // A range in another style is reported.
+    await selectWord(editor, 'Make')
+    await press(tb(r, 'Bold'))
+    await selectWord(editor, 'Mak')
+    const settled = renders
+    await selectWord(editor, 'ak')
+    expect(renders).toBe(settled)
+    expect(tb(r, 'Bold').getAttribute('aria-pressed')).toBe('true')
+    await selectWord(editor, 'red')
+    expect(tb(r, 'Bold').getAttribute('aria-pressed')).toBe('false')
   })
 })
