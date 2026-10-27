@@ -896,3 +896,43 @@ def test_flows_line_and_dot_stay_out_of_its_labels(tmp_path, props):
             red = sum(1 for x in range(max(0, x0), min(img.width, x1)) for y in range(max(0, y0), min(img.height, y1))
                       if (lambda p: p[3] > 128 and p[0] > 200 and p[1] < 80 and p[2] < 80)(img.getpixel((x, y))))
             assert red == 0, f"frame {frame}: {red} line pixels inside {t['text']!r}"
+
+
+SAM_ITEMS_1_5_1 = [   # Sam's place call (2026-10-27) less its four scene_labels items, which need his project's scene marks
+    {"at": 10.14, "for": 2.14, "props": {"color": "#292C33", "stats": [{"at": 0, "unit": "lb", "value": "4"}, {"at": 1.47, "sub": "robot hardware", "value": "$400"}], "accent": "#708C99", "fontFamily": "JetBrains Mono"}, "preset": "stat"},
+    {"at": 25.32, "for": 1.06, "opaque": True, "overlay": "self-righting.jsx"},
+    {"at": 27.77, "for": 4.03, "props": {"x": 540, "y": 930, "color": "#FFFFFF", "label": "Video call on legs", "accent": "#708C99", "fontFamily": "JetBrains Mono"}, "preset": "ring"},
+    {"at": 34.1, "for": 1.54, "props": {"y": 960, "text": "Flat ground", "color": "#292C33", "width": 650, "accent": "#708C99", "fontFamily": "JetBrains Mono"}, "preset": "rule"},
+]
+
+
+def test_items_take_opaque_as_the_skills_say_sams_call_places_in_one_turn(tmp_path):
+    """1.5.1 (Sam: no extra turns): the overlay and edit-session skills tell the AI to set "opaque": true on a
+    full-frame overlay item, and place refused it ("no field opaque"). It is an item field now, written as given."""
+    d = make_project(tmp_path)
+    p = json.loads((d / "project.json").read_text())
+    p["tracks"][0]["items"][0].update({"end": 60, "outPoint": 60, "sourceDuration": 60})
+    (d / "project.json").write_text(json.dumps(p))
+    (d / "self-righting.jsx").write_text("export default function R() { return <div style={{background: '#000'}}>up</div> }")
+    out = place.run_many(str(d / "project.json"), json.dumps(SAM_ITEMS_1_5_1), measure_fn=fake_measure(),
+                         transcribe=no_transcribe, sampler=fake_sheet())
+    assert len(out["placed"]) == 4
+    items = [it for t in tracks(d)[1:] for it in t["items"]]
+    cover = [it for it in items if it.get("src") == "./self-righting.jsx"]
+    assert len(cover) == 1 and cover[0]["opaque"] is True
+    assert all("opaque" not in it for it in items if it is not cover[0]), "only the item that asked is opaque"
+
+
+def test_opaque_is_true_or_false_and_false_clears_it(tmp_path, capsys):
+    d = make_project(tmp_path)
+    (d / "o.jsx").write_text("export default function O() { return <div>o</div> }")
+    err = refused(capsys, place.run_many, str(d / "project.json"), json.dumps([{"overlay": "o.jsx", "at": 1, "opaque": "yes"}]),
+                  measure_fn=fake_measure(), transcribe=no_transcribe, sampler=fake_sheet())
+    assert err["error"] == "invalid_params" and err["message"].startswith("items[0]: ") and "opaque" in err["message"]
+    place.run_many(str(d / "project.json"), json.dumps([{"overlay": "o.jsx", "at": 1, "for": 2, "id": "ov-o", "opaque": True}]),
+                   measure_fn=fake_measure(), transcribe=no_transcribe, sampler=fake_sheet())
+    find = lambda: next(it for t in tracks(d) for it in t["items"] if it["id"] == "ov-o")
+    assert find()["opaque"] is True
+    place.run_many(str(d / "project.json"), json.dumps([{"id": "ov-o", "opaque": False}]),
+                   measure_fn=fake_measure(), transcribe=no_transcribe, sampler=fake_sheet())
+    assert "opaque" not in find()

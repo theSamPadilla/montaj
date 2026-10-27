@@ -336,13 +336,15 @@ def resolve_time(project, project_path, project_dir, at_s, phrase, take, languag
 
 def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=None, props=None, track=None,
         item_id=None, language=None, model=DEFAULT_WHISPER_MODEL, detail=False,
-        measure_fn=look_step.measure, transcribe=None):
+        measure_fn=look_step.measure, transcribe=None, opaque=None):
     project_path = os.path.abspath(project_path)
     project_dir = os.path.dirname(project_path)
     if transcribe is None:
         transcribe = transcribe_file
     if overlay and preset:
         fail("invalid_params", "Pass overlay or preset, not both.")
+    if opaque is not None and not isinstance(opaque, bool):
+        fail("invalid_params", "opaque is true or false.")
     if for_s is not None and until is not None:
         fail("invalid_params", "Pass for or until, not both.")
     if preset and preset not in PRESETS:
@@ -437,6 +439,12 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
         item["start"], item["end"] = round(start, 3), round(end, 3)
         if src:
             item["src"] = src
+        # 1.5.1: a full-frame overlay that covers the footage (the overlay and edit-session skills' "opaque": true);
+        # false clears it
+        if opaque is True:
+            item["opaque"] = True
+        elif opaque is False:
+            item.pop("opaque", None)
         new_props = dict(item.get("props") or {})
         new_props.update(extra_props)
         if preset == "stat":   # round 9: a time on the timeline inside the item's span is made seconds into the item
@@ -543,7 +551,7 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
 
 # ── several at once (PL89b) ───────────────────────────────────────────────────────────────────────────────────────
 
-ITEM_KEYS = {"at", "for", "until", "overlay", "preset", "props", "track", "id"}
+ITEM_KEYS = {"at", "for", "until", "overlay", "preset", "props", "track", "id", "opaque"}
 
 
 def default_sampler(project_path, times, out):
@@ -613,13 +621,15 @@ def run_many(project_path, items, *, language=None, model=DEFAULT_WHISPER_MODEL,
         a = {"at": None if x.get("at") is None else (x["at"] if isinstance(x["at"], str) else json.dumps(x["at"])),
              "for_s": x.get("for"), "until": x.get("until"), "overlay": x.get("overlay"), "preset": x.get("preset"),
              "props": None if x.get("props") is None else (x["props"] if isinstance(x["props"], str) else json.dumps(x["props"])),
-             "track": x.get("track"), "item_id": x.get("id")}
+             "track": x.get("track"), "item_id": x.get("id"), "opaque": x.get("opaque")}
 
         def check(a=a):
             if a["overlay"] and a["preset"]:
                 fail("invalid_params", "Pass overlay or preset, not both.")
             if a["for_s"] is not None and a["until"] is not None:
                 fail("invalid_params", "Pass for or until, not both.")
+            if a["opaque"] is not None and not isinstance(a["opaque"], bool):
+                fail("invalid_params", "opaque is true or false.")
             if a["preset"] and a["preset"] not in PRESETS:
                 fail("invalid_params", f"preset is one of {', '.join(PRESETS)}.")
             parse_at(a["at"])
@@ -640,7 +650,7 @@ def run_many(project_path, items, *, language=None, model=DEFAULT_WHISPER_MODEL,
     for k, a in enumerate(kw):
         out, refusal = _said(lambda a=a: run(project_path, at=a["at"], for_s=a["for_s"], until=a["until"], overlay=a["overlay"],
                                               preset=a["preset"], props=a["props"], track=a["track"], item_id=a["item_id"],
-                                              language=language, model=model, detail=detail, measure_fn=measure_fn, transcribe=transcribe))
+                                              opaque=a["opaque"], language=language, model=model, detail=detail, measure_fn=measure_fn, transcribe=transcribe))
         if refusal:
             before = f" Placed before it: {', '.join(p['id'] for p in placed)}." if placed else " Nothing was placed."
             fail(refusal.get("error", "failed"), f"items[{k}]: {refusal.get('message', '')}{before}")
