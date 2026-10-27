@@ -4433,6 +4433,24 @@ async def project_brief(project_id: str, project_dir: Path = Depends(get_project
     return await asyncio.to_thread(build)
 
 
+@router.get("/projects/{project_id}/spine")
+async def project_spine(project_id: str, project_dir: Path = Depends(get_project_dir)):
+    """The speech track as the agent places things against it (lib/spine.py, run 5): `{"spine": [{id, start, end, src,
+    said}]}`, each item of the first track with its timeline times and the words it plays. Read-only, no lock (project.json
+    is written by atomic rename); in a thread, since it reads each item's transcript."""
+    from lib import spine
+
+    def build():
+        try:
+            project = json.loads((project_dir / "project.json").read_text())
+        except (OSError, ValueError):
+            raise HTTPException(404, detail={"error": "not_found", "message": "project.json is not readable"})
+        if not isinstance(project, dict):
+            raise HTTPException(422, detail={"error": "invalid_project", "message": "project.json is not an object"})
+        return {"spine": spine.spine(project, str(project_dir))}
+    return await asyncio.to_thread(build)
+
+
 @router.get("/projects/{project_id}/shots")
 async def list_shots(project_id: str, project_dir: Path = Depends(get_project_dir)):
     """The labelled shots of the project's sources (the `shots` step; lib/shots.py): `{"shots": {clip id: {"src",
