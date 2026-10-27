@@ -54,6 +54,7 @@ export type {
   AnalyzeAudioPolishArgs,
   AudioPolishAnalysis,
   FootageDropPayload,
+  AudioDropPayload,
   ImageDropPayload,
   PendingDrop,
   TimelineDropPlacement,
@@ -89,7 +90,7 @@ export type {
 // `FOOTAGE_DND_MIME` and `IMAGE_DND_MIME` are values (consts), not types —
 // exported separately so hosts can compare against them when reading a drag
 // event's MIME data (and set them when starting a drag).
-export { FOOTAGE_DND_MIME, IMAGE_DND_MIME } from './types'
+export { FOOTAGE_DND_MIME, AUDIO_DND_MIME, IMAGE_DND_MIME } from './types'
 
 // ── Video editor pure helpers ─────────────────────────────────────────────────
 export {
@@ -128,7 +129,7 @@ export {
 // footage-bin drag today, a filesystem drop in a later task) — public so the
 // host can route either drop through it rather than each reimplementing
 // "land where you dropped it, without stomping existing footage".
-export { placeDroppedClip, resolveDropTrackIndex } from './video/timeline/placement'
+export { placeDroppedClip, placeDroppedAudio, resolveDropTrackIndex } from './video/timeline/placement'
 export type { DroppedClipPlacement, PlacedClipResult } from './video/timeline/placement'
 // Marker model — pure mutations over `project.markers` (see markers.ts's file
 // header for the "same reference when unchanged" contract they all share).

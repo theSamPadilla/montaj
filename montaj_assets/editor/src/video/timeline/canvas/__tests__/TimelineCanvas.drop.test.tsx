@@ -27,7 +27,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, act, cleanup } from '@testing-library/react'
 import { createPlaybackClock } from '../../../playback-clock'
 import type { Project } from '../../../../types'
-import { FOOTAGE_DND_MIME, type FootageDropPayload } from '../../../../types'
+import { FOOTAGE_DND_MIME, AUDIO_DND_MIME, type FootageDropPayload } from '../../../../types'
 import TimelineCanvas from '../TimelineCanvas'
 import { createViewportStore } from '../viewport'
 import { computeTimelineLayout } from '../draw'
@@ -435,5 +435,52 @@ describe('TimelineCanvas — OS-file drop', () => {
     expect(e.defaultPrevented).toBe(false)
     expect(onProjectChange).not.toHaveBeenCalled()
     expect(onOverlayEdit).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('TimelineCanvas: a sound dragged from the Media bin', () => {
+  const SOUND = { src: '/p/assets/bed.mp3', sourceDuration: 4, name: 'bed.mp3', type: 'music' }
+  const withAudio = {
+    id: 'p3',
+    tracks: [{ id: 'trk-0', items: [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4, sourceDuration: 20 }] }],
+    audio: { tracks: [{ id: 'aud-0', src: '/p/a.mp3', start: 0, end: 2, lane: 0, sourceDuration: 2 }] },
+  } as unknown as Project
+
+  it('is accepted on dragover and takes the drop', () => {
+    const { surface } = mount({ project: withAudio })
+    const dt = makeDataTransfer({ [AUDIO_DND_MIME]: JSON.stringify(SOUND) })
+    const over = dragEvent('dragover', 300, dt)
+    act(() => { surface.dispatchEvent(over) })
+    expect(over.defaultPrevented).toBe(true)
+  })
+
+  it('a drop on the existing audio lane lands on that lane at the time under the cursor', () => {
+    const { surface, onProjectChange, onOverlayEdit } = mount({ project: withAudio })
+    const lane = computeTimelineLayout(withAudio).lanes[0]
+    const dt = makeDataTransfer({ [AUDIO_DND_MIME]: JSON.stringify(SOUND) })
+    act(() => { surface.dispatchEvent(dragEvent('drop', 500, dt, lane.y + lane.height / 2)) })
+
+    expect(onProjectChange).toHaveBeenCalledTimes(1)
+    const committed = onOverlayEdit.mock.calls[0][0] as Project
+    expect(committed.audio!.tracks).toHaveLength(2)
+    expect(committed.audio!.tracks!.find(t => t.src === SOUND.src)).toMatchObject({ lane: 0, start: 5, end: 9, type: 'music' })
+  })
+
+  it('a drop anywhere else lands on a new audio lane, and the video tracks are untouched', () => {
+    const { surface, onOverlayEdit } = mount({ project: withAudio })
+    const dt = makeDataTransfer({ [AUDIO_DND_MIME]: JSON.stringify(SOUND) })
+    act(() => { surface.dispatchEvent(dragEvent('drop', 500, dt, 20)) })
+
+    const committed = onOverlayEdit.mock.calls[0][0] as Project
+    expect(committed.audio!.tracks!.find(t => t.src === SOUND.src)).toMatchObject({ lane: 1, start: 5 })
+    expect(trackItems(committed)[0]).toHaveLength(1)
+  })
+
+  it('a payload with no length places nothing', () => {
+    const { surface, onProjectChange } = mount({ project: withAudio })
+    const dt = makeDataTransfer({ [AUDIO_DND_MIME]: JSON.stringify({ ...SOUND, sourceDuration: 0 }) })
+    act(() => { surface.dispatchEvent(dragEvent('drop', 500, dt)) })
+    expect(onProjectChange).not.toHaveBeenCalled()
   })
 })

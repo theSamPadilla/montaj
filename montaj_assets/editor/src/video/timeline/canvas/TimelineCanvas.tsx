@@ -35,12 +35,12 @@
 
 import { useMissingClips } from '../../missingClips'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { GetFilmstripArgs, GetWaveformPeaksArgs, FilmstripIndex, PeaksData, PendingDrop, Project, FootageDropPayload, ResolveFilePath, TimelineDropPlacement, TimelinePin } from '../../../types'
-import { FOOTAGE_DND_MIME } from '../../../types'
+import type { GetFilmstripArgs, GetWaveformPeaksArgs, FilmstripIndex, PeaksData, PendingDrop, Project, FootageDropPayload, AudioDropPayload, ResolveFilePath, TimelineDropPlacement, TimelinePin } from '../../../types'
+import { FOOTAGE_DND_MIME, AUDIO_DND_MIME } from '../../../types'
 import type { KeyframeProp, Marker } from '../../../schema'
 import type { PlaybackClock } from '../../playback-clock'
 import { BASE_VISUAL_ROW_RENDER_HEIGHT_PX, ROW_GAP_PX, VISUAL_ROW_RENDER_HEIGHT_PX } from '../timeline-model'
-import { placeDroppedClip, resolveDropPoint } from '../placement'
+import { placeDroppedClip, placeDroppedAudio, resolveDropPoint } from '../placement'
 import { computeTimelineLayout, drawTimelineContent, drawTimelineOverlay, MARKER_FLAG_WIDTH_PX, MARKER_LABEL_GAP_PX, type PendingDropBand, type TimelineLayout, type TimelineMode, type VisualRowLayout } from './draw'
 import { hitTest, isEdgeHit, type Point, type SurfaceRect } from './hit-test'
 import { keyframeUnionTimes } from './keyframe-strip'
@@ -248,6 +248,15 @@ function MarkerRenameBox({
       onBlur={e => onCommit(e.target.value)}
     />
   )
+}
+
+/** The audio lane (`AudioLane.laneIndex`) drawn under client-y `y`, or -1: where a sound dropped from the Media bin
+ *  lands. Read from the layout's own rectangles, like `dropTrackIndexAt`. */
+export function dropAudioLaneAt(y: number, layout: TimelineLayout): number {
+  for (const lane of layout.lanes) {
+    if (y >= lane.y && y < lane.y + lane.height) return lane.laneIndex
+  }
+  return -1
 }
 
 /**
@@ -1397,7 +1406,7 @@ export default function TimelineCanvas({
       // EITHER our own bin MIME, or — only when the host gave us somewhere to
       // send them — an OS-file drag. `getData()` is unreadable during
       // `dragover`, so this can only test `types`.
-      const isFootage = dt.types?.includes(FOOTAGE_DND_MIME)
+      const isFootage = dt.types?.includes(FOOTAGE_DND_MIME) || dt.types?.includes(AUDIO_DND_MIME)
       const isFiles = !!pointerRef.current.onImportFilesToTimeline && dt.types?.includes('Files')
       if (!isFootage && !isFiles) return
       // Without preventDefault the browser never fires `drop`; `copy` shows the
@@ -1424,6 +1433,38 @@ export default function TimelineCanvas({
       // arrive from a drag that started outside this surface entirely.
       const raw = e.dataTransfer?.getData(FOOTAGE_DND_MIME)
       const files = e.dataTransfer?.files
+      const rawAudio = e.dataTransfer?.getData(AUDIO_DND_MIME)
+
+      if (rawAudio) {
+        e.preventDefault()
+        if (cursorTimeRef.current !== null) { cursorTimeRef.current = null; requestRedraw('overlay') }
+        let sound: AudioDropPayload
+        try {
+          sound = JSON.parse(rawAudio) as AudioDropPayload
+        } catch {
+          return
+        }
+        if (
+          !sound ||
+          typeof sound.src !== 'string' ||
+          typeof sound.sourceDuration !== 'number' ||
+          !Number.isFinite(sound.sourceDuration) ||
+          sound.sourceDuration <= 0
+        ) return
+        if (!p.onProjectChange && !p.onOverlayEdit) return
+        if (!el) return
+        const rect = el.getBoundingClientRect()
+        const placed = placeDroppedAudio(p.project, {
+          atTime: dropTimeAt(e.clientX, rect),
+          preferredLane: dropAudioLaneAt(e.clientY - rect.top, p.layout),
+          audio: sound,
+          ...dropSnapInputs(),
+        })
+        if (placed === p.project) return
+        p.onProjectChange?.(placed)
+        p.onOverlayEdit?.(placed)
+        return
+      }
 
       if (raw) {
         e.preventDefault()
