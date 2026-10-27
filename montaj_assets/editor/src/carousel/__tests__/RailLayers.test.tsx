@@ -150,34 +150,29 @@ describe('Layers panel', () => {
 })
 
 describe('Background panel', () => {
+  // In the rail the swatch opens the colour panel (§587 M5).
+  const colourPanel = (r: Awaited<ReturnType<typeof mount>>['r']) => r.getByRole('region', { name: 'Colour panel' })
   it('a colour change writes once', async () => {
     const { r, adapter } = await mount(base())
     await openRail(r, 'Background')
     const before = adapter.saveCalls.length
-    const input = r.container.ownerDocument.querySelector<HTMLInputElement>('input[type="color"][aria-label="Background color"]')!
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Background color' })) })
+    const hex = within(colourPanel(r)).getByRole('textbox', { name: 'Hex' }) as HTMLInputElement
     await act(async () => {
-      fireEvent.change(input, { target: { value: '#111111' } })
-      fireEvent.change(input, { target: { value: '#222222' } })
-      fireEvent.change(input, { target: { value: '#112233' } })
+      fireEvent.change(hex, { target: { value: '#112233' } })
+      fireEvent.keyDown(hex, { key: 'Enter' })
     })
-    expect(adapter.saveCalls.length).toBe(before)
-    await act(async () => { fireEvent.blur(input) })
     await waitFor(() => expect(adapter.saveCalls.length).toBe(before + 1))
     expect(lastSave(adapter).slides![0].base_color).toBe('#112233')
   })
 
-  it('a pick that ends where it started writes nothing', async () => {
+  it('a panel closed with no pick writes nothing', async () => {
     const { r, adapter } = await mount(base())
     await openRail(r, 'Background')
     const before = adapter.saveCalls.length
-    const input = r.container.ownerDocument.querySelector<HTMLInputElement>('input[type="color"][aria-label="Background color"]')!
-    await act(async () => {
-      fireEvent.change(input, { target: { value: '#222222' } })
-      fireEvent.change(input, { target: { value: '#ffffff' } })
-      fireEvent.blur(input)
-    })
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Background color' })) })
+    await act(async () => { fireEvent.click(within(colourPanel(r)).getByRole('button', { name: 'Close' })) })
     expect(adapter.saveCalls.length).toBe(before)
-    expect(input.value).toBe('#ffffff')
   })
 
   it('Set image as background is disabled without a selected image', async () => {

@@ -1,5 +1,6 @@
-import { useRef } from 'react'
+import { useContext, useRef } from 'react'
 import { cn } from './utils'
+import { ColourPanelContext } from './colourPanelContext'
 
 // Color control that actually reads as one: a filled rounded swatch (the live
 // value) with the native <input type="color"> overlaid transparently so the OS
@@ -32,6 +33,8 @@ export interface SwatchInputProps {
   size?: 'sm' | 'md'
   /** Tooltip on the row. */
   title?: string
+  /** In the rail layout's colour panel: whether this colour takes an 8-digit hex (transparency). */
+  alpha?: boolean
 }
 
 export function SwatchInput({
@@ -43,13 +46,41 @@ export function SwatchInput({
   showValue = true,
   size = 'md',
   title,
+  alpha,
 }: SwatchInputProps) {
+  // In the rail layout the swatch opens the colour panel, not the OS picker.
+  const openPanel = useContext(ColourPanelContext)
   // The current pick gesture: the colour on screen when it began (the first
   // onChange since the last blur) and the latest colour picked. null while no
   // pick is pending. Judged on what onChange reported, not on the input's
   // value at blur, so it does not depend on the host echoing the pick back.
   const pickRef = useRef<{ start: string; last: string } | null>(null)
   const box = size === 'sm' ? 'h-5 w-5' : 'h-7 w-7'
+  if (openPanel) {
+    return (
+      <div className="flex items-center gap-2.5" title={title}>
+        <button
+          type="button"
+          aria-label={ariaLabel}
+          className={cn('relative shrink-0 cursor-pointer rounded-md border border-[var(--editor-border)] shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)] disabled:cursor-not-allowed disabled:opacity-40', box)}
+          style={{ backgroundColor: value }}
+          onClick={() => openPanel({
+            label: ariaLabel,
+            value,
+            alpha,
+            // A control with `onCommit` previews through `onChange` and writes
+            // on `onCommit`; one without writes on `onChange` alone.
+            preview: onCommit ? onChange : undefined,
+            commit: onCommit ?? onChange,
+            cancel: onCancel,
+          })}
+        />
+        {showValue && (
+          <span className="font-mono text-sm uppercase text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)]">{value}</span>
+        )}
+      </div>
+    )
+  }
   return (
     <div className="flex items-center gap-2.5" title={title}>
       <label className={cn('relative shrink-0 cursor-pointer', box)}>
@@ -60,7 +91,7 @@ export function SwatchInput({
         />
         <input
           type="color"
-          value={value}
+          value={value.length === 9 ? value.slice(0, 7) : value}
           onChange={e => {
             pickRef.current = { start: pickRef.current?.start ?? value, last: e.target.value }
             onChange(e.target.value)

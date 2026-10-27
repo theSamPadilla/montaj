@@ -72,6 +72,7 @@ export type {
   EditorSlots,
   CarouselLayout,
   CarouselRailItemId,
+  CarouselBrand,
   CarouselEditorProps,
   VideoEditorProps,
   RenderModalContext,
