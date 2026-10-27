@@ -26,6 +26,9 @@ import { elementsAt, isLayerPress, nextLayerDown, pointInElement } from './hitTe
 import { isApplePlatform } from '../ui/modifierKeys'
 import { scaleFontSize, scalesTextWithBox } from './textScale'
 import { createLiveBoxes, useLiveBox, type LiveBoxes } from './liveBox'
+import { useGroupGestures } from './groupGestures'
+import { expandToGroups, groupOf, heldByLock, selectionAfterPress, toggleGroupSelection } from './groups'
+import GroupChrome from './GroupChrome'
 
 // Neutral fallback used only when no host `resolveImageSrc` is injected. The
 // package must not synthesize a host-shaped URL (e.g. Montaj's `/api/files`):
@@ -277,9 +280,15 @@ interface Props {
   /**
    * Drag-select (§586 M6): the new selection, in order, so the last is the
    * primary. The band's elements back-to-front, behind the prior selection's
-   * when shift was held at the press. Absent → no band is drawn.
+   * when shift was held at the press. Absent → no band is drawn. Also how a
+   * press on a member of a group selects the whole group (§587).
    */
   onSelectMany?: (ids: string[]) => void
+  /**
+   * One write of several elements, one undo step (§587): a group's resize and
+   * turn. Absent → a selected group draws its box without handles.
+   */
+  editElements?: (slideId: string, edit: (elements: CarouselElement[]) => CarouselElement[]) => Promise<void>
   /** Shift-click on an element: add it to the selection or take it out. Absent → shift-click selects as a plain click. */
   onToggleSelect?: (id: string) => void
   scale?: number
@@ -462,6 +471,7 @@ export default function SlideCanvas({
   margin = 0,
   pickList = false,
   onContextMenu,
+  editElements,
 }: Props) {
   const sid = slideId ?? slide.id
   const resolveSrc = resolveImageSrc ?? ((el: ImageElement) => resolveAssetDefault(el.src))
@@ -534,6 +544,19 @@ export default function SlideCanvas({
   // Images need nothing: they fill the wrapper.
   const applyPreviewOverlayBox = (id: string, box: { w: number; h: number }, ratio: number) => {
     if (elementById(id)?.type === 'overlay') liveBoxes.set(id, { w: box.w, h: box.h, ratio })
+  }
+
+  // ── Groups (§587): a press selects a member's whole group (one member alone
+  // inside a group already entered); a selected group gets one box and handles.
+  const groupGesture = useGroupGestures({ slide, slideId: sid, scale, selectedIds, editElements, applyPreviewBox, applyPreviewOverlayBox, liveBoxes })
+  const selectPress = (el: CarouselElement) => {
+    const ids = selectionAfterPress(slide.elements, el.id, selectedIds)
+    if (ids.length > 1 && onSelectMany) onSelectMany(ids)
+    else onSelect?.(el.id)
+  }
+  const toggleOn = (el: CarouselElement) => {
+    if (groupOf(el) && onSelectMany) onSelectMany(toggleGroupSelection(slide.elements, el.id, selectedIds))
+    else onToggleSelect?.(el.id)
   }
 
   // ── Gesture hooks ──
@@ -868,7 +891,10 @@ export default function SlideCanvas({
   // ── Pointer wiring shared by drag/resize/rotate ──
   // We attach window-level move/up listeners while a gesture is active so the
   // gesture keeps tracking outside the element bounds.
-  const activeGesture = useRef<'drag' | 'resize' | 'rotate' | 'group' | 'band' | null>(null)
+  const activeGesture = useRef<'drag' | 'resize' | 'rotate' | 'group' | 'band' | 'group-transform' | null>(null)
+  // The window listeners below are set up once: they reach this render's group gesture here.
+  const groupGestureRef = useRef(groupGesture)
+  groupGestureRef.current = groupGesture
 
   // Set when a gesture ends (a resize, a rotate, a drag, or a group drag that
   // moved), so the click the browser sends after its release changes nothing:
@@ -909,6 +935,7 @@ export default function SlideCanvas({
         const m = g.members.find((mm) => mm.id === p.id)
         applyPreviewTransform(p.id, p.x, p.y, m?.rotation ?? 0)
       }
+      if (g.members.length) groupGesture.dragTo(result)
     },
     up: () => {
       const g = groupRef.current
@@ -925,6 +952,7 @@ export default function SlideCanvas({
       if (!moved) {
         // Rounded back to where they are: draw them there, record nothing.
         for (const m of g.members) applyPreviewTransform(m.id, m.x, m.y, m.rotation ?? 0)
+        groupGesture.dragTo(null)
         return
       }
       void (async () => {
@@ -988,13 +1016,15 @@ export default function SlideCanvas({
       const b = bandRef.current
       bandRef.current = null
       setBandShown(false)
-      if (b && !b.rect && commitBand && b.toggleId) onToggleSelect?.(b.toggleId)
+      const toggled = b?.toggleId ? elementById(b.toggleId) : undefined
+      if (b && !b.rect && commitBand && toggled) toggleOn(toggled)
       if (!b?.rect || !commitBand) return
       swallowClickRef.current = true
       const rect = b.rect
-      const ids = slide.elements
+      // A band that touches a member selects its whole group (§587).
+      const ids = expandToGroups(slide.elements, slide.elements
         .filter((el) => !hiddenSet?.has(el.id) && bandTouches(el, rect))
-        .map((el) => el.id)
+        .map((el) => el.id))
       onSelectMany?.(b.add ? [...selectedIds.filter((id) => !ids.includes(id)), ...ids] : ids)
     },
   }
@@ -1015,11 +1045,12 @@ export default function SlideCanvas({
       else if (gesture === 'rotate') rotate.onPointerUp()
       else if (gesture === 'group') groupHandlers.current.up()
       else if (gesture === 'band') bandHandlers.current.up(swallowClick)
+      else if (gesture === 'group-transform') groupGestureRef.current.end()
       // A group drag decides for itself: a press on a member that did not move
       // is a click, and collapses the selection to that member.
       const unmoved = heldPressRef.current?.moved === false
       heldPressRef.current = null
-      if (swallowClick && !(gesture === 'drag' && unmoved) && (gesture === 'drag' || gesture === 'resize' || gesture === 'rotate')) swallowClickRef.current = true
+      if (swallowClick && !(gesture === 'drag' && unmoved) && (gesture === 'drag' || gesture === 'resize' || gesture === 'rotate' || gesture === 'group-transform')) swallowClickRef.current = true
     }
     const onMove = (e: PointerEvent) => {
       // A mouse that moves with no button held has lost its release (the window
@@ -1044,6 +1075,7 @@ export default function SlideCanvas({
       else if (activeGesture.current === 'rotate') rotate.onPointerMove(cursor)
       else if (activeGesture.current === 'group') groupHandlers.current.move(cursor, skipSnap)
       else if (activeGesture.current === 'band') bandHandlers.current.move(cursor)
+      else if (activeGesture.current === 'group-transform') groupGestureRef.current.move(cursor, e.shiftKey)
     }
     const onUp = () => end(true)
     const onCancel = () => end(false)
@@ -1210,11 +1242,12 @@ export default function SlideCanvas({
           }
 
           // Every selected, unlocked element, as one drag moves them (§156).
-          const startGroupDrag = (e: React.PointerEvent) => {
+          // A member of a group with a locked member stays too (§587).
+          const startGroupDrag = (e: React.PointerEvent, ids: string[] = selectedIds) => {
             const members: GroupMember[] = []
-            for (const id of selectedIds) {
+            for (const id of ids) {
               const m = slide.elements.find((el) => el.id === id)
-              if (m && !isLocked(m)) members.push({ id: m.id, x: m.x, y: m.y, w: m.w, h: m.h, rotation: m.rotation })
+              if (m && !heldByLock(slide.elements, m)) members.push({ id: m.id, x: m.x, y: m.y, w: m.w, h: m.h, rotation: m.rotation })
             }
             groupRef.current = { start: { x: e.clientX, y: e.clientY }, members, others: snapTargets(members.map((m) => m.id)), latest: null }
             activeGesture.current = 'group'
@@ -1247,7 +1280,7 @@ export default function SlideCanvas({
             // On a locked element it toggles on release, and a move bands and adds.
             if (e.shiftKey && onToggleSelect && !cropSession) {
               if (isLocked(element) && onSelectMany) startBand(e, element.id)
-              else onToggleSelect(element.id)
+              else toggleOn(element)
               return
             }
             // A press inside a selected element's box acts on it though another
@@ -1271,7 +1304,7 @@ export default function SlideCanvas({
             // A press on a locked element starts nothing (§586 M5): it is only
             // selected, as a click does; a press-and-move on it draws a band.
             if (isLocked(element)) {
-              if (!(selectedIds.length > 1 && selectedIds.includes(element.id))) onSelect?.(element.id)
+              if (!(selectedIds.length > 1 && selectedIds.includes(element.id))) selectPress(element)
               startBand(e)
               return
             }
@@ -1279,6 +1312,13 @@ export default function SlideCanvas({
             // its locked members stay where they are.
             if (selectedIds.length > 1 && selectedIds.includes(element.id)) {
               startGroupDrag(e)
+              return
+            }
+            // A member of a group not entered: the whole group is selected and dragged.
+            const pressed = selectionAfterPress(slide.elements, element.id, selectedIds)
+            if (pressed.length > 1 && onSelectMany) {
+              onSelectMany(pressed)
+              startGroupDrag(e, pressed)
               return
             }
             onSelect?.(element.id)
@@ -1365,7 +1405,7 @@ export default function SlideCanvas({
                 // click that is not under the selection ends it.
                 if (held && held.id !== element.id) clickBaseRef.current = { id: held.id, at: Date.now() }
                 else if (e.detail < 2) clickBaseRef.current = null
-                onSelect?.(element.id)
+                selectPress(element)
               } : undefined}
               onPointerDown={handlePointerDownDrag}
               onDoubleClick={interactive ? (e) => handleDoubleClick(element, e) : undefined}
@@ -1526,7 +1566,8 @@ export default function SlideCanvas({
             {slide.elements.map((element) => {
               if (hiddenSet?.has(element.id)) return null
               // Outlined when selected at all; handles only for the one selected element.
-              const isOutlined = selectedIds.includes(element.id)
+              // A selected group's members are drawn by the group's box (§587).
+              const isOutlined = selectedIds.includes(element.id) && !(groupGesture.group && groupOf(element) === groupGesture.group)
               const isSelected = selectedElementId === element.id
               const locked = isLocked(element)
               const inCrop = cropSession?.elementId === element.id
@@ -1740,6 +1781,23 @@ export default function SlideCanvas({
                 </div>
               )
             })}
+
+            {/* A selected group's box and handles (§587). */}
+            {groupGesture.group && groupGesture.box && (
+              <GroupChrome
+                key={groupGesture.group}
+                box={groupGesture.box}
+                scale={scale}
+                boxRef={groupGesture.boxRef}
+                locked={groupGesture.locked}
+                handles={groupGesture.handles}
+                isMenuPress={isMenuPress}
+                onResizeStart={(handle, e) => { if (groupGesture.beginResize(handle, e)) activeGesture.current = 'group-transform' }}
+                onRotateStart={(e) => { if (groupGesture.beginRotate(e)) activeGesture.current = 'group-transform' }}
+                onUnlock={onUnlock && (() => { const m = slide.elements.find((el) => groupOf(el) === groupGesture.group && isLocked(el)); if (m) onUnlock(m.id) })}
+                onBadgeClick={() => { swallowClickRef.current = false }}
+              />
+            )}
           </div>
         </div>
       )}

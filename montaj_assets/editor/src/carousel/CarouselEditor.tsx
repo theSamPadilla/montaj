@@ -36,6 +36,7 @@ import type { ReorderDirection } from '../state/project-reducer'
 import { COPY_OFFSET, cloneElement, copyElements, duplicateCopies, insertCopies, pasteElements, withoutLock, type ElementClipboard } from './clipboard'
 import { isLocked, toggleLock } from './lock'
 import { moveToLayer, reorderSelection } from './layerOrder'
+import { canGroup, canUngroup, freshGroupIds, groupBox, groupMemberIds, groupOf, groupElements, selectionAfterPress, ungroupElements, wholeGroup } from './groups'
 import { newTextElement } from './newText'
 import { elementCategory, newOverlayElement, overlayTileLabel, TEMPLATE_DND_MIME } from './overlayElement'
 import { applyTextStyle, isTextOverlay, pickTextStyle, type TextStyle } from './textStyle'
@@ -260,6 +261,10 @@ const matchesCmdKey = (key: string) => (e: KeyboardEvent) =>
  *  left to the browser (it switches tabs). */
 const matchesLayerKey = (code: 'BracketLeft' | 'BracketRight', alt: boolean) => (e: KeyboardEvent) =>
   (e.metaKey || e.ctrlKey) && !e.shiftKey && e.altKey === alt && e.code === code
+
+/** Cmd+G (Ctrl+G off a Mac), and with Shift: group and ungroup (§587). Alt leaves G alone. */
+const matchesGroupKey = (shift: boolean) => (e: KeyboardEvent) =>
+  (e.metaKey || e.ctrlKey) && e.shiftKey === shift && !e.altKey && e.key.toLowerCase() === 'g'
 
 /** Option+Shift+L (Alt+Shift+L on Windows), no Cmd or Ctrl. Matched on `code`,
  *  the physical key: Option changes what a Mac types for it. */
@@ -718,6 +723,29 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     void state.editElements(selectedSlide.id, (els) => toggleLock(els, ids))
   }
 
+  // ── Groups (§587) ──
+  const selectedGroupId = selectedSlide ? wholeGroup(selectedSlide.elements, liveSelectedIds) : null
+  const groupable = !!selectedSlide && canGroup(selectedSlide.elements, liveSelectedIds)
+  const ungroupable = !!selectedSlide && canUngroup(selectedSlide.elements, liveSelectedIds)
+  /** Group: the selection becomes one new group, gathered at its frontmost member; one slide write. It stays selected. */
+  function groupSelection() {
+    if (!selectedSlide || !canGroup(selectedSlide.elements, liveSelectedIds)) return
+    const ids = liveSelectedIds
+    const group = crypto.randomUUID()
+    void state.editElements(selectedSlide.id, (els) => (canGroup(els, ids) ? groupElements(els, ids, group) : els))
+  }
+  /** Ungroup: every whole group in the selection; its members stay selected. One slide write. */
+  function ungroupSelection() {
+    if (!selectedSlide || !canUngroup(selectedSlide.elements, liveSelectedIds)) return
+    const ids = liveSelectedIds
+    void state.editElements(selectedSlide.id, (els) => (canUngroup(els, ids) ? ungroupElements(els, ids) : els))
+  }
+  /** What a press on `elementId` of `slideId` selects: its whole group, unless the selection is inside that group already. */
+  function selectElement(slideId: string, elementId: string, current: string[]) {
+    const els = slidesRef.current.find((sl) => sl.id === slideId)?.elements ?? []
+    setSelectedElementIds(selectionAfterPress(els, elementId, current))
+  }
+
   /** T: a text box at the slide centre, as the "+ Text" button adds it. */
   function addTextBox() {
     if (!selectedSlide || !textTemplate) return
@@ -768,7 +796,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   function unlockElement(elementId: string) {
     if (!selectedSlide || !canEdit) return
     if (cropElementId) flushSync(applyCrop)
-    void state.editElements(selectedSlide.id, (els) => els.some((el) => el.id === elementId && isLocked(el)) ? toggleLock(els, [elementId]) : els)
+    // The badge of a selected group unlocks all of it (§587).
+    const g = groupOf(selectedSlide.elements.find((el) => el.id === elementId))
+    const ids = g && g === selectedGroupId ? groupMemberIds(selectedSlide.elements, g) : [elementId]
+    void state.editElements(selectedSlide.id, (els) => els.some((el) => ids.includes(el.id) && isLocked(el)) ? toggleLock(els, ids.filter((id) => isLocked(els.find((el) => el.id === id)))) : els)
   }
 
   /** Select all: every element on the slide the host is not hiding. */
@@ -794,6 +825,18 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (cropElementId && elementId !== cropElementId) applyCrop()
     if (!additive) { setSelectedElementId(elementId); return }
     setSelectedElementIds((prev) => prev.includes(elementId) ? prev.filter((id) => id !== elementId) : [...prev, elementId])
+  }
+  /** A group's layer row (§587): selects its members; additive toggles them in the selection. */
+  function selectLayerGroup(memberIds: string[], additive: boolean) {
+    if (cropElementId && !memberIds.includes(cropElementId)) applyCrop()
+    if (!additive) { setSelectedElementIds(memberIds); return }
+    setSelectedElementIds((prev) => memberIds.every((id) => prev.includes(id)) ? prev.filter((id) => !memberIds.includes(id)) : [...prev, ...memberIds.filter((id) => !prev.includes(id))])
+  }
+  /** A group's layer row lock: all its members, one undo step. */
+  function toggleLayerGroupLock(memberIds: string[]) {
+    if (!selectedSlide || !canEdit) return
+    if (cropElementId) flushSync(applyCrop)
+    void state.editElements(selectedSlide.id, (els) => toggleLock(els, memberIds))
   }
   /** A layer row's lock: that element only, one undo step; a pending crop lands first. */
   function toggleLayerLock(elementId: string) {
@@ -845,6 +888,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       onToggleLock={toggleLayerLock}
       onReorderSelection={reorderFromPanel}
       onMove={moveLayers}
+      onSelectGroup={selectLayerGroup}
+      onToggleGroupLock={toggleLayerGroupLock}
     />
   )
   const brandColours = useMemo(
@@ -1071,6 +1116,22 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       matches: matchesCmdKey('d'),
       guard: () => hasSelection && canEdit,
       action: () => duplicateSelection(),
+    },
+    {
+      id: 'carousel.group',
+      description: 'Group',
+      keyHint: ['⌘', 'G'],
+      matches: matchesGroupKey(false),
+      guard: () => hasSelection && canEdit && liveSelectedIds.length > 1,
+      action: () => groupSelection(),
+    },
+    {
+      id: 'carousel.ungroup',
+      description: 'Ungroup',
+      keyHint: ['⌘', '⇧', 'G'],
+      matches: matchesGroupKey(true),
+      guard: () => hasSelection && canEdit,
+      action: () => ungroupSelection(),
     },
     {
       // Claimed on an empty slide too: the page must not select its own text.
@@ -1338,7 +1399,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (cropElementId) flushSync(applyCrop)
     const src = slidesRef.current.find(s => s.id === id)
     if (!src) return
-    const clone: Slide = { ...src, id: crypto.randomUUID(), elements: src.elements.map(cloneElement) }
+    const clone: Slide = { ...src, id: crypto.randomUUID(), elements: freshGroupIds(src.elements.map(cloneElement)) }
     void state.duplicateSlide(id, clone)
     setSelectedSlideId(clone.id)
     setSelectedElementId(null)
@@ -2025,6 +2086,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 selectedElementIds={liveSelectedIds}
                 onToggleSelect={toggleSelect}
                 onSelectMany={selectBand}
+                editElements={state.editElements}
                 scale={canvasScale}
                 resolveImageSrc={adapter.resolveImageSrc}
                 compileOverlay={(t) => adapter.compileOverlay(t)}
@@ -2154,6 +2216,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     moveElement,
     resizeElement,
     rotateElement,
+    editElements: state.editElements,
     commit: state.commit,
     updateOverlayProp,
     updateImageCrop,
@@ -2217,8 +2280,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (!onActive) activateSlide(slideId)
     if (info.elementId) {
       if (cropElementIdRef.current && cropElementIdRef.current !== info.elementId) applyCrop()
-      // Inside the selection it stays (a multi-selection too); elsewhere the element is selected.
-      if (!onActive || !liveSelectedIds.includes(info.elementId)) setSelectedElementId(info.elementId)
+      // Inside the selection it stays (a multi-selection too); elsewhere the element (its group, §587) is selected.
+      if (!onActive || !liveSelectedIds.includes(info.elementId)) selectElement(slideId, info.elementId, onActive ? liveSelectedIds : [])
     } else {
       if (cropElementIdRef.current) applyCrop()
       setSelectedElementId(null)
@@ -2272,6 +2335,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       layer('backward', 'Send backward', ['⌘', '['], 'backward'),
       layer('back', 'Send to back', ['⌥', '⌘', '['], 'back'),
       'separator',
+      ...(selectedGroupId
+        ? [{ id: 'ungroup', label: 'Ungroup', keys: ['⌘', '⇧', 'G'], disabled: !canEdit || !ungroupable, run: before(ungroupSelection) }]
+        : sel.length > 1 ? [{ id: 'group', label: 'Group', keys: ['⌘', 'G'], disabled: !canEdit || !groupable, run: before(groupSelection) }] : []),
       {
         id: 'lock', label: anyLocked ? 'Unlock' : 'Lock', keys: lockKey ? ['⌥', '⇧', 'L'] : undefined,
         disabled: !canEdit, run: before(toggleSelectionLock),
@@ -2398,6 +2464,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             onAlignSelection={handleAlignSelection}
             onMoveInStack={moveSelectionInStack}
             onToggleLock={toggleSelectionLock}
+            onGroup={!selectedGroupId && selectedElements.length > 1 ? groupSelection : undefined}
+            onUngroup={selectedGroupId ? ungroupSelection : undefined}
+            groupDisabled={selectedGroupId ? !ungroupable : !groupable}
+            groupBox={selectedGroupId ? groupBox(selectedElements) : undefined}
             onDuplicate={() => {
               // One element: the panel's Duplicate, which copies it as it is
               // after the crop just applied. Several: Cmd+D's.

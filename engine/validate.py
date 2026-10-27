@@ -483,6 +483,10 @@ def validate_project(path):
                     fail("invalid_field", f"slides[{si}].elements[{ei}].w must be > 0")
                 if el["h"] <= 0:
                     fail("invalid_field", f"slides[{si}].elements[{ei}].h must be > 0")
+                # §587: the editor's groups; null is no group.
+                group = el.get("group")
+                if group is not None and (not isinstance(group, str) or not group):
+                    fail("invalid_field", f"slides[{si}].elements[{ei}].group must be a non-empty string")
 
                 if el_type == "image":
                     src = el.get("src")

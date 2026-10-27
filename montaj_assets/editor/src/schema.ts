@@ -424,6 +424,13 @@ export interface ImageElement {
    * Absent = unlocked.
    */
   locked?: boolean
+  /**
+   * Optional: the id of the group this element belongs to (§587). Elements
+   * that share it are selected, moved, resized and rotated as one in the
+   * editor, and sit next to each other in `elements`. Editor-only: the
+   * renderer ignores it. Absent = not in a group.
+   */
+  group?: string
 }
 
 export interface OverlayElement {
@@ -450,6 +457,13 @@ export interface OverlayElement {
    * Absent = unlocked.
    */
   locked?: boolean
+  /**
+   * Optional: the id of the group this element belongs to (§587). Elements
+   * that share it are selected, moved, resized and rotated as one in the
+   * editor, and sit next to each other in `elements`. Editor-only: the
+   * renderer ignores it. Absent = not in a group.
+   */
+  group?: string
 }
 
 export type CarouselElement = ImageElement | OverlayElement
