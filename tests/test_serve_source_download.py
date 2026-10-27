@@ -333,7 +333,7 @@ def test_run_refuses_a_bad_link(init_spy, tmp_path, extra, code, needle):
 # The task: finalize
 # ---------------------------------------------------------------------------
 
-def test_download_on_a_pending_project_puts_the_clip_on_the_timeline(tmp_path, monkeypatch, finalize_stubs):
+def test_download_on_a_pending_project_adds_the_source_only(tmp_path, monkeypatch, finalize_stubs):
     pid = str(uuid.uuid4())
     project_dir = tmp_path / "p"
     _write_project(project_dir, pid)
@@ -353,7 +353,7 @@ def test_download_on_a_pending_project_puts_the_clip_on_the_timeline(tmp_path, m
     clip = {"id": cid, "type": "video", "src": str(target), "start": 0.0, "end": 0.0,
             "sourceDuration": 212.0, "sourceWidth": 1920, "sourceHeight": 1080}
     assert project["sources"] == [clip]
-    assert project["tracks"][0]["items"] == [clip]
+    assert project["tracks"][0]["items"] == []       # §590: never laid; cut builds the spine from the sources
     assert project["sourceDownload"] == {"kind": "youtube", "url": URL, "status": "done", "clipId": cid}
     assert project["status"] == "pending"
 
@@ -463,7 +463,7 @@ def test_a_stale_save_that_dropped_the_clip_gets_it_back_once(workspace, monkeyp
 
     project = _read(project_dir)
     assert [s["src"] for s in project["sources"]] == [str(target)]
-    assert [i["src"] for i in project["tracks"][0]["items"]] == [str(target)]
+    assert project["tracks"][0]["items"] == []
     assert project["sourceDownload"]["status"] == "done"
 
 

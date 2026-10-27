@@ -15,7 +15,7 @@ from validate_step import validate as validate_step  # noqa: F401
 from validate_step import resolve_step_path  # noqa: F401
 
 VALID_USES_PREFIXES = {"montaj/", "user/", "./steps/"}
-STEP_NOTE_MAX = 160  # an optional one-line `note` on a workflow step
+STEP_NOTE_MAX = 320  # an optional one-line `note` on a workflow step (was 160: a note says why, not only what; Sam, 2026-10-26)
 
 # `foreach` accepts any dotted identifier path — `"clips"`, `"storyboard.scenes"`,
 # `"storyboard.imageRefs"`, etc. No whitelist and no predicate grammar; the agent

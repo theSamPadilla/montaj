@@ -931,8 +931,7 @@ async def _finalize_source_download(
     Idempotent, keyed by the file's path: a source already at this `src` is
     reused (a stale save can put the record back to `downloading` after a
     finalize, and the next open runs this again). A new clip goes to `sources`
-    and, only while the project is `pending` (the agent's lifecycle), to
-    `tracks[0].items` in init's shape. Read to write with no await between, as
+    only, in init's shape. Read to write with no await between, as
     `_run_ingest_detached`, so a concurrent PUT cannot interleave."""
     project_path = project_dir / "project.json"
     settings = json.loads(project_path.read_text()).get("settings") or {}
@@ -958,16 +957,7 @@ async def _finalize_source_download(
             clip = existing
         else:
             clip = {"id": _next_clip_id(project), **clip}
-            sources.append(clip)
-            if project.get("status") == "pending":
-                tracks = project.get("tracks")
-                if not isinstance(tracks, list) or not tracks:
-                    tracks = project["tracks"] = [{"id": "trk-0", "items": []}]
-                first = tracks[0]
-                if isinstance(first, dict):
-                    first.setdefault("items", []).append(dict(clip))
-                elif isinstance(first, list):
-                    first.append(dict(clip))
+            sources.append(clip)        # §590: never laid on the timeline; cut builds the spine from sources
         project["sourceDownload"] = {"kind": "youtube", "url": url, "status": "done", "clipId": clip["id"]}
         refused = save_guard.maintenance_refusal(raw, project)
         if refused is None:
@@ -4798,15 +4788,12 @@ def _rerun_under_lock(project_dir: Path, body: dict, headers=None, project_id=No
         run_count = fresh.get("runCount", 1)
         version_label = body.get("versionName") or fresh.get("status", "draft")
         _git_commit_sync(project_dir, f"version: run {run_count} — {version_label}")
-        # Restore video track to original source clips; drop captions/overlays.
-        # `order` is a legacy field: nothing downstream sorts or requires it, so a missing
-        # key on an init-created or ingested source degrades to None rather than KeyError.
-        source_clips = [{"id": c["id"], "src": c["src"], "order": c.get("order")} for c in fresh_sources]
+        # Start again as a new project does (§590): an empty timeline, the clips in sources.
         updated = {
             **fresh,
             "status": "pending",
             "runCount": run_count + 1,
-            "tracks": [{"id": "trk-0", "items": source_clips}],
+            "tracks": [{"id": "trk-0", "items": []}],
         }
         if "prompt" in body:
             updated["editingPrompt"] = body["prompt"]

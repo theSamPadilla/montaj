@@ -1,7 +1,7 @@
 {
   "name": "cut",
   "category": "edit",
-  "description": "Cut a talking head in two calls. Without plan: transcribes clips that have no transcript, per voiced run (the only file it writes beside a clip; the transcripts are trustworthy, never transcribe a window), removes silences (read on each clip's own audio) and fillers, and writes every saying as a row of cut-plan.md in the project folder, labeled where a take may be redone (retake?, false-start?, repeat?, noise?), changing nothing in the project; the answer carries the plan. Pick takes by deleting rows or words in the plan. With plan: applies that plan, edited or not, through speech_edit's save (a version first), and answers with every seam: its time and the words each side. The language is detected unless you pass it.",
+  "description": "Cut a talking head in two calls; with footage, start here. On an empty timeline it builds the talking head from the sources (b-roll left out). Without plan: transcribes clips that have no transcript, per voiced run (the only file it writes beside a clip; the transcripts are trustworthy, never transcribe a window), removes silences (read on each clip's own audio) and fillers, and writes every saying as a row of cut-plan.md in the project folder, labeled where a take may be redone (retake?, false-start?, repeat?, noise?), changing nothing in the project; the answer carries the plan. With plan: applies that plan, edited or not (a version first), and answers with every seam: its time and the words each side. The language is detected unless you pass it.",
   "input": {
     "type": "project",
     "description": "The project id, its folder, or the absolute path of its project.json"

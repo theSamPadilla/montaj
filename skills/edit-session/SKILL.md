@@ -49,7 +49,9 @@ Output: `clip.json` (word-level timings) and `clip.srt`. Always read the fresh `
 
 This is the single most important thing to know about editing a v4 draft: a cut, a split, a ripple delete and a trim are all rewrites of `tracks` and `captions` in `project.json`. No intermediate file is produced, no clip file changes, and every edit is reversible by editing the JSON back. The helpers live in `montaj_assets/editor/src/video/cuts.ts` and the operator reaches them from the timeline; you reach the same outcome by writing the same JSON.
 
-**Cutting speech goes through skill `speech-edit`**: edit the transcript as text and apply it in one write. A speech edit carries overlays and captions with the cut; the manual edits below do not. Use the table for non-speech work: footage without speech, or a transcript too unreliable to edit.
+**With footage, start with `cut`**: faster, cheaper and better than cutting by hand, and battle-tested on real projects (false starts, repeats, dead air, unfinished sentences). On an empty timeline it builds the talking head from the sources.
+
+**Cutting speech after that goes through skill `speech-edit`**: edit the transcript as text and apply it in one write. A speech edit carries overlays and captions with the cut; the manual edits below do not. Use the table for non-speech work: footage without speech, or a transcript too unreliable to edit.
 
 The four shapes, and what each does to the timeline:
 

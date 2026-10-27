@@ -42,12 +42,12 @@ def test_get_workflow_marks_skill_backed_entries():
 
 
 def test_get_workflow_marks_real_step_entries():
-    """overlays.json's probe entry (montaj/probe) is a real step, not a skill."""
+    """overlays.json's cut_plan entry (montaj/cut) is a real step, not a skill."""
     resp = client.get("/api/workflows/overlays")
     assert resp.status_code == 200
     steps = _steps_by_id(resp.json())
 
-    entry = steps["probe"]
+    entry = steps["cut_plan"]
     assert entry["kind"] == "step"
     assert "skill" not in entry
 
@@ -63,7 +63,7 @@ def test_get_workflow_preserves_existing_fields():
     assert apply["needs"] == ["select-takes"]
     assert apply["params"] == {"plan": "cut-plan.md"}
     assert apply["kind"] == "step"
-    assert steps["probe"]["foreach"] == "clips"
+    assert steps["cut_plan"]["note"].startswith("With footage, start here")
 
     select_takes = steps["select-takes"]
     assert select_takes["uses"] == "montaj/select-takes"

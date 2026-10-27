@@ -64,7 +64,6 @@ _LABEL = {"retake": "retake?", "repeat": "retake?", "false-start": "false-start?
           "abandoned": "false-start?", "pause": "noise?", "inaudible": "noise?", "noise": "noise?"}
 _SPAN_LABEL = {"retake": "repeat?", "repeat": "repeat?", "restart": "repeat?", "false-start": "false-start?",
                "abandoned": "false-start?"}
-TEXT_INLINE_CAP = 12000     # the plan answer carries the plan's text up to this many bytes
 SEAMS_MAX = 40
 SEAM_EDGE_S = 0.02
 PREV_PLAN_FILE = "cut-plan.prev.md"
@@ -363,14 +362,15 @@ def _kept_whole(row):
 
 
 def _plan(d, title, units, trailing, labels, gone, at, of_source, language, max_pause, project_dir, is_filler,
-          whole=frozenset(), breath=None, threshold=SILENCE_THRESHOLD_DB, noise=frozenset()):
+          whole=frozenset(), breath=None, threshold=SILENCE_THRESHOLD_DB, noise=frozenset(), left=frozenset()):
     """The plan: speech_edit's text format (PL89: it only labels). `## Cut` holds every saying, each row of the base
     (the mechanical pass: silences and fillers already gone) in recording order, tagged [time] or [time label]: the
     labels (`labels`, from _labels) question a take, never remove it. `gone`: {(letter, word index): why} of words the
     silence took with it (no sound, or no voice, under them): left out of their rows and listed under `## Unused`, as
     is every other word of a line the base does not play (an earlier cut's, tagged earlier). Times are of the timeline
     as it is now; line ids are the source's (lib/speech_lines). breath: written in the header, so the apply rebuilds
-    the same base. Returns (text, kept rows [(id, t, words)], unused rows [(id, t, words, why)], {label: takes})."""
+    the same base. left: the sources left out of a spine (§590, b-roll), whose words are never offered.
+    Returns (text, kept rows [(id, t, words)], unused rows [(id, t, words, why)], {label: takes})."""
     head = speech_text.render(d, title, "none").split("\n")
     cut_at = head.index("## Cut")
     meta = (f"language {language} · max-pause {max_pause:.2f}" + (f" · breath {breath:.3f}" if breath is not None else "")
@@ -460,6 +460,8 @@ def _plan(d, title, units, trailing, labels, gone, at, of_source, language, max_
             continue                 # only fillers went, which the counts carry
         src = next((s for s, lt in d.letters.items() if lt == letter), None)
         src = src if src is None or os.path.isabs(src) else os.path.join(project_dir, src)
+        if src in left:
+            continue
         t = of_source(src, missing[0].start) if src else None
         text = " ".join(w.text for w in missing)
         if t is None:
@@ -714,6 +716,45 @@ def _has_clips(project, track_id):
     if project.get("status") == "pending":
         return bool(items)
     return any(float(it.get("end", 0)) > float(it.get("start", 0)) for it in items)
+
+
+def _spine(project, project_dir, words=False):
+    """§590: (project, spine ids, ids left out). A project with no clip on any track has the talking-head spine
+    built in memory: its video sources on the first track, as project creation laid them before §590, so the plan
+    rows every take of every line; only the cut that applies writes it. words (after transcription): a source whose
+    words do not look like speech (b-roll) is left out, unless none does. Any other project is returned as it is."""
+    sources = [s for s in project.get("sources") or [] if isinstance(s, dict) and s.get("id") and s.get("src")
+               and s.get("type", "video") == "video"]
+    out = normalize_tracks(copy.deepcopy(project))
+    if not sources or any(_media(t) for t in out.get("tracks", [])):
+        return project, frozenset(), []
+    items = [{**{k: v for k, v in s.items() if k not in ("inPoint", "outPoint")}, "start": 0.0, "end": 0.0}
+             for s in sources]
+    left = []
+    if words:
+        speech = [it for it in items if _speechy(it, project_dir)]
+        if speech:
+            left, items = [it["id"] for it in items if it not in speech], speech
+    if not out.get("tracks"):
+        out["tracks"] = [{"id": "trk-0", "items": []}]
+    out["tracks"][0]["items"] = items
+    return out, frozenset(it["id"] for it in items), left
+
+
+def _speechy(it, project_dir):
+    """Whether a source's transcript reads as speech over the whole source (the mechanical pass's b-roll test)."""
+    r = _resolved(it, project_dir)
+    sidecar = sidecar_for(r)
+    raw = load_words(sidecar) if sidecar else []
+    if not raw:
+        return False
+    inside = [{"text": w.text, "start": w.start, "end": w.end} for w in raw]
+    span = max(float(it.get("sourceDuration") or get_duration(r["src"])), 1e-6)
+    return not (_made_up(inside) or _hardly_speech(inside, span))
+
+
+def _left_out(left):
+    return f"left {', '.join(left)} out of the cut: {'its' if len(left) == 1 else 'their'} words do not look like speech (b-roll?)"
 
 
 def _already_cut(project):
@@ -1152,10 +1193,13 @@ def _make_plan(args, project_path, project_dir):
         return
     # §558: the speech is a video track, an audio lane or the voiceover; an audio one is lifted into a track of its
     # own for the cut (lib/speech_source.py) and lowered back at the write
-    key = speech_source.choose(first, project_dir, args.speech)
-    first_l, lift = speech_source.lift(first, key, project_dir)
+    spined, spine, _ = _spine(first, project_dir)
+    key = speech_source.choose(spined, project_dir, args.speech)
+    if spine and key != spined["tracks"][0]["id"]:
+        spined, spine = first, frozenset()     # the spine is built for the video track cut, never under a narration
+    first_l, lift = speech_source.lift(spined, key, project_dir)
     track_id = lift.track_id
-    if not _has_clips(first_l, track_id):
+    if not spine and not _has_clips(first_l, track_id):
         fail("no_clips", "No clips on the timeline. Place clips first (the footage is in the project's media), "
                          "then run cut.")
     _stem_clash(_track(first_l, track_id)[1], project_dir)
@@ -1165,7 +1209,12 @@ def _make_plan(args, project_path, project_dir):
     if isinstance(disk.get(MARKER_KEY), dict) and not args.recut:     # another run cut it meanwhile
         print(json.dumps(_already_cut(disk), ensure_ascii=False))
         return
-    disk_l, lift = speech_source.lift(disk, key, project_dir)
+    disk_s, spine, left = _spine(disk, project_dir, words=True) if spine else (disk, spine, [])
+    disk_l, lift = speech_source.lift(disk_s, key, project_dir)
+    if left:
+        warnings.insert(0, _left_out(left))
+    left_srcs = frozenset(_resolve(s["src"], project_dir) for s in disk.get("sources") or []
+                          if isinstance(s, dict) and s.get("id") in left)
     language = _language(args.language, _track(disk_l, track_id)[1], project_dir)
     # PL89i: a phrase whisper heard once though it was said twice, heard again before the plan is built on it
     reheard = _rehear_slow(disk_l, track_id, project_dir, args.model, language)
@@ -1197,7 +1246,7 @@ def _make_plan(args, project_path, project_dir):
             text, kept, unused, counts = _plan(b["d"], title, b["units"], b["trailing"], b["labels"], b["gone"], at,
                                                of_source, language, max_pause, project_dir, _filler_test(language),
                                                b.get("whole", frozenset()), breath, threshold,
-                                               _noise_keys(b["refiner"], b["d"]))
+                                               _noise_keys(b["refiner"], b["d"]), left_srcs)
             res = apply(project_path, _untagged(text)[0], preview=True, max_pause=max_pause, feel=DEFAULT_FEEL,
                         base=b["work"], base_of=disk, want_project=True, carry_from=b["origin"], lineage=b["lineage"],
                         guard_keys=(MARKER_KEY,) + _read_too(lift), refiner=b["refiner"], lower=_lower(lift))
@@ -1244,8 +1293,8 @@ def _make_plan(args, project_path, project_dir):
         answer["notes"] = notes
     if warnings:
         answer["warnings"] = warnings[:5]
-    if b["d"] is not None and len(text.encode()) <= TEXT_INLINE_CAP:
-        answer["text"] = text                  # the plan itself, so no read is needed to edit it
+    if b["d"] is not None:
+        answer["text"] = text      # the whole plan, however long: a read for the rest costs the AI a turn (Sam, 2026-10-26)
     print(json.dumps(answer, ensure_ascii=False))
 
 
@@ -1267,7 +1316,10 @@ def _apply_plan(args, project_path, project_dir):
                                 "Edit it to change the cut.")
     if speech_source.is_lifted(track_id) and not any(k == key for k, _, _ in speech_source.candidates(disk, project_dir)):
         fail("stale_plan", "The timeline changed since this plan was made. Run cut again for a new plan.")
-    disk_l, lift = speech_source.lift(disk, key, project_dir)
+    disk_s, spine, left = _spine(disk, project_dir, words=True)
+    if spine and track_id != disk_s["tracks"][0]["id"]:
+        disk_s, spine, left = disk, frozenset(), []
+    disk_l, lift = speech_source.lift(disk_s, key, project_dir)
     _track(disk_l, track_id)
     plan_lang, plan_pause, plan_breath, plan_threshold = _plan_meta(text)
     language = args.language or plan_lang or "en"
@@ -1292,11 +1344,11 @@ def _apply_plan(args, project_path, project_dir):
         # another level gives another base, so the plan's text would not say what the apply keeps
         fail("stale_plan", f"This plan was made at silence-threshold {threshold:g}. Run cut again at "
                            f"{args.silence_threshold:g}, or apply it without silence-threshold (your edited plan is kept).")
-    warnings = []
+    warnings = [_left_out(left)] if left else []
     b = _build(project_path, project_dir, disk_l, track_id, language, warnings, max_pause, breath, threshold)
     stale = ("This plan was made before cut was updated, or the timeline changed. Run cut again (your edited plan "
              "is kept).")
-    if not _has_clips(disk_l, track_id):
+    if not spine and not _has_clips(disk_l, track_id):
         stale += " There are no clips on the timeline now; place clips first."
     answer = {"project": disk.get("id"), "mode": "applied"}
 

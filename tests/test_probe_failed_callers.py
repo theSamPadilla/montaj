@@ -493,7 +493,7 @@ def test_init_logs_the_probe_failure_with_its_reason(tmp_path):
 
     assert result.returncode == 0, result.stderr
     project = json.loads(Path(result.stdout.strip().splitlines()[-1]).read_text())
-    item = track_items(project)[0][0]
+    item = project["sources"][0]
     assert "proxySrc" not in item
     [line] = [ln for ln in result.stderr.splitlines() if "proxy FAILED" in ln]
     assert f"ffprobe could not read {item['src']} (exit)" in line

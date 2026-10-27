@@ -4,9 +4,7 @@
   "project_type": "editing",
   "requires_clips": false,
   "steps": [
-    { "id": "probe",   "uses": "montaj/probe",             "foreach": "clips", "note": "Look at the footage." },
-    { "id": "snapshot",       "uses": "montaj/snapshot",          "foreach": "clips", "needs": ["probe"], "note": "Look at the footage." },
-    { "id": "cut_plan",       "uses": "montaj/cut",               "needs": ["snapshot"], "note": "Only if asked to cut or clean the talk, or for a fresh edit of raw footage. Makes a plan of what to remove; read it and adjust it if needed." },
+    { "id": "cut_plan",       "uses": "montaj/cut",               "note": "With footage, start here: faster, cheaper and better than cutting by hand, and battle-tested on real projects (false starts, repeats, dead air, unfinished sentences). Makes a plan of what to remove; read it and adjust it if needed." },
     { "id": "cut_apply",      "uses": "montaj/cut",               "needs": ["cut_plan"], "params": { "plan": "cut-plan.md" }, "note": "Only after the plan step ran: applies the plan." },
     { "id": "place",          "uses": "montaj/place",             "note": "Only if asked: a preset (lower_third, callout) or your own JSX (write_project_overlay first), at seconds or a spoken phrase." },
     { "id": "captions_make",  "uses": "montaj/generate_captions", "note": "Only if asked." },
