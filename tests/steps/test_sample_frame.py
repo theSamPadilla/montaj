@@ -317,7 +317,7 @@ def test_several_times_make_one_node_call_and_one_sheet(frames_node_env, tmp_pat
     out = proc.stdout.strip()
     assert out == str(tmp_path / "render" / "samples" / "sheet-1.0-4.0s.png")
     img = Image.open(out)
-    assert img.size[0] == 3 * 360 + 4 * 4  # cols = min(n, 4), tile width 360
+    assert 1272 <= img.size[0] <= 1280  # the shared look layout (lib/sheet.look_sheet): 1280 px wide
 
 
 def test_several_times_forward_no_captions(frames_node_env, tmp_path):
@@ -348,12 +348,12 @@ def test_several_times_go_to_out_when_given(frames_node_env, tmp_path):
     assert proc.stdout.strip() == str(out) and out.is_file()
 
 
-def test_more_than_twelve_times_point_to_contact_sheet(frames_node_env, tmp_path):
+def test_more_than_the_cap_of_times_is_refused(frames_node_env, tmp_path):
     project = _write_project(tmp_path, None)
-    args = [x for i in range(13) for x in ("--at", str(i))]
+    args = [x for i in range(121) for x in ("--at", str(i))]
     proc = run_step_env(STEP, frames_node_env, "--project", str(project), *args)
     assert proc.returncode != 0
-    assert "invalid_args" in proc.stderr and "contact_sheet" in proc.stderr
+    assert "invalid_args" in proc.stderr and "120" in proc.stderr
 
 
 def test_every_time_is_validated_with_a_scene(tmp_path):
