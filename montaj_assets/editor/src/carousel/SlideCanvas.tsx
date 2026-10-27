@@ -22,6 +22,7 @@ import { isLocked } from './lock'
 import { bandRect, bandTouches, type BandRect } from './bandSelect'
 import { groupDragMove, type GroupDragResult, type GroupMember } from './groupDrag'
 import { elementsAt, isLayerPress, nextLayerDown, pointInElement } from './hitTest'
+import { isApplePlatform } from '../ui/modifierKeys'
 import { scaleFontSize, scalesTextWithBox } from './textScale'
 
 // Neutral fallback used only when no host `resolveImageSrc` is injected. The
@@ -237,6 +238,13 @@ interface Props {
    * → they clip at the slide edge.
    */
   margin?: number
+
+  /**
+   * A right-click (rail layout, §587 M7): the element under the pointer (or
+   * null on the empty slide or its margin) and the point in slide units. The
+   * native menu is suppressed only when this is passed.
+   */
+  onContextMenu?: (info: { clientX: number; clientY: number; elementId: string | null; point: { x: number; y: number } }) => void
 }
 
 // Plain default for the inline editor when we can't read the rendered text's
@@ -334,6 +342,7 @@ export default function SlideCanvas({
   onDrop,
   children,
   margin = 0,
+  onContextMenu,
 }: Props) {
   const sid = slideId ?? slide.id
   const resolveSrc = resolveImageSrc ?? ((el: ImageElement) => resolveAssetDefault(el.src))
@@ -902,6 +911,13 @@ export default function SlideCanvas({
       onDragEnter={interactive ? onDragEnter : undefined}
       onDragOver={interactive ? onDragOver : undefined}
       onDrop={interactive ? onDrop : undefined}
+      onContextMenu={interactive && onContextMenu ? (e) => {
+        e.preventDefault()
+        const t = e.target as HTMLElement
+        const hit = t.closest?.('[data-element-id], [data-chrome-for]') as HTMLElement | null
+        const elementId = hit?.getAttribute('data-element-id') ?? hit?.getAttribute('data-chrome-for') ?? null
+        onContextMenu({ clientX: e.clientX, clientY: e.clientY, elementId, point: slidePoint(e) })
+      } : undefined}
     >
       {/* The margin around the page (§586 M4): a press here is a press on the
           empty canvas, and its click reaches the root. Under the slide. */}
@@ -968,6 +984,8 @@ export default function SlideCanvas({
 
           const handlePointerDownDrag = (e: React.PointerEvent) => {
             if (!interactive || editingId === element.id) return
+            // A right-press (or Ctrl-click on a Mac) opens the host's menu; it starts no gesture.
+            if (onContextMenu && (e.button === 2 || (e.button === 0 && e.ctrlKey && isApplePlatform()))) return
             const layerPress = isLayerPress(e)
             if (inCrop && !layerPress) return
             e.preventDefault()
