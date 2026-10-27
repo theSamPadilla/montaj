@@ -22,7 +22,7 @@ export const SLIDE_HEADER_H = 32
 export interface StackedSlidesProps {
   slides: Slide[]
   activeSlideId: string | null
-  /** While scrolling, another slide became the one most in view. */
+  /** While the person scrolls, another slide became the one most in view. A layout change alone never calls it. */
   onScrollActivate: (slideId: string) => void
   /** Scrolls the stack to centre this slide; a new `seq` asks again. */
   scrollTarget: { id: string; seq: number } | null
@@ -60,6 +60,40 @@ export default function StackedSlides({
   const onScrollActivateRef = useRef(onScrollActivate)
   onScrollActivateRef.current = onScrollActivate
 
+  // Only the person scrolling picks another slide. A layout change (a panel
+  // opening, the zoom) or the stack's own scroll also moves what is in view, and
+  // must not take the active slide (and its selection) away. So a report
+  // activates only when a scroll or wheel came from the person since the last
+  // one; a scale change and the stack's own scrolls clear that, and the scroll
+  // event the stack's own scroll fires (at the position it set) is not counted.
+  const userScrollRef = useRef(false)
+  const ownScrollRef = useRef<{ top: number; left: number } | null>(null)
+  const scrolledByStack = (root: HTMLElement) => {
+    userScrollRef.current = false
+    ownScrollRef.current = { top: root.scrollTop, left: root.scrollLeft }
+  }
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    const onScroll = () => {
+      const own = ownScrollRef.current
+      ownScrollRef.current = null
+      if (own && Math.abs(root.scrollTop - own.top) <= 1 && Math.abs(root.scrollLeft - own.left) <= 1) return
+      userScrollRef.current = true
+    }
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey) return
+      ownScrollRef.current = null
+      userScrollRef.current = true
+    }
+    root.addEventListener('scroll', onScroll, { passive: true })
+    root.addEventListener('wheel', onWheel, { passive: true })
+    return () => {
+      root.removeEventListener('scroll', onScroll)
+      root.removeEventListener('wheel', onWheel)
+    }
+  }, [])
+
   const idsKey = slides.map((s) => s.id).join('\n')
   useEffect(() => {
     const root = rootRef.current
@@ -76,6 +110,9 @@ export default function StackedSlides({
       }
       const shown = [...ratios.keys()].sort()
       setInView((prev) => (prev.length === shown.length && prev.every((id, i) => id === shown[i]) ? prev : shown))
+      const byUser = userScrollRef.current
+      userScrollRef.current = false
+      if (!byUser) return
       // The one most in view takes over only when the active one is less so:
       // a tie keeps the slide last clicked.
       let best: string | null = null
@@ -102,6 +139,7 @@ export default function StackedSlides({
     const top = Math.max(0, root.scrollTop + (s.top - r.top) - (root.clientHeight - s.height) / 2)
     if (typeof root.scrollTo === 'function') root.scrollTo({ top })
     else root.scrollTop = top
+    scrolledByStack(root)
   })
 
   // Zoom keeps the point at the view's centre fixed on the active slide: its
@@ -111,6 +149,7 @@ export default function StackedSlides({
   const anchorRef = useRef<{ fx: number; fy: number } | null>(null)
   if (scaleRef.current !== scale) {
     scaleRef.current = scale
+    userScrollRef.current = false
     const root = rootRef.current
     const el = activeSlideId ? sectionEls.current.get(activeSlideId) : undefined
     const s = el?.getBoundingClientRect()
@@ -129,6 +168,7 @@ export default function StackedSlides({
     const s = el.getBoundingClientRect()
     root.scrollLeft += s.left + a.fx * s.width - (r.left + root.clientWidth / 2)
     root.scrollTop += s.top + a.fy * s.height - (r.top + root.clientHeight / 2)
+    scrolledByStack(root)
   }, [scale, activeSlideId])
 
   // Live: in view, one either side, and the active slide. Before the observer
