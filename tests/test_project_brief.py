@@ -119,12 +119,10 @@ def test_the_steps_in_order_and_the_skills_they_use(proj):
     got = pb.build(p, str(d), str(ROOT), **Fns().kw())
     steps = got["text"].split("## Steps, in order")[1]
     assert steps.index("**cut_plan** (cut)") < steps.index("**select-takes** (select-takes)") < steps.index("**overlays** (overlay)")
-    assert "select-takes" in got["skills"] and "overlay" in got["skills"] and got["skills"][0] == "probe"
-    # looking at the footage is what this brief already did (run 3 spent six snapshots on it): folded, so cut is first
-    assert "probe and snapshot: this brief covers them" in steps, steps
+    # §590: the overlays workflow starts with cut (the brief carries what probe and snapshot showed)
+    assert "select-takes" in got["skills"] and "overlay" in got["skills"] and got["skills"][0] == "cut"
     assert "1. **cut_plan** (cut)" in steps and "**probe**" not in steps and "**snapshot**" not in steps, steps
-    # a step with no note of its own points at its guide in the recipe, never an empty line
-    assert "**overlays** (overlay) with {\"style\": \"auto\"}: its guide is the overlay skill in the Recipe" in steps, steps
+    assert "**overlays** (overlay) with {\"style\": \"auto\"}: Follow the overlay skill." in steps, steps
 
 
 def test_the_profile_style_and_its_edit_notes(proj):
