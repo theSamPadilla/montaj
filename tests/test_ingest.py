@@ -438,3 +438,53 @@ def test_clip_id_passthrough(tmp_path, monkeypatch):
     assert clip["id"] == "clip-7"
     # id is first key, matching init's clip dict ordering.
     assert list(clip.keys())[0] == "id"
+
+
+# ── audio files (cover art is not video) ──────────────────────────────────────
+
+def _make_flac(path: Path, *, cover: bool):
+    """A one-second FLAC, with a 64x64 JPEG attached as cover art when asked
+    (an attached picture is a video stream to ffprobe, flagged attached_pic)."""
+    args = ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1"]
+    if cover:
+        art = path.with_suffix(".jpg")
+        subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "color=red:size=64x64", "-frames:v", "1", str(art)],
+                       check=True, capture_output=True, timeout=30)
+        args += ["-i", str(art), "-map", "0:a", "-map", "1:v", "-c:v", "mjpeg", "-disposition:v", "attached_pic"]
+    subprocess.run(args + ["-c:a", "flac", str(path)], check=True, capture_output=True, timeout=30)
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="needs ffmpeg")
+@pytest.mark.parametrize("cover", [False, True], ids=["plain", "cover-art"])
+def test_audio_file_is_an_audio_source_even_with_cover_art(tmp_path, cover):
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    src = tmp_path / "bed.flac"
+    _make_flac(src, cover=cover)
+
+    clip = ingest_source(str(project_dir), str(src), "sdr_bt709", proxy=False)
+
+    assert clip["type"] == "audio"
+    assert "sourceWidth" not in clip and "sourceHeight" not in clip
+    assert "proxySrc" not in clip and "normalizedSrc" not in clip
+    assert clip["sourceDuration"] > 0
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="needs ffmpeg")
+def test_probe_video_ignores_cover_art(tmp_path):
+    from lib.normalize import probe_video
+    src = tmp_path / "bed.flac"
+    _make_flac(src, cover=True)
+    assert probe_video(str(src)) is None
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="needs ffmpeg")
+def test_a_real_video_stays_a_video_source(tmp_path):
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    src = tmp_path / "clip.mp4"
+    _make_conformant_sdr(src)
+
+    clip = ingest_source(str(project_dir), str(src), "sdr_bt709", proxy=False)
+
+    assert clip["type"] == "video"

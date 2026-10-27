@@ -29,7 +29,7 @@ from common import get_duration, progress
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # add repo root so `from lib.types...` works
 from lib.color_provenance import ProbeError, proxy_source_for
 from lib.disk_space import create_new, file_sizes, preflight, remove_partial
-from lib.normalize import probe_video, is_normalized, normalized_output_path, normalize
+from lib.normalize import probe_video, is_audio_only, is_normalized, normalized_output_path, normalize
 from lib.proxy import proxy_path_for, is_proxy_fresh, make_proxy
 from lib.types.colorspace import detect_from_transfer, is_hdr, require_valid_key
 
@@ -113,7 +113,7 @@ def ingest_source(
         allocation the caller's responsibility, exactly as init owns ``clip-<i>``.
 
     Returns a clip dict of the same shape init writes, plus source dimensions:
-        {"id"?, "type": "video", "src", "start": 0.0, "end": 0.0,
+        {"id"?, "type": "video" (or "audio" for an audio file), "src", "start": 0.0, "end": 0.0,
          "sourceDuration", "sourceWidth"?, "sourceHeight"?, "sourceCreatedAt"?,
          "proxySrc"?}
     Optional keys: ``id`` only when *clip_id* is given; ``sourceWidth`` /
@@ -132,7 +132,8 @@ def ingest_source(
     clip: dict = {}
     if clip_id is not None:
         clip["id"] = clip_id
-    clip["type"] = "video"
+    # An audio file (cover art included) is not footage: it has no video to probe, normalize or proxy.
+    clip["type"] = "audio" if info is None and is_audio_only(staged_src) else "video"
     clip["src"] = staged_src
     clip["start"] = 0.0
     clip["end"] = 0.0
