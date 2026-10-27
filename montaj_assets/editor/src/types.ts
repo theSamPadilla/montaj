@@ -727,7 +727,7 @@ export interface CarouselApi {
    * to the back and is locked, in one undo step. Does nothing for a locked or
    * missing image or a project that cannot be edited.
    */
-  setAsBackground(elementId: string): void
+  setAsBackground(elementId: string): Promise<void>
 }
 
 // ── Adapter ────────────────────────────────────────────────────────────────

@@ -155,9 +155,29 @@ describe('Background panel', () => {
     await openRail(r, 'Background')
     const before = adapter.saveCalls.length
     const input = r.container.ownerDocument.querySelector<HTMLInputElement>('input[type="color"][aria-label="Background color"]')!
-    await act(async () => { fireEvent.change(input, { target: { value: '#112233' } }) })
+    await act(async () => {
+      fireEvent.change(input, { target: { value: '#111111' } })
+      fireEvent.change(input, { target: { value: '#222222' } })
+      fireEvent.change(input, { target: { value: '#112233' } })
+    })
+    expect(adapter.saveCalls.length).toBe(before)
+    await act(async () => { fireEvent.blur(input) })
     await waitFor(() => expect(adapter.saveCalls.length).toBe(before + 1))
     expect(lastSave(adapter).slides![0].base_color).toBe('#112233')
+  })
+
+  it('a pick that ends where it started writes nothing', async () => {
+    const { r, adapter } = await mount(base())
+    await openRail(r, 'Background')
+    const before = adapter.saveCalls.length
+    const input = r.container.ownerDocument.querySelector<HTMLInputElement>('input[type="color"][aria-label="Background color"]')!
+    await act(async () => {
+      fireEvent.change(input, { target: { value: '#222222' } })
+      fireEvent.change(input, { target: { value: '#ffffff' } })
+      fireEvent.blur(input)
+    })
+    expect(adapter.saveCalls.length).toBe(before)
+    expect(input.value).toBe('#ffffff')
   })
 
   it('Set image as background is disabled without a selected image', async () => {
@@ -181,6 +201,24 @@ describe('Background panel', () => {
     expect(els[0]).toMatchObject({ x: 0, y: 0, w: 1080, h: 1350, locked: true })
   })
 
+  it('uses the real source size, in one save', async () => {
+    const { loadImageNaturalSize } = await import('../imageGeometry')
+    vi.mocked(loadImageNaturalSize).mockResolvedValueOnce({ width: 1000, height: 1000 })
+    const p = makeProject([slide('s0', [img('a', { x: 50, y: 60, w: 400, h: 200 })])])
+    const { r, adapter } = await mount(p)
+    await openRail(r, 'Layers')
+    await act(async () => { fireEvent.click(within(row('a')).getByRole('button', { name: /^Select/ })) })
+    await openRail(r, 'Layers')
+    await openRail(r, 'Background')
+    const before = adapter.saveCalls.length
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Set image as background' })) })
+    await waitFor(() => expect(adapter.saveCalls.length).toBe(before + 1))
+    // A 1:1 source on a 1080x1350 slide: all of the width, the middle 80% of the height... of a square: w 0.8 h 1.
+    const el = lastSave(adapter).slides![0].elements[0] as ImageElement
+    expect(el.crop!.h).toBeCloseTo(1)
+    expect(el.crop!.w).toBeCloseTo(1080 / 1350)
+  })
+
   it('setAsBackground is on the carousel api', async () => {
     let api: CarouselApi | null = null
     const { adapter } = await mount(makeProject([slide('s0', [txt('b', 'Hi'), img('a')])]), { onProvideCarouselApi: (a) => { api = a } })
@@ -190,9 +228,27 @@ describe('Background panel', () => {
 })
 
 describe('setImageAsBackground', () => {
+  const sq = { width: 1000, height: 1000 }
+  it('an uncropped square source in a wide box becomes the whole square', () => {
+    const out = setImageAsBackground([img('a', { w: 400, h: 200 })], 'a', 1000, 1000, sq)
+    expect(out[0]).toMatchObject({ x: 0, y: 0, w: 1000, h: 1000, locked: true })
+    const crop = (out[0] as ImageElement).crop
+    expect(crop === undefined || (crop.x === 0 && crop.y === 0 && crop.w === 1 && crop.h === 1)).toBe(true)
+  })
+  it('a cropped image after a side resize centres on the part shown', () => {
+    // 2000x1000 source, crop = its left half, box widened to 800x400: the picture
+    // is drawn 1600x800 and the box shows the left half of its width, the middle
+    // half of its height (shown crop {0, .25, .5, .5}).
+    const el = img('a', { w: 800, h: 400, crop: { x: 0, y: 0, w: 0.5, h: 1 } })
+    const out = setImageAsBackground([el], 'a', 1000, 1000, { width: 2000, height: 1000 })
+    const crop = (out[0] as ImageElement).crop!
+    expect(crop.w).toBeCloseTo(0.5)
+    expect(crop.h).toBeCloseTo(1)
+    // Centred on the shown part's x centre (0.25), clamped to the source.
+    expect(crop.x).toBeCloseTo(0)
+  })
   it('crops a wide image to the slide aspect around the visible part', () => {
-    // A 2:1 source shown whole in a 2:1 box.
-    const out = setImageAsBackground([img('a', { w: 400, h: 200 })], 'a', 1000, 1000)
+    const out = setImageAsBackground([img('a', { w: 400, h: 200 })], 'a', 1000, 1000, { width: 2000, height: 1000 })
     const crop = (out[0] as ImageElement).crop!
     expect(crop.h).toBeCloseTo(1)
     expect(crop.w).toBeCloseTo(0.5)
@@ -200,6 +256,6 @@ describe('setImageAsBackground', () => {
   })
   it('leaves a locked image alone', () => {
     const els = [img('a', { locked: true })]
-    expect(setImageAsBackground(els, 'a', 1000, 1000)).toBe(els)
+    expect(setImageAsBackground(els, 'a', 1000, 1000, sq)).toBe(els)
   })
 })
