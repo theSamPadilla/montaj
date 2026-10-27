@@ -562,6 +562,10 @@ def sync_refusal(project_id, who, fields=(), files=(), *, everything: bool = Fal
         return None
     if not everything and not fields and not files and not derived:
         return None
+    if who.kind not in ("resolve", "untrusted"):
+        # Sam, 1.5.1: an AI or driven write is never refused for Studio sync, a recorded clash or not. Only a
+        # person's resolve keeps its outside-the-clash check.
+        return None
     clashes = sync_clash.load(project_id)
     if clashes.unsure:
         # An unsure read is not a clash (Sam, 1.5.1: "if the sync state can't be checked make the edit

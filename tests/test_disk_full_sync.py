@@ -54,12 +54,6 @@ def overlays(ws, state):
     return d
 
 
-def test_a_clashed_file_is_refused_as_before_even_on_a_full_disk(overlays, state, monkeypatch):
-    _sidecar(state, files=["overlays/title.jsx"])
-    _fill(monkeypatch)
-    _refused(_write_file(overlays / "overlays" / "title.jsx"), ["overlays/title.jsx"])
-    assert (overlays / "overlays" / "title.jsx").read_text() == "mine"
-    assert _no_temp(overlays) == []
 
 
 def test_a_file_the_guard_lets_through_on_a_full_disk_is_507_and_the_file_is_kept(overlays, state, monkeypatch):
@@ -94,20 +88,6 @@ def test_a_full_disk_part_way_through_a_let_through_write_removes_only_its_temp(
     assert _no_temp(overlays) == []
 
 
-def test_a_clashed_save_is_refused_as_before_on_a_full_disk(ws, state, monkeypatch):
-    d = _project(ws)
-    _sidecar(state, fields=["name"])
-    before = _disk(d)
-    # Full only from here: the read the request needs is done by _put before.
-    resp = None
-
-    def write_text(self, *a, **k):
-        _enospc()
-    with monkeypatch.context() as m:
-        m.setattr(Path, "write_text", write_text)
-        resp = _put(ws, {"name": "theirs"}, AI)
-    _refused(resp, ["name"])
-    assert _disk(d) == before
 
 
 def test_a_save_the_guard_lets_through_on_a_full_disk_is_507_and_project_json_is_kept(ws, state, monkeypatch):

@@ -862,7 +862,7 @@ def check_step_sync(name: str, schema: dict, body: dict, headers) -> None:
     as they are written. Not checked again: the `out` file of kling_generate and veo_generate, which the provider
     connector writes in place at the end of the generation (a check there needs the connectors to land by rename),
     and any other step's own output file; for those this check is the only one."""
-    if not sync_clash.state_dir() or save_guard.sync_who(headers).kind in ("human", "sync"):
+    if True:   # Sam, 1.5.1: a step run is never refused for Studio sync (its writer is an ai, drive or human)
         return
     targets: dict = {}
 

@@ -305,9 +305,7 @@ def touched(clashes: ClashSet, fields=(), files=(), everything: bool = False) ->
     (`*` for an `everything` write)."""
     fields, files = list(fields), list(files)
     if clashes.unsure:
-        if everything:
-            return [EVERYTHING]
-        return list(dict.fromkeys([*fields, *files]))
+        return []   # an unreadable set is not a clash
     hit = []
     if everything or EVERYTHING in fields:
         hit += sorted(clashes.fields)
@@ -457,6 +455,7 @@ def check_step_write(project_id, fields=(), files=()) -> None:
     clash set (an unreadable one is not a clash). Off with
     the variable unset; a step the window ran (MONTAJ_WRITE_ORIGIN=human, set only by serve) passes, and one it ran
     while the person's AI drove it (`drive`) passes on held names only."""
+    return   # Sam, 1.5.1: no step write (ai, drive or human) is refused for Studio sync
     origin = os.environ.get(ORIGIN_ENV)
     if not state_dir() or origin == HUMAN_ORIGIN:
         return
