@@ -64,6 +64,10 @@ export type Action<P extends Project = Project> =
   // an older view (a key read the render before it, an upload that took time)
   // cannot drop an element that arrived since. The same array back changes nothing.
   | { type: 'editElements'; slideId: string; edit: (elements: CarouselElement[]) => CarouselElement[] }
+  // Every slide edited as a whole (§587 M5: "change this colour on every slide"
+  // is one mutation, so one undo step). Same rule as `editElements`: `edit` is
+  // given the slides the state holds when applied; the same array back changes nothing.
+  | { type: 'editSlides'; edit: (slides: Slide[]) => Slide[] }
   // Element structural actions the editor needs beyond add/remove.
   | { type: 'duplicateElement'; slideId: string; elementId: string; newElement: CarouselElement }
   | { type: 'reorderElement'; slideId: string; elementId: string; direction: ReorderDirection }
@@ -292,6 +296,13 @@ export function projectReducer<P extends Project>(state: P, action: Action<P>): 
       const elements = action.edit(slide.elements)
       if (elements === slide.elements) return state
       const slides = (state.slides ?? []).map((s): Slide => (s.id === action.slideId ? { ...s, elements } : s))
+      return { ...state, slides }
+    }
+
+    case 'editSlides': {
+      const current = state.slides ?? []
+      const slides = action.edit(current)
+      if (slides === current) return state
       return { ...state, slides }
     }
 

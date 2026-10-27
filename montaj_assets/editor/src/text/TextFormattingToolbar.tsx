@@ -89,7 +89,7 @@ export function TextBackgroundControl({
   updateOverlayProp,
 }: Pick<TextFormattingToolbarProps, 'slideId' | 'element' | 'updateOverlayProp'>) {
   const raw = readPropAsString(element, 'bgColor')
-  const saved = HEX_PATTERN.test(raw) && raw.length === 7 ? raw : NEUTRAL_BG
+  const saved = HEX_PATTERN.test(raw) && (raw.length === 7 || raw.length === 9) ? raw : NEUTRAL_BG
 
   // Like the text effect color: the swatch previews a pick locally and the
   // overlay is written once, when the picker closes, so one pick is one undo step.
@@ -108,6 +108,7 @@ export function TextBackgroundControl({
         title="Text background"
         showValue={false}
         size="sm"
+        alpha
       />
       {!isTransparentBackground(raw) && (
         <Button
@@ -150,7 +151,7 @@ export function textFormatting(
     currentAlign: typeof props.textAlign === 'string' ? props.textAlign : undefined,
     fontSizeValue: readPropAsString(element, 'fontSize'),
     fontFamilyValue: readPropAsString(element, 'fontFamily'),
-    colorValue: HEX_PATTERN.test(rawColor) && rawColor.length === 7 ? rawColor : '#111111',
+    colorValue: HEX_PATTERN.test(rawColor) && (rawColor.length === 7 || rawColor.length === 9) ? rawColor : '#111111',
     toggleBold: () => write('fontWeight', boldActive ? '400' : '700'),
     toggleItalic: () => write('fontStyle', italicActive ? 'normal' : 'italic'),
     cycleCase: () => write('textTransform', nextCase(props.textTransform)),
@@ -174,20 +175,30 @@ export const TEXT_ALIGNS: ReadonlyArray<{ value: TextAlignValue; Icon: typeof Al
 export function TextColorControl({
   value,
   onChange,
+  onOpenPanel,
   className,
   children,
 }: {
   value: string
   onChange: (v: string) => void
+  /** The rail layout: the control opens the colour panel instead of the OS picker. */
+  onOpenPanel?: () => void
   className?: string
   children: ReactNode
 }) {
+  if (onOpenPanel) {
+    return (
+      <button type="button" className={className} title="Text color" aria-label="Text color" onClick={onOpenPanel}>
+        {children}
+      </button>
+    )
+  }
   return (
     <label className={`${className ?? ''} relative cursor-pointer`} title="Text color">
       {children}
       <input
         type="color"
-        value={value}
+        value={value.length === 9 ? value.slice(0, 7) : value}
         onChange={(e) => onChange(e.target.value)}
         className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
         aria-label="Text color"

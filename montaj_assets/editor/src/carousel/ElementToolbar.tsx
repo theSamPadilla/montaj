@@ -57,6 +57,8 @@ export interface ElementToolbarProps {
   hiddenElementIds?: string[]
   onToggleElementVisibility?: (elementId: string) => void
   mode?: 'light' | 'dark'
+  /** The text colour opens the colour panel (§587 M5) instead of the OS picker. */
+  onOpenTextColour?: () => void
 }
 
 const iconBtn =
@@ -90,6 +92,7 @@ function TextGroup({
   disabled,
   effectsOpen,
   onToggleEffects,
+  onOpenTextColour,
 }: {
   slideId: string
   element: OverlayElement
@@ -97,6 +100,7 @@ function TextGroup({
   disabled: boolean
   effectsOpen: boolean
   onToggleEffects: () => void
+  onOpenTextColour?: () => void
 }) {
   const fmt = textFormatting(slideId, element, update)
   const { supported } = fmt
@@ -130,7 +134,7 @@ function TextGroup({
       )}
       {hasStyle && <Sep />}
       {supported.has('color') && (
-        <TextColorControl value={fmt.colorValue} onChange={fmt.setColor} className={cn(iconBtn, 'flex-col gap-px', disabled && 'cursor-not-allowed opacity-40')}>
+        <TextColorControl value={fmt.colorValue} onChange={fmt.setColor} onOpenPanel={onOpenTextColour} className={cn(iconBtn, 'flex-col gap-px', disabled && 'cursor-not-allowed opacity-40')}>
           <span aria-hidden="true" className="text-sm font-bold leading-none">A</span>
           <span aria-hidden="true" className="h-[3px] w-4 rounded-sm border border-[var(--editor-border)]" style={{ backgroundColor: fmt.colorValue }} />
         </TextColorControl>
@@ -221,6 +225,7 @@ export default function ElementToolbar({
   hiddenElementIds,
   onToggleElementVisibility,
   mode = 'dark',
+  onOpenTextColour,
 }: ElementToolbarProps) {
   const element = selection.length === 1 ? selection[0] : undefined
   const image = element?.type === 'image' ? element : undefined
@@ -270,7 +275,7 @@ export default function ElementToolbar({
       >
         {text && (
           <>
-            <TextGroup slideId={slideId} element={text} update={update} disabled={locked || !canEdit} effectsOpen={popover === 'effects'} onToggleEffects={toggle('effects')} />
+            <TextGroup slideId={slideId} element={text} update={update} disabled={locked || !canEdit} effectsOpen={popover === 'effects'} onToggleEffects={toggle('effects')} onOpenTextColour={onOpenTextColour && run(onOpenTextColour)} />
             <Sep />
           </>
         )}

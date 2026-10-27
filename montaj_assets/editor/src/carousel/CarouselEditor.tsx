@@ -10,6 +10,8 @@ import SlideCanvas, { type CropExit, type SlideCanvasCropControl } from './Slide
 import SlidePropertyPanel from './SlidePropertyPanel'
 import AddElementMenu from './AddElementMenu'
 import RailLayout from './RailLayout'
+import ColourPanel from './ColourPanel'
+import { collectColours, normalizeHex, replaceColour, setOverlayPropIn } from './colours'
 import ElementToolbar, { type ElementToolbarPopover } from './ElementToolbar'
 import { useOverlaySchemas } from './ElementControls'
 import StackedSlides, { SlideHeader } from './StackedSlides'
@@ -29,7 +31,7 @@ import { isLocked, toggleLock } from './lock'
 import { reorderSelection } from './layerOrder'
 import { newTextElement } from './newText'
 import { applyTextStyle, isTextOverlay, pickTextStyle, type TextStyle } from './textStyle'
-import { Button } from '../ui'
+import { Button, ColourPanelContext, type ColourRequest } from '../ui'
 import { shortcutText } from '../ui/modifierKeys'
 import { applyZoomAction, zoomKeyAction, zoomLabel, zoomScale, FIT, clampPct, type Zoom, type ZoomAction } from './zoom'
 
@@ -359,7 +361,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 // ── CarouselEditor ────────────────────────────────────────────────────────────
 
-export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, onProvideRenderTrigger, onProvideCarouselApi, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default', onError, renderSaveTimeoutMs = RENDER_SAVE_TIMEOUT_MS, lockKey = false, layout = 'classic', railPanels }: Props<P>) {
+export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, onProvideRenderTrigger, onProvideCarouselApi, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default', onError, renderSaveTimeoutMs = RENDER_SAVE_TIMEOUT_MS, lockKey = false, layout = 'classic', railPanels, brand }: Props<P>) {
   const state = useProjectState(adapter, initialProject.id, initialProject)
   const project = state.project
   const slides = project.slides ?? []
@@ -1556,6 +1558,46 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (cropElementIdRef.current) flushSync(applyCrop)
   }
 
+  // ── Colour panel (§587 M5, `layout="rail"`) ──
+  // Any colour control opens it (the OS picker is not used); it takes the side
+  // panel until closed or the selection moves.
+  const [colourOpen, setColourOpen] = useState<{ request: ColourRequest; seq: number } | null>(null)
+  const colourSeq = useRef(0)
+  function openColourPanel(request: ColourRequest) {
+    beforeToolbarAction()
+    setColourOpen({ request, seq: ++colourSeq.current })
+  }
+  function openTextColour() {
+    const sel = selectedElements.length === 1 ? selectedElements[0] : undefined
+    if (!selectedSlide || !sel || !isTextOverlay(sel)) return
+    const slideId = selectedSlide.id
+    const raw = sel.overlay.props.color
+    const set = (v: string) => state.previewSlides(all => setOverlayPropIn(all, slideId, sel.id, 'color', v))
+    openColourPanel({
+      label: 'Text color',
+      value: (typeof raw === 'string' && normalizeHex(raw)) || '#111111',
+      alpha: true,
+      preview: set,
+      commit: v => { set(v); void state.commit() },
+      cancel: () => state.discardTransient(),
+    })
+  }
+  const previewColourEverywhere = (from: string, to: string) => state.previewSlides(all => replaceColour(all, from, to))
+  const commitColourEverywhere = (from: string, to: string) => { previewColourEverywhere(from, to); void state.commit() }
+  const usedColours = useMemo(() => collectColours(slides), [slides])
+  const brandColours = useMemo(
+    () => (brand?.colors ?? []).map(c => normalizeHex(c)).filter((c): c is string => !!c),
+    [brand?.colors],
+  )
+  // The selection moving on closes the panel (a preview left open is given up).
+  const selectionKey = `${selectedSlideId}|${selectedElements.map(el => el.id).join(',')}`
+  const lastSelectionKey = useRef(selectionKey)
+  useEffect(() => {
+    if (lastSelectionKey.current === selectionKey) return
+    lastSelectionKey.current = selectionKey
+    setColourOpen(null)
+  }, [selectionKey])
+
   function handleSlideChange(patch: Partial<Slide>) {
     if (selectedSlideId) void state.updateSlide(selectedSlideId, patch)
   }
@@ -1940,6 +1982,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   )
 
   const railShell = (
+    <ColourPanelContext.Provider value={openColourPanel}>
     <RailLayout
       topLeft={slots?.carouselTopLeft}
       topRight={slots?.carouselTopRight}
@@ -1985,9 +2028,24 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             hiddenElementIds={hiddenElementIds}
             onToggleElementVisibility={onToggleElementVisibility}
             mode={mode}
+            onOpenTextColour={openTextColour}
           />
         ) : undefined
       }
+      colourPanel={colourOpen && (
+        <ColourPanel
+          key={colourOpen.seq}
+          request={colourOpen.request}
+          disabled={!canEdit || selectedElements.some(isLocked)}
+          brandColours={brandColours}
+          usedColours={usedColours}
+          onPreviewEverywhere={previewColourEverywhere}
+          onCommitEverywhere={commitColourEverywhere}
+          onDiscardPreview={() => state.discardTransient()}
+          onClose={() => setColourOpen(null)}
+        />
+      )}
+      onRailItem={() => setColourOpen(null)}
       canvas={railCanvas}
       panels={{
         media: slots?.carouselMediaPanel,
@@ -2007,6 +2065,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       onZoomPercent={(pct) => setZoom({ mode: 'pct', pct: clampPct(pct) })}
       onZoomAction={zoomBy}
     />
+    </ColourPanelContext.Provider>
   )
 
   return (

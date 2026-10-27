@@ -43,10 +43,14 @@ export interface RailLayoutProps {
   canvas: ReactNode
   /** The selected element's toolbar, centred along the top of the canvas area (§587 M3). */
   canvasToolbar?: ReactNode
+  /** The colour panel (§587 M5): while set it takes the side panel; closing it returns to the item that was open. */
+  colourPanel?: ReactNode
   /** Panel content per item; a missing one shows the placeholder. */
   panels: Partial<Record<CarouselRailItemId, ReactNode>>
   /** Called before any panel opens or closes (the editor applies a pending crop). */
   onBeforeToggle: () => void
+  /** Called when a rail item is pressed (the colour panel, if open, closes). */
+  onRailItem?: () => void
   slideIds: string[]
   selectedSlideId: string | null
   onSelectSlide: (id: string) => void
@@ -72,7 +76,7 @@ const ZOOM_MENU: ReadonlyArray<{ action: ZoomAction; label: string; keys?: strin
 
 /** The rail layout's shell: top bar, rail + side panel, canvas, right panel, bottom bar. */
 export default function RailLayout({
-  topLeft, topRight, size, onUndo, onRedo, canUndo, canRedo, canvas, canvasToolbar, panels, onBeforeToggle,
+  topLeft, topRight, size, onUndo, onRedo, canUndo, canRedo, canvas, canvasToolbar, colourPanel, panels, onBeforeToggle, onRailItem,
   slideIds, selectedSlideId, onSelectSlide, onOpenControls, gridOpen, onToggleGrid,
   zoomLabel, zoomPercent, onZoomPercent, onZoomAction,
 }: RailLayoutProps) {
@@ -131,6 +135,7 @@ export default function RailLayout({
 
   function toggle(id: CarouselRailItemId) {
     onBeforeToggle()
+    onRailItem?.()
     // Notes and the side panel are one "active rail item": opening either closes the other.
     if (id === 'notes') {
       setNotesOpen((o) => !o)
@@ -189,7 +194,11 @@ export default function RailLayout({
           })}
         </nav>
 
-        {sideItem && (
+        {colourPanel ? (
+          <div className="flex-shrink-0 w-[320px] overflow-y-auto border-r border-[var(--editor-border)] bg-[var(--editor-bg)] text-[var(--editor-text)]">
+            {colourPanel}
+          </div>
+        ) : sideItem && (
           <section
             aria-label={`${sideItem.label} panel`}
             tabIndex={-1}

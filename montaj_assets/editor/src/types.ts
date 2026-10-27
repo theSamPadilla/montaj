@@ -1330,12 +1330,22 @@ export interface CarouselRenderModalContext<P extends Project = Project> {
   onClose: () => void
 }
 
+/** The host's brand for the carousel editor (`layout="rail"`). */
+export interface CarouselBrand {
+  /** The brand palette: hex colours, shown in the colour panel. */
+  colors?: string[]
+  /** The brand fonts: the text presets use `heading` and `body` (CSS font-family values), with `googleFonts` to fetch. */
+  fonts?: { heading?: string; body?: string; googleFonts?: string[] }
+}
+
 /**
  * Props for the carousel editor component. Controlled shape: the host owns the
  * `project` and is notified of edits via `onProjectChange`. The adapter drives
  * transport; theme and slots are optional, and `readOnly` disables mutation.
  */
 export interface CarouselEditorProps<P extends Project = Project> {
+  /** `layout="rail"`: the brand's palette and fonts, from the host's profile. */
+  brand?: CarouselBrand
   /**
    * `'classic'` (default) is today's layout. `'rail'` swaps in the top bar, the
    * icon rail with its side panel, the right panel and the bottom bar; the host

@@ -77,6 +77,16 @@ export interface UseProjectState<P extends Project = Project> {
    * copy of the list over whatever arrived since.
    */
   editElements: (slideId: string, edit: (elements: CarouselElement[]) => CarouselElement[]) => Promise<void>
+  /**
+   * Edits every slide at once (§587 M5): one save and one undo step, gated like
+   * every slide edit; an edit that returns the same array writes nothing.
+   */
+  editSlides: (edit: (slides: Slide[]) => Slide[]) => Promise<void>
+  /**
+   * The same edit as a transient (a live preview): local only, no save and no
+   * undo step until `commit()`; `discardTransient()` gives it up.
+   */
+  previewSlides: (edit: (slides: Slide[]) => Slide[]) => void
   setOverlayFrame: (slideId: string, elementId: string, frame: number) => Promise<void>
   /**
    * Writes `project.notes` (PL70): `edit` is called once, synchronously, with
@@ -125,7 +135,7 @@ export function useProjectState<P extends Project = Project>(
   const mutate = useCallback(
     (action: Action<P>): Promise<void> => {
       const base = projectRef.current
-      const editGated = new Set(['updateOverlayProp', 'updateImageCrop', 'replaceImage', 'setStatus', 'setName', 'moveElement', 'resizeElement', 'rotateElement', 'addElement', 'removeElement', 'addSlide', 'removeSlide', 'duplicateSlide', 'reorderSlides', 'updateSlide', 'editElements', 'duplicateElement', 'reorderElement', 'setOverlayFrame'])
+      const editGated = new Set(['updateOverlayProp', 'updateImageCrop', 'replaceImage', 'setStatus', 'setName', 'moveElement', 'resizeElement', 'rotateElement', 'addElement', 'removeElement', 'addSlide', 'removeSlide', 'duplicateSlide', 'reorderSlides', 'updateSlide', 'editElements', 'editSlides', 'duplicateElement', 'reorderElement', 'setOverlayFrame'])
       if (editGated.has(action.type) && !isEditable(base.status)) {
         console.warn(`[useProjectState] dropped ${action.type}: status="${base.status}" not editable`)
         return Promise.resolve()
@@ -140,7 +150,7 @@ export function useProjectState<P extends Project = Project>(
           return Promise.resolve()
         }
       }
-      if (action.type === 'editElements') {
+      if (action.type === 'editElements' || action.type === 'editSlides') {
         // Applied once, here, to the live project: an edit that changes nothing
         // writes nothing (no undo step, no save).
         const next = projectReducer(base, action)
@@ -157,7 +167,7 @@ export function useProjectState<P extends Project = Project>(
   const mutateTransient = useCallback(
     (action: Action<P>): void => {
       const base = projectRef.current
-      const editGated = new Set(['moveElement', 'resizeElement', 'rotateElement'])
+      const editGated = new Set(['moveElement', 'resizeElement', 'rotateElement', 'editSlides'])
       if (!editGated.has(action.type) || !isEditable(base.status)) {
         console.warn(`[useProjectState] dropped transient ${action.type}: status="${base.status}" not editable`)
         return
@@ -281,6 +291,16 @@ export function useProjectState<P extends Project = Project>(
     [mutate],
   )
 
+  const editSlides = useCallback(
+    (edit: (slides: Slide[]) => Slide[]) => mutate({ type: 'editSlides', edit }),
+    [mutate],
+  )
+
+  const previewSlides = useCallback(
+    (edit: (slides: Slide[]) => Slide[]): void => mutateTransient({ type: 'editSlides', edit }),
+    [mutateTransient],
+  )
+
   const setOverlayFrame = useCallback(
     (slideId: string, elementId: string, frame: number) =>
       mutate({ type: 'setOverlayFrame', slideId, elementId, frame }),
@@ -324,6 +344,8 @@ export function useProjectState<P extends Project = Project>(
     reorderSlides,
     updateSlide,
     editElements,
+    editSlides,
+    previewSlides,
     setOverlayFrame,
     editNotes,
     commit: sync.commit,
