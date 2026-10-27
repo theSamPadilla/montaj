@@ -332,7 +332,7 @@ export const VIDEO_CONTROLS: ControlSection[] = [
 export const LOCK_CONTROL: ControlEntry = { keys: ['⌥', '⇧', 'L'], label: 'Lock or unlock' }
 
 /** Controls reference for the carousel editor. Sourced from CarouselEditor's key
- *  bindings (undo/redo, Delete, the N note key, the clipboard, nudge, layer and
+ *  bindings (undo/redo, Delete, the N note key, the clipboard, nudge, layer, zoom and
  *  Esc keys) and the canvas gesture hints. */
 export const CAROUSEL_CONTROLS: ControlSection[] = [
   {
@@ -345,6 +345,8 @@ export const CAROUSEL_CONTROLS: ControlSection[] = [
       { icon: MousePointerClick, label: 'Double-click an image to crop it' },
       { icon: MousePointerClick, label: 'Shift-click to select several' },
       { icon: MousePointerClick, label: '⌘-click to select the layer below' },
+      { icon: MousePointerClick, label: 'Rail layout: ⌘-click also lists every layer under the pointer (↑ ↓ to move, Esc to close)' },
+      { icon: MousePointerClick, label: 'Rail layout: right-click for the menu (copy, paste, duplicate, delete, layer order, lock, crop, replace, set as background, add a note)' },
       { icon: MousePointer2, label: 'Drag on empty canvas to select several' },
       { icon: Magnet, label: 'Hold ⌘ while dragging for no snapping' },
       { icon: Maximize2, label: 'Corner-drag text to scale the text' },
@@ -371,6 +373,10 @@ export const CAROUSEL_CONTROLS: ControlSection[] = [
       { keys: ['⌘', '⌥', '['], label: 'Send to back' },
       { keys: ['⌘', '⌥', 'C'], label: 'Copy text style' },
       { keys: ['⌘', '⌥', 'V'], label: 'Paste text style' },
+      { keys: ['⌘', '+'], label: 'Rail layout: zoom in' },
+      { keys: ['⌘', '−'], label: 'Rail layout: zoom out' },
+      { keys: ['⌘', '0'], label: 'Rail layout: zoom to fit' },
+      { keys: ['⌘', '1'], label: 'Rail layout: zoom to 100%' },
       LOCK_CONTROL,
       { keys: ['Esc'], label: 'Deselect' },
     ],

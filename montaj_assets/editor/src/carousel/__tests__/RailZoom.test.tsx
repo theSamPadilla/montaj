@@ -176,6 +176,17 @@ describe('CarouselEditor layout="rail": zoom (§587 M6)', () => {
     input.remove()
   })
 
+  it('the zoom keys work after the slider was dragged', async () => {
+    const { r } = await mount(makeProject())
+    const sl = slider(r)
+    await act(async () => { sl.focus(); fireEvent.change(sl, { target: { value: '150' } }) })
+    expect(document.activeElement).toBe(sl)
+    await act(async () => { fireEvent.pointerUp(sl) })
+    expect(document.activeElement).not.toBe(sl)
+    await key('1', { metaKey: true }, document.activeElement ?? document.body)
+    expect(pct(r).textContent).toBe('100%')
+  })
+
   it('the canvas area scrolls both ways when zoomed past fit', async () => {
     const { r } = await mount(makeProject())
     await menu(r, '200%')

@@ -246,6 +246,10 @@ export default function RailLayout({
           value={Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(zoomPercent)))}
           disabled={gridOpen}
           onChange={(e) => onZoomPercent(Number(e.target.value))}
+          // A slider counts as a typing surface to the keymap: let go of it
+          // after a drag so the zoom and editor keys keep working.
+          onPointerUp={(e) => e.currentTarget.blur()}
+          onPointerCancel={(e) => e.currentTarget.blur()}
         />
         <button
           ref={zoomBtnRef}

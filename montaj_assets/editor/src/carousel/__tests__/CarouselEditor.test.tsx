@@ -581,6 +581,10 @@ describe('CarouselEditor — editor-core integration', () => {
         ['Ctrl', 'Alt', '['],
         ['Ctrl', 'Alt', 'C'],
         ['Ctrl', 'Alt', 'V'],
+        ['Ctrl', '+'],
+        ['Ctrl', '−'],
+        ['Ctrl', '0'],
+        ['Ctrl', '1'],
         ['Esc'],
       ])
 
