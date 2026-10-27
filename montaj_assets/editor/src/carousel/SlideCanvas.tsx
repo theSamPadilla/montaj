@@ -665,6 +665,9 @@ export default function SlideCanvas({
   useEffect(() => {
     if (!pickOpen) return
     const onKey = (e: KeyboardEvent) => {
+      // Keys typed into a field stay the field's.
+      const t = e.target
+      if (t instanceof HTMLElement && (t.isContentEditable || t.closest('input, textarea, select, [contenteditable="true"]'))) return
       if (e.key === 'Escape' || e.key === 'Enter') {
         e.preventDefault()
         e.stopPropagation()
@@ -942,6 +945,12 @@ export default function SlideCanvas({
     top: -margin,
     width: displayW + 2 * margin,
     height: displayH + 2 * margin,
+  }
+  // The pick list opens toward the room left in the chrome box: past the
+  // right or bottom edge it flips to the press's other side (rows ~28px).
+  const pickFlip = {
+    x: pick !== null && pick.x * scale + 8 + 220 > displayW + margin,
+    y: pick !== null && pick.y * scale + 8 + pickIds.length * 28 + 8 > displayH + margin,
   }
 
   return (
@@ -1292,8 +1301,9 @@ export default function SlideCanvas({
                 onClick={(e) => e.stopPropagation()}
                 style={{
                   position: 'absolute',
-                  left: pick.x * scale + 8,
-                  top: pick.y * scale + 8,
+                  left: pick.x * scale + (pickFlip.x ? -8 : 8),
+                  top: pick.y * scale + (pickFlip.y ? -8 : 8),
+                  transform: `translate(${pickFlip.x ? '-100%' : '0'}, ${pickFlip.y ? '-100%' : '0'})`,
                   minWidth: 140,
                   maxWidth: 220,
                   padding: 4,

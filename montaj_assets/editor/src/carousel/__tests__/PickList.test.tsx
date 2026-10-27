@@ -27,7 +27,7 @@ const text = (id: string, x: number, y: number) => ({
 const stack = (): Slide['elements'] => [img('el-1', 100, 100, { locked: true } as Partial<ImageElement>), text('el-2', 150, 150), img('el-3', 200, 200)]
 const ALL = { clientX: 250, clientY: 250, metaKey: true }
 
-function mount(selected: string[], pickList = true) {
+function mount(selected: string[], pickList = true, elements: Slide['elements'] = stack()) {
   const fns = {
     moveElement: vi.fn(async () => {}),
     commit: vi.fn(async () => {}),
@@ -38,7 +38,7 @@ function mount(selected: string[], pickList = true) {
     const [sel, setSel] = useState(selected)
     return (
       <SlideCanvas
-        slide={{ id: 's', base_color: '#ffffff', elements: stack() } as Slide}
+        slide={{ id: 's', base_color: '#ffffff', elements } as Slide}
         width={1080}
         height={1080}
         interactive
@@ -142,5 +142,33 @@ describe('Cmd-click pick list (§587 M8)', () => {
     mount([], false)
     await cmdPress()
     expect(list()).toBeNull()
+  })
+
+  it('leaves keys typed into a field alone', async () => {
+    mount([])
+    await cmdPress()
+    const field = document.createElement('input')
+    document.body.appendChild(field)
+    const down = new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
+    await act(async () => { field.dispatchEvent(down) })
+    expect(down.defaultPrevented).toBe(false)
+    expect(rows().map((r) => r.getAttribute('aria-selected'))).toEqual(['true', 'false', 'false'])
+    await act(async () => { field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })) })
+    expect(list()).not.toBeNull()
+    field.remove()
+  })
+
+  it('flips to the other side of the press near the right and bottom edges', async () => {
+    mount([], true, [img('el-1', 880, 880), img('el-3', 900, 900)])
+    await cmdPress({ clientX: 1000, clientY: 1050, metaKey: true })
+    expect(list()!.style.transform).toBe('translate(-100%, -100%)')
+    expect(list()!.style.left).toBe('992px')
+  })
+
+  it('opens down and right with room', async () => {
+    mount([])
+    await cmdPress()
+    expect(list()!.style.transform).toBe('translate(0, 0)')
+    expect(list()!.style.left).toBe('258px')
   })
 })
