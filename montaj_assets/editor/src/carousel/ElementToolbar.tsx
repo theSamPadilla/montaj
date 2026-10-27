@@ -7,7 +7,7 @@ import { FontFamilyPicker, FontSizePicker } from '../text/FontPicker'
 import { caseLabel, TEXT_ALIGNS, TextBackgroundControl, TextColorControl, textFormatting } from '../text/TextFormattingToolbar'
 import { supportsEffects, supportsFit, TextEffectControls } from '../text/TextEffectControls'
 import { AlignControls, type AlignPatch } from './AlignControls'
-import { cropBlockedReason, HideToggle, LayerOrderButtons, OverlayPropsSection, schemaPropsFor, TEXT_CONTROL_PROPS, TransformFields, useReplaceImagePicker } from './ElementControls'
+import { cropBlockedReason, HideToggle, LayerOrderButtons, OverlayPropsSection, schemaPropsFor, TEXT_CONTROL_PROPS, useReplaceImagePicker } from './ElementControls'
 import { isLocked } from './lock'
 import { elementColourTarget } from './colours'
 import { isTextOverlay } from './textStyle'
@@ -258,9 +258,6 @@ export default function ElementToolbar({
   beforeAction,
   updateOverlayProp,
   onElementChange,
-  onElementPreview,
-  onElementCommit,
-  onElementCancel,
   onAlignSelection,
   onMoveInStack,
   onToggleLock,
@@ -419,18 +416,10 @@ export default function ElementToolbar({
 
       {popover === 'position' && (
         <Popover label="Position">
+          {/* Align and layer order only: the canvas handles place, size and turn
+              (Sam, 2026-10-26); the AI sets exact numbers through its tools. */}
           {element ? (
-            <>
-              <TransformFields
-                element={element}
-                disabled={locked || !canEdit}
-                onChange={onElementChange}
-                onPreview={onElementPreview}
-                onCommit={onElementCommit}
-                onCancel={onElementCancel}
-              />
-              <AlignControls element={element} width={w} height={h} disabled={locked || !canEdit} onChange={onElementChange} />
-            </>
+            <AlignControls element={element} width={w} height={h} disabled={locked || !canEdit} onChange={onElementChange} />
           ) : (
             <AlignControls elements={selection} width={w} height={h} disabled={allLocked || !canEdit} onChange={(patches: Array<{ id: string } & AlignPatch>) => { beforeAction(); onAlignSelection(patches) }} />
           )}
