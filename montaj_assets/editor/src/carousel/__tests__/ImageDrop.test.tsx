@@ -572,6 +572,51 @@ describe('Images on the canvas: a drag from the host', () => {
   })
 })
 
+// ── a file dropped from Finder also joins the project's media (§587) ─────────
+
+describe('Images on the canvas: files from Finder join project.assets', () => {
+  it('two files: one save adds both assets and both elements, and one undo removes both', async () => {
+    const adapter = makeFakeAdapter()
+    await mount(adapter)
+    const { box, at } = pinCanvas()
+    await fire(box, dragEvent('drop', at(540, 675), transfer({ files: [png('a1.png'), png('b1.png')] })))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const saved = lastSave(adapter)
+    expect(saved.assets).toEqual([
+      { id: expect.any(String), src: '/proj/assets/a1.png', type: 'image', name: 'a1.png' },
+      { id: expect.any(String), src: '/proj/assets/b1.png', type: 'image', name: 'b1.png' },
+    ])
+    expect(elementsOf(saved).map((e) => (e as ImageElement).src)).toEqual(['a.png', '/proj/assets/a1.png', '/proj/assets/b1.png'])
+    await undo()
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(lastSave(adapter).assets).toEqual([])
+    expect(elementsOf(lastSave(adapter)).map((e) => e.id)).toEqual(['el-img'])
+    await undo()
+    expect(adapter.saveCalls).toHaveLength(2)
+  })
+
+  it('a file whose path already is an asset adds no duplicate', async () => {
+    const adapter = makeFakeAdapter()
+    const existing = { id: 'asset-1', src: '/proj/assets/a1.png', type: 'image' as const, name: 'a1.png' }
+    await mount(adapter, makeProject({ assets: [existing] }))
+    const { box, at } = pinCanvas()
+    await fire(box, dragEvent('drop', at(540, 675), transfer({ files: [png('a1.png')] })))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(lastSave(adapter).assets).toEqual([existing])
+    expect(elementsOf(lastSave(adapter))).toHaveLength(2)
+  })
+
+  it('a Media-card drag adds no asset', async () => {
+    const adapter = makeFakeAdapter()
+    await mount(adapter)
+    const { box, at } = pinCanvas()
+    await startHostDrag()
+    await fire(box, dragEvent('drop', at(540, 675), payload('/media/pic.png', 'pic')))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(lastSave(adapter).assets).toEqual([])
+  })
+})
+
 // ── only a drag that started in this page is a host image (§556 review) ─────
 //
 // Any page or app can put `IMAGE_DND_MIME` on a drag, and its `src` (a remote

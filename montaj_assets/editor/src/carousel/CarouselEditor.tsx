@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom'
 import { RefreshCw, AlertCircle, Download, Info, Undo2, Redo2, Plus } from 'lucide-react'
 import type { Project, Slide, CarouselElement, ImageElement, CarouselEditorProps, OverlayFactory, SlideNotesApi, CarouselApi, ImageDropPayload, GlobalOverlay } from '../types'
 import { IMAGE_DND_MIME } from '../types'
-import type { SlideNote } from '../schema'
+import type { Asset, SlideNote } from '../schema'
 import { applyTheme, defaultMontajTheme, isLightTheme } from '../theme'
 import { useProjectState } from '../state/use-project-state'
 import SlideCanvas, { type CropExit, type SlideCanvasCropControl } from './SlideCanvas'
@@ -1432,7 +1432,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
    *  further down and right. The new images become the selection, unless the
    *  person has gone to another slide or into crop mode meanwhile. One that
    *  cannot be uploaded is reported once and the rest are still added. */
-  async function addImages(slideId: string, sources: Array<() => Promise<string>>, at?: { x: number; y: number }) {
+  async function addImages(slideId: string, sources: Array<() => Promise<string>>, at?: { x: number; y: number }, files?: File[]) {
     const resolution = project.settings.resolution as [number, number]
     const settled = await Promise.allSettled(
       sources.map(async (source) => newImageElement(adapter, resolution, await source(), at)),
@@ -1440,6 +1440,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     const failed = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected')
     if (failed) reportError("Couldn't add the image", failed.reason)
     const added = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []))
+    // The file behind each image that was added (same order), for its media name.
+    const names = settled.flatMap((r, i) => (r.status === 'fulfilled' ? [files?.[i]?.name] : []))
 
     // The uploads and size reads took time. Write only if the editor is still
     // up and the slide still there, onto the elements it has now.
@@ -1448,7 +1450,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     // An arrow-key nudge still open would fold into this edit's undo step.
     flushNudge()
     const placed = added.map((el, i) => ({ ...el, x: el.x + i * COPY_OFFSET, y: el.y + i * COPY_OFFSET }))
-    const saved = state.editElements(slideId, (els) => [...els, ...placed])
+    // A new file also joins `project.assets`, in the same step (one save, one undo); a path already there is skipped.
+    const assets: Asset[] | undefined = files
+      ? placed.map((el, i): Asset => ({ id: crypto.randomUUID(), src: (el as ImageElement).src, type: 'image', name: names[i] }))
+      : undefined
+    const saved = state.editElements(slideId, (els) => [...els, ...placed], assets)
     // Selected, unless the user has gone to another slide meanwhile, or into
     // crop mode: their selection is theirs, and moving it off the image being
     // cropped would leave the crop on one image and the selection on another.
@@ -1537,9 +1543,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     // A DataTransfer can only be read during its event. A payload from a drag
     // that did not begin in this page is not believed.
     const src = pageDragOn() ? hostImageSrc(data) : null
+    const dropped = src !== null ? [] : Array.from(data.files ?? []).filter(isImageFile)
     const sources = src !== null
       ? [() => Promise.resolve(src)]
-      : Array.from(data.files ?? []).filter(isImageFile).map((file) => () => adapter.uploadFile(file, project.id, 'drop'))
+      : dropped.map((file) => () => adapter.uploadFile(file, project.id, 'drop'))
     if (sources.length === 0) return
 
     // Where it fell, in slide units: the canvas draws the slide at `slideScale`.
@@ -1549,7 +1556,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       : undefined
     // A drop on another stacked slide makes it the active one first.
     if (slideId !== selectedSlideId) activateSlide(slideId)
-    void addImages(slideId, sources, at)
+    void addImages(slideId, sources, at, src === null ? dropped : undefined)
   }
 
   // A locked element's props and crop are not written, whoever asks (the canvas'
