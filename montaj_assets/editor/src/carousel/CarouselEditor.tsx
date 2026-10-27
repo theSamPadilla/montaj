@@ -13,6 +13,8 @@ import RailLayout from './RailLayout'
 import LayersPanel from './LayersPanel'
 import BackgroundPanel from './BackgroundPanel'
 import { setImageAsBackground } from './background'
+import { TextPanel, ElementsPanel, AiImagePanel, type AiImageState } from './RailPanels'
+import { generateImageElement } from './newImage'
 import ElementToolbar, { type ElementToolbarPopover } from './ElementToolbar'
 import { useOverlaySchemas } from './ElementControls'
 import StackedSlides, { SlideHeader } from './StackedSlides'
@@ -2021,6 +2023,29 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     </div>
   )
 
+  // The AI image panel's state lives here, so a close and reopen of the panel
+  // keeps a run in flight (and its button off) and the result lands once.
+  const [aiImage, setAiImage] = useState<AiImageState>({ prompt: '', generating: false, error: null })
+  const aiBusyRef = useRef(false)
+  async function generateAiImage(slideId: string, prompt: string) {
+    if (aiBusyRef.current) return
+    aiBusyRef.current = true
+    setAiImage((s) => ({ ...s, generating: true, error: null }))
+    try {
+      const element = await generateImageElement(adapter, project, prompt)
+      if (!mountedRef.current) return
+      // The slide it was asked on; it may have been deleted meanwhile.
+      if (!slidesRef.current.some((sl) => sl.id === slideId)) throw new Error('That slide was removed')
+      handleAddElement(slideId, element)
+      setAiImage((s) => ({ ...s, prompt: '' }))
+    } catch (e) {
+      if (mountedRef.current) setAiImage((s) => ({ ...s, error: e instanceof Error ? e.message : String(e) }))
+    } finally {
+      aiBusyRef.current = false
+      if (mountedRef.current) setAiImage((s) => ({ ...s, generating: false }))
+    }
+  }
+  const panelSlideId = selectedSlide && !showPendingSurface && state.isEditingAllowed ? selectedSlide.id : null
   const railShell = (
     <RailLayout
       topLeft={slots?.carouselTopLeft}
@@ -2077,6 +2102,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         notes: slots?.carouselNotesPanel,
         layers: layersPanel || undefined,
         background: backgroundPanel || undefined,
+        // The editor's own panels; a host's `railPanels` entry wins.
+        text: <TextPanel project={project} slideId={panelSlideId} onAddElement={handleAddElement} textTemplate={textTemplate} />,
+        elements: <ElementsPanel project={project} adapter={adapter} slideId={panelSlideId} onAddElement={handleAddElement} />,
+        'ai-image': <AiImagePanel adapter={adapter} slideId={panelSlideId} state={aiImage} onChange={(patch) => setAiImage((s) => ({ ...s, ...patch }))} onGenerate={generateAiImage} />,
         ...railPanels,
       }}
       onBeforeToggle={applyCrop}

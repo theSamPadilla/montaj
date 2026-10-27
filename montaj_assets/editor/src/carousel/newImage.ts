@@ -1,4 +1,4 @@
-import type { ImageElement } from '../types'
+import type { EditorAdapter, ImageElement, Project } from '../types'
 import { loadImageNaturalSize, placeImageBox, type ImageSize } from './imageGeometry'
 
 /**
@@ -26,4 +26,19 @@ export async function newImageElement(
   }
   const { x, y, w, h } = placeImageBox(size, resolution, at)
   return { id, type: 'image', src, x, y, w, h, rotation: 0 }
+}
+
+/**
+ * Generates an image from `prompt` through the adapter and shapes a new element
+ * for it. Shared by the "+ AI Image" prompt and the AI image panel. Rejects with
+ * the adapter's error; throws when the host has no `generateImage`.
+ */
+export async function generateImageElement(
+  adapter: EditorAdapter<Project>,
+  project: Pick<Project, 'id' | 'settings'>,
+  prompt: string,
+): Promise<ImageElement> {
+  if (!adapter.generateImage) throw new Error('Image generation is not available')
+  const result = await adapter.generateImage(prompt, project.id)
+  return newImageElement(adapter, project.settings.resolution, result.path)
 }

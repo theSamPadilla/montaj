@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Project, CarouselElement, EditorAdapter } from '../types'
 import { Button } from '../ui'
 import OverlayPicker from './OverlayPicker'
-import { newImageElement } from './newImage'
+import { newImageElement, generateImageElement } from './newImage'
 import { newTextElement } from './newText'
 
 interface Props {
@@ -64,9 +64,8 @@ export default function AddElementMenu({ project, selectedSlideId, adapter, onAd
     setGenerating(true)
     setGenError(null)
     try {
-      const result = await adapter.generateImage(prompt.trim(), project.id)
       // Shaped like the generated image, centred on the slide.
-      const element = await newImageElement(adapter, project.settings.resolution, result.path)
+      const element = await generateImageElement(adapter, project, prompt.trim())
       onAddElement(selectedSlideId, element)
       setShowPrompt(false)
       setPrompt('')
