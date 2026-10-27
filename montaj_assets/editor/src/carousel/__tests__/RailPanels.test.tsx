@@ -208,6 +208,26 @@ describe('Elements panel previews', () => {
     expect(compileOverlay).toHaveBeenCalledTimes(6)
     expect(adapter.compileOverlay).toBe(compileOverlay)
   })
+
+  it('keeps each tile\'s preview element across editor renders, so nothing recompiles', async () => {
+    const compileOverlay = vi.fn(async () => () => null)
+    await mount(three(), { compileOverlay })
+    await openRail('Elements')
+    await screen.findByRole('button', { name: /Lower third/ })
+    const io = MockIO.instances.find((o) => o.options?.rootMargin === '200px')!
+    await act(async () => { io.cb([...io.observed].map((target) => ({ target, isIntersecting: true, intersectionRatio: 1 }) as unknown as IntersectionObserverEntry), io as unknown as IntersectionObserver) })
+    await waitFor(() => expect(compileOverlay).toHaveBeenCalledTimes(2))
+    const panel = screen.getByRole('region', { name: 'Elements panel' })
+    const ids = () => Array.from(panel.querySelectorAll('[data-element-id]'), (el) => el.getAttribute('data-element-id'))
+    const before = ids()
+    expect(before).toHaveLength(2)
+    // The editor renders again: another slide picked, an element selected, an edit.
+    await pickSlideOf('el-1')
+    await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })) })
+    await act(async () => {})
+    expect(ids()).toEqual(before)
+    expect(compileOverlay).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('AI image panel', () => {

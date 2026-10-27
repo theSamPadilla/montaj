@@ -1341,6 +1341,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     void state.addElement(slideId, element)
     if (onShow) setSelectedElementId(element.id)
   }
+  // The same add, stable across renders, for the memoised rail panels.
+  const handleAddElementRef = useRef(handleAddElement)
+  handleAddElementRef.current = handleAddElement
+  const addElementStable = useCallback((slideId: string, element: CarouselElement) => handleAddElementRef.current(slideId, element), [])
   function handleDeleteElement(slideId: string, elementId: string) {
     if (isLocked(slidesRef.current.find(s => s.id === slideId)?.elements.find(el => el.id === elementId))) return
     void state.removeElement(slideId, elementId)
@@ -2284,7 +2288,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         background: backgroundPanel || undefined,
         // The editor's own panels; a host's `railPanels` entry wins.
         text: <TextPanel project={project} slideId={panelSlideId} onAddElement={handleAddElement} textTemplate={textTemplate} fonts={brand?.fonts} />,
-        elements: <ElementsPanel project={project} adapter={adapter} slideId={panelSlideId} onAddElement={handleAddElement} />,
+        elements: <ElementsPanel projectId={project.id} profile={project.profile} width={w} height={h} adapter={adapter} slideId={panelSlideId} onAddElement={addElementStable} />,
         'ai-image': <AiImagePanel adapter={adapter} slideId={panelSlideId} state={aiImage} onChange={(patch) => setAiImage((s) => ({ ...s, ...patch }))} onGenerate={generateAiImage} />,
         ...railPanels,
       }}

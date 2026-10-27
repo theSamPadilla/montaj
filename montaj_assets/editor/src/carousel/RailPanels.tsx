@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { CarouselBrand, EditorAdapter, GlobalOverlay, CarouselElement, Project, Slide } from '../types'
 import { Button } from '../ui'
 import { Loader } from '../ui/Loader'
@@ -69,10 +69,16 @@ export function TextPanel({ project, slideId, onAddElement, textTemplate, fonts 
 
 const PREVIEW_SCALE = 0.17
 
-/** A small, non-interactive render of one overlay template, as it would be added. */
-function OverlayThumb({ overlay, project, adapter }: { overlay: GlobalOverlay; project: Project; adapter: EditorAdapter<Project> }) {
-  const el = newOverlayElement(overlay, [OVERLAY_BOX.w, OVERLAY_BOX.h])
-  const slide: Slide = { id: 'preview', base_color: 'transparent', elements: [{ ...el, x: 0, y: 0 }] }
+/** A small, non-interactive render of one overlay template, as it would be added.
+ *  Its slide is built once per template, with a stable element id: a fresh id
+ *  would remount the element, and the overlay would compile again, on every
+ *  editor render. */
+const OverlayThumb = memo(function OverlayThumb({ overlay, projectId, adapter }: { overlay: GlobalOverlay; projectId: string; adapter: EditorAdapter<Project> }) {
+  const slide = useMemo<Slide>(() => {
+    const el = newOverlayElement(overlay, [OVERLAY_BOX.w, OVERLAY_BOX.h])
+    return { id: 'preview', base_color: 'transparent', elements: [{ ...el, id: `preview:${overlay.jsxPath}`, x: 0, y: 0 }] }
+  }, [overlay])
+  const compileOverlay = useMemo(() => (template: string) => adapter.compileOverlay(template, projectId), [adapter, projectId])
   return (
     <div
       aria-hidden="true"
@@ -86,21 +92,34 @@ function OverlayThumb({ overlay, project, adapter }: { overlay: GlobalOverlay; p
           height={OVERLAY_BOX.h}
           scale={PREVIEW_SCALE}
           resolveImageSrc={adapter.resolveImageSrc}
-          compileOverlay={(template) => adapter.compileOverlay(template, project.id)}
+          compileOverlay={compileOverlay}
           watchFile={adapter.watchFile}
         />
       </OverlayErrorBoundary>
     </div>
   )
-}
+})
 
 /** A tile's thumbnail slot: a plain box until the tile has been near view, then the live thumb for good. */
-function PreviewSlot({ shown, ...thumb }: { shown: boolean; overlay: GlobalOverlay; project: Project; adapter: EditorAdapter<Project> }) {
+function PreviewSlot({ shown, ...thumb }: { shown: boolean; overlay: GlobalOverlay; projectId: string; adapter: EditorAdapter<Project> }) {
   if (shown) return <OverlayThumb {...thumb} />
   return <div aria-hidden="true" className="rounded bg-[var(--editor-bg)]" style={{ width: OVERLAY_BOX.w * PREVIEW_SCALE, height: OVERLAY_BOX.h * PREVIEW_SCALE }} />
 }
 
-export function ElementsPanel({ project, adapter, slideId, onAddElement }: PanelProps) {
+export interface ElementsPanelProps {
+  projectId: string
+  profile: Project['profile']
+  /** The slide's size, px: a template is added centred on it. */
+  width: number
+  height: number
+  adapter: EditorAdapter<Project>
+  /** The active slide, or null when there is none to add to. */
+  slideId: string | null
+  /** Keep it stable: the panel is memoised on plain props, so it renders again only when one of them changes. */
+  onAddElement: (slideId: string, element: CarouselElement) => void
+}
+
+export const ElementsPanel = memo(function ElementsPanel({ projectId, profile, width, height, adapter, slideId, onAddElement }: ElementsPanelProps) {
   const [overlays, setOverlays] = useState<GlobalOverlay[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   // Tiles that have been near view: set once, kept, so scrolling back never recompiles.
@@ -121,11 +140,11 @@ export function ElementsPanel({ project, adapter, slideId, onAddElement }: Panel
     let live = true
     setOverlays(null)
     setError(null)
-    loadOverlays(adapter, project)
+    loadOverlays(adapter, { profile })
       .then((list) => { if (live) setOverlays(list.filter((o) => !o.empty)) })
       .catch((e) => { if (live) setError(e instanceof Error ? e.message : String(e)) })
     return () => { live = false }
-  }, [adapter, project.profile])
+  }, [adapter, profile])
   return (
     <div ref={rootRef} className="flex flex-col gap-3 p-4">
       <PanelTitle>Graphics</PanelTitle>
@@ -142,10 +161,10 @@ export function ElementsPanel({ project, adapter, slideId, onAddElement }: Panel
               type="button"
               disabled={!slideId}
               title={overlay.description || undefined}
-              onClick={() => slideId && onAddElement(slideId, newOverlayElement(overlay, project.settings.resolution))}
+              onClick={() => slideId && onAddElement(slideId, newOverlayElement(overlay, [width, height]))}
               className="flex flex-col items-stretch gap-1.5 rounded-lg border border-[var(--editor-border)] bg-[var(--editor-surface)] p-2 text-left hover:border-[var(--editor-accent)] disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)]"
             >
-              <PreviewSlot shown={!hasIO || seen.has(overlay.jsxPath)} overlay={overlay} project={project} adapter={adapter} />
+              <PreviewSlot shown={!hasIO || seen.has(overlay.jsxPath)} overlay={overlay} projectId={projectId} adapter={adapter} />
               <span className="truncate text-xs text-[var(--editor-text)]">{overlay.name}</span>
             </button>
           ))}
@@ -153,7 +172,7 @@ export function ElementsPanel({ project, adapter, slideId, onAddElement }: Panel
       )}
     </div>
   )
-}
+})
 
 export interface AiImageState { prompt: string; generating: boolean; error: string | null }
 
