@@ -247,6 +247,10 @@ export interface GlobalOverlayProp {
   type: 'string' | 'int' | 'float' | 'bool' | 'color'
   default?: unknown
   description?: string
+  /** The values a string prop takes: the prop editor shows a select. */
+  enum?: string[]
+  /** `'color'`: a string prop holding a colour, edited with a swatch (as `type: 'color'`). */
+  format?: string
 }
 
 /**
@@ -262,6 +266,12 @@ export interface GlobalOverlay {
   jsxPath: string
   group?: string
   empty?: boolean
+  /**
+   * A shipped template's kind, from its sidecar (§587): `'shape'`, `'line'` or
+   * `'frame'` put it in that section of the rail layout's Elements panel, added
+   * in a box of that kind's shape. Absent for every other template.
+   */
+  category?: string
 }
 
 // ── Version history (optional capability) ─────────────────────────────────────
@@ -1358,9 +1368,27 @@ export interface CarouselBrand {
  * `project` and is notified of edits via `onProjectChange`. The adapter drives
  * transport; theme and slots are optional, and `readOnly` disables mutation.
  */
+/**
+ * What the person asked their own AI for, from the editor (§587): `kind`
+ * `'shape'` is the Elements panel's "Ask your AI for a custom shape", `text`
+ * what they typed (trimmed, never empty), `slideId` the slide on show (null
+ * with none). The host turns it into a prompt for the person's AI.
+ */
+export interface AskAiRequest {
+  kind: 'shape'
+  slideId: string | null
+  text: string
+}
+
 export interface CarouselEditorProps<P extends Project = Project> {
   /** `layout="rail"`: the brand's palette and fonts, from the host's profile. */
   brand?: CarouselBrand
+  /**
+   * `layout="rail"`: the Elements panel's "Ask your AI for a custom shape"
+   * field calls it on Enter or its button with what was typed, then clears.
+   * The editor runs no AI itself. Absent: no field.
+   */
+  onAskAi?: (request: AskAiRequest) => void
   /**
    * `'classic'` (default) is today's layout. `'rail'` swaps in the top bar, the
    * icon rail with its side panel, the right panel and the bottom bar; the host

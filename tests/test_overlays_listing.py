@@ -191,3 +191,31 @@ def test_profile_overlay_group_accepts_a_plain_name(tmp_path, monkeypatch):
     r = client.post("/api/profiles/default/overlays/groups", json={"name": "grp"})
     assert r.status_code == 201, r.text
     assert (tmp_path / ".montaj" / "profiles" / "default" / "overlays" / "grp").is_dir()
+
+
+# ── §587 R2: the shape, line and frame templates carry their `category` ───────
+
+def test_sidecar_category_is_passed_through(tmp_path):
+    from serve.routes.overlays import scan_overlays
+    _write_overlay(tmp_path, "blob", {"description": "d", "props": [], "category": "shape"})
+    e = scan_overlays(tmp_path)[0]
+    assert e["category"] == "shape"
+    assert set(e) == {"name", "description", "props", "jsxPath", "category"}
+
+
+@pytest.mark.parametrize("bad", ["", 3, None, ["shape"], {"k": "shape"}])
+def test_sidecar_category_of_the_wrong_type_is_omitted(tmp_path, bad):
+    from serve.routes.overlays import scan_overlays
+    _write_overlay(tmp_path, "blob", {"description": "d", "props": [], "category": bad})
+    assert "category" not in scan_overlays(tmp_path)[0]
+
+
+def test_system_overlays_list_the_shapes_lines_and_frames_by_category():
+    entries = client.get("/api/overlays/system").json()
+    by_name = {e.get("name"): e for e in entries}
+    assert by_name["shape-rect"]["category"] == "shape"
+    assert by_name["shape-ellipse"]["category"] == "shape"
+    assert by_name["line-dashed"]["category"] == "line"
+    assert by_name["frame-border"]["category"] == "frame"
+    # the templates without one are listed as before
+    assert "category" not in by_name["static-text"]
