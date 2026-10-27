@@ -85,6 +85,7 @@ def test_each_script_line_lists_its_takes_with_times_and_words(proj):
     assert "   - A2 4.0-6.6: \"this may be the funniest demo i've ever seen.\"" in hook, hook
     assert "   - A3 8.0-11.6: \"in the demo the robot dents a car and lifts a car.\"" in text.split("2. In the demo")[1], text
     assert "3. A line nobody ever recorded here.\n   - not recorded as written" in text, text
+    assert "run_step transcripts" in text.split("## Script")[1].split("**<")[0], "where to look for a line by meaning"
     assert "## Talking-head transcripts" not in text, "the full transcripts are cut's plan's"
     assert "make it look great" not in text.split("## Script")[1], "the notes after ----- are not script"
 
@@ -107,7 +108,11 @@ def test_a_long_b_roll_gets_its_shots_and_one_sheet_a_short_one_does_not(proj):
     assert got["sheets"][1:] == [str(d / "render" / "brief" / "shots-clip-1.jpg")]
     text = got["text"]
     assert "**clip-1 demo.mov**, 74.7 s, 3 shots" in text and "- 2: 4.9-12.6 car dent" in text, text
-    assert "2 of its shots have no label yet" in text, text
+    assert "2 of 3 have no label yet" in text, text
+    # run 4 (#50-56): b-roll added by unlabelled shot number swapped the mannequin and the lift; label first
+    roll = text.split("## B-roll")[1].split("##")[0]
+    assert roll.index("Label the shots first") < roll.index("- 1: 0.0-4.9"), roll
+    assert 'shots {clip: "clip-1", labels: {"1": "a few words"' in roll, roll
     # how to use them without looking again: add b-roll by shot; snapshot is the one closer look
     assert 'edit_timeline {op: "add", item: {source: "clip-1", shot: n, start}}' in text, text
     assert "snapshot" in text.split("## B-roll")[1].split("##")[0]

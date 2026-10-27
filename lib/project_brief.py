@@ -239,7 +239,7 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
               "Each script line, then every take line that says it in recording order: id (cut's plan uses it), seconds "
               "in its source, the words Whisper heard. Retakes and partial sayings are all listed, so the last one is "
               "usually the last full saying. Caption and spell by the script's words, not Whisper's. \"not recorded as "
-              "written\": look for it by meaning in cut's plan. The takes are yours to pick.", ""]
+              "written\": look for it by meaning with run_step transcripts (every take's lines). The takes are yours to pick.", ""]
         k = 0
         for kind, text in script:
             if kind == "section":
@@ -286,14 +286,15 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
                 seen = ""
             W.append(f"**{s.get('id', '')} {os.path.basename(s['src'])}**, {dur:.1f} s, {len(shots)} shots (seconds in "
                      f"the source).{seen}")
+            bare = sum(1 for sh in shots if not sh.get("label"))
+            if bare:   # run 4 (#50-56): b-roll added by unlabelled number swapped the mannequin and the lift
+                W.append(f"Label the shots first, from the sheet, before adding any: run_step shots {{clip: \"{s.get('id', '')}\", "
+                         f"labels: {{\"1\": \"a few words\", ...}}}} names each by what happens in it; {bare} of {len(shots)} "
+                         "have no label yet. Every later read shows them.")
             W += [f"- {sh['n']}: {sh['start']:.1f}-{sh['end']:.1f}" + (f" {sh['label']}" if sh.get("label") else "")
                   for sh in shots]
-            W.append(f"Add b-roll by shot: edit_timeline {{op: \"add\", item: {{source: \"{s.get('id', '')}\", shot: n, "
+            W.append(f"Then add b-roll by shot: edit_timeline {{op: \"add\", item: {{source: \"{s.get('id', '')}\", shot: n, "
                      "start}}, which takes the shot's span; for a closer look at a moment, snapshot the clip.")
-            bare = sum(1 for sh in shots if not sh.get("label"))
-            if bare:
-                W.append(f"{bare} of its shots have no label yet: name them once with `shots` (labels) and every later "
-                         "read shows them.")
         W.append("")
 
     # steps
