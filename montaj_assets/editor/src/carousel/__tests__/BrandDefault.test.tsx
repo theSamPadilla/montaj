@@ -199,3 +199,20 @@ describe('Background panel (§587 r2 note 9)', () => {
     expect(m.r.queryByTestId('bg-images')).toBeNull()
   })
 })
+
+describe('CarouselApi.setBackgroundImage (§587 r2 note 9)', () => {
+  it('adds the image at src as a locked cover at the back, in one save and one undo step', async () => {
+    let api: import('../../types').CarouselApi | null = null
+    const { adapter } = await mount('rail', { onProvideCarouselApi: (a) => { api = a } })
+    expect(api).not.toBeNull()
+    const before = adapter.saveCalls.length
+    await act(async () => { await api!.setBackgroundImage('/lib/bg.png') })
+    await waitFor(() => expect(adapter.saveCalls.length).toBe(before + 1))
+    const els = elementsOf(last(adapter))
+    expect(els[0]).toMatchObject({ type: 'image', src: '/lib/bg.png', x: 0, y: 0, w: 1080, h: 1080, locked: true })
+    expect(els).toHaveLength(5)
+    await undo()
+    await waitFor(() => expect(adapter.saveCalls.length).toBe(before + 2))
+    expect(elementsOf(last(adapter))).toHaveLength(4)
+  })
+})

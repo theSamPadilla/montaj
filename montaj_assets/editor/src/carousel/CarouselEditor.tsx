@@ -1469,6 +1469,23 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     await addImages(selectedSlide.id, [() => Promise.resolve(src)])
   }
 
+  /** The host's `setBackgroundImage`: the image at `src` becomes the selected slide's background (as Set as background does), in one write. */
+  async function setBackgroundImage(src: string) {
+    if (!selectedSlide || !canAddImages) return
+    const slideId = selectedSlide.id
+    const resolution = project.settings.resolution as [number, number]
+    let el: ImageElement
+    try { el = await newImageElement(adapter, resolution, src) } catch (e) { reportError("Couldn't add the image", e); return }
+    let size: ImageSize | null = null
+    try { size = await loadImageNaturalSize(adapter.resolveImageSrc(el)) } catch { /* unreadable */ }
+    if (!mountedRef.current || !slidesRef.current.some((s) => s.id === slideId)) return
+    flushNudge()
+    const natural = size ?? { width: el.w, height: el.h }
+    await state.editElements(slideId, (els) => setImageAsBackground([...els, el], el.id, w, h, natural)).catch(() => {})
+  }
+  const setBackgroundImageRef = useRef(setBackgroundImage)
+  setBackgroundImageRef.current = setBackgroundImage
+
   // Host api: handed up once (it is stable, and always runs the latest
   // `addImage`) and withdrawn with null on unmount, like the notes api.
   const addImageRef = useRef(addImage)
@@ -1476,6 +1493,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   const carouselApi = useMemo<CarouselApi>(() => ({
     addImage: (src) => addImageRef.current(src),
     setAsBackground: (elementId) => setAsBackgroundRef.current(elementId),
+    setBackgroundImage: (src) => setBackgroundImageRef.current(src),
   }), [])
   useEffect(() => {
     if (!onProvideCarouselApi) return

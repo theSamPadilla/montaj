@@ -729,6 +729,13 @@ export interface CarouselApi {
    * missing image or a project that cannot be edited.
    */
   setAsBackground(elementId: string): Promise<void>
+  /**
+   * Makes the image at `src` (a host path) the selected slide's background:
+   * it is added as `setAsBackground` leaves an image (covering, at the back,
+   * locked), in one undo step. Does nothing when no slide is selected, when
+   * the project cannot be edited, and in crop mode.
+   */
+  setBackgroundImage(src: string): Promise<void>
 }
 
 // ── Adapter ────────────────────────────────────────────────────────────────
