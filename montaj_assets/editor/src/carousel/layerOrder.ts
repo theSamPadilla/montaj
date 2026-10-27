@@ -44,3 +44,28 @@ export function reorderSelection(
   }
   return next.every((el, i) => el === elements[i]) ? elements : next
 }
+
+/**
+ * `elements` with `ids` moved to sit just above or just below `targetId` as the
+ * Layers panel lists them (front first), keeping their own order among
+ * themselves. A target among `ids`, an unknown target or nothing to move, or an
+ * order that would not change, gives the very same array back. Never mutates
+ * `elements`.
+ */
+export function moveToLayer(
+  elements: CarouselElement[],
+  ids: Iterable<string>,
+  targetId: string,
+  where: 'above' | 'below',
+): CarouselElement[] {
+  const moving = new Set(ids)
+  if (moving.has(targetId)) return elements
+  const front = [...elements].reverse()
+  const picked = front.filter((el) => moving.has(el.id))
+  const rest = front.filter((el) => !moving.has(el.id))
+  const at = rest.findIndex((el) => el.id === targetId)
+  if (at < 0 || picked.length === 0) return elements
+  rest.splice(where === 'above' ? at : at + 1, 0, ...picked)
+  const next = rest.reverse()
+  return next.every((el, i) => el === elements[i]) ? elements : next
+}
