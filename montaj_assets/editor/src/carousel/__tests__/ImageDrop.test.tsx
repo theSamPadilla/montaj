@@ -595,6 +595,16 @@ describe('Images on the canvas: files from Finder join project.assets', () => {
     expect(adapter.saveCalls).toHaveLength(2)
   })
 
+  it('the asset is named after the file it landed as (a de-dup suffix, a converted type), not the dropped file', async () => {
+    const adapter = makeFakeAdapter()
+    adapter.uploadFile = vi.fn(async (file: File) => (file.name === 'a1.png' ? '/proj/assets/a1-2.png' : 'C:\\proj\\assets\\b1.jpg'))
+    await mount(adapter)
+    const { box, at } = pinCanvas()
+    await fire(box, dragEvent('drop', at(540, 675), transfer({ files: [png('a1.png'), png('b1.heic')] })))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(lastSave(adapter).assets?.map((a) => a.name)).toEqual(['a1-2.png', 'b1.jpg'])
+  })
+
   it('a file whose path already is an asset adds no duplicate', async () => {
     const adapter = makeFakeAdapter()
     const existing = { id: 'asset-1', src: '/proj/assets/a1.png', type: 'image' as const, name: 'a1.png' }

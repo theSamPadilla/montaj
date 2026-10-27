@@ -1438,8 +1438,6 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     const failed = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected')
     if (failed) reportError("Couldn't add the image", failed.reason)
     const added = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []))
-    // The file behind each image that was added (same order), for its media name.
-    const names = settled.flatMap((r, i) => (r.status === 'fulfilled' ? [files?.[i]?.name] : []))
 
     // The uploads and size reads took time. Write only if the editor is still
     // up and the slide still there, onto the elements it has now.
@@ -1450,7 +1448,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     const placed = added.map((el, i) => ({ ...el, x: el.x + i * COPY_OFFSET, y: el.y + i * COPY_OFFSET }))
     // A new file also joins `project.assets`, in the same step (one save, one undo); a path already there is skipped.
     const assets: Asset[] | undefined = files
-      ? placed.map((el, i): Asset => ({ id: crypto.randomUUID(), src: (el as ImageElement).src, type: 'image', name: names[i] }))
+      ? placed.map((el): Asset => ({ id: crypto.randomUUID(), src: (el as ImageElement).src, type: 'image', name: (el as ImageElement).src.split(/[\\/]/).pop() }))
       : undefined
     const saved = state.editElements(slideId, (els) => [...els, ...placed], assets)
     // Selected, unless the user has gone to another slide meanwhile, or into
