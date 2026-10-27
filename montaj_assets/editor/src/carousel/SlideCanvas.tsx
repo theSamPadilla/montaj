@@ -23,6 +23,7 @@ import { isLocked } from './lock'
 import { bandRect, bandTouches, type BandRect } from './bandSelect'
 import { groupDragMove, type GroupDragResult, type GroupMember } from './groupDrag'
 import { elementsAt, isLayerPress, nextLayerDown, pointInElement } from './hitTest'
+import { isApplePlatform } from '../ui/modifierKeys'
 import { scaleFontSize, scalesTextWithBox } from './textScale'
 
 // Neutral fallback used only when no host `resolveImageSrc` is injected. The
@@ -253,6 +254,12 @@ interface Props {
    * Mac) also lists every element under the pointer. Absent → no list.
    */
   pickList?: boolean
+  /**
+   * A right-click (rail layout, §587 M7): the element under the pointer (or
+   * null on the empty slide or its margin) and the point in slide units. The
+   * native menu is suppressed only when this is passed.
+   */
+  onContextMenu?: (info: { clientX: number; clientY: number; elementId: string | null; point: { x: number; y: number } }) => void
 }
 
 // Plain default for the inline editor when we can't read the rendered text's
@@ -351,6 +358,7 @@ export default function SlideCanvas({
   children,
   margin = 0,
   pickList = false,
+  onContextMenu,
 }: Props) {
   const sid = slideId ?? slide.id
   const resolveSrc = resolveImageSrc ?? ((el: ImageElement) => resolveAssetDefault(el.src))
@@ -946,6 +954,10 @@ export default function SlideCanvas({
     width: displayW + 2 * margin,
     height: displayH + 2 * margin,
   }
+  // A right-press (or Ctrl-click on a Mac) opens the host's menu when it has
+  // one; it starts no gesture, on the element or on its handles.
+  const isMenuPress = (e: React.PointerEvent) =>
+    !!onContextMenu && (e.button === 2 || (e.button === 0 && e.ctrlKey && isApplePlatform()))
   // The pick list opens toward the room left in the chrome box: past the
   // right or bottom edge it flips to the press's other side (rows ~28px).
   const pickFlip = {
@@ -985,6 +997,13 @@ export default function SlideCanvas({
       onDragEnter={interactive ? onDragEnter : undefined}
       onDragOver={interactive ? onDragOver : undefined}
       onDrop={interactive ? onDrop : undefined}
+      onContextMenu={interactive && onContextMenu ? (e) => {
+        e.preventDefault()
+        const t = e.target as HTMLElement
+        const hit = t.closest?.('[data-element-id], [data-chrome-for]') as HTMLElement | null
+        const elementId = hit?.getAttribute('data-element-id') ?? hit?.getAttribute('data-chrome-for') ?? null
+        onContextMenu({ clientX: e.clientX, clientY: e.clientY, elementId, point: slidePoint(e) })
+      } : undefined}
     >
       {/* The margin around the page (§586 M4): a press here is a press on the
           empty canvas, and its click reaches the root. Under the slide. */}
@@ -1051,6 +1070,7 @@ export default function SlideCanvas({
 
           const handlePointerDownDrag = (e: React.PointerEvent) => {
             if (!interactive || editingId === element.id) return
+            if (isMenuPress(e)) return
             const layerPress = isLayerPress(e)
             if (inCrop && !layerPress) return
             e.preventDefault()
@@ -1452,6 +1472,7 @@ export default function SlideCanvas({
                           key={h.id}
                           data-testid={`resize-handle-${h.id}`}
                           onPointerDown={(e) => {
+                            if (isMenuPress(e)) return
                             e.preventDefault()
                             e.stopPropagation()
                             activeGesture.current = 'resize'
@@ -1499,6 +1520,7 @@ export default function SlideCanvas({
                         data-testid="rotate-handle"
                         title="Drag to rotate"
                         onPointerDown={(e) => {
+                          if (isMenuPress(e)) return
                           e.preventDefault()
                           e.stopPropagation()
                           // The element turns about the middle of its wrapper.

@@ -38,6 +38,7 @@ import { newTextElement } from './newText'
 import { applyTextStyle, isTextOverlay, pickTextStyle, type TextStyle } from './textStyle'
 import { Button, ColourPanelContext, type ColourRequest } from '../ui'
 import { shortcutText } from '../ui/modifierKeys'
+import CanvasContextMenu, { type ContextMenuEntry } from './CanvasContextMenu'
 import { applyZoomAction, zoomKeyAction, zoomLabel, zoomScale, FIT, clampPct, type Zoom, type ZoomAction } from './zoom'
 
 // Generic over the host's concrete project type `P` (default = the package's
@@ -2015,12 +2016,116 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           onDragOver={(e) => handleCanvasDragOver(e, id)}
           onDrop={(e) => handleCanvasDrop(e, id)}
           margin={CANVAS_MARGIN}
+          onContextMenu={live ? (info) => openContextMenu(id, info) : undefined}
         >
           {slidePins && <NotePinLayer pins={slidePins} pinDisplay={pinDisplay} onPinClick={onPinClick} />}
           {armedSlideId === id && <NoteArmLayer layerRef={armLayerRef} onPlace={placeArmedNote} />}
         </SlideCanvas>
       </div>
     )
+  }
+
+  // ── Right-click menu (§587 M7, rail layout) ──
+  // Each entry calls the handler its key or the toolbar uses, after the same
+  // `beforeToolbarAction`, so a pending crop lands as its own undo step first.
+  interface CtxMenuState { slideId: string; x: number; y: number; elementId: string | null; point: { x: number; y: number } }
+  const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null)
+  const closeCtxMenu = useCallback(() => setCtxMenu(null), [])
+  // Zoom, a change of project or of the grid view takes the menu away.
+  useEffect(() => { setCtxMenu(null) }, [zoom, project.id, gridOpen])
+  const replaceInputRef = useRef<HTMLInputElement>(null)
+  const replaceTargetRef = useRef<{ slideId: string; elementId: string } | null>(null)
+
+  function openContextMenu(slideId: string, info: { clientX: number; clientY: number; elementId: string | null; point: { x: number; y: number } }) {
+    if (!railLayout || showPendingSurface) return
+    const onActive = slideId === selectedSlideIdRef.current
+    if (!onActive) activateSlide(slideId)
+    if (info.elementId) {
+      if (cropElementIdRef.current && cropElementIdRef.current !== info.elementId) applyCrop()
+      // Inside the selection it stays (a multi-selection too); elsewhere the element is selected.
+      if (!onActive || !liveSelectedIds.includes(info.elementId)) setSelectedElementId(info.elementId)
+    } else {
+      if (cropElementIdRef.current) applyCrop()
+      setSelectedElementId(null)
+    }
+    setCtxMenu({ slideId, x: info.clientX, y: info.clientY, elementId: info.elementId, point: info.point })
+  }
+
+  function contextMenuEntries(menu: CtxMenuState): ContextMenuEntry[] {
+    const canPaste = canEdit && !!clipboardRef.current?.elements.length
+    const paste: ContextMenuEntry = { id: 'paste', label: 'Paste', keys: ['⌘', 'V'], disabled: !canPaste, run: () => { beforeToolbarAction(); pasteClipboard() } }
+    if (!menu.elementId) {
+      const entries: ContextMenuEntry[] = [paste]
+      const opts = notesRef.current
+      if (opts) {
+        entries.push({
+          id: 'add-note',
+          label: 'Add a note here',
+          disabled: project.status === 'pending',
+          run: () => {
+            if (!opts.enabled) { opts.onLocked?.(); return }
+            const clamp = (v: number) => Math.min(1, Math.max(0, v))
+            setArmed(menu.slideId)
+            placeArmedNote({ x: clamp(menu.point.x / w), y: clamp(menu.point.y / h) })
+          },
+        })
+      }
+      return entries
+    }
+    const sel = selectedElements
+    const allLocked = sel.length > 0 && sel.every(isLocked)
+    const anyLocked = sel.some(isLocked)
+    const before = (fn: () => void) => () => { beforeToolbarAction(); fn() }
+    const layer = (id: string, label: string, keys: string[], dir: ReorderDirection): ContextMenuEntry => (
+      { id, label, keys, disabled: !canEdit, run: before(() => moveSelectionInStack(dir)) }
+    )
+    const entries: ContextMenuEntry[] = [
+      { id: 'copy', label: 'Copy', keys: ['⌘', 'C'], run: before(copySelection) },
+      paste,
+      {
+        id: 'duplicate', label: 'Duplicate', keys: ['⌘', 'D'], disabled: !canEdit,
+        run: () => {
+          // One element: the toolbar's Duplicate. Several: Cmd+D's.
+          if (selectedElementId && selectedSlide) handleDuplicateElement(selectedSlide.id, selectedElementId)
+          else { beforeToolbarAction(); duplicateSelection() }
+        },
+      },
+      { id: 'delete', label: 'Delete', keys: ['⌫'], disabled: !canEdit || allLocked, run: before(removeSelection) },
+      'separator',
+      layer('front', 'Bring to front', ['⌥', '⌘', ']'], 'front'),
+      layer('forward', 'Bring forward', ['⌘', ']'], 'forward'),
+      layer('backward', 'Send backward', ['⌘', '['], 'backward'),
+      layer('back', 'Send to back', ['⌥', '⌘', '['], 'back'),
+      'separator',
+      {
+        id: 'lock', label: anyLocked ? 'Unlock' : 'Lock', keys: lockKey ? ['⌥', '⇧', 'L'] : undefined,
+        disabled: !canEdit, run: before(toggleSelectionLock),
+      },
+    ]
+    const image = sel.length === 1 && sel[0].type === 'image' ? sel[0] : null
+    if (image && selectedSlide) {
+      const locked = isLocked(image)
+      const slideId = selectedSlide.id
+      entries.push(
+        {
+          id: 'crop', label: 'Crop', disabled: !canEdit || locked,
+          run: () => {
+            if (cropElementIdRef.current === image.id) applyCrop()
+            else enterCrop(image.id, slideId)
+          },
+        },
+        {
+          id: 'replace', label: 'Replace image', disabled: !canEdit || locked,
+          run: () => {
+            beforeToolbarAction()
+            replaceTargetRef.current = { slideId, elementId: image.id }
+            replaceInputRef.current?.click()
+          },
+        },
+        { id: 'background', label: 'Set as background', disabled: !canEdit || locked, run: () => { void setAsBackground(image.id) } },
+      )
+    }
+    return entries
   }
 
   const railCanvas = (
@@ -2184,7 +2289,26 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
 
   return (
     <div ref={containerRef} className={`flex flex-col h-full ${railLayout ? 'overflow-hidden' : 'overflow-y-auto'} bg-[var(--editor-bg)] text-[var(--editor-text)]`}>
-      {railLayout ? railShell : (
+      {railLayout ? (
+        <>
+          {railShell}
+          {ctxMenu && <CanvasContextMenu x={ctxMenu.x} y={ctxMenu.y} entries={contextMenuEntries(ctxMenu)} onClose={closeCtxMenu} />}
+          <input
+            ref={replaceInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            data-testid="context-replace-input"
+            onChange={(e) => {
+              const input = e.target
+              const file = input.files?.[0]
+              input.value = ''
+              const target = replaceTargetRef.current
+              if (file && target) void handleReplaceImage(target.slideId, target.elementId, file)
+            }}
+          />
+        </>
+      ) : (
       <>
       {/* TOP: slide rail | canvas | editing panel (right). Fixed viewport-relative
           height with min-h-0 so each of the three columns establishes its own
