@@ -127,11 +127,44 @@ def _ends_sentence(word) -> bool:
     return bool(_SENTENCE_END.search(w)) and not _INITIALISM.match(w)
 
 
+MIN_CAPTION_S = 0.3   # a caption shorter than this is too short to read (run 5: "part." showed for one frame)
+
+
+def _join_short(items):
+    """Each phrase shorter than MIN_CAPTION_S joins a neighbour it runs into (a gap of PHRASE_GAP_S or less): one that
+    ends a sentence joins the phrase before it, so the sentence end stays with its sentence; one that opens or runs on
+    joins the next. Never across a sentence end, never past CAPTION_WORDS_MAX words; alone it stays."""
+    out = [list(p) for p in items]
+    near = lambda a, b: b[0]["start"] - a[-1]["end"] <= PHRASE_GAP_S
+    fits = lambda a, b: len(a) + len(b) <= CAPTION_WORDS_MAX
+    i = 0
+    while i < len(out):
+        p = out[i]
+        if p[-1]["end"] - p[0]["start"] >= MIN_CAPTION_S:
+            i += 1
+            continue
+        prev = out[i - 1] if i > 0 else None
+        nxt = out[i + 1] if i + 1 < len(out) else None
+        ends = _ends_sentence(p[-1]["word"])
+        into_prev = prev is not None and not _ends_sentence(prev[-1]["word"]) and near(prev, p) and fits(prev, p)
+        into_next = nxt is not None and not ends and near(p, nxt) and fits(p, nxt)
+        if into_prev and (ends or not into_next):
+            prev.extend(p)
+            del out[i]
+        elif into_next:
+            nxt[:0] = p
+            del out[i]
+        else:
+            i += 1
+    return out
+
+
 def group(words, max_words=PHRASE_MAX_WORDS):
     """Floor word durations, then group into display phrases.
 
     A phrase ends after a word that ends a sentence (never runs across one), after a word that ends a clause (unless
-    it is a lone word opening a sentence: "Yeah,"), when it holds `max_words`, or before a gap over 0.4 s. Returns segments
+    it is a lone word opening a sentence: "Yeah,"), when it holds `max_words`, or before a gap over 0.4 s; then a phrase
+    too short to read joins a neighbour (_join_short). Returns segments
     `{"text", "start", "end", "words": [{"word", "start", "end"}]}` with times
     rounded to milliseconds. Pure: never mutates `words`.
     """
@@ -152,6 +185,7 @@ def group(words, max_words=PHRASE_MAX_WORDS):
             items.append(phrase)
             opens = _ends_sentence(w["word"]) or (nxt is not None and nxt["start"] - w["end"] > PHRASE_GAP_S)
             phrase = []
+    items = _join_short(items)
 
     return [
         {

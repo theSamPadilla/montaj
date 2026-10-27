@@ -27,8 +27,8 @@ def texts(segs):
 
 def test_a_sentence_end_always_breaks_and_a_caption_never_runs_across_one():
     words = W("in the right place. Obviously this is a staged demo with a mannequin.")
-    assert texts(group(words, max_words=8)) == ["in the right place.", "Obviously this is a staged demo with a",
-                                                 "mannequin."]
+    # run 5: "mannequin." alone would show for 0.2 s, too short to read, so it ends its sentence's caption
+    assert texts(group(words, max_words=8)) == ["in the right place.", "Obviously this is a staged demo with a mannequin."]
     assert texts(group(W("Really? Yes! It works."), max_words=8)) == ["Really?", "Yes!", "It works."]
 
 
