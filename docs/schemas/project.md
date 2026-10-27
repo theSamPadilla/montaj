@@ -1402,7 +1402,7 @@ Carousel-specific top-level fields:
 | `x`, `y` | number | Top-left position in pixels at native resolution. |
 | `w`, `h` | number | Width and height in pixels at native resolution. |
 | `rotation` | number | Clockwise rotation in degrees. |
-| `group` | string | Optional. Elements with the same `group` are one group in the editor: selected, moved, resized and turned as one, kept next to each other in `elements`. Ignored at render time. |
+| `group` | string | Optional. Elements with the same `group` are one group in the editor: selected, moved, resized and turned as one. Its members must sit next to each other in `elements` (validation rejects a scattered group). A group belongs to its slide: the same id on another slide is another group. Ignored at render time. |
 
 **`type: "overlay"`**
 
@@ -1416,7 +1416,7 @@ Carousel-specific top-level fields:
 | `x`, `y` | number | Top-left position in pixels at native resolution. |
 | `w`, `h` | number | Width and height in pixels at native resolution. |
 | `rotation` | number | Clockwise rotation in degrees. |
-| `group` | string | Optional. Elements with the same `group` are one group in the editor: selected, moved, resized and turned as one, kept next to each other in `elements`. Ignored at render time. |
+| `group` | string | Optional. Elements with the same `group` are one group in the editor: selected, moved, resized and turned as one. Its members must sit next to each other in `elements` (validation rejects a scattered group). A group belongs to its slide: the same id on another slide is another group. Ignored at render time. |
 
 ### Example
 

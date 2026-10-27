@@ -40,7 +40,7 @@ import type { ReorderDirection } from '../state/project-reducer'
 import { COPY_OFFSET, cloneElement, copyElements, duplicateCopies, insertCopies, pasteElements, withoutLock, type ElementClipboard } from './clipboard'
 import { isLocked, toggleLock } from './lock'
 import { moveToLayer, reorderSelection } from './layerOrder'
-import { canGroup, canUngroup, freshGroupIds, groupBox, groupMemberIds, groupOf, groupElements, selectionAfterPress, ungroupElements, wholeGroup } from './groups'
+import { canGroup, canUngroup, freshGroupIds, groupBox, groupMemberIds, groupOf, groupElements, heldByLock, removeElements, selectionAfterPress, ungroupElements, wholeGroup } from './groups'
 import { newTextElement } from './newText'
 import { elementCategory, newOverlayElement, overlayTileLabel, TEMPLATE_DND_MIME } from './overlayElement'
 import { isFontFile } from '../lib/font-files'
@@ -676,22 +676,18 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // to the elements the project holds when it lands, so nothing that arrived
   // meanwhile is written over.
 
-  /** Removes the selected elements. Several go in one slide write, so one undo
-   *  brings them all back. */
+  /** Removes the selected elements in one slide write, so one undo brings
+   *  them all back. A member left alone in its group leaves it in that write. */
   function removeSelection() {
     if (!selectedSlide) return
-    // A locked element stays, and stays selected.
-    const removable = liveSelectedIds.filter(id => !isLocked(selectedSlide.elements.find(el => el.id === id)))
+    // What a lock holds stays, and stays selected: a locked element, or any
+    // member of a group with a locked member (§587).
+    const removable = liveSelectedIds.filter(id => {
+      const el = selectedSlide.elements.find(e => e.id === id)
+      return !!el && !heldByLock(selectedSlide.elements, el)
+    })
     if (removable.length === 0) return
-    if (removable.length === 1) {
-      void state.removeElement(selectedSlide.id, removable[0])
-    } else {
-      const gone = new Set(removable)
-      void state.editElements(selectedSlide.id, (els) => {
-        const kept = els.filter(el => !gone.has(el.id) || isLocked(el))
-        return kept.length === els.length ? els : kept
-      })
-    }
+    void state.editElements(selectedSlide.id, (els) => removeElements(els, removable))
     setSelectedElementIds(liveSelectedIds.filter(id => !removable.includes(id)))
   }
 
@@ -945,8 +941,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
    *  faster than a render still add up. */
   function nudgeSelection(dx: number, dy: number) {
     if (!selectedSlide) return
-    // A locked element stays where it is; with only locked ones selected there is nothing to move.
-    const movable = selectedElements.filter(el => !isLocked(el))
+    // What a lock holds stays where it is (a locked element, or any member of
+    // a group with a locked member); with only those selected nothing moves.
+    const movable = selectedElements.filter(el => !heldByLock(selectedSlide.elements, el))
     if (movable.length === 0) return
     const movableIds = movable.map(el => el.id)
     let burst = nudgeRef.current
@@ -1465,8 +1462,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   handleAddElementRef.current = handleAddElement
   const addElementStable = useCallback((slideId: string, element: CarouselElement) => handleAddElementRef.current(slideId, element), [])
   function handleDeleteElement(slideId: string, elementId: string) {
-    if (isLocked(slidesRef.current.find(s => s.id === slideId)?.elements.find(el => el.id === elementId))) return
-    void state.removeElement(slideId, elementId)
+    if (heldNow(slideId, elementId)) return
+    void state.editElements(slideId, (els) => removeElements(els, [elementId]))
     setSelectedElementId(null)
     // A crop on it goes with it, unwritten.
     if (cropElementId === elementId) void leaveCrop('discard')
@@ -1482,7 +1479,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     setSelectedElementId(clone.id)
   }
   function handleReorderElement(slideId: string, elementId: string, direction: 'forward' | 'backward') {
-    void state.reorderElement(slideId, elementId, direction)
+    // Group-aware (§587): a member moves among its group, an element passes a
+    // whole group, so no group is ever scattered through the stack.
+    void state.editElements(slideId, (els) => reorderSelection(els, [elementId], direction))
   }
 
   // Replace image (§556 M5): the file goes into the project, the new image's
@@ -1802,6 +1801,12 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // inline editor, the panel's text controls, a host slot).
   const lockedNow = (slideId: string, elementId: string) =>
     isLocked(slidesRef.current.find(s => s.id === slideId)?.elements.find(el => el.id === elementId))
+  // An element's place is held by its own lock or one on any member of its group (§587).
+  function heldNow(slideId: string, elementId: string) {
+    const els = slidesRef.current.find(s => s.id === slideId)?.elements
+    const el = els?.find(e => e.id === elementId)
+    return !!els && !!el && heldByLock(els, el)
+  }
   const updateOverlayProp: typeof state.updateOverlayProp = (slideId, elementId, key, value) =>
     lockedNow(slideId, elementId) ? Promise.resolve() : state.updateOverlayProp(slideId, elementId, key, value)
   /** Several props in one write, one undo step (`undefined` removes one). */
@@ -1812,11 +1817,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // The gesture writes too: an external save can lock the element while the
   // person holds it, and the release then writes nothing.
   const moveElement: typeof state.moveElement = (slideId, elementId, x, y) =>
-    lockedNow(slideId, elementId) ? Promise.resolve() : state.moveElement(slideId, elementId, x, y)
+    heldNow(slideId, elementId) ? Promise.resolve() : state.moveElement(slideId, elementId, x, y)
   const resizeElement: typeof state.resizeElement = (slideId, elementId, box) =>
-    lockedNow(slideId, elementId) ? Promise.resolve() : state.resizeElement(slideId, elementId, box)
+    heldNow(slideId, elementId) ? Promise.resolve() : state.resizeElement(slideId, elementId, box)
   const rotateElement: typeof state.rotateElement = (slideId, elementId, rotation) =>
-    lockedNow(slideId, elementId) ? Promise.resolve() : state.rotateElement(slideId, elementId, rotation)
+    heldNow(slideId, elementId) ? Promise.resolve() : state.rotateElement(slideId, elementId, rotation)
   // A live overlay prop (the toolbar's stroke weight drag): transient until the
   // release commits it as one undo step. Nothing previewed, nothing committed.
   const propPreviewOpen = useRef(false)
@@ -1845,9 +1850,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     const slide = slidesRef.current.find(s => s.id === selectedSlideId)
     const el = slide?.elements.find(e => e.id === selectedElementId)
     if (!el) return
-    // A locked element's place and content are not edited.
+    // A locked element's place and content are not edited, nor the place of a
+    // member of a group with a locked member (§587).
     if (isLocked(el)) return
-    if ('x' in patch || 'y' in patch || 'w' in patch || 'h' in patch) {
+    const held = heldByLock(slide!.elements, el)
+    if (!held && ('x' in patch || 'y' in patch || 'w' in patch || 'h' in patch)) {
       const box = {
         x: patch.x ?? el.x,
         y: patch.y ?? el.y,
@@ -1856,7 +1863,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       }
       void state.resizeElement(selectedSlideId, selectedElementId, box).then(() => state.commit())
     }
-    if ('rotation' in patch && typeof patch.rotation === 'number') {
+    if (!held && 'rotation' in patch && typeof patch.rotation === 'number') {
       void state.rotateElement(selectedSlideId, selectedElementId, patch.rotation).then(() => state.commit())
     }
     if (el.type === 'overlay' && 'overlay' in patch && patch.overlay) {
@@ -1883,8 +1890,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   function handlePanelElementPreview(patch: Partial<CarouselElement>) {
     if (!selectedSlideId || !selectedElementId) return
     if (cropElementIdRef.current) flushSync(applyCrop)
+    if (heldNow(selectedSlideId, selectedElementId)) return
     const el = slidesRef.current.find(s => s.id === selectedSlideId)?.elements.find(e => e.id === selectedElementId)
-    if (!el || isLocked(el)) return
+    if (!el) return
     let edit = panelEdit.current
     if (edit && (edit.slideId !== selectedSlideId || edit.elementId !== selectedElementId)) {
       // Another element's edit is still open: finish it before this one starts.
@@ -2081,7 +2089,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (!selectedSlide) return
     const moves = patches.flatMap(p => {
       const el = selectedSlide.elements.find(e => e.id === p.id)
-      if (!el || isLocked(el)) return []
+      if (!el || heldByLock(selectedSlide.elements, el)) return []
       const x = 'x' in p ? p.x : el.x
       const y = 'y' in p ? p.y : el.y
       return x === el.x && y === el.y ? [] : [{ id: el.id, x, y }]
@@ -2447,7 +2455,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       return entries
     }
     const sel = selectedElements
-    const allLocked = sel.length > 0 && sel.every(isLocked)
+    // Delete removes nothing a lock holds, a group's lock included (§587).
+    const allHeld = sel.length > 0 && !!selectedSlide && sel.every(el => heldByLock(selectedSlide.elements, el))
     const anyLocked = sel.some(isLocked)
     const before = (fn: () => void) => () => { beforeToolbarAction(); fn() }
     const layer = (id: string, label: string, keys: string[], dir: ReorderDirection): ContextMenuEntry => (
@@ -2464,7 +2473,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           else { beforeToolbarAction(); duplicateSelection() }
         },
       },
-      { id: 'delete', label: 'Delete', keys: ['⌫'], disabled: !canEdit || allLocked, run: before(removeSelection) },
+      { id: 'delete', label: 'Delete', keys: ['⌫'], disabled: !canEdit || allHeld, run: before(removeSelection) },
       'separator',
       layer('front', 'Bring to front', ['⌥', '⌘', ']'], 'front'),
       layer('forward', 'Bring forward', ['⌘', ']'], 'forward'),

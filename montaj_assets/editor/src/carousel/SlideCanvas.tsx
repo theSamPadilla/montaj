@@ -588,7 +588,7 @@ export default function SlideCanvas({
 
   // ── Groups (§587): a press selects a member's whole group (one member alone
   // inside a group already entered); a selected group gets one box and handles.
-  const groupGesture = useGroupGestures({ slide, slideId: sid, scale, selectedIds, editElements, applyPreviewBox, applyPreviewOverlayBox, liveBoxes })
+  const groupGesture = useGroupGestures({ slide, slideId: sid, scale, selectedIds, editElements, applyPreviewBox, applyPreviewOverlayBox, liveBoxes, hidden: hiddenSet })
   const selectPress = (el: CarouselElement) => {
     const ids = selectionAfterPress(slide.elements, el.id, selectedIds)
     if (ids.length > 1 && onSelectMany) onSelectMany(ids)
@@ -620,8 +620,8 @@ export default function SlideCanvas({
     onCommit: async (id, x, y) => {
       const el = elementById(id)
       if (!el) return
-      // Locked while held: back to where it is, nothing written or committed.
-      if (isLocked(el)) { applyPreviewTransform(id, el.x, el.y, el.rotation); return }
+      // Locked while held (its own lock or its group's): back to where it is, nothing written or committed.
+      if (heldByLock(slide.elements, el)) { applyPreviewTransform(id, el.x, el.y, el.rotation); return }
       const nx = Math.round(x)
       const ny = Math.round(y)
       applyPreviewTransform(id, nx, ny, el.rotation)
@@ -651,7 +651,7 @@ export default function SlideCanvas({
       const el = elementById(id)
       if (!el) return
       const rotation = gesture.startBox.rotation ?? 0
-      if (isLocked(el)) { applyPreviewBox(id, el, el.rotation); return }
+      if (heldByLock(slide.elements, el)) { applyPreviewBox(id, el, el.rotation); return }
       // w and h first, then x and y from the point the handle pins.
       const next = roundResizedBox(box, gesture.handle, rotation)
       applyPreviewBox(id, next, rotation)
@@ -675,7 +675,7 @@ export default function SlideCanvas({
     onCommit: async (id, rotation) => {
       const el = elementById(id)
       if (!el) return
-      if (isLocked(el)) { applyPreviewTransform(id, el.x, el.y, el.rotation); return }
+      if (heldByLock(slide.elements, el)) { applyPreviewTransform(id, el.x, el.y, el.rotation); return }
       const next = Math.round(rotation)
       // A whole turn away is the same angle: put back the element's own.
       const same = ((next - (el.rotation ?? 0)) % 360 + 360) % 360 === 0
@@ -1358,7 +1358,7 @@ export default function SlideCanvas({
               else if (selectedIds.length > 1) {
                 heldPressRef.current = { x: e.clientX, y: e.clientY, moved: false }
                 startGroupDrag(e)
-              } else if (!isLocked(held)) {
+              } else if (!heldByLock(slide.elements, held)) {
                 heldPressRef.current = { x: e.clientX, y: e.clientY, moved: false }
                 startDrag(e, held)
               }
@@ -1385,7 +1385,10 @@ export default function SlideCanvas({
               return
             }
             onSelect?.(element.id)
-            startDrag(e, element)
+            // One member inside a group with a locked member is held by that
+            // lock (§587): a press-and-move bands, as on a locked element.
+            if (heldByLock(slide.elements, element)) startBand(e)
+            else startDrag(e, element)
           }
 
           const innerContent =
@@ -1727,7 +1730,7 @@ export default function SlideCanvas({
                   {/* Selection handles (hidden while cropping or rotated-crop guard).
                       Placed in percentages of the box, so they follow the size a
                       resize preview writes straight to this box. */}
-                  {isSelected && !locked && !inCrop && editingId !== element.id && (
+                  {isSelected && !locked && !heldByLock(slide.elements, element) && !inCrop && editingId !== element.id && (
                     <>
                       {HANDLES.map((h) => (
                         <div

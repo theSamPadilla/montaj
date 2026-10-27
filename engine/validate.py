@@ -463,6 +463,10 @@ def validate_project(path):
                 fail("missing_field", f"slides[{si}].elements must be an array")
 
             el_ids = set()
+            # §587: a group's members sit side by side in `elements` (the
+            # editor moves a group through the stack as one block). A group
+            # belongs to its slide: the same id on another slide is another group.
+            group_last = {}
             for ei, el in enumerate(elements):
                 el_id = el.get("id")
                 if not isinstance(el_id, str):
@@ -487,6 +491,11 @@ def validate_project(path):
                 group = el.get("group")
                 if group is not None and (not isinstance(group, str) or not group):
                     fail("invalid_field", f"slides[{si}].elements[{ei}].group must be a non-empty string")
+                if group is not None:
+                    prev = group_last.get(group)
+                    if prev is not None and prev != ei - 1:
+                        fail("invalid_field", f"slides[{si}]: group '{group}' members at elements[{prev}] and elements[{ei}] must be adjacent; move them next to each other in elements")
+                    group_last[group] = ei
 
                 if el_type == "image":
                     src = el.get("src")
