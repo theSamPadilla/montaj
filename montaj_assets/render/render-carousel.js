@@ -817,7 +817,8 @@ function reportVendoredFonts(vendoredKeys, fellThrough, faceIndex) {
 // `href` is what the @font-face loads, `file` the path the page may read (null
 // for a URL). A relative `src` is the project dir's, as an image's is; an
 // http(s) one is fetched through the page guard as any props URL is. A family
-// keeps only the characters a CSS string and an HTML page take as they are,
+// keeps only the characters a CSS string and an HTML page take as they are
+// (no comma either: it would split a font-family list),
 // and an entry that leaves nothing, or names no usable file, is skipped.
 function slideFontFaces(elements, projectDir) {
   const seen = new Set()
@@ -825,7 +826,7 @@ function slideFontFaces(elements, projectDir) {
   for (const el of elements) {
     for (const f of Array.isArray(el?.fontFiles) ? el.fontFiles : []) {
       if (!f || typeof f.src !== 'string' || !f.src || typeof f.family !== 'string') continue
-      const family = f.family.replace(/["\\<>{};\u0000-\u001f\u007f]/g, '').trim()
+      const family = f.family.replace(/["\\<>{};,\u0000-\u001f\u007f]/g, '').trim()
       if (!family) continue
       let href, file = null
       if (/^https?:\/\//i.test(f.src)) href = f.src
@@ -833,7 +834,8 @@ function slideFontFaces(elements, projectDir) {
         file = isAbsPath(f.src) ? f.src : join(projectDir, f.src)
         href = toFileHref(file)
       }
-      if (/["\\<>]/.test(href)) continue
+      // No quote, bracket, whitespace or control character: an http(s) src with a newline would end the CSS string.
+      if (/[\s"\\<>\u0000-\u001f\u007f]/.test(href)) continue
       const key = `${family}\u0000${href}`
       if (seen.has(key)) continue
       seen.add(key)

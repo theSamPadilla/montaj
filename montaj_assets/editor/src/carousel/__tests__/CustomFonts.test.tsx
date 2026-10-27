@@ -183,6 +183,35 @@ describe('Your own fonts (§587 r3)', () => {
     expect(filesOf(last(adapter), 'el-t')).toBeUndefined()
   })
 
+  it('malformed fontFiles on another element never break a pick', async () => {
+    const importFont = vi.fn(async (f: CustomFont) => `/proj/${f.family}.ttf`)
+    const held = textEl('el-u', 300, { fontFiles: [null, { family: 3 }, 'x', { family: 'Brand Sans' }] })
+    const { adapter, r } = await mount({ customFonts: FONTS, importFont }, makeProject([held]))
+    await click('el-t')
+    await press(tb(r, 'Font family'))
+    await press(within(listbox(r)).getByRole('option', { name: 'Brand Sans' }))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(importFont).toHaveBeenCalledTimes(1)
+    expect(filesOf(last(adapter), 'el-t')).toEqual([{ family: 'Brand Sans', src: '/proj/Brand Sans.ttf' }])
+  })
+
+  it('a slow import never overwrites a later pick', async () => {
+    let finish!: (src: string) => void
+    const importFont = vi.fn(() => new Promise<string>((res) => { finish = res }))
+    const { adapter, r } = await mount({ customFonts: FONTS, importFont })
+    await click('el-t')
+    await press(tb(r, 'Font family'))
+    await press(within(listbox(r)).getByRole('option', { name: 'Acme Serif' }))
+    await press(tb(r, 'Font family'))
+    await press(within(listbox(r)).getByRole('option', { name: 'Lato' }))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    await act(async () => { finish('/proj/acme.otf') })
+    await settle()
+    expect(adapter.saveCalls).toHaveLength(1)
+    expect(String(propsOf(last(adapter), 'el-t').fontFamily)).toContain('Lato')
+    expect(filesOf(last(adapter), 'el-t')).toBeUndefined()
+  })
+
   it('a locked element keeps its font', async () => {
     const { adapter, r } = await mount({ customFonts: FONTS, onAddFonts: vi.fn() })
     await click('el-locked')

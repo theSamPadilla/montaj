@@ -1,5 +1,6 @@
 import type { CarouselElement, FontFile, OverlayElement } from '../types'
 import { STANDARD_TEXT_PROPS } from '../overlays/contract'
+import { isFontFile } from '../lib/font-files'
 
 /** The props a copied text style carries: the standard text props but the text
  *  itself, plus the effect trio the toolbar also writes. */
@@ -30,7 +31,9 @@ export function pickTextStyle(element: OverlayElement): TextStyle {
     if (value !== undefined && value !== null) props[key] = value
   }
   const style: TextStyle = element.googleFonts ? { props, googleFonts: [...element.googleFonts] } : { props }
-  if (element.fontFiles) style.fontFiles = element.fontFiles.map((f) => ({ ...f }))
+  // `fontFiles` comes from the AI as often as from the editor: a malformed entry is left out.
+  const files = Array.isArray(element.fontFiles) ? element.fontFiles.filter(isFontFile) : []
+  if (files.length) style.fontFiles = files.map((f) => ({ ...f }))
   return style
 }
 
@@ -46,15 +49,16 @@ export function applyTextStyle(element: OverlayElement, style: TextStyle): Overl
       written[key] = style.props[key]
     }
   }
+  const styleFiles = Array.isArray(style.fontFiles) ? style.fontFiles.filter(isFontFile) : undefined
   const withFont = 'fontFamily' in style.props && current.fontFamily !== undefined && current.fontFamily !== null
   const fontsDiffer = withFont && (JSON.stringify(element.googleFonts ?? null) !== JSON.stringify(style.googleFonts ?? null)
-    || JSON.stringify(element.fontFiles ?? null) !== JSON.stringify(style.fontFiles ?? null))
+    || JSON.stringify(element.fontFiles ?? null) !== JSON.stringify(styleFiles?.length ? styleFiles : null))
   if (Object.keys(written).length === 0 && !fontsDiffer) return element
   const next: OverlayElement = { ...element, overlay: { ...element.overlay, props: { ...current, ...written } } }
   if (withFont) {
     if (style.googleFonts) next.googleFonts = [...style.googleFonts]
     else delete next.googleFonts
-    if (style.fontFiles?.length) next.fontFiles = style.fontFiles.map((f) => ({ ...f }))
+    if (styleFiles?.length) next.fontFiles = styleFiles.map((f) => ({ ...f }))
     else delete next.fontFiles
   }
   return next

@@ -327,27 +327,59 @@ def _process_one(
 # A still image: one frame, a PNG with alpha
 # ---------------------------------------------------------------------------
 
-_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".gif"}
 # RVM's own pass mattes a still best near this long side (measured on the
 # fixture portrait: a 1536 px pass left holes in the helmet).
 _IMAGE_PASS_PX = 512
+# The matting pass runs on a copy no longer than this on its long side: RVM's
+# refiner works at the full size it is given, so a 48 MP photo peaked at several GB.
+_IMAGE_MATTE_MAX_PX = 4096
+# Names that claim to be a still: a file Pillow cannot open under one of these
+# fails as an invalid image, not as a video.
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".gif"}
 
 
 def _is_image(path: str) -> bool:
-    return os.path.splitext(path)[1].lower() in _IMAGE_EXTS
+    """A still is whatever Pillow opens, not what the extension says (.avif, .apng,
+    .ico). An .svg is not a still we can matte: it fails with JSON."""
+    if os.path.splitext(path)[1].lower() == ".svg":
+        fail("invalid_image", f"{os.path.basename(path)} is a vector image; remove_bg needs a photo or video")
+    try:
+        from PIL import Image
+    except ImportError:
+        return False
+    try:
+        with Image.open(path):
+            return True
+    except Image.DecompressionBombError:
+        return True  # it is an image, a huge one: _process_image reports it
+    except Exception:
+        return os.path.splitext(path)[1].lower() in _IMAGE_EXTS
 
 
 def _image_out(input_path: str, out: str | None) -> str:
     """<stem>-cutout.png beside the input, or out as a .png: serve's
-    _project names the step's .mov when out is left off."""
+    _project names the step's .mov when out is left off. A name this swaps the
+    extension of is checked for a collision here, as nothing else has seen it."""
     if not out:
         return f"{os.path.splitext(input_path)[0]}-cutout.png"
     root, ext = os.path.splitext(out)
-    return out if ext.lower() == ".png" else root + ".png"
+    if ext.lower() == ".png":
+        return out
+    cand, n = root + ".png", 2
+    while os.path.lexists(cand):
+        cand = f"{root}-{n}.png"
+        n += 1
+    return cand
 
 
 def _image_ratio(width: int, height: int) -> float:
     return round(min(1.0, _IMAGE_PASS_PX / max(width, height)), 4)
+
+
+def _up(plane: np.ndarray, width: int, height: int) -> np.ndarray:
+    """One float plane resized to the source size (bilinear)."""
+    from PIL import Image
+    return np.asarray(Image.fromarray(np.ascontiguousarray(plane, dtype=np.float32), "F").resize((width, height), Image.BILINEAR))
 
 
 def _process_image(input_path: str, output_path: str, session, max_height: int | None) -> dict:
@@ -355,31 +387,57 @@ def _process_image(input_path: str, output_path: str, session, max_height: int |
     start. Opaque pixels keep the photo's own colour, edges take RVM's
     foreground, and the photo's own transparency stays. The colour profile is
     kept for an RGB photo."""
-    from PIL import Image, ImageOps, UnidentifiedImageError
+    from PIL import Image, ImageOps
 
     try:
         with Image.open(input_path) as im:
             icc = im.info.get("icc_profile") if im.mode in ("RGB", "RGBA", "P") else None
             im = ImageOps.exif_transpose(im)
             rgba = im.convert("RGBA")
-    except (UnidentifiedImageError, OSError) as e:
+    except Exception as e:  # also DecompressionBombError, truncated data
         fail("invalid_image", f"Could not read {os.path.basename(input_path)} as an image: {e}")
 
     width, height = _target_size(rgba.width, rgba.height, 0, max_height)
     if (width, height) != rgba.size:
         rgba = rgba.resize((width, height), Image.LANCZOS)
     arr = np.asarray(rgba)
-    src = arr[..., :3].transpose(2, 0, 1)[None].astype(np.float32) / 255.0
+    long_side = max(width, height)
+    if long_side > _IMAGE_MATTE_MAX_PX:
+        k = _IMAGE_MATTE_MAX_PX / long_side
+        mw, mh = max(2, round(width * k)), max(2, round(height * k))
+        small = np.asarray(rgba.convert("RGB").resize((mw, mh), Image.LANCZOS))
+    else:
+        mw, mh, small = width, height, arr[..., :3]
+    src = small.transpose(2, 0, 1)[None].astype(np.float32) / 255.0
+    del small
     zeros = np.zeros((1, 1, 1, 1), dtype=np.float32)
     fgr, pha, *_ = session.run(_OUTPUT_NAMES, {
         "src": src, "r1i": zeros, "r2i": zeros, "r3i": zeros, "r4i": zeros,
-        "downsample_ratio": np.array([_image_ratio(width, height)], dtype=np.float32),
+        "downsample_ratio": np.array([_image_ratio(mw, mh)], dtype=np.float32),
     })
+    del src
+    scaled = (mw, mh) != (width, height)
 
-    alpha = (pha[0, 0] * (arr[..., 3] / 255.0) * 255).round().clip(0, 255).astype(np.uint8)
-    fg = (fgr[0].transpose(1, 2, 0) * 255).round().clip(0, 255).astype(np.uint8)
-    rgb = np.where((alpha == 255)[..., None], arr[..., :3], fg)
-    out = Image.fromarray(np.dstack([rgb, alpha]), "RGBA")
+    def plane(x):  # one float plane at source size
+        return _up(x, width, height) if scaled else x
+
+    # Plane by plane in float32, so a large photo never holds several float64 copies.
+    alpha = plane(pha[0, 0]).astype(np.float32, copy=True)
+    alpha *= arr[..., 3]
+    np.rint(alpha, out=alpha)
+    alpha = alpha.clip(0, 255).astype(np.uint8)
+    del pha
+    solid = alpha == 255
+    rgba_out = np.empty((height, width, 4), dtype=np.uint8)
+    rgba_out[..., 3] = alpha
+    for c in range(3):
+        f = plane(fgr[0, c]).astype(np.float32, copy=True)
+        f *= 255
+        np.rint(f, out=f)
+        rgba_out[..., c] = np.where(solid, arr[..., c], f.clip(0, 255).astype(np.uint8))
+        del f
+    del fgr
+    out = Image.fromarray(rgba_out, "RGBA")
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     out.save(output_path, format="PNG", **({"icc_profile": icc} if icc else {}))
     check_output(output_path)
