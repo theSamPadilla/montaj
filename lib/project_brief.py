@@ -41,23 +41,21 @@ def _probe(path):
         return None, None
 
 
-HEAD_TILE_W, HEAD_TILE_H, HEAD_COLS, HEAD_LABEL_PX = 300, 533, 5, 26   # a 9:16 tile a viewer reads at 768 px
-
-
-def _heads_sheet(frames, labels, out):
-    """One sheet of `frames` ([(media path, seconds)]), each tile labelled: the talking heads at a glance."""
+def _heads_sheet(frames, labels, out, box=False):
+    """One sheet of `frames` ([(media path, seconds)]), each tile labelled: the talking heads at a glance, in the one look
+    sheet layout (lib.sheet.look_sheet, 1280 px, which the app delivers whole). `box`: takes of mixed shapes, each fitted
+    into a square box; takes of one shape keep it."""
     import tempfile
     from lib.common import ffmpeg_bin
-    from lib.sheet import tile_sheet
+    from lib import sheet
     with tempfile.TemporaryDirectory() as work:
         paths = []
         for i, (media, t) in enumerate(frames):
             p = os.path.join(work, f"h_{i:03d}.png")
             subprocess.run([ffmpeg_bin(), "-nostdin", "-v", "error", "-y", "-ss", f"{max(0.0, t):.3f}", "-i", ff_path(media),
-                            "-frames:v", "1", "-vf", f"scale={HEAD_TILE_W * 2}:-2", p], check=True, timeout=60)
+                            "-frames:v", "1", "-vf", "scale=640:-2", p], check=True, timeout=60)
             paths.append(p)
-        tile_sheet(paths, labels, min(HEAD_COLS, len(paths)), HEAD_TILE_W, out, label_px=HEAD_LABEL_PX,
-                   box_height=HEAD_TILE_H)
+        sheet.look_sheet(paths, labels, out, box=box)
     return out
 
 
@@ -221,10 +219,11 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
         out = os.path.join(project_dir, "render", "brief", "talking-heads.jpg")
         frames = [(s.get("proxySrc") or s["src"], (lns[0].words[0].start + lns[0].words[-1].end) / 2 if lns else 0.0)
                   for s, _, lns in heads]
-        labels = [f"{letter}  {s.get('id', '')} {os.path.basename(s['src'])}" for s, letter, _ in heads]
+        labels = [f"{letter}  {s.get('id', '')}" for s, letter, _ in heads]   # the file is in the table above
         try:
             os.makedirs(os.path.dirname(out), exist_ok=True)
-            sheets.append(heads_fn(frames, labels, out))
+            shapes = {(s.get("sourceWidth") or 0) > (s.get("sourceHeight") or 0) for s, _, _ in heads}
+            sheets.append(heads_fn(frames, labels, out, box=len(shapes) > 1))
             W.append("The first sheet with this brief shows a frame of each talking head, labelled by letter and clip.")
         except Exception:  # noqa: BLE001: no sheet, the brief still answers
             pass

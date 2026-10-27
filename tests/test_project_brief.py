@@ -63,7 +63,7 @@ class Fns:
                     {"n": 1, "start": 0.0, "end": 4.9}, {"n": 2, "start": 4.9, "end": 12.6, "label": "car dent"},
                     {"n": 3, "start": 12.6, "end": 74.7}],
                 "sheet_fn": lambda src, shots, out, scan: (self.sheets.append(out), Path(out).write_bytes(b"png"), out)[2],
-                "heads_fn": lambda frames, labels, out: (self.sheets.append((labels, out)), Path(out).write_bytes(b"jpg"), out)[2]}
+                "heads_fn": lambda frames, labels, out, box=False: (self.sheets.append((labels, out)), Path(out).write_bytes(b"jpg"), out)[2]}
 
 
 def test_sources_have_their_role_length_fps_and_picture(proj):
@@ -164,7 +164,7 @@ def test_the_route_answers_the_brief(proj, monkeypatch):
     monkeypatch.setattr(pb, "_silences", f.kw()["silences_fn"])
     monkeypatch.setattr(pb.shots_lib, "shots_for", lambda src, scan_path=None: {"shots": [{"n": 1, "start": 0, "end": 74.7}]})
     monkeypatch.setattr(pb.shots_lib, "sheet", lambda src, shots, out, scan_path=None: (Path(out).write_bytes(b"png"), out)[1])
-    monkeypatch.setattr(pb, "_heads_sheet", lambda frames, labels, out: (Path(out).write_bytes(b"jpg"), out)[1])
+    monkeypatch.setattr(pb, "_heads_sheet", lambda frames, labels, out, box=False: (Path(out).write_bytes(b"jpg"), out)[1])
     r = TestClient(app).get(f"/api/projects/{p['id']}/brief")
     assert r.status_code == 200, r.text
     body = r.json()
@@ -180,6 +180,25 @@ def test_one_sheet_shows_every_talking_head_labelled_by_letter_and_clip(proj):
     heads = [x for x in f.sheets if isinstance(x, tuple)]
     assert len(heads) == 1
     labels, out = heads[0]
-    assert labels == ["A  clip-0 talk.mov"] and out == str(d / "render" / "brief" / "talking-heads.jpg")
+    assert labels == ["A  clip-0"], "the file is in the Sources table; a long label runs into the next at 6 across"
+    assert out and out == str(d / "render" / "brief" / "talking-heads.jpg")
     assert got["sheets"][0] == out, "the talking heads first, then the b-roll"
     assert "The first sheet with this brief shows a frame of each talking head" in got["text"], got["text"]
+
+
+def test_the_talking_head_sheet_is_the_one_look_sheet_layout(tmp_path, monkeypatch):
+    # 55 (2026-10-26): every look sheet is lib.sheet.look_sheet's 1280 px layout, which the app delivers whole; takes of
+    # one shape keep their shape (portrait tiles), mixed shapes are boxed
+    import subprocess
+    from lib.common import ffmpeg_bin
+    from lib import sheet
+    clip = tmp_path / "take.mp4"
+    subprocess.run([ffmpeg_bin(), "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=180x320:d=2:r=30",
+                    "-pix_fmt", "yuv420p", str(clip)], check=True)
+    seen = []
+    monkeypatch.setattr(sheet, "look_sheet", lambda paths, labels, out, cols=None, box=False: seen.append((len(paths), labels, box)) or out)
+    out = str(tmp_path / "heads.jpg")
+    assert pb._heads_sheet([(str(clip), 1.0), (str(clip), 0.5)], ["A  clip-0", "B  clip-1"], out) == out
+    assert seen == [(2, ["A  clip-0", "B  clip-1"], False)]
+    pb._heads_sheet([(str(clip), 1.0)], ["A  clip-0"], out, box=True)
+    assert seen[-1][2] is True
