@@ -222,28 +222,42 @@ describe('Elements panel: shapes, lines and frames', () => {
   })
 })
 
-describe('Edit popover for a shape: colour and option props', () => {
-  it('a colour prop gets a swatch and an option prop a select, which writes one undo step', async () => {
+describe('Edit popover for a shape: colour props; the stroke popover owns weight and arrows', () => {
+  it('a colour prop gets a swatch; strokeWidth and arrowhead are left to the Stroke popover and arrows', async () => {
     const line: OverlayElement = {
       id: 'el-line', type: 'overlay', frame: 59, x: 100, y: 500, w: 648, h: 54, rotation: 0,
       overlay: { template: LINE.jsxPath, props: { stroke: '#111111', strokeWidth: '8', arrowhead: 'end' } },
     }
-    const { adapter, r } = await mount(makeProject([slide(0, [img('el-0'), line])]))
+    const { r } = await mount(makeProject([slide(0, [img('el-0'), line])]))
     await pickSlideOf('el-line')
     await act(async () => { fireEvent.click(within(r.getByRole('toolbar', { name: 'Element' })).getByRole('button', { name: 'Edit' })) })
     const pop = r.getByRole('dialog', { name: 'Edit' })
-    const select = await waitFor(() => within(pop).getByRole('combobox', { name: 'arrowhead' }) as HTMLSelectElement)
-    expect(within(pop).getByRole('button', { name: 'stroke' })).toBeTruthy()
+    await waitFor(() => within(pop).getByRole('button', { name: 'stroke' }))
     expect(within(pop).queryByRole('textbox', { name: 'stroke' })).toBeNull()
-    expect(select.value).toBe('end')
-    await act(async () => { fireEvent.change(select, { target: { value: 'both' } }) })
+    expect(within(pop).queryByRole('combobox', { name: 'arrowhead' })).toBeNull()
+    expect(within(pop).queryByRole('spinbutton', { name: 'strokeWidth' })).toBeNull()
+  })
+
+  it('an option prop on another overlay gets a select, which writes one undo step', async () => {
+    const badge = sys('badge', 'Badge', undefined, [{ name: 'tone', type: 'string', default: 'calm', enum: ['calm', 'loud'] }])
+    const el: OverlayElement = {
+      id: 'el-badge', type: 'overlay', frame: 59, x: 100, y: 500, w: 300, h: 100, rotation: 0,
+      overlay: { template: badge.jsxPath, props: { tone: 'calm' } },
+    }
+    const { adapter, r } = await mount(makeProject([slide(0, [img('el-0'), el])]), { listGlobalOverlays: vi.fn(async () => [badge]) })
+    await pickSlideOf('el-badge')
+    await act(async () => { fireEvent.click(within(r.getByRole('toolbar', { name: 'Element' })).getByRole('button', { name: 'Edit' })) })
+    const pop = r.getByRole('dialog', { name: 'Edit' })
+    const select = await waitFor(() => within(pop).getByRole('combobox', { name: 'tone' }) as HTMLSelectElement)
+    expect(select.value).toBe('calm')
+    await act(async () => { fireEvent.change(select, { target: { value: 'loud' } }) })
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
-    expect(overlaysOn(lastSave(adapter), 0)[0].overlay.props.arrowhead).toBe('both')
+    expect(overlaysOn(lastSave(adapter), 0)[0].overlay.props.tone).toBe('loud')
   })
 })
 
 describe('Edit popover for a shape: numeric props step', () => {
-  it("the shipped dashed line's strokeWidth has a stepper (int in the sidecar)", async () => {
+  it("the shipped dashed line's dash length has a stepper (int in the sidecar); its weight is not here", async () => {
     const dashed = { ...dashedSidecar, name: 'line-dashed', jsxPath: '/rt/templates/overlays/line-dashed/line-dashed.jsx' } as GlobalOverlay
     const el: OverlayElement = {
       id: 'el-dash', type: 'overlay', frame: 59, x: 100, y: 500, w: 648, h: 54, rotation: 0,
@@ -253,11 +267,12 @@ describe('Edit popover for a shape: numeric props step', () => {
     await pickSlideOf('el-dash')
     await act(async () => { fireEvent.click(within(r.getByRole('toolbar', { name: 'Element' })).getByRole('button', { name: 'Edit' })) })
     const pop = r.getByRole('dialog', { name: 'Edit' })
-    const inc = await waitFor(() => within(pop).getByRole('button', { name: 'Increase strokeWidth' }))
+    const inc = await waitFor(() => within(pop).getByRole('button', { name: 'Increase dash' }))
+    expect(within(pop).queryByRole('button', { name: 'Increase strokeWidth' })).toBeNull()
     await act(async () => { fireEvent.click(inc) })
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
     // The editor writes every prop edit as a string; the templates read either.
-    expect(overlaysOn(lastSave(adapter), 0)[0].overlay.props.strokeWidth).toBe('9')
+    expect(overlaysOn(lastSave(adapter), 0)[0].overlay.props.dash).toBe('25')
   })
 })
 
@@ -271,7 +286,7 @@ describe('Edit popover for a shape: no Frame field', () => {
     await pickSlideOf('el-line')
     await act(async () => { fireEvent.click(within(r.getByRole('toolbar', { name: 'Element' })).getByRole('button', { name: 'Edit' })) })
     const pop = r.getByRole('dialog', { name: 'Edit' })
-    await waitFor(() => within(pop).getByRole('combobox', { name: 'arrowhead' }))
+    await waitFor(() => within(pop).getByRole('button', { name: 'stroke' }))
     expect(within(pop).queryByText('Frame')).toBeNull()
     expect(within(pop).queryByRole('spinbutton', { name: 'Frame' })).toBeNull()
   })

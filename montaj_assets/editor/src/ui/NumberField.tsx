@@ -68,6 +68,10 @@ export interface NumberFieldProps {
    *  the callers that close over their own last-previewed value and the ones
    *  that want the number handed to them. */
   onCommit: (value: number) => void
+  /** Escape in the box: the caller drops what `onPreview` showed. The typed
+   *  value is given up (no `onCommit`), the box blurs and shows the value the
+   *  project holds, and the key goes no further. Omit and Escape is not handled. */
+  onCancel?: () => void
   /** One DISCRETE nudge — the caller is expected to emit one final edit (one
    *  undo entry), NOT a preview/commit pair. Omit to render no steppers.
    *  Takes a direction rather than a value because the nudge's unit is the
@@ -140,6 +144,7 @@ export function NumberField({
   value,
   onPreview,
   onCommit,
+  onCancel,
   onStep,
   step,
   min,
@@ -214,7 +219,16 @@ export function NumberField({
         onBlur={commit}
         // Enter closes the typing gesture the same way blur does — it does not
         // duplicate the commit logic, just triggers the same onBlur path.
-        onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+        onKeyDown={e => {
+          if (e.key === 'Enter') e.currentTarget.blur()
+          else if (e.key === 'Escape' && onCancel) {
+            // Give the typed value up: nothing to commit on the blur, and the key stays the field's.
+            e.stopPropagation()
+            dirty.current = false
+            onCancel()
+            e.currentTarget.blur()
+          }
+        }}
         className={cn(inspectorInputClass, 'text-right disabled:opacity-50 disabled:cursor-not-allowed', className)}
       />
       {unit && (

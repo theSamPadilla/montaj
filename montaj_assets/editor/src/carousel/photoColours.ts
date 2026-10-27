@@ -73,14 +73,16 @@ async function sample(src: string): Promise<string[]> {
 
 const cache = new Map<string, Promise<string[]>>()
 
-/** The image's dominant colours, read once per `src`. Rejects when it cannot be read. */
+/**
+ * The image's dominant colours, read once per `src` for the session. Rejects
+ * when it cannot be read, and that is kept too: the panel opening again does
+ * not fetch an unreadable image again.
+ */
 export function photoColoursOf(src: string): Promise<string[]> {
   let p = cache.get(src)
   if (!p) {
     p = sample(src)
     cache.set(src, p)
-    // A failure is not kept: the image may load later.
-    p.catch(() => cache.delete(src))
   }
   return p
 }

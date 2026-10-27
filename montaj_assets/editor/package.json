@@ -14,7 +14,7 @@
   "sideEffects": false,
   "scripts": {
     "test": "vitest run",
-    "test:browser": "node --test browser/slide-chrome-clip.test.mjs browser/layers-drag.test.mjs browser/toolbar-fixed.test.mjs browser/colour-swatch.test.mjs browser/live-resize.test.mjs browser/video-live-resize.test.mjs browser/stroke-control.test.mjs",
+    "test:browser": "node --test browser/slide-chrome-clip.test.mjs browser/layers-drag.test.mjs browser/toolbar-fixed.test.mjs browser/colour-swatch.test.mjs browser/live-resize.test.mjs browser/photo-colours.test.mjs browser/video-live-resize.test.mjs browser/stroke-control.test.mjs",
     "lint": "eslint src"
   },
   "dependencies": {

@@ -211,6 +211,19 @@ describe('Text colour "A" with a live colour bar (§587 R9)', () => {
   })
 })
 
+describe('Text colour "A" toggles the panel like the swatch', () => {
+  it('a second press closes the panel; a third opens it again', async () => {
+    const { r } = await mount()
+    await click('el-t')
+    await press(tb(r, 'Text color'))
+    expect(panelTitle(r)).toBe('Text color')
+    await press(tb(r, 'Text color'))
+    expect(r.queryByRole('region', { name: 'Colour panel' })).toBeNull()
+    await press(tb(r, 'Text color'))
+    expect(panelTitle(r)).toBe('Text color')
+  })
+})
+
 describe('Colour panel sections (§587 R9)', () => {
   it('the search field takes a colour name and a hex, each written once on Enter', async () => {
     const { adapter, r } = await mount()
