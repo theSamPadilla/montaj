@@ -139,6 +139,37 @@ describe('Text panel', () => {
   })
 })
 
+describe('Text panel in the brand fonts', () => {
+  const brand = { fonts: { heading: 'Syne', body: 'Inter', googleFonts: ['Syne:wght@700', 'Inter:wght@400'] } }
+  it.each([
+    ['Add a heading', 'Syne'],
+    ['Add a subheading', 'Syne'],
+    ['Add body text', 'Inter'],
+  ])('%s uses the brand font and fetches it', async (label, family) => {
+    const project = three()
+    const adapter = adapterWith(project)
+    render(<CarouselEditor project={project} adapter={adapter} onProjectChange={vi.fn()} layout="rail" brand={brand} />)
+    await waitFor(() => expect(document.querySelectorAll('[data-slide-section]').length).toBe(3))
+    await openRail('Text')
+    expect((screen.getByRole('button', { name: label }) as HTMLElement).style.fontFamily).toBe(family)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: label })) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const [t] = added(lastSave(adapter), 0)
+    expect(t.overlay.props.fontFamily).toBe(family)
+    expect(t.googleFonts).toEqual(brand.fonts.googleFonts)
+  })
+
+  it('no brand: the template keeps its own font', async () => {
+    const adapter = await mount(three())
+    await openRail('Text')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Add a heading' })) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const [t] = added(lastSave(adapter), 0)
+    expect(t.overlay.props.fontFamily).toBeUndefined()
+    expect(t.googleFonts).toBeUndefined()
+  })
+})
+
 describe('Elements panel', () => {
   it('lists the templates and a click adds one to the active slide', async () => {
     const adapter = await mount(three())

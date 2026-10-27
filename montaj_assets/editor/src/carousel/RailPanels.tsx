@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import type { EditorAdapter, GlobalOverlay, CarouselElement, Project, Slide } from '../types'
+import type { CarouselBrand, EditorAdapter, GlobalOverlay, CarouselElement, Project, Slide } from '../types'
 import { Button } from '../ui'
 import { Loader } from '../ui/Loader'
 import ReadOnlySlide from './ReadOnlySlide'
 import OverlayErrorBoundary from './OverlayErrorBoundary'
+import { ensureGoogleFontsLoaded } from '../lib/google-fonts'
 import { TEXT_PRESETS, newTextElement, type TextPresetId } from './newText'
 import { loadOverlays, newOverlayElement, OVERLAY_BOX } from './overlayElement'
 
@@ -31,11 +32,13 @@ const PRESET_STYLE: Record<TextPresetId, { fontSize: number; fontWeight: number 
   body: { fontSize: 14, fontWeight: 400 },
 }
 
-export function TextPanel({ project, slideId, onAddElement, textTemplate }: Omit<PanelProps, 'adapter'> & { textTemplate: GlobalOverlay | null }) {
+export function TextPanel({ project, slideId, onAddElement, textTemplate, fonts }: Omit<PanelProps, 'adapter'> & { textTemplate: GlobalOverlay | null; fonts?: CarouselBrand['fonts'] }) {
+  // The presets show in the brand's fonts, so those load here too.
+  useEffect(() => { ensureGoogleFontsLoaded(fonts?.googleFonts) }, [fonts?.googleFonts])
   const disabled = !slideId || !textTemplate
   const add = (preset?: TextPresetId) => {
     if (!slideId || !textTemplate) return
-    onAddElement(slideId, newTextElement(textTemplate, project.settings.resolution, preset))
+    onAddElement(slideId, newTextElement(textTemplate, project.settings.resolution, preset, fonts))
   }
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -54,7 +57,7 @@ export function TextPanel({ project, slideId, onAddElement, textTemplate }: Omit
             disabled={disabled}
             onClick={() => add(id)}
             className="h-auto w-full justify-start py-2"
-            style={PRESET_STYLE[id]}
+            style={{ ...PRESET_STYLE[id], fontFamily: (id === 'body' ? fonts?.body ?? fonts?.heading : fonts?.heading ?? fonts?.body) }}
           >
             {TEXT_PRESETS[id].label}
           </Button>

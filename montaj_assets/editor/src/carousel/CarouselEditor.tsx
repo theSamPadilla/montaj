@@ -2162,7 +2162,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         layers: layersPanel || undefined,
         background: backgroundPanel || undefined,
         // The editor's own panels; a host's `railPanels` entry wins.
-        text: <TextPanel project={project} slideId={panelSlideId} onAddElement={handleAddElement} textTemplate={textTemplate} />,
+        text: <TextPanel project={project} slideId={panelSlideId} onAddElement={handleAddElement} textTemplate={textTemplate} fonts={brand?.fonts} />,
         elements: <ElementsPanel project={project} adapter={adapter} slideId={panelSlideId} onAddElement={handleAddElement} />,
         'ai-image': <AiImagePanel adapter={adapter} slideId={panelSlideId} state={aiImage} onChange={(patch) => setAiImage((s) => ({ ...s, ...patch }))} onGenerate={generateAiImage} />,
         ...railPanels,
