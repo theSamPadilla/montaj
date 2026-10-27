@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react'
-import { SwatchInput } from '../ui'
+import { cn, SwatchInput } from '../ui'
+import { railEyebrow, railSecondaryBtn, railSwatch } from './railStyles'
 
 export interface BackgroundPanelProps {
   color: string
@@ -25,7 +26,7 @@ export default function BackgroundPanel({ color, onColorPreview, onColorChange, 
   return (
     <div className="flex flex-col gap-4 p-4 text-[var(--editor-text)]">
       <div className="flex flex-col gap-2">
-        <span className="text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">Color</span>
+        <span className={railEyebrow}>Color</span>
         {brandColours.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {brandColours.map((c) => (
@@ -35,9 +36,7 @@ export default function BackgroundPanel({ color, onColorPreview, onColorChange, 
                 aria-label={`Brand color ${c}`}
                 title={c}
                 onClick={() => { setDraft(null); onColorChange(c) }}
-                className={`h-7 w-7 rounded-md border shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)] ${
-                  c.toLowerCase() === color.toLowerCase() ? 'border-[var(--editor-accent)] ring-2 ring-[var(--editor-accent)]' : 'border-[var(--editor-border)]'
-                }`}
+                className={cn(railSwatch, 'h-7 w-7', c.toLowerCase() === color.toLowerCase() && 'ring-2 ring-[var(--editor-accent)]')}
                 style={{ backgroundColor: c }}
               />
             ))}
@@ -57,7 +56,7 @@ export default function BackgroundPanel({ color, onColorPreview, onColorChange, 
         type="button"
         disabled={!canSetImage}
         onClick={onSetImage}
-        className="h-8 px-3 rounded-md text-xs border border-[var(--editor-border)] hover:bg-[var(--editor-surface)] disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)]"
+        className={railSecondaryBtn}
       >
         Set image as background
       </button>
