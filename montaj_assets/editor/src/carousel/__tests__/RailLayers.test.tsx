@@ -166,6 +166,29 @@ describe('Background panel', () => {
     expect(lastSave(adapter).slides![0].base_color).toBe('#112233')
   })
 
+  it('a locked element selected: the slide colour still changes (the lock is the element\'s)', async () => {
+    const { r, adapter } = await mount(makeProject([slide('s0', [img('a', { locked: true } as Partial<ImageElement>)])]))
+    const w = document.querySelector<HTMLElement>('[data-element-id="a"]')!
+    await act(async () => {
+      w.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }))
+      window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, clientX: 10, clientY: 10 }))
+      fireEvent.click(w)
+    })
+    expect(r.getByRole('toolbar', { name: 'Element' })).toBeTruthy()
+    await openRail(r, 'Background')
+    const before = adapter.saveCalls.length
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Background color' })) })
+    const hex = within(colourPanel(r)).getByRole('textbox', { name: 'Hex' }) as HTMLInputElement
+    expect(hex.disabled).toBe(false)
+    await act(async () => {
+      fireEvent.change(hex, { target: { value: '#112233' } })
+      fireEvent.keyDown(hex, { key: 'Enter' })
+    })
+    await waitFor(() => expect(adapter.saveCalls.length).toBe(before + 1))
+    expect(lastSave(adapter).slides![0].base_color).toBe('#112233')
+    expect(lastSave(adapter).slides![0].elements[0]).toMatchObject({ id: 'a', locked: true, x: 100 })
+  })
+
   it('a panel closed with no pick writes nothing', async () => {
     const { r, adapter } = await mount(base())
     await openRail(r, 'Background')

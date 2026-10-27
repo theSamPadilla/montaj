@@ -35,6 +35,8 @@ export interface SwatchInputProps {
   title?: string
   /** In the rail layout's colour panel: whether this colour takes an 8-digit hex (transparency). */
   alpha?: boolean
+  /** Rail layout: what the colour panel colours (see `ColourRequest.target`). */
+  target?: 'element' | 'slide'
 }
 
 export function SwatchInput({
@@ -47,6 +49,7 @@ export function SwatchInput({
   size = 'md',
   title,
   alpha,
+  target,
 }: SwatchInputProps) {
   // In the rail layout the swatch opens the colour panel, not the OS picker.
   const openPanel = useContext(ColourPanelContext)
@@ -73,6 +76,7 @@ export function SwatchInput({
             preview: onCommit ? onChange : undefined,
             commit: onCommit ?? onChange,
             cancel: onCancel,
+            target,
           })}
         />
         {showValue && (

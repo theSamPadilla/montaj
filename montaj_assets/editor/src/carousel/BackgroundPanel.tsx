@@ -28,6 +28,7 @@ export default function BackgroundPanel({ color, onColorPreview, onColorChange, 
           onCommit={(v) => { setDraft(null); onColorChange(v) }}
           onCancel={() => { setDraft(null); onColorCancel?.() }}
           ariaLabel="Background color"
+          target="slide"
         />
       </div>
       <button

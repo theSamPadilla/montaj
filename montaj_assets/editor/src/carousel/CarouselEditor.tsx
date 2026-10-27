@@ -2261,7 +2261,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         <ColourPanel
           key={colourOpen.seq}
           request={colourOpen.request}
-          disabled={!canEdit || selectedElements.some(isLocked)}
+          // A locked element keeps its colours; the slide's own colour is not the element's.
+          disabled={!canEdit || (colourOpen.request.target !== 'slide' && selectedElements.some(isLocked))}
           brandColours={brandColours}
           usedColours={usedColours}
           onPreviewEverywhere={previewColourEverywhere}

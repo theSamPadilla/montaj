@@ -17,6 +17,8 @@ export interface ColourRequest {
   commit: (value: string) => void
   /** Gives an uncommitted preview up (after `preview(value)` put the old colour back). */
   cancel?: () => void
+  /** What is coloured: an element (default; a locked one keeps its colour) or the slide itself. */
+  target?: 'element' | 'slide'
 }
 
 export type OpenColourPanel = (request: ColourRequest) => void
