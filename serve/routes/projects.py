@@ -49,7 +49,7 @@ from lib import project_lock as _project_lock_mod
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, project_lock, project_lock_async, write_json_atomic
 from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwargs
 from lib.overlay_validation import overlay_item_errors
-from lib.audio_validation import audio_track_errors
+from lib.audio_validation import audio_track_check
 from lib.caption_translation import TranslationError, apply_show, apply_translation, show_new_language, finish_regenerated_track, is_translation, merge_caption_theme as _lib_merge_caption_theme, record_source_language
 from lib.project_tracks import normalize_tracks, track_items
 from lib.item_ids import id_suffix
@@ -4282,10 +4282,11 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
                     "message": "Project not saved. Fix these overlay items: " + "; ".join(overlay_errors),
                     "errors": overlay_errors,
                 })
-        # §559: an audio entry with no string `src` crashes every render. Only entries this save writes
-        # or changes are checked, so a project already holding one still saves.
+        # §559: an audio entry with no string `src` crashes every render. A new one, or a src taken away, is refused;
+        # an old entry that already had none never blocks a save (changed, it saves with a warning).
+        audio_warnings = []
         if "audio" in body:
-            audio_errors = audio_track_errors(merged, previous=existing)
+            audio_errors, audio_warnings = audio_track_check(merged, previous=existing)
             if audio_errors:
                 raise HTTPException(400, detail={
                     "error": "invalid_audio_tracks",
@@ -4372,6 +4373,8 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
         _active_renders.add(project_id)
         asyncio.create_task(_run_carousel_render_detached(project_id, project_dir))
     response.headers["Server-Timing"] = f"save;dur={int(round((time.perf_counter() - save_started) * 1000.0))}"
+    if audio_warnings:
+        media_report = {**media_report, "warnings": [*audio_warnings, *media_report.get("warnings", [])]}
     # The report rides on the answer only, never in project.json.
     return {**current, **media_report} if media_report else current
 
