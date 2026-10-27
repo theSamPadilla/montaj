@@ -27,7 +27,7 @@ import { tmpdir } from 'os'
 import esbuild from 'esbuild'
 import { collectPuppeteerSegments, overlayBakeInputs } from './render.js'
 import { bundleComponent, cleanupBundle, resolveFilePath } from './bundle.js'
-import { propFilePath } from './file-url.js'
+import { fromFileHref, propFilePath } from './file-url.js'
 import { isMain as isMainModule } from './is-main.js'
 
 const isMain = isMainModule(import.meta.url, process.argv[1])
@@ -98,9 +98,15 @@ export function usesIcons(componentPath) {
   return scan(componentPath, 2)
 }
 
+/** The path a `file://` prop names, read as the render reads it (overlay-build's collectNamed), else null. */
+function fileHrefProp(value) {
+  if (typeof value !== 'string' || !/^file:\/\//i.test(value)) return null
+  try { return fromFileHref(new URL(value).href.replace(/[?#].*$/, '')) } catch { return null }
+}
+
 /** Copy every file a props value names into `assetsDir`, and give back props pointing at the copies, relative. */
 export function relocateProps(value, assetsDir, copied, warnings, counter = { n: 0 }) {
-  const file = propFilePath(value)
+  const file = propFilePath(value) ?? fileHrefProp(value)
   if (file !== null) {
     const resolved = resolveFilePath(file) ?? file
     let ok = false

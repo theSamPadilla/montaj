@@ -44,7 +44,7 @@ import { childKilledError } from './child-killed.js'
 import { specFor, encoderArgsFor, detectFromTransfer, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { lutPath } from './look.js'
 import { ffmpegFilterPath } from './ffmpeg-filter-path.js'
-import { graphicsToHdrChain, GRAPHICS_WHITE_NITS, GRAPHICS_WHITE_NITS_NO_FOOTAGE } from './hdr-graphics.js'
+import { graphicsToHdrChain } from './hdr-graphics.js'
 import { externalizeFilterGraph } from './filter-script.js'
 import { assertSegmentHasVideo } from './segment-check.js'
 import {
@@ -244,17 +244,19 @@ export function parseVideoGeometry(probe) {
     width: quarterTurn ? h : w,
     height: quarterTurn ? w : h,
     alpha: typeof s.pix_fmt === 'string' && ALPHA_PIX_FMT.test(s.pix_fmt),
+    pixFmt: typeof s.pix_fmt === 'string' ? s.pix_fmt : null,
   }
 }
 
 /**
- * Probe a video file's display size and whether its pixel format has alpha.
- * One ffprobe; null on any failure. render.js calls this once per unique
- * final `src` and stamps the result on `probedWidth` / `probedHeight` /
- * `probedAlpha` — see buildVideoItemFilterParts for what they decide.
+ * Probe a video file's display size, whether its pixel format has alpha, and
+ * that format. One ffprobe; null on any failure. render.js calls this once per
+ * unique final `src` and stamps the result on `probedWidth` / `probedHeight` /
+ * `probedAlpha` / `probedPixFmt` — see buildVideoItemFilterParts and
+ * animatedVideoCrop for what they decide.
  *
  * @param {string} filePath
- * @returns {{width: number, height: number, alpha: boolean} | null}
+ * @returns {{width: number, height: number, alpha: boolean, pixFmt: string|null} | null}
  */
 export function probeVideoGeometry(filePath) {
   const result = spawnSync(FFPROBE, [
@@ -350,52 +352,6 @@ export function culledClips(segment) {
   if (!segment.layers) return segment.opaqueVideo ? new Set(items) : new Set()
   const cover = segment.cullBelow == null ? -1 : segment.layers.indexOf(segment.cullBelow)
   return new Set(segment.layers.slice(0, Math.max(0, cover)).filter((x) => items.includes(x)))
-}
-
-/**
- * Where graphics white lands in one HDR compose segment (POSTLAUNCH §47):
- * GRAPHICS_WHITE_NITS (800) when a video clip is visible in the segment, so
- * captions and overlays over footage stay bright against camera HDR, and
- * GRAPHICS_WHITE_NITS_NO_FOOTAGE (300) when none is: an end card, a
- * title card, a full-screen overlay, or a timeline image or screenshot with no
- * clip at that time, which then match SDR and the editor preview.
- *
- * A clip is visible when the segment has a non-image item whose picture no
- * opaque overlay above it replaces (culledClips: segment.opaqueVideo, or since
- * §308 P3 only the items below `cullBelow`). An image over a clip is graphics
- * over footage. planSegments splits at every clip boundary, so the set
- * of items is constant within a segment, and an overlay that runs from a clip
- * into a footage-less stretch changes level at exactly that frame.
- *
- * @param {{ items?: object[], opaqueVideo?: boolean }} segment
- * @returns {number} nits
- */
-export function graphicsWhiteNitsFor(segment) {
-  const culled = culledClips(segment)
-  const footage = (segment.items ?? []).some((item) => !isImageItem(item) && !culled.has(item))
-  return footage ? GRAPHICS_WHITE_NITS : GRAPHICS_WHITE_NITS_NO_FOOTAGE
-}
-
-/**
- * Where the graphic at `index` maps white: a full-screen card (cover-probe.js
- * markCards set `coversFrame`) and every graphic stacked above it take
- * GRAPHICS_WHITE_NITS_NO_FOOTAGE, since they sit on the card and not on
- * footage, for the card's whole span. Graphics below the card, and every
- * graphic in a segment without one, take the segment's level.
- *
- * Read over the segment's whole bottom-to-top layer list (§308 P3), so an
- * IMAGE stacked above a card takes the card's white too, as an overlay above
- * it does; one below takes the segment's. A list with every item below every
- * overlay (no image above a card) answers exactly as the overlays alone did.
- *
- * @param {object[]} overlays       the segment's layers (or overlays), in compositing order
- * @param {number}   index
- * @param {number}   segmentWhiteNits  graphicsWhiteNitsFor(segment)
- * @returns {number}
- */
-export function overlayWhiteNits(overlays, index, segmentWhiteNits) {
-  const cardAt = overlays.findIndex((ov) => ov.coversFrame === true)
-  return cardAt !== -1 && index >= cardAt ? GRAPHICS_WHITE_NITS_NO_FOOTAGE : segmentWhiteNits
 }
 
 // Cache the `ffmpeg -filters` listing across calls — a build's filter set can't
@@ -978,7 +934,7 @@ function sampleCropRects(item, kind, timeOffset, duration) {
  * @returns {{ hold: string } | { chain: string, bw: number, bh: number,
  *   S: number, downscaled: boolean, peakW: number, peakH: number }}
  */
-function movingCropChain(item, SW, SH, boxW, boxH, sampled, timeOffset, onCap, budgetPx, shownW, shownH) {
+function movingCropChain(item, SW, SH, boxW, boxH, sampled, timeOffset, onCap, budgetPx, shownW, shownH, evenX = false) {
   const { cropTracks, rects } = sampled
   let x0 = 1, y0 = 1, x1 = 0, y1 = 0, minW = 1, minH = 1, kMax = 0
   for (const c of rects) {
@@ -1029,7 +985,11 @@ function movingCropChain(item, SW, SH, boxW, boxH, sampled, timeOffset, onCap, b
   const bw = sText ? Math.max(1, Math.floor(boxW / S)) : boxW
   const bh = sText ? Math.max(1, Math.floor(boxH / S)) : boxH
   // ceil, never round: the box must always fit inside the resized union.
-  const x = `round(((${X})*${SW}-${ux})*${kS}+((${W})*${SW}*${kS}-${bw})/2)`
+  const xPx = `round(((${X})*${SW}-${ux})*${kS}+((${W})*${SW}*${kS}-${bw})/2)`
+  // evenX (oddCropSafe): clamped first, because crop's own clamp can land on an
+  // odd x. Against the scale's width, never `iw`: crop's expressions read the
+  // first frame's size (the stale-clamp trap, WHY THIS SHAPE, above).
+  const x = evenX ? `2*floor(clip(${xPx},0,ceil(${uw}*${kS})-${bw})/2)` : xPx
   const y = `round(((${Y})*${SH}-${uy})*${kS}+((${H})*${SH}*${kS}-${bh})/2)`
   // NOTHING may ever sit between the eval=frame `scale` and the fixed `crop`
   // below, for either kind, in EITHER branch (full resolution, or 1/S): not
@@ -1084,6 +1044,20 @@ function animatedImageCrop(item, boxW, boxH, timeOffset, duration, onCap, budget
 }
 
 /**
+ * Whether ffmpeg's exact `crop` may start at an odd x in frames of `pixFmt`.
+ * MEASURED (ffmpeg 8.1.2, one frame cropped at x 1074 and 1075): at the odd x,
+ * yuv420p10le and yuv422p10le misread their chroma and come out magenta (a keyed
+ * pan on an HLG clip did on 61 of 129 frames), and p010le swaps U and V;
+ * yuv420p and yuv444p10le are the same at both. Safe: 8-bit planar formats, and
+ * formats with no horizontal subsampling. Any other, or no probe, is unsafe.
+ */
+function oddCropSafe(pixFmt) {
+  if (typeof pixFmt !== 'string') return false
+  return /^yuv[ja]?4(20|22|11|10)p$/.test(pixFmt)
+    || /^(yuva?444p|yuvj444p|gbra?p|gray|ya\d|rgb|bgr|argb|abgr|rgba|bgra|0rgb|0bgr)/.test(pixFmt)
+}
+
+/**
  * The keyframed source crop of a VIDEO (PV55 phase 2), as a chain for the crop
  * slot of buildVideoItemFilterParts: its output is a CONSTANT `width`x`height`
  * frame holding the crop rect at each instant, so the decrease-fit, the colour
@@ -1102,8 +1076,10 @@ function animatedImageCrop(item, boxW, boxH, timeOffset, duration, onCap, budget
  *
  * The rect is cover-fitted into that frame, so a key whose pixel aspect is off
  * by validate's 1% tolerance (or by the even rounding) trims a sliver instead
- * of reading past the rect. The caller has checked `hasCropKeyframes` and a
- * positive `sourceWidth`/`sourceHeight` (the size every video crop is in).
+ * of reading past the rect. In a format where an odd crop x breaks the chroma
+ * (oddCropSafe) the window moves on even x only. The caller has checked
+ * `hasCropKeyframes` and a positive `sourceWidth`/`sourceHeight` (the size every
+ * video crop is in).
  * Returns `{ chain, width, height }`, or `{ hold: reason }` for a rect that is
  * not finite and positive (the caller then holds the crop at the segment start).
  *
@@ -1136,7 +1112,7 @@ function animatedVideoCrop(item, fitW, fitH, timeOffset, duration, onCap, budget
   const BW = Math.max(2, Math.min(RW, Math.round(shown.width / 2) * 2))
   const BH = Math.max(2, Math.min(RH, Math.round(shown.height / 2) * 2))
   const m = movingCropChain(item, SW, SH, BW, BH, sampled, timeOffset, onCap, budgetPx,
-    Math.max(1, shown.width), Math.max(1, shown.height))
+    Math.max(1, shown.width), Math.max(1, shown.height), !oddCropSafe(item.probedPixFmt))
   if (m.hold) return m
   if (m.downscaled) warnCropDownscaled('video', item, m, budgetPx)
   return { chain: m.chain, width: m.bw, height: m.bh }
@@ -1176,8 +1152,8 @@ const BAKED_OVERLAY_GEOMETRY = geometryFor({}, 'overlay')
  *   MAX_ANIMATED_CROP_PX when absent. No production caller passes it.
  *   `toHdr` ('hdr_hlg' or 'hdr_pq'): map the image into that space through the
  *   graphics mapping (hdr-graphics.js); encodeSegment sets it for an HDR
- *   segment, with `whiteNits` from graphicsWhiteNitsFor (GRAPHICS_WHITE_NITS
- *   when absent). `dryRun` names the mapping's LUT without writing it.
+ *   segment; `whiteNits` is GRAPHICS_WHITE_NITS when absent. `dryRun` names
+ *   the mapping's LUT without writing it.
  * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string }}
  */
 // NOTE: item.speed is intentionally ignored here — a still image has no
@@ -1680,9 +1656,8 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
  *   capture into that space (hdr-graphics.js), right after the scale step.
  *   encodeSegment sets it for an HDR segment, whose canvas is tagged bt2020nc.
  *   PNG callers leave it off (sample-frame composites in SDR).
- * @param {number} [opts.captureWhiteNits] — where the mapping puts white:
- *   encodeSegment passes graphicsWhiteNitsFor(segment); GRAPHICS_WHITE_NITS when
- *   absent.
+ * @param {number} [opts.captureWhiteNits] — where the mapping puts white;
+ *   GRAPHICS_WHITE_NITS when absent.
  * @param {boolean} [opts.dryRun=false] — name the mapping's LUT without writing it.
  * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string }}
  */
@@ -2057,8 +2032,6 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   const duration = end - start
   const projectColorSpace = segment.colorSpace ?? DEFAULT_COLOR_SPACE
   const spec = specFor(projectColorSpace)
-  // HDR graphics white for this segment: 800 over footage, 300 without (§47).
-  const graphicsWhiteNits = graphicsWhiteNitsFor(segment)
   // Dry-run pins both probes to true so the golden capture never depends on the
   // host's ffmpeg build (see encode-args-golden.test.mjs's determinism note).
   const zscaleAvailable = opts._dryRun ? true : hasZscale()
@@ -2119,7 +2092,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   // it. Carries that partner so the blend closes on the item it opened for and
   // not merely on the next `to` to come along. Null everywhere else.
   let pendingBlend = null
-  for (const [layerPos, layer] of layers.entries()) {
+  for (const layer of layers) {
     // --- Overlay + caption layers ---
     if (overlayLayers.has(layer)) {
       const ov = layer
@@ -2128,7 +2101,6 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
         buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, start, duration,
           { fps, captureToBt709: !isHdr(projectColorSpace),
             captureToHdr: isHdr(projectColorSpace) ? projectColorSpace : null,
-            captureWhiteNits: overlayWhiteNits(layers, layerPos, graphicsWhiteNits),
             dryRun: opts._dryRun })
       inputs.push(...inputArgs)
       filterParts.push(...fp)
@@ -2190,11 +2162,9 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
       // audio, so an image item contributes nothing here — skip it entirely
       // (no input, no inputIdx bump).
       if (culled.has(item)) continue
-      // White by position (§308 P3): an image above a full-screen card sits on
-      // the card, as an overlay above it does.
       const { inputArgs, filterParts: fp, newVideoLabel } =
         buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration, start,
-          { toHdr: isHdr(projectColorSpace) ? projectColorSpace : null, whiteNits: overlayWhiteNits(layers, layerPos, graphicsWhiteNits), dryRun: opts._dryRun })
+          { toHdr: isHdr(projectColorSpace) ? projectColorSpace : null, dryRun: opts._dryRun })
       inputs.push(...inputArgs)
       filterParts.push(...fp)
       videoLabel = newVideoLabel

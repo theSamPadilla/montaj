@@ -1,6 +1,6 @@
 {
   "name": "caption",
-  "description": "Convert word-level transcript JSON to a caption track for the render engine",
+  "description": "Group transcript words into caption lines (a caption track for the render engine)",
   "input": {
     "type": "json",
     "description": "Word-level JSON transcript from the transcribe step"
@@ -16,6 +16,11 @@
       "default": "word-by-word",
       "options": ["word-by-word", "karaoke", "subtitle", "pop", "highlight-box", "outline", "clean", "accent"],
       "description": "Caption animation style"
+    },
+    {
+      "name": "max-words",
+      "type": "int",
+      "description": "Most words a caption holds (1-12). Default by style: 4, or 8 for word-by-word and pop. A caption also ends at a sentence's end and at a clause's comma."
     }
   ]
 }

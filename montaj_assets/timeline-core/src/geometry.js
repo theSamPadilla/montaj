@@ -786,8 +786,7 @@ export function isFullFrameCrop(crop) {
  * overlay crossfade, and a fade leaves the item where it is. Any other track
  * (a placement prop, a crop, or one naming nothing) does.
  *
- * The one placement rule both engines read, through {@link opaqueReplacesPicture}
- * and render's cover-probe.js.
+ * The placement rule both engines read, through {@link opaqueReplacesPicture}.
  *
  * @param {{scale?: number|null, scaleX?: number|null, scaleY?: number|null,
  *   offsetX?: number|null, offsetY?: number|null, rotation?: number|null,

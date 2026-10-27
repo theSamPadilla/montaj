@@ -1,11 +1,11 @@
 {
   "name": "export_overlay_pages",
-  "description": "Export a project's overlays and captions as web pages. Writes one self-contained HTML page per overlay into a new folder: the overlay's own code inlined, a small player that plays it by itself at its fps and loops, a transparent background, and the files its props name copied beside it (assets/) with relative paths, so the folder opens anywhere. Fonts load from Google Fonts the first time the page opens. With list true, writes nothing and lists the overlays that could be exported. The pages go in a new folder inside out (overlays, then overlays 2, ...); nothing already there is changed.",
+  "description": "Export a project's overlays and captions as web pages, in one new zip inside out (overlays.zip, then overlays 2.zip, ...; nothing already there is changed). Inside, one folder holds a self-contained HTML page per overlay: its own code inlined, a small player that plays it by itself at its fps and loops, a transparent background, and the files its props name (assets/) with relative paths, so it opens anywhere once unzipped. Fonts load from Google Fonts the first time a page opens. With list true, writes nothing and lists the overlays that could be exported.",
   "input": { "type": "none", "description": "No file input: operates on a project (see the project param)." },
-  "output": { "type": "json", "description": "{dir, pages: [{id, name, file, start, end}], files: [paths relative to dir], warnings: [...]}; with list: {items: [{id, name, caption, start, end}]}" },
+  "output": { "type": "json", "description": "{zip, pages: [{id, name, file, start, end}], files: [paths inside the zip's folder], warnings: [...]}; with list: {items: [{id, name, caption, start, end}]}" },
   "params": [
     { "name": "project", "type": "path", "required": true, "description": "The project id, its folder, or the absolute path of its project.json" },
-    { "name": "out", "type": "path", "required": false, "outKind": "export", "description": "The folder to put the pages' new folder in (required unless list is true). Outside the workspace it must be an existing folder that is not hidden and not a system or app folder." },
+    { "name": "out", "type": "path", "required": false, "outKind": "export", "description": "The folder to put the zip in (required unless list is true). Outside the workspace it must be an existing folder that is not hidden and not a system or app folder." },
     { "name": "items", "type": "string", "required": false, "description": "Only these overlays, as a comma-separated list of ids or names from list. Default: all of them, and the captions" },
     { "name": "list", "type": "bool", "required": false, "description": "List the overlays that could be exported and write nothing" }
   ]

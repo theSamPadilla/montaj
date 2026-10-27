@@ -1,0 +1,11 @@
+{
+  "name": "transcripts",
+  "description": "Every talking-head take's lines in one call, with the ids cut's plan uses (A1, D7...): each line's seconds in its source and its words, retakes and asides included. scope \"timeline\": what plays on the timeline now, in timeline seconds. words: each word with its start and end. Read-only; complete, never trimmed.",
+  "input": {"type": "project", "description": "The project id, its folder, or the absolute path of its project.json"},
+  "output": {"type": "json", "description": "{scope, text} by default; words: {scope, lines: {id: [[text, start, end]]}}, or for the timeline {scope, items: [{item, track, start, end, src, lines, words}]}"},
+  "params": [
+    {"name": "project", "type": "path", "required": true, "description": "The project id, its folder, or the absolute path of its project.json"},
+    {"name": "scope", "type": "string", "default": "all", "description": "\"all\", \"timeline\", or source ids or letters, comma-separated (\"clip-3\", \"D\")."},
+    {"name": "words", "type": "bool", "default": false, "description": "Each word with its start and end, not lines of text."}
+  ]
+}

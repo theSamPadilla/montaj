@@ -18,24 +18,80 @@ export function serializeSlideInPage() {
   return '<!DOCTYPE html>\n' + clone.outerHTML
 }
 
-/** Copy every file:// URL in `html` into `<dir>/assets/` (once each) and point the html at the copies. */
+/** The opener just before position `i` of `html` (skipping spaces), and the text that closes a URL it opens. */
+function closerBefore(html, i) {
+  let j = i
+  while (j > 0 && (html[j - 1] === ' ' || html[j - 1] === '\t')) j--
+  if (html.slice(0, j).endsWith('&quot;')) return '&quot;'
+  if (html.slice(0, j).endsWith('&#39;')) return '&#39;'
+  const c = html[j - 1]
+  if (c === '"' || c === "'") return c
+  if (c === '(') return ')'
+  return null
+}
+
+/** The file a file:// URL names: the path as written (a name may hold spaces, U+202F or #), else percent-decoded. */
+function pathOfFileUrl(url) {
+  const raw = url.replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+  const literal = raw.slice('file://'.length)
+  const isFile = (p) => { try { return statSync(p).isFile() } catch { return false } }
+  if (literal && isFile(literal)) return literal
+  let decoded = literal
+  try { decoded = fileURLToPath(raw.replace(/ /g, '%20').replace(/#/g, '%23')) } catch { /* a malformed escape: as written */ }
+  if (isFile(decoded)) return decoded
+  // a real fragment (an SVG sprite's #icon): the file before it
+  const hash = decoded.lastIndexOf('#')
+  return hash > 0 && isFile(decoded.slice(0, hash)) ? decoded.slice(0, hash) : decoded
+}
+
+/**
+ * Copy every file:// URL in `html` into `<dir>/assets/` (once each) and point the html at the copies. A URL runs to
+ * its own closing delimiter: the attribute's quote (or &quot; / &#39; inside a serialized style attribute), or the
+ * paren of an unquoted url(...); only a URL with no opener stops at whitespace. (PL89: a macOS screenshot's name has
+ * spaces and a U+202F, and a URL cut at the first space left the slide pointing at the user's disk.)
+ */
 export function relocateFileUrls(html, dir, copied, warnings, counter) {
-  return html.replace(/file:\/\/\/[^"'\s)<>]+/g, (url) => {
-    let path
-    try { path = fileURLToPath(url.replace(/&amp;/g, '&')) } catch { return url }
-    if (copied.has(path)) return copied.get(path)
-    try {
-      if (!statSync(path).isFile()) throw new Error('not a file')
-    } catch {
-      warnings.push(`a file a slide names is missing: ${basename(path)}`)
-      return url
+  let out = ''
+  let at = 0
+  for (;;) {
+    const i = html.indexOf('file:///', at)
+    if (i < 0) break
+    const closer = closerBefore(html, i)
+    let end
+    if (closer) {
+      end = html.indexOf(closer, i)
+      if (closer === ')') {
+        // an unquoted url(...): the paren that closes it, never past the end of the declaration
+        const stop = html.slice(i).search(/[;}"<>]/)
+        if (stop >= 0 && (end < 0 || end > i + stop)) end = i + stop
+      }
+      if (end < 0) end = html.length
+    } else {
+      const m = html.slice(i).search(/[\s"'<>)]/)
+      end = m < 0 ? html.length : i + m
     }
-    mkdirSync(join(dir, 'assets'), { recursive: true })
-    const name = `${String(++counter.n).padStart(2, '0')}-${basename(path)}`
-    copyFileSync(path, join(dir, 'assets', name))
-    copied.set(path, `assets/${name}`)
-    return copied.get(path)
-  })
+    const url = html.slice(i, end).replace(/\s+$/, '')
+    out += html.slice(at, i) + relocateOne(url, dir, copied, warnings, counter)
+    at = i + url.length
+  }
+  return out + html.slice(at)
+}
+
+function relocateOne(url, dir, copied, warnings, counter) {
+  const path = pathOfFileUrl(url)
+  const tail = url.replace(/&amp;/g, '&').endsWith(basename(path)) ? '' : (/#[^#/]*$/.exec(url) ?? [''])[0]
+  if (copied.has(path)) return copied.get(path) + tail
+  try {
+    if (!statSync(path).isFile()) throw new Error('not a file')
+  } catch {
+    warnings.push(`a file a slide names is missing: ${basename(path)}`)
+    return url
+  }
+  mkdirSync(join(dir, 'assets'), { recursive: true })
+  const name = `${String(++counter.n).padStart(2, '0')}-${basename(path)}`
+  copyFileSync(path, join(dir, 'assets', name))
+  copied.set(path, `assets/${name}`)
+  return copied.get(path) + tail
 }
 
 /** Write one slide's page; returns its file name. */

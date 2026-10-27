@@ -36,20 +36,27 @@ sys.path.insert(0, MONTAJ_ROOT)
 from serve.common import get_project_dir  # noqa: E402
 from serve.caption_job import build_audio_mix_spec, caption_input_change, caption_input_fingerprint  # noqa: E402
 from lib.project_revisions import engine_guard_enabled  # noqa: E402
+from lib import caption_ink  # noqa: E402
+from lib.caption_script import script_of, spell_from_script  # noqa: E402
+from lib.caption_words import timeline_words, write_transcript  # noqa: E402
+from lib.caption_marks import keep_persons, stamp_all, stamped  # noqa: E402
+from lib.project_versions import commit_version  # noqa: E402
+from lib.caption_profile_look import caption_words_args, resolve_style_and_look  # noqa: E402
+from serve.caption_theme import seed_prev  # noqa: E402
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, update_project  # noqa: E402
 from lib.sync_clash import SyncConflict, exit_refused  # noqa: E402
 
 # The whisper run before this write took minutes: a short lock wait must not throw it away.
 STEP_LOCK_TIMEOUT = 30.0
+VERSION_MESSAGE = "version: before captions"   # the captions step's, so both read alike in the history
 
 
 def resolve_style(args_style, project: dict) -> str:
-    """style = explicit arg, else prior captions.style, else 'pop'.
+    """style = explicit arg, else prior captions.style, else the profile's captionStyle, else 'pop'.
 
-    Mirrors the SSE route's: body.style or prior captions.style or 'pop'.
+    Mirrors the SSE route's (lib/caption_profile_look.resolve_style_and_look).
     """
-    prior = project.get("captions") or {}
-    return args_style or prior.get("style") or "pop"
+    return resolve_style_and_look(args_style, project)[0]
 
 
 def merge_caption_theme(track: dict, prev) -> dict:
@@ -59,6 +66,16 @@ def merge_caption_theme(track: dict, prev) -> dict:
     font, weight or per-style colour was lost on this path only).
     """
     return _merge_theme(prev, track)
+
+
+def ink_pass(project_path) -> list:
+    """Run the caption_ink pass on the project just written (a no-op, with no render, when it has no card on screen
+    anywhere). A failure is a warning for the answer, never a failed caption run."""
+    try:
+        out = caption_ink.update(project_path)
+    except Exception as e:  # noqa: BLE001 — the captions are written; ink is a refinement
+        return [f"caption ink not set ({type(e).__name__}): run caption_ink"]
+    return list((out or {}).get("warnings") or [])
 
 
 def main():
@@ -71,6 +88,11 @@ def main():
     parser.add_argument("--language", default="auto",
                         help="Language code (e.g. en, es), or 'auto' to detect")
     parser.add_argument("--style", default=None, help="Caption animation style")
+    parser.add_argument("--replace-edited", action="store_true",
+                        help="Replace the lines a person made or edited too (only when they ask)")
+    parser.add_argument("--script", default=None,
+                        help="The script the speaker read (default: the project's editingPrompt; \"\" for none): caption "
+                             "words take its spelling on the transcript's timings")
     args = parser.parse_args()
 
     # Resolve the project dir. The step is a CLI subprocess, not an HTTP
@@ -101,7 +123,8 @@ def main():
     except ValueError as e:
         fail("no_audible_timeline", str(e))
 
-    style = resolve_style(args.style, project)
+    # The profile's caption look (font, emphasis colour) for a new track, as the editor seeds it.
+    style, look = resolve_style_and_look(args.style, project)
 
     mix_timeline_py = os.path.join(MONTAJ_ROOT, "steps", "audio", "mix_timeline.py")
     transcribe_py = os.path.join(MONTAJ_ROOT, "steps", "speech", "transcribe.py")
@@ -116,29 +139,39 @@ def main():
     track_path = os.path.join(d, "_caption_track.json")
 
     try:
-        # 1. Write the mix spec.
-        with open(mix_spec_path, "w") as f:
-            json.dump(mix_spec, f)
+        # Run 5: the words are each audible clip's and voiceover's own transcript, mapped through the timeline
+        # (lib/caption_words): the ones the cut was made on. The mix is transcribed only when one has none.
+        from_sources = timeline_words(project, d)
+        if from_sources is not None:
+            write_transcript(from_sources, words_json_path)
+        else:
+            # 1. Write the mix spec.
+            with open(mix_spec_path, "w") as f:
+                json.dump(mix_spec, f)
 
-        # 2. Mix the audible timeline into one WAV, in timeline time.
-        run([sys.executable, mix_timeline_py,
-             "--input", mix_spec_path, "--out", mix_wav_path])
+            # 2. Mix the audible timeline into one WAV, in timeline time.
+            run([sys.executable, mix_timeline_py,
+                 "--input", mix_spec_path, "--out", mix_wav_path])
 
-        # 3. Transcribe the mix as plain audio so word timings are
-        #    output/project-time (NOT a trim spec).
-        #    Outlasts transcribe's own whisper runaway guard, so a stuck
-        #    whisper surfaces as its structured transcription_timeout rather
-        #    than this wrapper's bare TimeoutExpired.
-        #    --fit-pauses: caption word times sit on the audio after a pause.
-        run([sys.executable, transcribe_py,
-             "--input", mix_wav_path,
-             "--model", args.model, "--language", args.language,
-             "--out", words_prefix, "--fit-pauses"],
-            timeout=whisper_runaway_timeout_for(mix_wav_path) + 300)
+            # 3. Transcribe the mix as plain audio so word timings are
+            #    output/project-time (NOT a trim spec). By voiced runs, so the words sit on the voice; never
+            #    --fit-pauses, whose pauses found on a mix squeezed run 5's words early.
+            #    Outlasts transcribe's own whisper runaway guard, so a stuck
+            #    whisper surfaces as its structured transcription_timeout rather
+            #    than this wrapper's bare TimeoutExpired.
+            run([sys.executable, transcribe_py,
+                 "--input", mix_wav_path,
+                 "--model", args.model, "--language", args.language,
+                 "--out", words_prefix],
+                timeout=whisper_runaway_timeout_for(mix_wav_path) + 300)
+
+        # 3b. Spell the words from the script, when one is given (lib/caption_script.py): timings stay the transcript's.
+        script = args.script if args.script is not None else script_of(project)
+        corrected = spell_from_script(words_json_path, script) if script and script.strip() else None
 
         # 4. Group words into a styled caption track.
         run([sys.executable, caption_py,
-             "--input", words_json_path, "--style", style, "--out", track_path])
+             "--input", words_json_path, "--style", style, "--out", track_path, *caption_words_args(project)])
 
         # 5. Load the track, finish it like the SSE route (theme, ids, kept
         #    translations), persist onto project.
@@ -150,12 +183,26 @@ def main():
         # would undo that.
         written = {}
 
+        # A track made before stamps cannot be judged line by line (§585): save a version first, so a person's
+        # earlier edits can be got back, and say so in the answer.
+        prior = list((project.get("captions") or {}).get("segments") or [])
+        lines = [s for s in prior if isinstance(s, dict) and not (isinstance(s.get("lang"), str) and isinstance(s.get("translationOf"), list))]
+        unguarded = bool(lines) and not stamped(lines) and not args.replace_edited
+        if unguarded:
+            commit_version(d, VERSION_MESSAGE)
+
         def apply(fresh):
             if fingerprint is not None:
                 change = caption_input_change(fingerprint, fresh)
                 if change is not None:
                     fail("project_changed", change["message"])
-            done = finish_regenerated_track(fresh.get("captions"), dict(track))
+            prev_lines = list((fresh.get("captions") or {}).get("segments") or [])
+            done = finish_regenerated_track(seed_prev(fresh.get("captions") or {}, look), dict(track))
+            stamp_all(done.get("segments") or [])   # every line this run writes is the AI's (§585)
+            if not args.replace_edited:
+                # A line the person made or edited is theirs: it stays, and the new lines go around it.
+                done["segments"], kept = keep_persons(prev_lines, done.get("segments") or [])
+                written["kept"] = [{"id": k.get("id"), "text": k.get("text")} for k in kept]
             record_source_language(done, args.language, words_json_path)
             fresh["captions"] = done
             written["track"] = done
@@ -172,8 +219,18 @@ def main():
         except (OSError, ValueError):
             fail("project_not_found", f"project.json for {args.project_id} not readable")
         track = written["track"]
+        warnings = ink_pass(project_path)
 
-        print(json.dumps(track))
+        answer = dict(track)
+        if corrected is not None:
+            answer["corrected"] = corrected
+        if written.get("kept"):
+            answer["keptYours"] = written["kept"]
+        if unguarded:
+            answer["unguarded"] = True
+        if warnings:
+            answer["warnings"] = warnings
+        print(json.dumps(answer))
     finally:
         for tmp in (mix_spec_path, mix_wav_path, words_json_path,
                     words_srt_path, track_path):

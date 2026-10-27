@@ -126,3 +126,23 @@ test('an exported page draws the overlay frame by frame and plays by itself (hea
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// PL89: the carousel export cut a file URL at its first space. The overlay export reads each prop value whole, so a
+// macOS screenshot's name (spaces, a U+202F) and the app's served-file form are copied.
+test('relocateProps: a path with spaces and U+202F, its served-file form and its file:// forms, are copied', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-xpages-'))
+  try {
+    const shot = join(dir, 'Screenshot 2026-10-24 at 2.32\u202FPM.png')
+    writeFileSync(shot, 'x')
+    const warnings = []
+    // PL89: a file:// prop renders (overlay-build names it) but was left as it was, so the zip shipped without it.
+    const out = relocateProps({ a: shot, b: `/api/files?path=${encodeURIComponent(shot)}`, c: pathToFileURL(shot).href, d: `file://${shot}` },
+      join(dir, 'out', 'assets'), new Map(), warnings)
+    assert.deepEqual(warnings, [])
+    assert.equal(out.a, 'assets/01-Screenshot 2026-10-24 at 2.32\u202FPM.png')
+    assert.deepEqual([out.b, out.c, out.d], [out.a, out.a, out.a])
+    const gone = relocateProps('file:///nope/gone.png', join(dir, 'out', 'assets'), new Map(), warnings)
+    assert.equal(gone, 'file:///nope/gone.png')
+    assert.match(warnings[0], /gone\.png/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

@@ -113,7 +113,7 @@ def test_transcribe_single_whisper_invocation(transcribe_module, monkeypatch, tm
 
     out_prefix = str(tmp_path / "out")
     monkeypatch.setattr(sys, "argv",
-                        ["transcribe.py", "--input", str(audio_file), "--out", out_prefix])
+                        ["transcribe.py", "--input", str(audio_file), "--out", out_prefix, "--whole-file"])
     transcribe_module.main()
 
     assert len(calls) == 1, f"Expected 1 whisper invocation, got {len(calls)}: {calls}"
@@ -163,7 +163,7 @@ def _capture_whisper_cmd(transcribe_module, monkeypatch, tmp_path, argv,
     audio.write_bytes(b"\x00" * 16)
     monkeypatch.setattr(sys, "argv",
                         ["transcribe.py", "--input", str(audio),
-                         "--out", str(tmp_path / "out"), *argv])
+                         "--out", str(tmp_path / "out"), "--whole-file", *argv])
     transcribe_module.main()
     assert len(calls) == 1, f"expected 1 whisper call, got {calls}"
     return calls[0]
@@ -212,7 +212,8 @@ def test_transcribe_runs_whisper_under_the_runaway_guard(transcribe_module, monk
     _stub_weights(monkeypatch, tmp_path, "large-v3-turbo-q5_0")
     audio = tmp_path / "audio.wav"
     audio.write_bytes(b"\x00" * 16)
-    monkeypatch.setattr(sys, "argv", ["transcribe.py", "--input", str(audio), "--out", str(tmp_path / "out")])
+    monkeypatch.setattr(sys, "argv", ["transcribe.py", "--input", str(audio), "--out", str(tmp_path / "out"),
+                                      "--whole-file"])
     transcribe_module.main()
     assert seen == {"audio": str(audio), "check": True}
 
@@ -240,7 +241,8 @@ def _words(result):
 
 def test_fit_pauses_moves_a_word_out_of_the_silence(tone_pause_tone, tmp_path, fake_whisper_env):
     proc = run_step_env("transcribe.py", fake_whisper_env,
-                        "--input", str(tone_pause_tone), "--out", str(tmp_path / "out"), "--fit-pauses")
+                        "--input", str(tone_pause_tone), "--out", str(tmp_path / "out"), "--fit-pauses",
+                        "--whole-file")      # the full-file run's fit (by runs, a word never sits in a silence)
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout)
     data, offsets = _words(result)
@@ -256,7 +258,7 @@ def test_fit_pauses_moves_a_word_out_of_the_silence(tone_pause_tone, tmp_path, f
 
 def test_without_fit_pauses_the_word_times_are_whisper_s(tone_pause_tone, tmp_path, fake_whisper_env):
     proc = run_step_env("transcribe.py", fake_whisper_env,
-                        "--input", str(tone_pause_tone), "--out", str(tmp_path / "out"))
+                        "--input", str(tone_pause_tone), "--out", str(tmp_path / "out"), "--whole-file")
     assert proc.returncode == 0, proc.stderr
     data, offsets = _words(json.loads(proc.stdout))
     assert "fit_pauses" not in data["montaj"]

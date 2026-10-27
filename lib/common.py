@@ -2,6 +2,7 @@
 """Shared helpers for video-toolkit scripts. All scripts import from here."""
 import contextlib, json, math, os, re, shutil, subprocess, sys, tempfile
 from decimal import Decimal
+from pathlib import Path
 
 try:
     from lib import disk_space as _disk_space
@@ -64,22 +65,47 @@ def check_output(path: str):
         fail("empty_output", f"Output file is empty: {path}")
 
 
-def new_folder_in(parent: str, name: str) -> str:
-    """Make a folder that did not exist inside `parent` (which is made if missing): `name`, then `name 2`,
-    `name 3`, ... Nothing already in `parent` is changed. Returns its absolute path. An export step writes only
-    into the folder this returns."""
+def new_file_in(parent: str, name: str, ext: str) -> str:
+    """Make an empty file that did not exist inside `parent` (which is made if missing): `name<ext>`, then
+    `name 2<ext>`, `name 3<ext>`, ... Nothing already in `parent` is changed, and a link at a name counts as taken.
+    Returns its absolute path. An export step writes only the file this returns."""
     parent = os.path.abspath(parent)
     if os.path.exists(parent) and not os.path.isdir(parent):
         fail("out_exists", "out is a file; pick a folder")
     os.makedirs(parent, exist_ok=True)
     for n in range(1, 10000):
-        path = os.path.join(parent, name if n == 1 else f"{name} {n}")
+        path = os.path.join(parent, f"{name}{ext}" if n == 1 else f"{name} {n}{ext}")
         try:
-            os.mkdir(path)
+            os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
             return path
         except FileExistsError:
             continue
-    fail("out_exists", f"out already holds too many {name} folders; pick another folder")
+    fail("out_exists", f"out already holds too many {name} files; pick another folder")
+
+
+_STORED = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".mp4", ".mov", ".webm", ".mp3", ".m4a", ".woff2", ".zip"}
+
+
+def zip_folder(src: str, dest: str, top: str, skip=()) -> None:
+    """Write every file under `src` into the zip at `dest`, as `<top>/<path relative to src>`, leaving out the
+    names in `skip`. Already-compressed media is stored, the rest deflated."""
+    import zipfile
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+        for root, dirs, names in os.walk(src):
+            dirs.sort()
+            for n in sorted(names):
+                if n in skip:
+                    continue
+                path = os.path.join(root, n)
+                arc = f"{top}/{Path(os.path.relpath(path, src)).as_posix()}"
+                stored = os.path.splitext(n)[1].lower() in _STORED
+                z.write(path, arc, compress_type=zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED)
+
+
+def folder_files(src: str, skip=()) -> list:
+    """Every file under `src` as a sorted list of `/`-separated paths relative to it, leaving out `skip`."""
+    return sorted(Path(os.path.relpath(os.path.join(r, n), src)).as_posix()
+                  for r, _d, names in os.walk(src) for n in names if n not in skip)
 
 
 _FFMPEG_BANNER = re.compile(
@@ -113,6 +139,39 @@ def run(cmd: list[str], timeout: int = 300, check: bool = True, cwd: str = None)
             _disk_space.print_and_exit(_disk_space.DiskFull(free=_disk_space.free_bytes(root), path=root))
         fail("unexpected_error", f"Command failed: {' '.join(cmd)}\n{ffmpeg_error_tail(r.stderr, 20)}")
     return r
+
+
+def run_stopping(cmd: list[str], timeout: float, env: dict = None, text: bool = False, grace: float = 10.0) -> subprocess.CompletedProcess:
+    """Run a command without a shell, capturing its output, and stop it cleanly when it overruns: past ``timeout``
+    seconds it gets SIGTERM (its whole process group on POSIX, so a child it started gets it too), ``grace`` seconds to
+    exit, then SIGKILL, and subprocess.TimeoutExpired is raised. SIGTERM first lets a node renderer close the Chromium
+    it started (puppeteer does on SIGTERM); a SIGKILL alone left that browser running with no parent."""
+    posix = os.name == "posix"
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=text, start_new_session=posix)
+
+    def stop(hard):
+        try:
+            if posix:
+                import signal
+                os.killpg(proc.pid, signal.SIGKILL if hard else signal.SIGTERM)
+            elif hard:
+                proc.kill()
+            else:
+                proc.terminate()
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        stop(False)
+        try:
+            out, err = proc.communicate(timeout=grace)
+        except subprocess.TimeoutExpired:
+            stop(True)
+            out, err = proc.communicate()
+        raise subprocess.TimeoutExpired(cmd, timeout, output=out, stderr=err)
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
 @contextlib.contextmanager
@@ -431,12 +490,17 @@ def _absolute_whisper_paths(args: list[str]) -> list[str]:
     return out
 
 
-def run_whisper(cmd: list[str], audio_path: str, check: bool = False) -> subprocess.CompletedProcess:
+def run_whisper(cmd: list[str], audio_path: str, check: bool = False,
+                duration_s=None) -> subprocess.CompletedProcess:
     """Run a whisper-cli command under the runaway guard (``check`` as in
-    ``run``). A run that outlives the guard is stopped and fails with
+    ``run``). ``duration_s``: the seconds of audio the command transcribes when
+    that is not one file's length (a command with many ``-f`` clips: their sum);
+    the guard is then ``whisper_runaway_timeout(duration_s)``, the same rule.
+    A run that outlives the guard is stopped and fails with
     ``transcription_timeout``, naming the limit, rather than escaping as a raw
     TimeoutExpired traceback that serve would pass on as the error message."""
-    timeout = whisper_runaway_timeout_for(audio_path)
+    timeout = (whisper_runaway_timeout(duration_s) if duration_s is not None
+               else whisper_runaway_timeout_for(audio_path))
     # whisper.cpp loads its ggml-cpu-* backends (ggml-cpu-*.dll on Windows,
     # libggml-cpu-*.so on macOS and Linux) from the current directory as well as
     # the exe's, so it must not inherit serve's cwd (a planted library there

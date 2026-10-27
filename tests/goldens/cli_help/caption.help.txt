@@ -1,6 +1,6 @@
 usage: montaj caption [-h]
                       [--style {word-by-word,karaoke,subtitle,pop,highlight-box,outline,clean,accent}]
-                      [--json] [--out PATH] [--quiet]
+                      [--max-words MAX_WORDS] [--json] [--out PATH] [--quiet]
                       input
 
 positional arguments:
@@ -10,6 +10,10 @@ options:
   -h, --help            show this help message and exit
   --style {word-by-word,karaoke,subtitle,pop,highlight-box,outline,clean,accent}
                         Caption animation style
+  --max-words MAX_WORDS
+                        Most words a caption holds (1-12). Default by style:
+                        4, or 8 for word-by-word and pop. A caption also ends
+                        at a sentence's end and at a clause's comma.
   --json                Output result as JSON
   --out PATH            Output file path
   --quiet               Suppress progress output

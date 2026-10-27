@@ -17,6 +17,7 @@ from steps.audio import waveform_trim
 from tests import cut_checks
 from tests.steps import test_cut as tc
 from tests.steps import test_cut_v5 as v5
+from tests.steps.test_cut_pass3 import apply_without_labeled
 from tests.steps.test_cut import stub_transcribe  # noqa: F401  (the fixture)
 
 SP = -20.0
@@ -112,16 +113,17 @@ def test_a_word_deleted_in_the_second_half(tmp_path, monkeypatch):
     assert v5.cover(d, *tones[5][:2]) < 0.05, tc.kept_iv(d)
 
 
-def test_the_second_half_moved_to_unused(tmp_path, monkeypatch):
+def test_the_second_half_deleted(tmp_path, monkeypatch):
     d, tones, plan, text = split_project(tmp_path, monkeypatch, "we went home", "after the show.")
     rows = rows_of(text)
-    apply_text(d, monkeypatch, text.replace(rows[1] + "\n", "") + "\n" + rows[1] + "\n")
+    apply_text(d, monkeypatch, text.replace(rows[1] + "\n", ""))
     assert said(d) == ["we", "went", "home"], said(d)
 
 
-def test_a_plan_whose_rows_would_play_other_words_is_refused(tmp_path, monkeypatch, capsys):
+def test_a_plan_whose_rows_would_play_other_words_is_written_with_a_note(tmp_path, monkeypatch):
     """The backstop: _make_plan compares every row's played source words with the plan's; a preview that would not
-    play a kept word (here a tidy made to clip one off) is never written."""
+    play a kept word (here a tidy made to clip one off) is still written (PL89: never refused), and the answer's
+    notes say the plan may not play what it says."""
     real = se.Refiner.tidy
 
     def clip(self, runs, derived, report=None):
@@ -132,8 +134,9 @@ def test_a_plan_whose_rows_would_play_other_words_is_refused(tmp_path, monkeypat
     monkeypatch.setattr(se.Refiner, "tidy", clip)
     tones, words, total = line("we went home", "after the show.")
     d = v5.project(tmp_path, monkeypatch, [("vo", tones, total, words)], room=-75.0)
-    assert tc.refused(d, monkeypatch=monkeypatch, capsys=capsys) == "plan_unsettled"
-    assert not (d / "cut-plan.md").exists()
+    plan, _ = tc.run(d, monkeypatch=monkeypatch)
+    assert plan["mode"] == "plan" and (d / "cut-plan.md").is_file()
+    assert any("may not play exactly what it says" in n for n in plan.get("notes", [])), plan.get("notes")
 
 
 # ── A-B2 / L-B3: soft real words ────────────────────────────────────────────────────────────────────────────
@@ -174,12 +177,12 @@ def test_one_move_restores_the_videos_soft_first_word(tmp_path, monkeypatch):
     words = [("so", 0.30, 0.90), ("we", 0.90, 1.20), ("went", 1.20, 1.50), ("out", 1.50, 1.80), ("today.", 1.80, 2.05)]
     d = v5.project(tmp_path, monkeypatch, [("vo", tones, 3.0, words)], room=-75.0)
     plan, text = plan_only(d, monkeypatch)
-    lines = text.splitlines()
-    star = next(ln for ln in lines if ln.startswith("*") and ln.endswith(" inaudible]"))
-    lid = star[1:].split()[0]
-    at = next(i for i, ln in enumerate(lines) if ln.startswith(lid + " "))
-    lines = [ln for ln in lines if ln is not star and not ln.startswith(lid + " ")]
-    lines.insert(at, re.sub(r" \[[^]]*\]$", "", star[1:]))
+    head, rest = text.split("\n## Cut\n", 1)
+    cut, unused = rest.split("\n## Unused\n", 1)
+    row = next(ln for ln in unused.splitlines() if ln.endswith(" inaudible]"))
+    assert re.search(r"\bso\b", row), text
+    back = re.sub(r" \[[^]]*\]$", "", row)                  # the row's words, tag gone, back in ## Cut in order
+    lines = (head + "\n## Cut\n" + back + "\n" + cut + "\n## Unused\n" + unused.replace(row + "\n", "")).splitlines()
     apply_text(d, monkeypatch, "\n".join(lines) + "\n")
     assert said(d) == [w for w, _, _ in words], said(d)
 
@@ -283,7 +286,11 @@ def test_a_sure_retakes_first_saying_running_into_the_second_takes_none_of_it(tm
     words[4] = (words[4][0], words[4][1], tones[5][0] + 0.15)
     words[5] = (words[5][0], tones[5][0] + 0.15, words[5][2])
     d = v5.project(tmp_path, monkeypatch, [("vo", tones, t + 1.0, words)], room=-75.0)
-    plan, text, applied, said_, before = v5.plan_apply(d, monkeypatch)
+    plan, _ = tc.run(d, monkeypatch=monkeypatch)
+    text = (d / "cut-plan.md").read_text()
+    assert plan["labels"] == {"retake?": 1}, text
+    apply_without_labeled(d, monkeypatch, text)                    # the agent takes the first saying
+    said_ = said(d)
     assert said_ == toks[:4] + ["now."], said_
     assert not heard_tones_play(d, tones, -75.0, skip=set(range(5))), tc.kept_iv(d)
 
@@ -314,7 +321,11 @@ def test_audio_wholly_inside_a_cut_span_is_moved_never_removed(tmp_path, monkeyp
                                                   "start": a0, "end": a1, "inPoint": 0.0, "outPoint": a1 - a0}]})
     (d / "project.json").write_text(json.dumps(p, indent=2))
     tc.git(d, "commit", "-qam", "audio")
-    plan, text, applied, said_, before = v5.plan_apply(d, monkeypatch)
+    if where == "retake":            # the agent takes the labeled first saying, which holds all of the audio's span
+        plan, _ = tc.run(d, monkeypatch=monkeypatch)
+        applied = apply_without_labeled(d, monkeypatch, (d / "cut-plan.md").read_text())
+    else:
+        plan, text, applied, said_, before = v5.plan_apply(d, monkeypatch)
     after = json.loads((d / "project.json").read_text())
     assert [t["id"] for t in after["audio"]["tracks"]] == ["sfx-top"]
     assert [it["id"] for tr in after["tracks"][1:] for it in tr["items"]] == ["sfx-lane"]
@@ -326,10 +337,11 @@ def test_audio_wholly_inside_a_cut_span_is_moved_never_removed(tmp_path, monkeyp
 
 # ── should-fix 1: take breaks read a soft tail as sound ───────────────────────────────────────────────────────
 
-def test_a_repeat_after_a_short_pause_and_a_soft_decay_is_a_sure_retake(tmp_path, monkeypatch):
+def test_a_repeat_after_a_short_pause_and_a_soft_decay_is_a_labeled_repeat(tmp_path, monkeypatch):
     """'press the red button now' twice, 0.2 s of room between, the first ending in a 0.12 s decay at -52: FINISH v5
     takes back the fix pass's take-span widening, so the decay is no sound to the take rules, the pause is 0.32 s, a
-    break, and the clear back-to-back repeat is a sure retake again (the last saying kept), as on 50258c43."""
+    break, and the clear back-to-back repeat is labeled repeat? again (deleting its words keeps the last saying), as on
+    50258c43."""
     toks = "press the red button now".split()
     tones, t = [], 0.3
     for k in range(5):
@@ -344,8 +356,13 @@ def test_a_repeat_after_a_short_pause_and_a_soft_decay_is_a_sure_retake(tmp_path
     words = [(tok + ("." if k == 9 else ""), heads[k][0], heads[k + 1][0] if k + 1 < 10 else heads[k][1])
              for k, tok in enumerate(toks + toks)]
     d = v5.project(tmp_path, monkeypatch, [("vo", tones, t + 1.0, words)], room=-75.0)
-    plan, text, applied, said_, before = v5.plan_apply(d, monkeypatch)
-    assert set(plan["removed"]["lines"]) & {"retake", "restart"}, text
+    plan, _ = tc.run(d, monkeypatch=monkeypatch)
+    text = (d / "cut-plan.md").read_text()
+    assert plan["labels"] == {"repeat?": 1}, text
+    edited = re.sub(r"press the red button now \{[\d.]+\} (?=press the red button now\.)", "", text, count=1)
+    assert edited != text, text
+    apply_text(d, monkeypatch, edited)
+    said_ = said(d)
     assert " ".join(said_) == "press the red button now.", said_
 
 
@@ -544,12 +561,13 @@ def test_clipped_loud_speech(tmp_path, monkeypatch):
 
 def test_an_attached_word_over_room_noise_keeps_no_stretched_room(tmp_path, monkeypatch):
     """kungfu's shape: speech -18, room -58 (40 dB under: the old attached line sat at the room). A word stretched over
-    1.5 s of room, between kept words, keeps at most its own burst, and the joined timeline no flat run over 0.45."""
+    1.5 s of room, between kept words, keeps at most its own burst (here none: under the attached line and the guard,
+    so it is inaudible and goes), and the joined timeline no flat run over 0.45."""
     tones = [(0.30, 0.60, -18.0), (0.65, 0.95, -18.0), (1.60, 1.80, -50.0), (2.80, 3.10, -18.0), (3.15, 3.45, -18.0)]
     words = [("this", 0.30, 0.65), ("is", 0.65, 1.10), ("so", 1.10, 2.60), ("very", 2.80, 3.15), ("good.", 3.15, 3.45)]
     d = v5.project(tmp_path, monkeypatch, [("vo", tones, 4.2, words)], room=-58.0)
     plan, text, applied, said_, before = v5.plan_apply(d, monkeypatch)
-    assert said_ == [w for w, _, _ in words], (said_, text)
+    assert said_ == ["this", "is", "very", "good."], (said_, text)
     assert v5.cover(d, 1.10, 2.60) * 1.5 <= 0.45, tc.kept_iv(d)
     v5.checked(d, plan, applied, before, v5.kept_tones("vo", tones))
 
@@ -614,14 +632,13 @@ def thrice():
     return tones, [tuple(w) for w in words], t + 0.8
 
 
-def test_a_clause_said_three_times_with_a_soft_stretched_word_is_no_sure_retake(tmp_path, monkeypatch):
-    """No sure retake: a repeat? flag or nothing, and all three sayings are applied (the take rules read the placed
-    spans, never widened over soft frames)."""
+def test_a_clause_said_three_times_with_a_soft_stretched_word_is_only_labeled(tmp_path, monkeypatch):
+    """Only labels (retake? or repeat?), and the unedited plan applies all three sayings (the take rules read the
+    placed spans, never widened over soft frames)."""
     tones, words, end = thrice()
     d = v5.project(tmp_path, monkeypatch, [("vo", tones, end, words)], room=-72.0)
     plan, text, applied, said_, before = v5.plan_apply(d, monkeypatch)
-    assert not plan["removed"]["lines"].get("retake"), text
-    assert set(plan.get("suggested") or {}) <= {"repeat?", "inaudible?"}, plan.get("suggested")
+    assert set(plan["labels"]) <= {"retake?", "repeat?"}, plan["labels"]
     assert said_.count("zan") == 3 and said_[-1] == "tep.", (said_, text)
 
 
@@ -645,7 +662,7 @@ def test_the_fixtures_applied_cut_passes_the_raw_flat_check_too(tmp_path, stub_t
     """09 and the orchestrator: flat.py v2's raw definition (no burst counted as sound) on the fixture's applied cut
     flags no run over max-pause but one that holds a word the -46 guard hears (fix pass: 0.83 s at source 22.24), and
     cut_checks agrees."""
-    stub_transcribe(tc.retake_transcript() if transcript == "retake" else json.loads((tc.FIX / "speech.json").read_text()))
+    stub_transcribe(tc.retake_transcript() if transcript == "retake" else tc.real_transcript())
     d = tc.make_project(tmp_path)
     plan, _ = tc.run(d, monkeypatch=monkeypatch)
     tc.run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)

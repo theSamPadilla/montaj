@@ -318,9 +318,9 @@ def test_a_soft_voiced_word_in_a_noisy_room_is_kept(tmp_path, monkeypatch):
     assert "so" in said, (said, tags(text))
 
 
-def test_a_noise_row_put_back_is_refused_clearly(tmp_path, monkeypatch, capsys):
+def test_a_noise_row_put_back_is_applied_and_noted(tmp_path, monkeypatch):
     """Review should-fix 2: a `noise` row moved back into ## Cut would play as nothing (its sound is silence to the
-    cut): the apply refuses it and says which word and what to do."""
+    cut): the apply applies (PL89: it never refuses over noise) and its notes name the word and say it has no voice."""
     parts = SENT + [(1.70, 1.76, -37.0, "click")] + BACK
     words = SENT_W + [("it", 1.65, 1.80)] + BACK_W
     d = project(tmp_path, monkeypatch, parts, 4.0, words)
@@ -329,54 +329,22 @@ def test_a_noise_row_put_back_is_refused_clearly(tmp_path, monkeypatch, capsys):
     head, rest = text.split("\n## Cut\n", 1)
     cut, unused = rest.split("\n## Unused", 1)
     row = next(r for r in unused.splitlines() if "[" in r and "noise" in r)
-    rid = row.split()[0].lstrip("*")
-    line = re.sub(r"\s*\[[^\]]*\]\s*$", "", row).lstrip("*")
-    rows = [line if r.split() and r.split()[0] == rid else r for r in cut.splitlines() if r.strip()]
+    rid = row.split()[0]
+    line = re.sub(r"\s*\[[^\]]*\]\s*$", "", row)
+    rows = []                                   # the noise row rejoins its line, right after the row of that id
+    for r in cut.splitlines():
+        if r.strip():
+            rows.append(r)
+            if r.split() and r.split()[0] == rid:
+                rows.append(line)
     (d / "cut-plan.md").write_text(head + "\n## Cut\n" + "\n".join(rows) + "\n\n## Unused" + unused.replace(row, ""))
-    before = (d / "project.json").read_text()
-    with pytest.raises(SystemExit):
-        tc.run(d, "--plan", str(d / "cut-plan.md"), monkeypatch=monkeypatch)
-    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
-    assert err["error"] == "noise_kept" and '"it"' in err["message"] and "Delete" in err["message"], err
-    assert (d / "project.json").read_text() == before
+    applied, _ = tc.run(d, "--plan", str(d / "cut-plan.md"), monkeypatch=monkeypatch)
+    assert applied["mode"] == "applied"
+    assert any('"it"' in n and "no voice" in n for n in applied.get("notes", [])), applied
 
 
 def test_the_voice_constants_are_in_the_energy_stamp():
-    assert voice.STAMP in se.Refiner.STAMP and se.VERSION == "speech-energy v5d"
+    assert voice.STAMP in se.Refiner.STAMP and se.VERSION == "speech-energy v6"
     for k in ("VERSION", "RATE", "PITCH_MIN", "WINDOW_S", "PITCH_LAG_S", "LOWPASS_HZ", "_LOWPASS_TAPS"):
         assert f"{getattr(voice, k)}" in se.Refiner.STAMP
     assert f"SPEECH_WORD_S={se.SPEECH_WORD_S}" in se.Refiner.STAMP
-
-
-@pytest.mark.parametrize("check", [True, False])
-def test_a_deep_voiced_phrase_seeds_no_repair(tmp_path, monkeypatch, check):
-    """Review (c): the voice check runs before the repair; a soft deep-voiced phrase whisper stretched over 2.2 s must
-    not read as silence to it (which would seed a broken stretch and a second whisper run)."""
-    import steps.edit.cut as cc
-    from tests import cut_checks
-    monkeypatch.setenv("TMPDIR", str(tmp_path / "tmp"))
-    (tmp_path / "tmp").mkdir()
-    import tempfile
-    monkeypatch.setattr(tempfile, "tempdir", None)
-    if not check:
-        monkeypatch.setattr(voice, "flags", lambda media, n: None)
-    parts = [(0.30, 0.55, SPEECH, "voice"), (0.60, 0.95, SPEECH, "voice"),
-             (1.60, 1.85, -38.0, "low70"), (1.95, 2.25, -38.0, "low70"), (2.35, 2.60, -38.0, "low70"),
-             (4.40, 4.70, SPEECH, "voice"), (4.75, 5.10, SPEECH, "voice")]
-    words = [("we", 0.30, 0.60), ("went", 0.60, 0.95), ("i", 1.55, 2.30), ("don't", 2.30, 3.20),
-             ("think", 3.20, 3.90), ("so", 4.40, 4.75), ("now.", 4.75, 5.10)]
-    calls = []
-
-    def fake(input_path, out=None, model=None, language="en", **kw):
-        keeps = [tuple(k) for k in json.loads(open(input_path).read())["keeps"]]
-        calls.append(keeps)
-        heard = [(w, a, b) for (w, _, _), (a, b, _, _) in zip(words, parts)
-                 if any(a >= x - 1e-6 and b <= y + 1e-6 for x, y in keeps)]
-        with open(out + ".json", "w") as fh:
-            json.dump(tc.gapless(heard), fh)
-        return {"words": out + ".json"}
-    monkeypatch.setattr(cc, "transcribe_file", fake)
-    monkeypatch.setattr(cut_checks, "RETRANSCRIBE", lambda media, keeps: None)
-    d = project(tmp_path, monkeypatch, parts, 5.6, words)
-    v5.plan_apply(d, monkeypatch)
-    assert not calls, calls

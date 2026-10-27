@@ -359,3 +359,52 @@ def test_a_non_finite_number_in_a_repeatable_list_is_refused():
 @pytest.mark.parametrize("value", [0, -2.5, "3", "1e3", 1e300])
 def test_finite_numbers_still_pass(value):
     validate_params(_schema([{"name": "x", "type": "float"}]), {"x": value})
+
+
+def test_sample_frame_real_schema_takes_a_list_of_times():
+    import json
+    from pathlib import Path
+    path = Path(__file__).resolve().parent.parent / "steps" / "render" / "sample_frame.json"
+    schema = json.loads(path.read_text())
+    body = {"project": "/p/project.json", "at": [0.5, 1.0, 2.5]}
+    validate_params(schema, body)
+    args = build_cli_args(schema, body)
+    assert args.count("--at") == 3 and args[args.index("--at") + 1] == "0.5"
+    one = build_cli_args(schema, {"project": "/p/project.json", "at": 2})
+    assert one.count("--at") == 1
+
+
+def test_a_list_of_objects_on_a_repeated_param_goes_as_json_one_flag_each():
+    """PL89b: place's items is a list of placements; each object must reach the step as JSON, never Python's repr."""
+    from serve.routes.steps import build_cli_args
+    schema = {"params": [{"name": "items", "type": "string"}]}
+    flags = build_cli_args(schema, {"items": [{"at": 2, "overlay": "overlays/a.jsx"}, {"preset": "callout", "at": 5}]})
+    assert flags == ["--items", '{"at": 2, "overlay": "overlays/a.jsx"}', "--items", '{"preset": "callout", "at": 5}']
+
+
+# Kung fu run (PL89i): steps carry out what they can.
+def test_inputs_given_as_one_string_is_one_path():
+    schema = {"input": {"type": "video", "multiple": True}, "params": []}
+    assert build_cli_args(schema, {"inputs": "/Users/x/IMG_1151.MOV"}) == ["--input", "/Users/x/IMG_1151.MOV"]
+
+
+def test_an_enum_refusal_carries_its_params_hint():
+    schema = {"params": [{"name": "mode", "type": "enum", "options": ["auto", "card"], "hint": "to read an item's framing, get_project"}]}
+    with pytest.raises(Exception) as e:
+        validate_params(schema, {"mode": "list"})
+    assert "get_project" in str(e.value.detail["message"])
+
+
+def test_a_path_typed_with_a_plain_space_finds_the_file_named_with_a_narrow_one(tmp_path):
+    from serve.routes.steps import resolve_spacing
+    real = tmp_path / "Screen Recording 2026-10-21 at 11.59.52 AM.mov"
+    real.write_bytes(b"x")
+    typed = str(tmp_path / "Screen Recording 2026-10-21 at 11.59.52 AM.mov")
+    schema = {"input": {"type": "video", "multiple": True}, "params": [{"name": "proxy", "type": "path"}, {"name": "out", "type": "path"}]}
+    body = {"inputs": [typed], "proxy": typed, "out": typed}
+    resolve_spacing(schema, body)
+    assert body["inputs"] == [str(real)] and body["proxy"] == str(real)
+    assert body["out"] == typed, "an output is never redirected"
+    body = {"input": str(tmp_path / "missing.mov")}
+    resolve_spacing({"input": {"type": "video"}, "params": []}, body)
+    assert body["input"] == str(tmp_path / "missing.mov"), "no match: left for the step to say"

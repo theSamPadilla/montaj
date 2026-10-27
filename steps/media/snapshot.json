@@ -1,9 +1,10 @@
 {
   "name": "snapshot",
-  "description": "Extract frames from a video: grid contact sheet (default), all frames (--frames all), or single frame at a timestamp (--at <sec>).",
+  "description": "Look at a video: a grid sheet (default), every frame (frames all), one full frame at a time (at), or one labelled sheet of many times (at repeated, up to 36): find a source's moments in one call. Look at footage in two calls: a sheet of each clip, then one sheet of the moments you pick.",
   "input": {
     "type": "video",
-    "description": "Source video file"
+    "description": "Source video file",
+    "required": false
   },
   "output": {
     "type": "image",
@@ -11,12 +12,24 @@
   },
   "params": [
     {
+      "name": "inputs",
+      "type": "path",
+      "description": "Several clips: ONE sheet, a row per clip (cols frames each, default 6), each tile labelled with its name and time. At most 12.",
+      "repeatable": true
+    },
+    {
+      "name": "names",
+      "type": "string",
+      "description": "A label per inputs clip (its clip id).",
+      "repeatable": true
+    },
+    {
       "name": "cols",
       "type": "int",
       "default": 3,
       "min": 1,
       "max": 10,
-      "description": "Grid columns (grid mode)"
+      "description": "Grid columns (grid mode, or a sheet of several at)"
     },
     {
       "name": "rows",
@@ -49,13 +62,14 @@
       "name": "at",
       "type": "float",
       "required": false,
-      "description": "Extract a single full-resolution frame at this timestamp (seconds). Mutually exclusive with --frames, --cols, --rows, --start, --end. Used for boundary-frame extraction: scene continuity (Kling --first-frame / --last-frame) and regen stitching."
+      "description": "Seconds. One: a single full-resolution frame (scene continuity, regen stitching). Several (up to 36): one sheet of those times, each tile labelled, cols columns (default up to 6). Not with frames, rows, start, end.",
+      "repeatable": true
     },
     {
       "name": "out",
       "type": "path",
       "required": false,
-      "description": "Output file path (grid / --at modes) or directory (all-frames mode). Defaults to <input>_snapshot.jpg / <input>_at_<sec>.jpg / <input>_frames/."
+      "description": "Output file path (grid and at modes) or directory (all-frames mode). Defaults to <input>_snapshot.jpg / <input>_at_<sec>.jpg / <input>_at_<first>-<last>.jpg / <input>_frames/."
     }
   ]
 }

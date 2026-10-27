@@ -197,7 +197,7 @@ def test_rerun_takes_its_autosave_inside_the_lock_hold_that_reads_the_project(pr
     assert json.loads(_git(proj, "show", "HEAD:project.json"))["name"] == "edited before the rerun"
     body = resp.json()
     assert body["status"] == "pending" and body["runCount"] == 2
-    assert body["tracks"] == [{"id": "trk-0", "items": [{"id": "s1", "src": "/x.mp4", "order": None}]}]
+    assert body["tracks"] == [{"id": "trk-0", "items": []}]       # §590: a rerun starts as a new project does
     assert json.loads(path.read_text()) == body
 
 

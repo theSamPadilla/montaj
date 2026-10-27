@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from lib.color_provenance import ProbeError, is_probe_retryable
 from lib.credentials import CredentialError, build_env_overlay
+from lib.path_match import spaced_twins
 from lib.step_schema import flag_value
 from serve.disk_full import STATUS as disk_full_status, child_disk_full, workspace_root as disk_full_root
 from serve.common import (
@@ -141,6 +142,8 @@ def build_cli_args(schema: dict, body: dict) -> list[str]:
     inp = schema.get("input", {})
     if inp.get("multiple"):
         files = body.get("inputs", [])
+        if isinstance(files, str):   # a string is one path, never its characters (PL89i: "File not found: V")
+            files = [files]
         # Also accept singular "input" for convenience (UI sends singular for single-file calls)
         if not files and "input" in body:
             files = [body["input"]]
@@ -299,10 +302,33 @@ def validate_params(schema: dict, body: dict) -> None:
             options = param.get("options", [])
             for item in values:
                 if item not in options:
-                    errors.append(f"'{name}' must be one of {options}, got {item!r}")
+                    hint = f" ({param['hint']})" if isinstance(param.get("hint"), str) else ""
+                    errors.append(f"'{name}' must be one of {options}, got {item!r}{hint}")
 
     if errors:
         raise HTTPException(422, detail={"error": "invalid_params", "message": "; ".join(errors)})
+
+
+def resolve_spacing(schema: dict, body: dict) -> None:
+    """In place: `input`, `inputs` and each path param (never an output) that names no file but has a twin differing
+    only in its kinds of space or its Unicode form (lib/path_match.py) is pointed at the twin, so the step runs on
+    the file meant. Several twins are a 422 naming them."""
+    def fix(v):
+        if isinstance(v, list):
+            return [fix(x) for x in v]
+        hits = spaced_twins(v)
+        if len(hits) > 1:
+            raise HTTPException(422, detail={"error": "ambiguous_path", "message": (
+                f"No file at {v}; several match once spaces are read alike: "
+                + ", ".join(os.path.basename(h) for h in hits) + ". Name one exactly."), "matches": hits})
+        return hits[0] if hits else v
+    for key in ("input", "inputs"):
+        if body.get(key) is not None:
+            body[key] = fix(body[key])
+    for p in schema.get("params") or []:
+        name = p.get("name")
+        if isinstance(name, str) and p.get("type") == "path" and not name.startswith("out") and body.get(name) is not None:
+            body[name] = fix(body[name])
 
 
 _PROJECT_ALIASES = ("projectId", "project_id")
@@ -622,6 +648,7 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
     # legitimate resolved path but catches anything the resolution produced that would leave the allowed
     # roots (low 15).
     check_step_out(name, schema, body, native=job_step_name(name, py_path) == name)
+    resolve_spacing(schema, body)
     validate_params(schema, body)
     cli_args = build_cli_args(schema, body)
     if timeout is None:
@@ -782,7 +809,12 @@ STEP_WRITES = {
     "cut": (("tracks", "captions", "audio", "markers", "notes", "cleanCut", "status"), ("speech-text.md", "cut-plan.md", "cut-plan.prev.md", "cut-plan.prev-")),
     # §558: place adds an overlay (and its preset file), captions styles the captions, slides edits the slides
     "place": (("tracks",), ("overlays/",)),
+    # PL89: push_in keys the talking-head clips' scale and offsetY
+    "push_in": (("tracks",), ()),
+    # PL89: frame_broll frames one b-roll clip (its crop or its card overlay, and the card's preset file)
+    "frame_broll": (("tracks",), ("overlays/",)),
     "captions": (("captions",), ()),
+    "caption_ink": (("captions",), ()),
     "slides": (("slides",), ()),
     "generate_captions": (("captions",), ()),
     "kling_generate": (("tracks", "storyboard", "status"), ()),

@@ -37,7 +37,7 @@ from serve.caption_job import build_audio_mix_spec, caption_input_change, captio
 from serve.caption_theme import sanitize_theme, seed_prev
 from serve import provenance
 from serve import save_guard
-from lib import project_revisions
+from lib import caption_ink, project_revisions, sync_clash
 from serve.jobs import create_job, set_done, set_error, get_job
 from serve.routes.files import drawable_upload, save_upload, upload_name
 from serve.disk_full import STATUS as disk_full_status, child_disk_full, detail_for as disk_full_detail, workspace_root as disk_full_root
@@ -51,8 +51,13 @@ from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, project_lock, 
 from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwargs
 from lib.overlay_validation import overlay_item_errors
 from lib.audio_validation import audio_track_check
+from lib import shots as _shots
+from lib.caption_profile_look import caption_words_args, resolve_style_and_look
+from lib.caption_script import script_of, spell_from_script
+from lib.caption_marks import stamp_all
 from lib.caption_translation import TranslationError, apply_show, apply_translation, show_new_language, finish_regenerated_track, is_translation, merge_caption_theme as _lib_merge_caption_theme, record_source_language
 from lib.project_tracks import normalize_tracks, track_items
+from lib.path_match import spaced_twins
 from lib.project_migrate import converge
 from lib.item_ids import id_suffix
 from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allowed_hosts
@@ -814,9 +819,12 @@ def _source_download_line_handler(project_id: str, project_dir: Path, job_id: st
             broadcaster.publish(project_id, _sse_data_frame(text))
 
     def name_it(title):
-        def change(project, _record):
+        def change(project, record):
+            # PL89e: the record keeps the title for the source's provenance (frame_broll's card credit reads it).
+            changed = record.get("title") != title
+            record["title"] = title
             if isinstance(project.get("name"), str) and project["name"].strip():
-                return False
+                return changed
             project["name"] = title
             return True
         _schedule_record_update(project_dir, job_id, change, publish)
@@ -925,8 +933,7 @@ async def _finalize_source_download(
     Idempotent, keyed by the file's path: a source already at this `src` is
     reused (a stale save can put the record back to `downloading` after a
     finalize, and the next open runs this again). A new clip goes to `sources`
-    and, only while the project is `pending` (the agent's lifecycle), to
-    `tracks[0].items` in init's shape. Read to write with no await between, as
+    only, in init's shape. Read to write with no await between, as
     `_run_ingest_detached`, so a concurrent PUT cannot interleave."""
     project_path = project_dir / "project.json"
     settings = json.loads(project_path.read_text()).get("settings") or {}
@@ -941,6 +948,8 @@ async def _finalize_source_download(
             project = json.loads(raw)
         except (OSError, ValueError):
             return  # deleted meanwhile
+        seen = project.get("sourceDownload") if isinstance(project.get("sourceDownload"), dict) else {}
+        title = seen.get("title") if isinstance(seen.get("title"), str) and seen.get("title").strip() else None
         sources = project.get("sources")
         if not isinstance(sources, list):
             sources = project["sources"] = []
@@ -950,16 +959,7 @@ async def _finalize_source_download(
             clip = existing
         else:
             clip = {"id": _next_clip_id(project), **clip}
-            sources.append(clip)
-            if project.get("status") == "pending":
-                tracks = project.get("tracks")
-                if not isinstance(tracks, list) or not tracks:
-                    tracks = project["tracks"] = [{"id": "trk-0", "items": []}]
-                first = tracks[0]
-                if isinstance(first, dict):
-                    first.setdefault("items", []).append(dict(clip))
-                elif isinstance(first, list):
-                    first.append(dict(clip))
+            sources.append(clip)        # §590: never laid on the timeline; cut builds the spine from sources
         project["sourceDownload"] = {"kind": "youtube", "url": url, "status": "done", "clipId": clip["id"]}
         refused = save_guard.maintenance_refusal(raw, project)
         if refused is None:
@@ -974,7 +974,7 @@ async def _finalize_source_download(
     # Where the file came from (serve/provenance.py). Best-effort, like the proxy below.
     try:
         await asyncio.to_thread(provenance.record_provenance, project_dir, clip["src"],
-                                {"kind": "web", "via": "youtube", "sourceUrl": url})
+                                {"kind": "web", "via": "youtube", "sourceUrl": url, **({"title": title} if title else {})})
     except Exception as e:
         logger.warning("source download: provenance not recorded for %s: %s", clip.get("src"), e)
 
@@ -4262,6 +4262,10 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
         body = {key: value for key, value in body.items() if key not in _SAVE_REPORT_KEYS}
         merged = _merged_for_save(existing, body,
                                   drop_nulls=save_guard.sync_origin_of(headers) == save_guard.SYNC_ORIGIN)
+        # PL89i: a new or changed item src naming no file, whose name differs from one file's only in its spaces (a
+        # typed space for the U+202F in a screen recording's name) or Unicode form, saves that file's real name.
+        # Before every check, so they see the document as it will be written. Stat calls only.
+        src_warnings = _match_item_srcs(merged, existing, project_dir) if "tracks" in body else []
         # §482: a field in an open Studio sync clash refuses the whole save, from anyone but a person, before
         # the revisions are compared. Every field the write really changes counts, not only the body's: a
         # normalisation of a legacy `tracks` the body never named is still a write of `tracks` (review 40, 1).
@@ -4382,7 +4386,31 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
     if audio_warnings:
         media_report = {**media_report, "warnings": [*audio_warnings, *media_report.get("warnings", [])]}
     # The report rides on the answer only, never in project.json.
+    if src_warnings:
+        media_report = {**media_report, "warnings": src_warnings + list(media_report.get("warnings") or [])}
     return {**current, **media_report} if media_report else current
+
+
+def _match_item_srcs(merged: dict, existing: dict, project_dir: Path) -> list:
+    """Point each new or changed item whose `src` names no file at its one twin (lib/path_match.py), in place, as an
+    absolute path (a relative src is the project folder's). Answers the save's warnings: one per src changed, and one
+    per src left as written because several files match, naming them."""
+    before = {(it.get("id"), it.get("src")) for t in normalize_tracks(existing).get("tracks") or [] if isinstance(t, dict)
+              for it in t.get("items") or [] if isinstance(it, dict)}
+    warnings = []
+    for track in normalize_tracks(merged).get("tracks") or []:
+        for item in (track.get("items") or []) if isinstance(track, dict) else []:
+            src = item.get("src") if isinstance(item, dict) else None
+            if not isinstance(src, str) or not src.strip() or (item.get("id"), src) in before or "://" in src or src.startswith("/api/"):
+                continue
+            hits = spaced_twins(src if os.path.isabs(src) else os.path.join(str(project_dir), src))
+            if len(hits) == 1:
+                item["src"] = hits[0]  # absolute: a step reads a src as a path, and a relative one from its own folder
+                warnings.append(f"{item.get('id')}: no file at {src}; saved the file it names, {item['src']}")
+            elif hits:
+                warnings.append(f"{item.get('id')}: no file at {src}, and several match once spaces are read alike ("
+                                + ", ".join(os.path.basename(h) for h in hits) + "); saved as written, so set it to one")
+    return warnings
 
 
 @router.get("/projects/{project_id}/generated")
@@ -4396,6 +4424,109 @@ async def list_generated(project_id: str, project_dir: Path = Depends(get_projec
     file is gone or changed size since (GET .../provenance marks those `stale`).
     Read in a thread: it stats every entry's file."""
     return {"dir": str(project_dir), "generated": await asyncio.to_thread(provenance.generated, project_dir)}
+
+
+@router.get("/projects/{project_id}/brief")
+async def project_brief(project_id: str, project_dir: Path = Depends(get_project_dir)):
+    """The project brief (lib/project_brief.py, PL89): what the AI's first decisions need, in one read: each source's
+    role, every take's transcript, the script mapped to the takes, a long b-roll's shots and their sheet, the workflow's
+    steps and the profile's style. `{"text", "sheets": [png paths], "skills": [skill names the steps use], "stamp"}`.
+    Cached under render/brief/ by a stamp of what it reads, so a later read of an unchanged project is free; the first
+    measures each talking head's silences and a long b-roll's shots (a few seconds). Read-only on project.json; in a
+    thread."""
+    from lib import project_brief
+
+    def build():
+        try:
+            project = json.loads((project_dir / "project.json").read_text())
+        except (OSError, ValueError):
+            raise HTTPException(404, detail={"error": "not_found", "message": "project.json is not readable"})
+        if not isinstance(project, dict):
+            raise HTTPException(422, detail={"error": "invalid_project", "message": "project.json is not an object"})
+        return project_brief.brief(project, str(project_dir), str(MONTAJ_ROOT))
+    return await asyncio.to_thread(build)
+
+
+@router.get("/projects/{project_id}/spine")
+async def project_spine(project_id: str, project_dir: Path = Depends(get_project_dir)):
+    """The speech track as the agent places things against it (lib/spine.py, run 5): `{"spine": [{id, start, end, src,
+    said}]}`, each item of the first track with its timeline times and the words it plays. Read-only, no lock (project.json
+    is written by atomic rename); in a thread, since it reads each item's transcript."""
+    from lib import spine
+
+    def build():
+        try:
+            project = json.loads((project_dir / "project.json").read_text())
+        except (OSError, ValueError):
+            raise HTTPException(404, detail={"error": "not_found", "message": "project.json is not readable"})
+        if not isinstance(project, dict):
+            raise HTTPException(422, detail={"error": "invalid_project", "message": "project.json is not an object"})
+        return {"spine": spine.spine(project, str(project_dir))}
+    return await asyncio.to_thread(build)
+
+
+@router.post("/projects/{project_id}/phrase-times")
+async def phrase_times(project_id: str, request: Request, project_dir: Path = Depends(get_project_dir)):
+    """Word anchors to timeline seconds, as place reads a phrase (lib/phrase_at; run 5): body `{"anchors": [{phrase or
+    word, occurrence?, take?}]}`. occurrence n is the nth saying in timeline order (default 1); take ("clean", "first",
+    "last") picks by place's rule instead. Answers `{"times": [{start, end, text, said} or {error}]}` in order, one bad
+    anchor never failing the others. The speech track is read once. Read-only, no lock; in a thread."""
+    from lib import phrase_at
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    anchors = body.get("anchors") if isinstance(body, dict) else None
+    if not isinstance(anchors, list) or not anchors or len(anchors) > 64:
+        raise HTTPException(422, detail={"error": "invalid_anchors", "message": "anchors is a list of 1 to 64 {phrase or word, occurrence or take}"})
+
+    def build():
+        try:
+            project = json.loads((project_dir / "project.json").read_text())
+        except (OSError, ValueError):
+            raise HTTPException(404, detail={"error": "not_found", "message": "project.json is not readable"})
+        language = ((project.get("settings") or {}).get("language") or "en") if isinstance(project, dict) else "en"
+        if not language or language == "auto":
+            language = "en"
+        prepared = phrase_at.prepare(project, str(project_dir), language)
+        out = []
+        for a in anchors:
+            phrase = (a.get("phrase") or a.get("word")) if isinstance(a, dict) else None
+            if not isinstance(phrase, str) or not phrase.strip():
+                out.append({"error": "an anchor names a phrase or a word"})
+                continue
+            try:
+                if a.get("take") is not None:
+                    f = phrase_at.find(project, str(project_dir), phrase, a["take"], language, prepared=prepared)
+                    out.append({"start": round(f.start, 3), "end": round(f.end, 3), "text": f.text, "said": f.said})
+                    continue
+                found, _, _, _ = phrase_at.sayings(project, str(project_dir), phrase, language, prepared=prepared)
+                n = a.get("occurrence", 1)
+                if not found:
+                    out.append({"error": f'"{phrase}" is not said on the speech track. {phrase_at.NOT_FOUND_HINT}'})
+                elif not isinstance(n, int) or isinstance(n, bool) or n < 1 or n > len(found):
+                    out.append({"error": f'"{phrase}" is said {len(found)} times; occurrence is 1 to {len(found)}'})
+                else:
+                    _, t0, t1, text = found[n - 1]
+                    out.append({"start": round(t0, 3), "end": round(t1, 3), "text": text, "said": len(found)})
+            except phrase_at.PhraseNotFound as e:
+                out.append({"error": str(e)})
+        return {"times": out}
+    return await asyncio.to_thread(build)
+
+
+@router.get("/projects/{project_id}/shots")
+async def list_shots(project_id: str, project_dir: Path = Depends(get_project_dir)):
+    """The labelled shots of the project's sources (the `shots` step; lib/shots.py): `{"shots": {clip id: {"src",
+    "shots": [{n, start, end, motion, label?}]}}}` for every source and timeline video whose file has a sidecar of its
+    current version. Read-only, no lock (project.json is written by atomic rename). In a thread: it stats each file."""
+    def read():
+        try:
+            project = json.loads((project_dir / "project.json").read_text())
+        except (OSError, ValueError):
+            return {}
+        return _shots.project_shots(project) if isinstance(project, dict) else {}
+    return {"shots": await asyncio.to_thread(read)}
 
 
 def _provenance_refused(e: ValueError) -> HTTPException:
@@ -4761,15 +4892,12 @@ def _rerun_under_lock(project_dir: Path, body: dict, headers=None, project_id=No
         run_count = fresh.get("runCount", 1)
         version_label = body.get("versionName") or fresh.get("status", "draft")
         _git_commit_sync(project_dir, f"version: run {run_count} — {version_label}")
-        # Restore video track to original source clips; drop captions/overlays.
-        # `order` is a legacy field: nothing downstream sorts or requires it, so a missing
-        # key on an init-created or ingested source degrades to None rather than KeyError.
-        source_clips = [{"id": c["id"], "src": c["src"], "order": c.get("order")} for c in fresh_sources]
+        # Start again as a new project does (§590): an empty timeline, the clips in sources.
         updated = {
             **fresh,
             "status": "pending",
             "runCount": run_count + 1,
-            "tracks": [{"id": "trk-0", "items": source_clips}],
+            "tracks": [{"id": "trk-0", "items": []}],
         }
         if "prompt" in body:
             updated["editingPrompt"] = body["prompt"]
@@ -6051,6 +6179,68 @@ def _merge_caption_theme(prev: dict, track: dict) -> dict:
     return _lib_merge_caption_theme(prev, track)
 
 
+CAPTION_INK_TIMEOUT_S = 300.0   # the step stops starting frames at 240 s on its own (caption_ink.DEADLINE_S)
+
+# Strong refs to the background ink passes (asyncio only weakly tracks fire-and-forget tasks).
+_caption_ink_tasks: set = set()
+
+
+def _caption_log(broadcaster, project_id: str, message: str) -> None:
+    broadcaster.publish(project_id, f"event: log\ndata: {json.dumps({'message': message})}\n\n")
+
+
+def _start_caption_ink(project_id: str, project_path: Path, project: dict, broadcaster, who=None) -> None:
+    """Run the ink pass as a background task, so the caption job is done (SSE `done`, the slot released) without it."""
+    task = asyncio.create_task(_run_caption_ink(project_id, project_path, project, broadcaster, who))
+    _caption_ink_tasks.add(task)
+    task.add_done_callback(_caption_ink_tasks.discard)
+
+
+async def drain_caption_ink_tasks() -> None:
+    """Wait for the ink passes in flight (the seam for tests)."""
+    while _caption_ink_tasks:
+        await asyncio.gather(*list(_caption_ink_tasks), return_exceptions=True)
+
+
+async def _run_caption_ink(project_id: str, project_path: Path, project: dict, broadcaster, who=None) -> None:
+    """After the captions are written and broadcast: when the step has anything to do (a card on screen, or ink of its
+    own to clear), run the caption_ink step (a subprocess; it renders frames) as the request's writer and broadcast the
+    project again if it wrote. Any failure is a `log` event only: it never fails the caption job."""
+    try:
+        if not caption_ink.needs_pass(project):
+            return
+        env = {**os.environ, "MONTAJ_ROOT": str(MONTAJ_ROOT)}
+        if sync_clash.state_dir():   # §482: whose run this is, as serve/routes/steps.py sets it
+            env[sync_clash.ORIGIN_ENV] = save_guard.step_origin(who)
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, str(MONTAJ_ROOT / "steps" / "transform" / "caption_ink.py"), "--project", str(project_path),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=str(MONTAJ_ROOT), env=env,
+            **_detached_kwargs())   # process-group leader, so a kill reaches the sample_frame children
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=CAPTION_INK_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            with contextlib.suppress(Exception):
+                _kill_tree(proc)
+            with contextlib.suppress(Exception):
+                await proc.wait()
+            _caption_log(broadcaster, project_id, "caption ink not set (timed out): run caption_ink")
+            return
+        if proc.returncode != 0:
+            tail = (err or b"").decode("utf-8", "replace").strip().splitlines()[-1:] or ["failed"]
+            _caption_log(broadcaster, project_id, f"caption ink not set: {tail[0][:200]}")
+            return
+        answer = {}
+        with contextlib.suppress(Exception):
+            answer = json.loads((out or b"").decode("utf-8", "replace").strip().splitlines()[-1])
+        for w in answer.get("warnings") or []:
+            _caption_log(broadcaster, project_id, f"caption ink: {w}")
+        if answer.get("changed"):
+            broadcaster.publish(project_id, _sse_data_frame(project_path.read_text(encoding="utf-8")))
+    except Exception as e:  # noqa: BLE001 — ink is a refinement of captions that are already written
+        with contextlib.suppress(Exception):
+            _caption_log(broadcaster, project_id, f"caption ink not set ({type(e).__name__}): run caption_ink")
+
+
 async def _run_caption_pipeline(
     project_id: str,
     project_dir: Path,
@@ -6120,7 +6310,14 @@ async def _run_caption_pipeline(
     # 2. Write the mix spec.
     mix_spec_path.write_text(json.dumps(mix_spec))
 
-    steps = [
+    # Run 5: the words are each audible clip's and voiceover's own transcript, mapped through the timeline
+    # (lib/caption_words), as the generate_captions step takes them; the mix is transcribed (by voiced runs, never
+    # --fit-pauses, which squeezed run 5's words early) only when one has none.
+    from lib.caption_words import timeline_words, write_transcript
+    from_sources = timeline_words(project, str(project_dir))
+    if from_sources is not None:
+        write_transcript(from_sources, str(words_json_path))
+    steps = ([] if from_sources is not None else [
         (
             "mix_timeline",
             [str(mix_timeline_py), "--input", str(mix_spec_path),
@@ -6130,16 +6327,23 @@ async def _run_caption_pipeline(
             "transcribe",
             [str(transcribe_py), "--input", str(mix_wav_path),
              "--model", model, "--language", language,
-             "--out", str(words_prefix), "--fit-pauses"],
+             "--out", str(words_prefix)],
         ),
+    ]) + [
         (
             "caption",
             [str(caption_py), "--input", str(words_json_path),
-             "--style", style, "--out", str(track_path)],
+             "--style", style, "--out", str(track_path), *caption_words_args(project)],
         ),
     ]
 
     for label, args in steps:
+        if label == "caption":
+            # The words in the script's spelling, from the project's editing prompt (lib/caption_script.py), as the
+            # generate_captions step does.
+            script = script_of(project)
+            if script.strip():
+                spell_from_script(words_json_path, script)
         proc = await asyncio.create_subprocess_exec(
             sys.executable, *args,
             stdout=asyncio.subprocess.PIPE,
@@ -6206,10 +6410,14 @@ async def _run_caption_pipeline(
         # Theme carried forward, ids minted, translated rows kept and re-cut at
         # their phrase boundaries (lib/caption_translation.py).
         track = finish_regenerated_track(prev, track)
+        # §585: every line written here is stamped as generated; the editor's Regenerate (a person pressed it)
+        # replaces the person's lines as it always has, so nothing is kept here.
+        stamp_all(track.get("segments") or [])
         record_source_language(track, language, project_dir / "_caption_words.json")
         project["captions"] = track
         text = _write_project_json(project_path, project)
     broadcaster.publish(project_id, _sse_data_frame(text))
+    _start_caption_ink(project_id, project_path, project, broadcaster, who)
 
     return track
 
@@ -6266,11 +6474,13 @@ async def generate_captions(
     if missing:
         raise HTTPException(503, detail={"error": "whisper_model_missing", "message": missing})
     language = body.get("language") or "auto"
-    style = body.get("style") or (project.get("captions") or {}).get("style") or "pop"
+    # Style: the body's, else the track's, else the profile's, else 'pop'.
+    style, look = resolve_style_and_look(body.get("style"), project)
     # A style profile's caption look (fontFamily/googleFonts + the style's
     # emphasis colour), seeded into the saved track where it doesn't already
-    # have a value — see serve/caption_theme.py.
-    theme = sanitize_theme(body.get("theme"))
+    # have a value — see serve/caption_theme.py. The editor sends it as
+    # `theme`; a caller that sends none (MCP) gets the same look from the profile.
+    theme = sanitize_theme(body["theme"]) if "theme" in body else sanitize_theme(look)
 
     # Temp paths the pipeline writes; mirrored here so the generator's `finally`
     # can unlink them (kept identical to the pipeline's own paths).

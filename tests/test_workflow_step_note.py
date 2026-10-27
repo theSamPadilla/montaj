@@ -1,4 +1,4 @@
-"""A workflow step may carry an optional one-line `note` (at most 160 characters).
+"""A workflow step may carry an optional one-line `note` (at most 320 characters).
 
 validate_workflow refuses a long or multi-line one, resolve_workflow keeps it on
 each resolved step, and GET /api/workflows/{name} passes it through.
@@ -39,11 +39,11 @@ def test_validate_accepts_a_note(tmp_path):
     assert v.validate_workflow(_write(tmp_path, _workflow("One per clip")))["valid"] is True
 
 
-def test_validate_accepts_exactly_160_characters(tmp_path):
-    assert v.validate_workflow(_write(tmp_path, _workflow("a" * 160)))["valid"] is True
+def test_validate_accepts_exactly_320_characters(tmp_path):
+    assert v.validate_workflow(_write(tmp_path, _workflow("a" * 320)))["valid"] is True
 
 
-@pytest.mark.parametrize("note", ["a" * 161, "two\nlines", "cr\rhere", "", 5, ["x"]])
+@pytest.mark.parametrize("note", ["a" * 321, "two\nlines", "cr\rhere", "", 5, ["x"]])
 def test_validate_refuses_a_bad_note(tmp_path, note):
     with pytest.raises(SystemExit):
         v.validate_workflow(_write(tmp_path, _workflow(note)))

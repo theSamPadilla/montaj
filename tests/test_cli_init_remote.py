@@ -97,7 +97,8 @@ class TestCliLocalClipAssetPassthrough:
         project = json.loads(project_path.read_text())
         assert project["version"] == "0.2"
         assert len(project["tracks"]) == 1
-        track = track_items(project)[0]
+        assert track_items(project)[0] == []      # §590: the clips are sources
+        track = project["sources"]
         assert len(track) == 1
         assert track[0]["src"].endswith("local.mp4")
 
@@ -135,7 +136,7 @@ class TestCliLocalClipAssetPassthrough:
         assert result.returncode == 0, result.stderr
         project_path = _project_path_from_stdout(result.stdout)
         project = json.loads(project_path.read_text())
-        assert len(track_items(project)[0]) == 1
+        assert len(project["sources"]) == 1
         assert len(project["assets"]) == 1
 
 
@@ -187,7 +188,7 @@ class TestRemoteClipDirect:
         assert project_path_str is not None, "init.main() did not print a project path"
         project = json.loads(Path(project_path_str).read_text())
         assert project["version"] == "0.2"
-        track = track_items(project)[0]
+        track = project["sources"]
         assert len(track) == 1
         # The clip src should reference the fetched file inside the workspace.
         assert "clip.mp4" in track[0]["src"]

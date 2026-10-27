@@ -44,6 +44,15 @@ def unused_rows(text):
     return tc.sections(text)[1]
 
 
+def apply_without_labeled(d, monkeypatch, text, label="retake?"):
+    """Delete every ## Cut row tagged `label` (as an agent taking the label does), apply, and return the answer."""
+    kept = [ln for ln in text.splitlines() if not re.search(rf"\[[\d.]+ {re.escape(label)} ", ln)]
+    assert len(kept) < len(text.splitlines()), text
+    (d / "cut-plan.md").write_text("\n".join(kept) + "\n")
+    applied, _ = tc.run(d, "--plan", str(d / "cut-plan.md"), monkeypatch=monkeypatch)
+    return applied
+
+
 # ── review #3 blockers (ported from its probes) ───────────────────────────────
 
 @pytest.mark.parametrize("bleed", [0.0, 0.02])
@@ -138,19 +147,6 @@ def test_a_soft_aside_in_dense_speech_with_no_lead_in_is_kept(tmp_path, monkeypa
     plan, text, _, said = plan_apply(d, monkeypatch)
     lost = [(a, b) for a, b, db in spans if cover(d, a, b) < 0.99]
     assert not lost and len(said) == len(toks), (lost, said, plan["removed"], text.split("## Cut")[-1])
-
-
-def test_misplaced_words_at_a_normal_pace_keep_their_text(tmp_path, monkeypatch):
-    """R3 should-fix 1: 'ride the bike' said at a normal pace as three bursts (0.60-1.15 s) inside whisper's span
-    for 'ride'; whisper put 'the bike' in the pause after. Their sound plays, so their text stays."""
-    spans = [(0.30, 0.55, SP), (0.60, 0.78, SP), (0.82, 0.90, SP), (0.94, 1.15, SP), (2.40, 2.65, SP),
-             (2.70, 2.95, SP)]
-    words = [("we", 0.30, 0.60), ("ride", 0.60, 1.20), ("the", 1.20, 1.80), ("bike", 1.80, 2.40),
-             ("all", 2.40, 2.70), ("day.", 2.70, 2.95)]
-    d = tc.tone_project(tmp_path, [("vo", spans, 3.6, words)])
-    plan, text, _, said = plan_apply(d, monkeypatch)
-    assert all(cover(d, a, b) > 0.99 for a, b, _ in spans)
-    assert said == ["we", "ride", "the", "bike", "all", "day."], (said, plan["removed"], text.split("## Cut")[-1])
 
 
 # ── review #3 fuzz: whisper drift up to 0.25 s, gapless spans, very short and near-noise tones ──────────────
@@ -304,9 +300,13 @@ def test_an_island_is_never_joined_across_a_word_the_person_removed(tmp_path, mo
 
 
 def test_a_dead_breath_island_between_cuts_goes(tmp_path, monkeypatch):
-    """No heard word in it: a short kept piece of room between two removed retakes' words is dropped, not widened."""
+    """No heard word in it: a short kept piece of room between two removed retakes' words is dropped, not widened.
+    The agent takes the two retake? labels by deleting their rows."""
     d = tc.spoken_project(tmp_path, ["press the red button now. | press the red button now. | press the red button now."])
-    plan, text, applied, said = plan_apply(d, monkeypatch)
+    plan, _ = tc.run(d, monkeypatch=monkeypatch)
+    text = (d / "cut-plan.md").read_text()
+    applied = apply_without_labeled(d, monkeypatch, text)
+    said = [w for w, _, _ in tc.played_words(d)]
     assert " ".join(said) == "press the red button now.", (said, text)
     assert not short_items(d), tc.kept_iv(d)
 
@@ -349,15 +349,17 @@ def _loud_cut_inside(d, env, floor):
 def test_a_faint_first_saying_never_wins_over_the_loud_last_take(tmp_path, monkeypatch):
     monkeypatch.setattr(tc, "NOISE_DB", -55.0)
     d = tc.tone_project(tmp_path, [("kf", KUNGFU_TONES, 16.4, KUNGFU_WORDS)])
-    plan, text, applied, said = plan_apply(d, monkeypatch)
+    plan, _ = tc.run(d, monkeypatch=monkeypatch)
+    text = (d / "cut-plan.md").read_text()
+    labeled = [ln for ln in tc.sections(text)[0] if re.search(r"\[[\d.]+ retake\? ", ln)]
+    words = " ".join(re.sub(r"\{[\d.]+\}|\[[^]]*\]", "", r).split(None, 1)[1] for r in labeled)
+    assert " ".join(words.split()) == "This may be the funniest demo I've ever seen.", labeled   # the earlier take
+    applied = apply_without_labeled(d, monkeypatch, text)
+    said = [w for w, _, _ in tc.played_words(d)]
     second = [w for w, _, _ in KUNGFU_WORDS[9:]]
     assert said == second, (said, text)
     assert all(cover(d, a, b) > 0.99 for a, b, _ in KUNGFU_TONES[9:]), tc.kept_iv(d)
     assert all(cover(d, a, b) < 0.01 for a, b, _ in KUNGFU_TONES[:9]), tc.kept_iv(d)
-    rows = unused_rows(text)
-    assert all(r.endswith(" retake]") for r in rows), rows                   # the earlier take of a clear retake
-    words = " ".join(re.sub(r"\{[\d.]+\}|\[[^]]*\]", "", r).split(None, 1)[1] for r in rows)
-    assert " ".join(words.split()) == "This may be the funniest demo I've ever seen.", rows
     env = speech_energy.envelope(str(d / "kf.mov"))
     assert not _loud_cut_inside(d, env, -30.0), (tc.kept_iv(d), text)
     assert_no_unwarned_island(d, plan, applied)
@@ -376,16 +378,18 @@ def test_the_kungfu_shape_with_the_last_take_trimmed_by_tidy_is_still_whole(tmp_
 
 def test_the_stamp_names_every_constant_that_changes_a_cut():
     for name in ("ISLAND_S", "SILENCE_BELOW_SPEECH_DB", "ATTACHED_BELOW_SPEECH_DB", "BREATH_S", "SENTENCE_END_S",
-                 "DRIFT_S", "EDGE_BLEED_FRAMES", "LETTER_S", "WORD_BASE_S", "MISPLACED_SHARE", "VIDEO_EDGE_S",
+                 "DRIFT_S", "EDGE_BLEED_FRAMES", "LETTER_S", "WORD_BASE_S", "VIDEO_EDGE_S",
                  "SPEECH_PERCENTILE", "MIN_KEEP_S"):
         assert f"{name}={getattr(speech_energy, name)}" in speech_energy.Refiner.stamp, name
 
 
-def test_a_plan_that_never_settles_fails_loudly(tmp_path, monkeypatch, capsys):
+def test_a_plan_that_never_settles_is_written_with_a_note(tmp_path, monkeypatch):
     from steps.edit import cut as cc
     d = tc.spoken_project(tmp_path, ["we start now and then we stop."])
     monkeypatch.setattr(cc, "_settle", lambda *a, **k: True)
-    assert tc.refused(d, monkeypatch=monkeypatch, capsys=capsys) == "plan_unsettled"
+    plan, _ = tc.run(d, monkeypatch=monkeypatch)
+    assert plan["mode"] == "plan" and (d / "cut-plan.md").is_file()
+    assert any("settle" in n for n in plan.get("notes", [])), plan
 
 
 # test_an_island_that_can_neither_join_nor_widen_is_kept_and_named: in tests/test_speech_energy.py, on v5's tidy

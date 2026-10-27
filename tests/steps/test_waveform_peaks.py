@@ -227,9 +227,11 @@ def test_waveform_peaks_missing_input():
     assert_error(proc, "file_not_found")
 
 
-def test_waveform_peaks_invalid_samples_per_second_rejected(sine_wav):
+def test_waveform_peaks_samples_per_second_off_the_buckets_takes_the_nearest(sine_wav):
+    # PL89i: once refused; a step carries out what it can
     proc = run_step("waveform_peaks.py", "--input", str(sine_wav), "--samples-per-second", "100")
-    assert proc.returncode != 0
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["samplesPerSecond"] == 50
 
 
 @pytest.mark.slow
@@ -239,3 +241,16 @@ def test_waveform_peaks_clamp_steps_down_end_to_end(long_sine_wav):
     data = json.loads(proc.stdout)
     assert data["samplesPerSecond"] == 200
     assert len(data["peaks"]) == 2 * 130_000
+
+
+# Kung fu run: samples-per-second 40 was refused (50, 200 or 800). Steps carry out what they can: the nearest rate,
+# said in the answer.
+def test_a_rate_between_the_buckets_takes_the_nearest_and_says_so(sine_wav):
+    proc = run_step("waveform_peaks.py", "--input", str(sine_wav), "--samples-per-second", "40")
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout)
+    assert data["samplesPerSecond"] == 50
+    assert "50" in data["note"] and "40" in data["note"]
+    data = json.loads(run_step("waveform_peaks.py", "--input", str(sine_wav), "--samples-per-second", "500").stdout)
+    assert data["samplesPerSecond"] == 800 and "note" in data
+    assert "note" not in json.loads(run_step("waveform_peaks.py", "--input", str(sine_wav), "--samples-per-second", "200").stdout)

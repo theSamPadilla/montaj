@@ -6,12 +6,18 @@ list of consecutive frame times gives a frame strip."""
 import argparse, json, os, subprocess, sys, tempfile
 from contextlib import nullcontext
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file  # noqa: E402
+from common import fail, require_file, run_stopping  # noqa: E402
+from sheet import tile_sheet  # noqa: E402
+sys.path.insert(0, os.path.dirname(__file__))
+from sample_frame import sample_frames  # noqa: E402
 
-GUTTER = 4
-LABEL_H = 18
 MAX_TILES = 120
+# PL89j (cost): past this many frames a sheet is several, in at most SPLIT_COLS columns, so each tile stays readable in
+# the 768 px preview (6 columns of 30 frames made 128 px tiles, and the agent read them full size)
+SHEET_FRAMES = 12
+SPLIT_COLS = 4
 SAMPLE_FRAME = os.path.join(os.path.dirname(__file__), "sample_frame.py")
 
 
@@ -39,44 +45,56 @@ def _sample_frame(project, t, out, raw=False):
     if raw:
         cmd.append("--raw")
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        proc = run_stopping(cmd, timeout=120, text=True)
     except subprocess.TimeoutExpired:
         fail("sample_failed", f"sample_frame at {t}s exceeded 120s")
     if proc.returncode != 0 or not os.path.isfile(out):
         fail("sample_failed", f"sample_frame at {t}s failed: {proc.stderr.strip()[-400:]}")
 
 
-def build(project, times, cols, tile_width, out, sampler=_sample_frame, frames_dir=None, raw=False):
-    from PIL import Image, ImageDraw
+def build(project, times, cols, tile_width, out, sampler=_sample_frame, frames_dir=None, raw=False, look_fn=None):
     if frames_dir:
         os.makedirs(frames_dir, exist_ok=True)
     with (nullcontext(frames_dir) if frames_dir else tempfile.TemporaryDirectory()) as work:
-        tiles = []
-        frames = []
-        for i, t in enumerate(times):
-            p = os.path.join(work, f"f_{i:04d}.png")
-            sampler(project, t, p, raw=True) if raw else sampler(project, t, p)
-            frames.append(os.path.abspath(p))
-            im = Image.open(p).convert("RGB")
-            h = int(im.size[1] * tile_width / im.size[0] + 0.5)  # round half up
-            tiles.append(im.resize((tile_width, h)))
-        tile_h = tiles[0].size[1]
-        rows = (len(tiles) + cols - 1) // cols
-        sheet = Image.new("RGB", (cols * tile_width + (cols + 1) * GUTTER,
-                                  rows * (tile_h + LABEL_H) + (rows + 1) * GUTTER), (255, 255, 255))
-        draw = ImageDraw.Draw(sheet)
-        for i, (t, tile) in enumerate(zip(times, tiles)):
-            r, c = divmod(i, cols)
-            x = GUTTER + c * (tile_width + GUTTER)
-            y = GUTTER + r * (tile_h + LABEL_H + GUTTER)
-            sheet.paste(tile, (x, y))
-            draw.text((x + 2, y + tile_h + 3), f"{t:.2f}s", fill=(0, 0, 0))
-        os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
-        sheet.save(out)
+        if sampler is _sample_frame:
+            # Default path: every time in ONE node process.
+            frames = [os.path.abspath(p) for p in sample_frames(project, times, work, raw=raw)]
+        else:
+            frames = []
+            for i, t in enumerate(times):
+                p = os.path.join(work, f"f_{i:04d}.png")
+                sampler(project, t, p, raw=True) if raw else sampler(project, t, p)
+                frames.append(os.path.abspath(p))
+        sheets, sheet_times = [], []
+        if len(times) > SHEET_FRAMES and not frames_dir:
+            n = -(-len(times) // SHEET_FRAMES)
+            size = -(-len(times) // n)
+            stem, ext = os.path.splitext(out)
+            for k, i in enumerate(range(0, len(times), size)):
+                dest = out if k == 0 else f"{stem}-{k + 1}{ext}"
+                tile_sheet(frames[i:i + size], times[i:i + size], min(cols, SPLIT_COLS), tile_width, dest)
+                sheets.append(os.path.abspath(dest))
+                sheet_times.append(list(times[i:i + size]))
+        else:
+            tile_sheet(frames, times, cols, tile_width, out)
     result = {"path": os.path.abspath(out), "times": list(times), "cols": cols, "tile_width": tile_width}
+    if sheets:
+        result.update(sheets=sheets, sheet_times=sheet_times, cols=min(cols, SPLIT_COLS))
     if frames_dir:
         result["frames"] = frames
+    # Round 9: the closing sheet answers look's issues too (look never ran in the run that ended on this step); a look
+    # that fails leaves the sheet as it is
+    if look_fn is not None:
+        try:
+            result["look"] = look_fn(project)
+        except (SystemExit, Exception):  # noqa: BLE001
+            pass
     return result
+
+
+def _look(project):
+    import look   # steps/render/look.py, beside this step
+    return look.run(project)
 
 
 def main():
@@ -103,7 +121,9 @@ def main():
     times = args.at or grid_times(project_duration(args.project), args.every)
     if len(times) > MAX_TILES:
         fail("invalid_args", f"{len(times)} samples > {MAX_TILES}; raise --every")
-    print(json.dumps(build(args.project, times, args.cols, args.tile_width, args.out, frames_dir=args.frames_dir, raw=args.raw)))
+    # a frame strip or a raw sheet is a look at footage, not the closing check
+    look_fn = None if args.raw or args.frames_dir else _look
+    print(json.dumps(build(args.project, times, args.cols, args.tile_width, args.out, frames_dir=args.frames_dir, raw=args.raw, look_fn=look_fn)))
 
 
 if __name__ == "__main__":

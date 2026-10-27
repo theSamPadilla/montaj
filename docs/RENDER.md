@@ -296,7 +296,7 @@ tone-map implementations: the normalize master encode (`lib/normalize.py`,
 paired with a light `hqdn3d=1.5:1.5:3:3` denoise pre-LUT — master creation
 only, never proxies or fallbacks), the editing proxy (`lib/proxy.py`), the
 per-item segment conversion (`encode-segment.js`), the embedded thumbnail
-(`compose.js`), and single-frame sampling (`sample-frame.js`).
+(`compose.js`), and frame sampling (`sample-frame.js`; `--at` may repeat, with `--frames-dir`, to render several times in one process).
 
 `natural1` is Apple's own HLG-to-SDR conversion (`avconvert -p
 Preset1920x1080`, macOS 26.6.2) captured as a 33³ cube over exactly this

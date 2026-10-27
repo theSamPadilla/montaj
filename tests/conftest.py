@@ -203,6 +203,12 @@ def fake_whisper_env(tmp_path_factory) -> dict:
                 {"text": "test",    "offsets": {"from": 2200, "to": 2800}},
             ]
         }
+        if not out_file:
+            # by runs (the default): no --output-file, a <clip>.json beside every -f clip
+            for i, a in enumerate(args):
+                if a == "-f" and i + 1 < len(args):
+                    with open(args[i + 1] + ".json", "w") as f:
+                        json.dump(data, f)
         if out_file:
             with open(out_file + ".json", "w") as f:
                 json.dump(data, f)
@@ -237,3 +243,14 @@ def run_step_env(script: str, env_extra: dict, *args) -> subprocess.CompletedPro
         [sys.executable, str(path), *args],
         capture_output=True, text=True, env=env,
     )
+
+
+@pytest.fixture(autouse=True)
+def _cut_never_runs_whisper(monkeypatch):
+    """cut transcribes a clip with no transcript, or montaj's own older full-file one (PL89): with a whisper model in
+    HOME a test would reach the real whisper. A test that wants a transcription stubs cut's transcribe_file itself."""
+    cut = sys.modules.get("steps.edit.cut")
+    if cut is not None:
+        def refuse(*a, **k):
+            raise AssertionError("cut ran whisper in a test: stub steps.edit.cut.transcribe_file")
+        monkeypatch.setattr(cut, "transcribe_file", refuse)

@@ -1,13 +1,13 @@
 {
   "name": "sample_frame",
-  "description": "Render a fully composited project frame at a given timestamp to PNG (video + image items + active overlay JSXs + the captions, drawn as the export draws them; no audio). With scene, render one 3D alone over the project's whole frame, at seconds into it.",
+  "description": "Render a fully composited project frame at a given timestamp to PNG, or at several timestamps to one labelled sheet (video + image items + active overlay JSXs + the captions, drawn as the export draws them; no audio). With scene, render one 3D alone over the project's whole frame, at seconds into it.",
   "input": {
     "type": "project",
     "description": "The project id, its folder, or the absolute path of its project.json"
   },
   "output": {
     "type": "image",
-    "description": "PNG file at the requested output path (defaults to <project_dir>/render/samples/frame-<at>s.png)"
+    "description": "PNG file at the requested output path (defaults to <project_dir>/render/samples/frame-<at>s.png, or sheet-<first>-<last>s.png for several times)"
   },
   "params": [
     {
@@ -19,8 +19,15 @@
     {
       "name": "at",
       "type": "float",
-      "required": true,
-      "description": "Timestamp in seconds to sample: timeline seconds, or with scene, seconds into that 3D"
+      "required": false,
+      "repeatable": true,
+      "description": "Seconds on the timeline (with scene, into that 3D). One: a full frame. Several (up to 120): labelled sheets on the 1280 px look layout, 24 a sheet. Not with every."
+    },
+    {
+      "name": "every",
+      "type": "float",
+      "required": false,
+      "description": "A sheet of the whole project: a frame every N seconds (not with at). The timeline's one look; the closing check is look."
     },
     {
       "name": "scene",
@@ -48,10 +55,17 @@
       "description": "Sample the untouched SOURCE frame under the time instead of the composite: the clip the timeline shows at that time, decoded straight from its file, with no crop, zoom, fit, grade, image items, overlays or captions. Use it to read the footage itself (e.g. to pick crops or cut points) without making a stripped copy of the project. Source resolution; an HDR source is not tone-mapped. A time with no video gives a black frame. Not combined with scene."
     },
     {
+      "name": "no-captions",
+      "type": "bool",
+      "required": false,
+      "default": false,
+      "description": "Sample the frame without the captions overlay, to read the picture under a caption. No effect with raw or scene."
+    },
+    {
       "name": "out",
       "type": "path",
       "required": false,
-      "description": "Output PNG path. Defaults to <project_dir>/render/samples/frame-<at>s.png"
+      "description": "Output PNG path (with several times, the sheet). Defaults to <project_dir>/render/samples/frame-<at>s.png, or sheet-<first>-<last>s.png for several times"
     }
   ]
 }

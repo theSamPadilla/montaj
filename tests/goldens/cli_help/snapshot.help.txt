@@ -1,24 +1,25 @@
-usage: montaj snapshot [-h] [--cols COLS] [--rows ROWS] [--start START]
-                       [--end END] [--frames FRAMES] [--at AT] [--json]
-                       [--out PATH] [--quiet]
-                       input
-
-positional arguments:
-  input            Source video file
+usage: montaj snapshot [-h] [--input INPUT] [--inputs INPUTS] [--names NAMES]
+                       [--cols COLS] [--rows ROWS] [--start START] [--end END]
+                       [--frames FRAMES] [--at AT] [--json] [--out PATH]
+                       [--quiet]
 
 options:
   -h, --help       show this help message and exit
-  --cols COLS      Grid columns (grid mode)
+  --input INPUT    Source video file
+  --inputs INPUTS  Several clips: ONE sheet, a row per clip (cols frames each,
+                   default 6), each tile labelled with its name and time. At
+                   most 12.
+  --names NAMES    A label per inputs clip (its clip id).
+  --cols COLS      Grid columns (grid mode, or a sheet of several at)
   --rows ROWS      Grid rows (grid mode)
   --start START    Window start in seconds (grid / all-frames mode)
   --end END        Window end in seconds (grid / all-frames mode)
   --frames FRAMES  Number of frames to sample (grid mode), or 'all' to extract
                    every frame in the window
-  --at AT          Extract a single full-resolution frame at this timestamp
-                   (seconds). Mutually exclusive with --frames, --cols,
-                   --rows, --start, --end. Used for boundary-frame extraction:
-                   scene continuity (Kling --first-frame / --last-frame) and
-                   regen stitching.
+  --at AT          Seconds. One: a single full-resolution frame (scene
+                   continuity, regen stitching). Several (up to 36): one sheet
+                   of those times, each tile labelled, cols columns (default
+                   up to 6). Not with frames, rows, start, end.
   --json           Output result as JSON
   --out PATH       Output file path
   --quiet          Suppress progress output

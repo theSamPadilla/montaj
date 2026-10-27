@@ -371,3 +371,20 @@ describe('makeCaptionEdit never pairs two words that have no letters', () => {
     expect(words.map(w => w.color)).toEqual([undefined, undefined, undefined])
   })
 })
+
+describe('makeCaptionEdit keeps the AI stamp (§585)', () => {
+  const stamped = () => seg({ auto: 'abc123def456', words: [{ word: 'hello', start: 0, end: 1 }, { word: 'world', start: 1, end: 2 }] } as Partial<CaptionSegment>)
+  const autoOf = (p: ReturnType<typeof vi.fn>) => (p.mock.calls[0][0].captions.segments[0] as unknown as { auto?: string }).auto
+
+  it('a text edit leaves auto byte for byte', () => {
+    const change = vi.fn()
+    makeCaptionEdit('cap-0', project([stamped()]), change)({ text: 'hello there' })
+    expect(autoOf(change)).toBe('abc123def456')
+  })
+
+  it('a style patch leaves auto byte for byte', () => {
+    const change = vi.fn()
+    makeCaptionEdit('cap-0', project([stamped()]), change)({ offsetX: 3, color: '#fff' } as never)
+    expect(autoOf(change)).toBe('abc123def456')
+  })
+})

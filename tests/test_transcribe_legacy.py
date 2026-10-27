@@ -12,11 +12,19 @@ pytestmark = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not installed")
 FAKE_WHISPER = """#!/usr/bin/env python3
 import json, sys
 args = sys.argv[1:]
+data = {"transcription": [
+    {"text": "hola", "offsets": {"from": 0, "to": 500}},
+]}
+if "--output-file" not in args:
+    # by runs (the default): no --output-file, a <clip>.json beside every -f clip
+    for i, a in enumerate(args):
+        if a == "-f":
+            with open(args[i + 1] + ".json", "w") as f:
+                json.dump(data, f)
+    sys.exit(0)
 prefix = args[args.index("--output-file") + 1]
 with open(prefix + ".json", "w") as f:
-    json.dump({"transcription": [
-        {"text": "hola", "offsets": {"from": 0, "to": 500}},
-    ]}, f)
+    json.dump(data, f)
 # The step always passes --output-srt and check_output() rejects zero-byte
 # files (lib/common.py:38-40), so the .srt must exist AND be non-empty.
 with open(prefix + ".srt", "w") as f:

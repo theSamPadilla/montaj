@@ -58,7 +58,7 @@ def _write_project(workspace: Path) -> str:
     return pid
 
 
-def test_rerun_restores_sources_in_the_object_track_shape(workspace, monkeypatch):
+def test_rerun_empties_the_timeline_in_the_object_track_shape(workspace, monkeypatch):
     monkeypatch.setattr("serve.routes.projects._git_commit_sync", lambda *a, **k: None)
     pid = _write_project(workspace)
 
@@ -66,14 +66,10 @@ def test_rerun_restores_sources_in_the_object_track_shape(workspace, monkeypatch
     assert resp.status_code == 200, resp.text
     updated = resp.json()
 
-    assert updated["tracks"] == [
-        {"id": "trk-0", "items": [
-            {"id": "clip-0", "src": "./clips/a.mp4", "order": 0},
-            {"id": "clip-1", "src": "./clips/b.mp4", "order": 1},
-        ]},
-    ]
-    # …and readers see the source clips, not a dict's keys.
-    assert [c["id"] for c in track_items(updated)[0]] == ["clip-0", "clip-1"]
+    # §590: a rerun starts as a new project does, with an empty timeline; the clips stay in sources.
+    assert updated["tracks"] == [{"id": "trk-0", "items": []}]
+    assert [c["id"] for c in updated["sources"]] == ["clip-0", "clip-1"]
+    assert track_items(updated) == [[]]
 
     on_disk = json.loads((workspace / "rerun-me" / "project.json").read_text())
     assert on_disk["tracks"] == updated["tracks"]

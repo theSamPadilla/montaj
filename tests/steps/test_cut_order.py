@@ -14,7 +14,8 @@ def _plan_lines(d):
 
 def _cut_rows(lines):
     """Indexes of the `## Cut` rows (each a line id, its words and a [time ...] tag)."""
-    at, end = lines.index("## Cut"), lines.index("## Unused")
+    at = lines.index("## Cut")
+    end = lines.index("## Unused") if "## Unused" in lines else len(lines)
     return [i for i in range(at + 1, end) if lines[i].strip() and not lines[i].startswith("<!--")]
 
 
@@ -38,7 +39,7 @@ def test_rows_of_one_clip_play_in_the_order_the_plan_puts_them(tmp_path, monkeyp
     said = ["One fine morning we left early.", "The road out of town was long.", "We reached the lake at noon."]
     d = tc.spoken_project(tmp_path, said)
     plan, _ = tc.run(d, monkeypatch=monkeypatch)
-    assert plan["removed"]["lines"] == {}
+    assert plan["labels"] == {}
     rows = _reorder(d, [2, 0, 1])
     assert [r.split(" ", 1)[1].split(" [")[0] for r in rows][0].startswith("We reached")
     applied, _ = tc.run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
@@ -51,7 +52,7 @@ def test_a_later_clips_rows_can_play_ahead_of_an_earlier_clips(tmp_path, monkeyp
     two = ["Now the second clip is talking.", "And this is where it ends."]
     d = tc.spoken_project(tmp_path, one, two)
     plan, _ = tc.run(d, monkeypatch=monkeypatch)
-    assert plan["removed"]["lines"] == {}
+    assert plan["labels"] == {}
     _reorder(d, [2, 3, 0, 1])
     applied, _ = tc.run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
     assert applied["mode"] == "applied"
@@ -61,18 +62,16 @@ def test_a_later_clips_rows_can_play_ahead_of_an_earlier_clips(tmp_path, monkeyp
     assert starts[0]["src"].endswith("vo1.mov"), [it["src"] for it in starts]       # the later clip plays first
 
 
-def test_a_kept_offer_moves_with_its_row(tmp_path, monkeypatch):
-    """A take the plan only offers (retake?: still in `## Cut`, its offer in `## Unused`) is a row like any other when
-    it is kept: moved last, it plays last, and nothing refuses the move."""
+def test_a_labeled_row_moves_like_any_other(tmp_path, monkeypatch):
+    """A take the plan labels (retake?: a row of `## Cut` with its tag) is a row like any other: moved last, it plays
+    last, and nothing refuses the move."""
     d = tc.spoken_project(tmp_path, ["what if a robot could ride a bike?", "Here is how it learns."], ["It falls a lot."],
                           ["It gets up again."], ["It keeps trying all day.", "So what if a robot could ride a bike?"])
     plan, _ = tc.run(d, monkeypatch=monkeypatch)
-    assert plan["suggested"].get("retake?"), plan["suggested"]
+    assert plan["labels"].get("retake?"), plan["labels"]
     lines = _plan_lines(d)
     rows = [lines[i] for i in _cut_rows(lines)]
-    _, unused = tc.sections("\n".join(lines))
-    offered_ids = {r.split()[0] for r in unused if "?" in r.rsplit("[", 1)[-1]}
-    k = next(j for j, r in enumerate(rows) if r.split()[0] in offered_ids)        # the offered take, kept in ## Cut
+    k = next(j for j, r in enumerate(rows) if re.search(r"\[[\d.]+ retake\? ", r))      # the labeled take
     assert rows[k].split(" ", 1)[1].startswith("what if"), rows[k]
     order = [j for j in range(len(rows)) if j != k] + [k]
     moved = _reorder(d, order)
@@ -83,11 +82,11 @@ def test_a_kept_offer_moves_with_its_row(tmp_path, monkeypatch):
 
 
 def test_the_kept_rows_reversed_on_real_speech_apply_reversed(tmp_path, stub_transcribe, monkeypatch):
-    """On recorded speech whose retakes the take rules removed, every kept row reversed still applies, in that order."""
+    """On recorded speech whose retakes the take rules label, every row reversed still applies, in that order."""
     stub_transcribe(tc.retake_transcript())
     d = tc.make_project(tmp_path)
     plan, _ = tc.run(d, monkeypatch=monkeypatch)
-    assert plan["removed"]["lines"]                                          # the take rules removed some
+    assert plan["labels"]                                                    # the take rules labeled some
     n = len(_cut_rows(_plan_lines(d)))
     moved = _reorder(d, list(range(n - 1, -1, -1)))
     applied, _ = tc.run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)

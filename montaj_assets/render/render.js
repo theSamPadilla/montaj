@@ -41,7 +41,7 @@ import {
 } from './disk-space.js'
 import { planSlices, fitBudget, parseSliceBudget, SLICE_BUDGET_BYTES } from './slice-plan.js'
 import {
-  runSlices, overlayDescriptor, plannedDescriptors, hdrCardCandidates, previewGroups, commonEdges,
+  runSlices, overlayDescriptor, plannedDescriptors, previewGroups, commonEdges,
   sliceDiskTerms, slicingLine,
 } from './slice-run.js'
 import { tmpdir }                         from 'os'
@@ -527,6 +527,8 @@ function loadRenderProject(projectPath, { out = null, requireFinal = true, overr
   // pass (7b). Taken before anything below mutates projectJson: the repoint
   // right after this, collectAllItems' cache swaps and every src the HDR pass
   // rewrites all act on projectJson, never on this copy.
+  // PL89d: before the pristine copy too, so the per-layer SDR pass seeks the same frames (anchorFullSourceCaches).
+  anchorFullSourceCaches(projectJson)
   const pristineProject = structuredClone(projectJson)
   // Before collectAllItems swaps in any cache: an SDR master an older montaj
   // built from an untagged source is sent back to its source, so the normalize
@@ -1118,7 +1120,7 @@ function planDisk({
   const unsliced = estimateRenderDisk(inputs)
   const slicing = planSlicing({
     inputs, unsliced, segmentSpecs, items: [...imageItems, ...videoItems], fps: settings.fps || 30,
-    renderWidth, renderHeight, captureScale, chunkFrames: plan.chunkSize, projectColorSpace, renderDir, reclaimBytes,
+    renderWidth, renderHeight, captureScale, chunkFrames: plan.chunkSize, renderDir, reclaimBytes,
   })
   const estimate = slicing.terms ? estimateRenderDisk({ ...inputs, slicing: slicing.terms }) : unsliced
   return { plan, estimate, scratch, reclaimBytes, slicing }
@@ -1140,9 +1142,8 @@ function planDisk({
  * slice at the sparse rate beside the lower bound of the rest, no headroom);
  * anything the lower bounds hold runs, at the smallest slices if need be.
  *
- * Unsliced, always, when an HDR render has a card candidate (slice-run.js
- * hdrCardCandidates): the card probe reads a whole capture. If the planning
- * throws, the unsliced numbers stand (they err high) and the render goes on.
+ * If the planning throws, the unsliced numbers stand (they err high) and the
+ * render goes on.
  *
  * Returns `{ sliced, slices, budgetBytes, wantedBytes, freeBytes, peakBytes,
  * captureBytes, reason, refused, needBytes, terms }`; `terms` (for
@@ -1150,7 +1151,7 @@ function planDisk({
  */
 function planSlicing({
   inputs, unsliced, segmentSpecs, items, fps, renderWidth, renderHeight, captureScale, chunkFrames,
-  projectColorSpace, renderDir, reclaimBytes,
+  renderDir, reclaimBytes,
 }) {
   const wantedBytes = parseSliceBudget(process.env.MONTAJ_SLICE_BUDGET_MB) ?? SLICE_BUDGET_BYTES
   const px = renderWidth * renderHeight * captureScale * captureScale
@@ -1161,9 +1162,6 @@ function planSlicing({
     captureBytes, reason, refused: false, needBytes: null, terms: null, ...extra,
   })
   if (segmentSpecs.length === 0) return off(null)
-  if (isHdr(projectColorSpace) && hdrCardCandidates(segmentSpecs).length > 0) {
-    return off('an HDR card candidate needs its whole capture probed')
-  }
   try {
     const overlays = plannedDescriptors(segmentSpecs).map((d) => ({ ...d, sparse: d.isCaption === true }))
     const groups = previewGroups(items, overlays, renderWidth, renderHeight, fps)
@@ -1565,6 +1563,7 @@ async function prepareVideoItems(videoItems, targetFor,
     item.probedWidth  = geom?.width  ?? null
     item.probedHeight = geom?.height ?? null
     item.probedAlpha  = geom?.alpha  ?? null
+    item.probedPixFmt = geom?.pixFmt ?? null
     if (!transferCache.has(item.src)) {
       transferCache.set(item.src, probeColorTransfer(item.src))
     }
@@ -2319,6 +2318,31 @@ function originalOfSdrMaster(path) {
  * marker only by untagged sources; an iPhone (HLG) or tagged source costs one
  * transfer probe and is left alone.
  */
+/**
+ * PL89d: a video item whose `normalizedSrc` is its source's recorded cache (project.sources: a source describes a whole
+ * file, so its normalizedSrc is a full-source conversion) and that has no `normalizedInPoint` gets origin 0, in the
+ * in-memory project only. Without an origin, sourceWindow reads a normalizedSrc as a legacy window cache starting at
+ * the item's inPoint and seeks from 0 of the full file: an item the agent added with the source's normalizedSrc pasted
+ * in rendered the source's start instead of its inPoint. A cache the sources do not record keeps the legacy reading.
+ */
+export function anchorFullSourceCaches(projectJson) {
+  const full = new Map()
+  for (const s of projectJson.sources ?? []) {
+    if (s && typeof s.src === 'string' && typeof s.normalizedSrc === 'string') full.set(resolve(s.src), resolve(s.normalizedSrc))
+  }
+  if (full.size === 0) return
+  for (const items of (projectJson.tracks ?? []).map((t) => (Array.isArray(t) ? t : t?.items))) {
+    for (const item of items ?? []) {
+      if (item?.type !== 'video' || typeof item.src !== 'string' || typeof item.normalizedSrc !== 'string') continue
+      if (item.normalizedInPoint != null) continue
+      if (full.get(resolve(item.src)) === resolve(item.normalizedSrc)) {
+        log(`${item.id ?? 'a clip'}: ${basename(item.normalizedSrc)} is its source's full-length cache; seeking it from 0`)
+        item.normalizedInPoint = 0
+      }
+    }
+  }
+}
+
 function repointStaleUntaggedMasters(projectJson) {
   const colorSpace = projectJson.settings?.colorSpace
   if (colorSpace != null && colorSpace !== 'sdr_bt709') return

@@ -692,3 +692,44 @@ def test_a_3d_items_keyframes_follow_its_kept_stretches(fx):
     dur = s["end"] - s["start"]
     assert pts[0]["t"] == 0 and pts[-1]["t"] == pytest.approx(dur, abs=1e-6) and pts[-1]["value"] == pytest.approx(0)
     assert all(0 <= q["t"] <= dur + 1e-6 for q in pts) and [q["t"] for q in pts] == sorted(q["t"] for q in pts)
+
+
+def _stamped(project):
+    from lib.caption_marks import stamp_all
+    project = copy.deepcopy(project)
+    stamp_all(project["captions"]["segments"])
+    return project
+
+
+def test_a_trimmed_ai_caption_line_is_restamped_and_a_persons_stays_theirs(fx):
+    from lib.caption_marks import is_persons, stamp
+    project = _stamped(fx.project)
+    r = run(fx, edit(fx.text, A4, None).replace(A1_CUT_FROM, A1_CUT_TO), project=project)
+    segs = r.project["captions"]["segments"]
+    assert any(s["text"] != next((o["text"] for o in project["captions"]["segments"] if o["id"] == s["id"]), None) for s in segs)
+    for s in segs:
+        assert s["auto"] == stamp(s["text"]) and not is_persons(s), s["id"]
+    mine = _stamped(fx.project)
+    cap1 = next(s for s in mine["captions"]["segments"] if s["id"] == "cap-1")
+    cap1["text"] = cap1["text"] + " (mine)"
+    r = run(fx, edit(fx.text, A4, None).replace(A1_CUT_FROM, A1_CUT_TO), project=mine)
+    out = next(s for s in r.project["captions"]["segments"] if s["id"] == "cap-1")
+    assert is_persons(out)
+
+
+def test_restored_speech_lines_are_stamped_when_the_track_is(fx):
+    from lib.caption_marks import is_persons, stamp
+    project = _stamped(fx.project)
+    c3 = speech_items(project)[2]
+    c3.update(outPoint=28.4, end=c3["start"] + 28.4 - 20.1)
+    cap6 = next(s for s in project["captions"]["segments"] if s["id"] == "cap-6")
+    cap6["words"] = cap6["words"][:2]
+    cap6.update(text='"No answer."', end=cap6["words"][-1]["end"])
+    cap6["auto"] = stamp(cap6["text"])
+    project["audio"]["tracks"][0]["end"] = c3["end"]
+    d = derive(project, fx.pdir)
+    text = render(d, project["id"])
+    r = run(fx, append(text, "A13 The old lady pulled her speckle."), project=project, derived=d)
+    new = [s for s in r.project["captions"]["segments"] if s["id"] == "cap-7"]
+    assert len(new) == 1 and new[0]["auto"] == stamp(new[0]["text"])
+    assert not any(is_persons(s) for s in r.project["captions"]["segments"])

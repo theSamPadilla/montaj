@@ -59,7 +59,7 @@ done
 
 Pass `--fps` to match the project. `spring()` is tuned in wall-clock time, so sampling a 60fps project at the 30 default shows springs settling twice as fast as they really will.
 
-**Once the overlay is placed in a project, two different questions — do not substitute one for the other.** Switch from `sample_overlay` (a frame number inside one isolated JSX) to `sample_frame --project <project.json> --at <seconds>` (a timestamp inside the whole composited timeline) once that distinction matters.
+**Once the overlay is placed in a project, two different questions — do not substitute one for the other.** Switch from `sample_overlay` (a frame number inside one isolated JSX) to `sample_frame --project <project.json> --at <seconds>` (a timestamp inside the whole composited timeline) once that distinction matters. Repeat `--at` (up to 12) to get one labelled sheet of several times in a single call.
 
 ### Motion energy — "is anything actually moving?"
 

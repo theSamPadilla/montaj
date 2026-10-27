@@ -33,7 +33,7 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 
-import { sampleOverlay, sampleFrame, clampAtToEnd, buildFrameCacheKey, buildOverlayCacheKey, SAMPLE_CACHE_VERSION } from '../sample-frame.js'
+import { sampleOverlay, sampleFrame, clampAtToEnd, buildFrameCacheKey, buildOverlayCacheKey, SAMPLE_CACHE_VERSION, measureOverlays } from '../sample-frame.js'
 import { buildOverlayFilterParts } from '../encode-segment.js'
 import { FFMPEG } from '../ffmpeg-bin.js'
 import { MASTER_LOOK } from '../look.js'
@@ -1736,6 +1736,45 @@ test('(z2) sampleFrame clampToEnd: past the end renders the last frame and write
   })
 
 // ---------------------------------------------------------------------------
+// noCaptions: the frame without the captions overlay (--no-captions)
+// ---------------------------------------------------------------------------
+
+test('buildFrameCacheKey: a frame without captions never shares an entry with a captioned one', () => {
+  const project = { settings: { colorSpace: 'sdr_bt709' } }
+  const captioned = buildFrameCacheKey(null, project, 1.5)
+  const bare = buildFrameCacheKey(null, project, 1.5, null, false, SAMPLE_CACHE_VERSION, null, true)
+  assert.notEqual(bare, captioned)
+  assert.equal(buildFrameCacheKey(null, project, 1.5, null, false, SAMPLE_CACHE_VERSION, null, false), captioned,
+    'the default key is unchanged, so captioned frames cached before stay valid')
+})
+
+test('sampleFrame noCaptions: the captions overlay is left out, and the cache does not hand it back', { timeout: 180_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-nc-'))
+  try {
+    const fixture = makeSyntheticFixture(dir)
+    if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+    const plain = { ...fixture.project, tracks: [fixture.project.tracks[0]] }
+    const captioned = {
+      ...plain,
+      captions: { style: 'subtitle', segments: [{ id: 'c1', start: 1.0, end: 2.5, text: 'HELLO CAPTIONS', words: [] }] },
+    }
+    const withCaption = join(dir, 'with.png')
+    const bare = join(dir, 'bare.png')
+    const bareAgain = join(dir, 'bare-again.png')
+    await sampleFrame({ projectJson: captioned, atSeconds: 1.5, outPath: withCaption })
+    await sampleFrame({ projectJson: captioned, atSeconds: 1.5, outPath: bare, noCaptions: true })
+    await sampleFrame({ projectJson: captioned, atSeconds: 1.5, outPath: bareAgain, noCaptions: true })
+    assert.ok(statSync(bare).size < statSync(withCaption).size, 'the bare frame is the plain footage, smaller than the captioned one')
+    assert.ok(readFileSync(bare).equals(readFileSync(bareAgain)))
+    const plainOut = join(dir, 'plain.png')
+    await sampleFrame({ projectJson: plain, atSeconds: 1.5, outPath: plainOut })
+    assert.equal(statSync(bare).size, statSync(plainOut).size, 'noCaptions equals the project with no captions')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
 // (§59) a sampled frame draws the captions, as the export does
 // ---------------------------------------------------------------------------
 
@@ -1770,6 +1809,75 @@ test('(§59) sampleFrame: the captions are drawn (the export\'s own caption over
     // plain one, not the captioned one.
     assert.ok(Math.abs(statSync(outsideSegment).size - sizeWithout) < sizeWith - sizeWithout,
       'a frame outside every segment should be (close to) the plain frame, not the captioned one')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// PL89f: a centred title written as a full-width box (left 0, width 1080, textAlign center) measures its element as
+// the whole width, so every zone check called it inside the title-safe margin and look told the agent to narrow the
+// four letters "UCLA". Each text also reports `glyphs`: its own text's extent, which the zone checks use.
+// ---------------------------------------------------------------------------
+test('(pl89f) sampleOverlay --measure: a full-width centred title reports its glyphs apart from its box', { timeout: 60_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-glyphs-'))
+  try {
+    const jsxPath = join(dir, 'title.jsx')
+    writeFileSync(jsxPath, "export default function T() { return <div style={{ position: 'absolute', left: 0, top: 300, width: 1080, " +
+      "textAlign: 'center', fontSize: 96, fontFamily: 'monospace', color: 'white' }}>UCLA</div> }\n")
+    const result = await sampleOverlay({ componentPath: jsxPath, frame: 0, fps: 30, width: 1080, height: 1920, outPath: join(dir, 'out.png'), measure: true })
+    const t = result.measurements.texts.find((x) => x.text.includes('UCLA'))
+    assert.ok(t, 'the title is measured')
+    assert.equal(Math.round(t.bbox.w), 1080, 'the box is the element: the full width')
+    assert.ok(t.glyphs && t.glyphs.w > 100 && t.glyphs.w < 400, `the glyphs are the four letters: ${JSON.stringify(t.glyphs)}`)
+    assert.ok(Math.abs(t.glyphs.x + t.glyphs.w / 2 - 540) < 4, `centred: ${JSON.stringify(t.glyphs)}`)
+    assert.ok(t.glyphs.y >= t.bbox.y - 1 && t.glyphs.h > 40, `on its line: ${JSON.stringify(t.glyphs)}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// PL89g: look measured each overlay in its own process, with its own Chromium (9 overlays: 9 launches, 3 at a time).
+// measureOverlays measures them all in one call over `lanes` browsers, each overlay on its own page; one that fails
+// is answered on its own and the rest are measured.
+// ---------------------------------------------------------------------------
+test('(pl89g) measureOverlays: several overlays in one call share one browser, a broken one answers alone', { timeout: 120_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-batch-'))
+  try {
+    const jsx = (text, top) => "export default function T() { return <div style={{ position: 'absolute', left: 100, top: " + top +
+      ", fontSize: 60, color: 'white' }}>" + text + "</div> }\n"
+    writeFileSync(join(dir, 'a.jsx'), jsx('Alpha', 200))
+    writeFileSync(join(dir, 'b.jsx'), 'export default function T() { return <div>{undefinedThing.x}</div> }\n')
+    writeFileSync(join(dir, 'c.jsx'), jsx('Gamma', 900))
+    const job = (name) => ({ componentPath: join(dir, `${name}.jsx`), frame: 0, fps: 30, width: 1080, height: 1920, outPath: join(dir, `${name}.png`) })
+    const { results, browsers } = await measureOverlays([job('a'), job('b'), job('c')], { lanes: 1 })
+    assert.equal(results.length, 3)
+    assert.ok(results[0].measurements.texts.some((t) => t.text === 'Alpha'), JSON.stringify(results[0]))
+    assert.ok(results[1].error, `the broken one says why: ${JSON.stringify(results[1])}`)
+    assert.ok(results[2].measurements.texts.some((t) => t.text === 'Gamma' && Math.round(t.bbox.y) === 900), JSON.stringify(results[2]))
+    assert.equal(browsers, 1, 'one browser for the three')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// PL89g: look reads a text's fill against the picture behind it, so the measure gives each text its `color`, and
+// `plate`: the colour of an opaque background behind it inside the overlay (it is read against that, not the picture).
+test('(pl89g) sampleOverlay --measure: each text has its color, and its plate when it sits on one', { timeout: 60_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-color-'))
+  try {
+    const jsxPath = join(dir, 'labels.jsx')
+    writeFileSync(jsxPath, "export default function T() { return <div>" +
+      "<div style={{ position: 'absolute', left: 100, top: 200, fontSize: 50, color: 'rgb(255, 255, 255)' }}>bare</div>" +
+      "<div style={{ position: 'absolute', left: 100, top: 600, padding: 20, background: 'rgb(20, 20, 24)' }}>" +
+      "<span style={{ fontSize: 50, color: 'rgb(250, 250, 250)' }}>plated</span></div></div> }\n")
+    const result = await sampleOverlay({ componentPath: jsxPath, frame: 0, fps: 30, width: 1080, height: 1920, outPath: join(dir, 'out.png'), measure: true })
+    const bare = result.measurements.texts.find((t) => t.text === 'bare')
+    const plated = result.measurements.texts.find((t) => t.text === 'plated')
+    assert.equal(bare.color, 'rgb(255, 255, 255)')
+    assert.equal(bare.plate, null)
+    assert.equal(plated.plate, 'rgb(20, 20, 24)')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

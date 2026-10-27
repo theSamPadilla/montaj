@@ -28,7 +28,8 @@ def _project(tmp_path, overlays=(), base=((0, 5), (5, 10)), captions=(), extra_t
     items = []
     for ov in overlays:
         ov = dict(ov)
-        jsx = ov.pop("jsx", "export default function O() { return <div>hi</div> }")
+        # moving by default (PL89b: look says when an overlay has no motion); the motion tests pass their own
+        jsx = ov.pop("jsx", "export default function O() { const m = Motion.motion(frame, fps, duration); return <div style={m.style}>hi</div> }")
         if jsx is not None:
             (d / "overlays" / f"{ov['id']}.jsx").write_text(jsx)
         items.append({"type": "overlay", "src": f"./overlays/{ov['id']}.jsx", **ov})
@@ -85,6 +86,13 @@ def test_data_issues_past_the_footage_missing_file_black_and_hidden(tmp_path):
     assert ("ov-gone", "hidden by img-full 1.0-2.0s") in found
 
 
+def test_a_3d_scene_item_is_drawn_by_the_engine_and_has_no_overlay_file(tmp_path):
+    # PL89 round 1: look answered "overlay file missing" for each 3D scene item (src engine:scene3d).
+    scene = {"id": "sc-walk", "type": "overlay", "src": "engine:scene3d", "start": 1, "end": 3, "props": {"scene": "walk"}}
+    path, p = _project(tmp_path, overlays=[{"id": "ov-a", "start": 2, "end": 4}], extra_tracks=[{"id": "t3d", "items": [scene]}])
+    assert [i for i in lc.data_issues(p, str(path.parent)) if i["id"] == "sc-walk"] == []
+
+
 def test_a_clean_project_has_no_data_issues(tmp_path):
     path, p = _project(tmp_path, overlays=[{"id": "ov-a", "start": 2, "end": 4}], captions=[(0, 2)])
     assert lc.data_issues(p, str(path.parent)) == []
@@ -126,11 +134,34 @@ def test_two_overlays_on_screen_at_once_whose_text_crosses_are_reported():
     assert [i["text"] for i in lc.text_overlaps([a, b, c])] == ["text overlaps ov-b", "text overlaps ov-c"]
 
 
-def test_the_answer_stays_within_300_characters_and_counts_the_rest():
-    issues = [{"t": k, "id": f"ov-{k}", "text": "text \"A long headline\" runs off the frame"} for k in range(30)]
+def test_the_answer_lists_every_issue_once_grouping_the_same_one_across_items():
+    # PL89g: a 300-character answer showed one issue and "more": 3, so the agent ran look again with detail to read the
+    # rest (two of its five passes). Every issue comes back; the same issue on several items is one line.
+    same = 'text "Footage: Phonebot" under the apps\' right-side buttons: move it up 162 px'
+    issues = [{"t": t, "id": i, "text": same} for t, i in ((26.04, "ov-b"), (4.92, "ov-a"), (29.44, "ov-c"))]
+    issues += [{"t": k, "id": f"ov-{k}", "text": f'text "Headline {k}" runs off the frame: move it left {k} px'} for k in range(1, 9)]
     out = lc.answer(issues, extra={"overlays": 12})
-    assert len(json.dumps(out)) <= 300 and out["ok"] is False and out["more"] == 30 - len(out["issues"])
+    assert "more" not in out and len(out["issues"]) == 9, out
+    assert out["issues"][0] == "1s ov-1: " + 'text "Headline 1" runs off the frame: move it left 1 px'
+    assert "4.92s ov-a, 26.04s ov-b, 29.44s ov-c: " + same in out["issues"]
     assert lc.answer([], extra={"overlays": 2}) == {"ok": True, "overlays": 2}
+
+
+def test_a_very_long_answer_still_stops_and_counts_the_rest():
+    issues = [{"t": k, "id": f"ov-{k}", "text": f'text "A long headline number {k}" runs off the frame'} for k in range(200)]
+    out = lc.answer(issues)
+    assert out["more"] == 200 - len(out["issues"]) and len(json.dumps(out)) <= lc.ANSWER_CAP
+
+
+@pytest.mark.parametrize("box,want", [
+    # PL89g: "move it right 4 px", then "up 1 px": nudges under ZONE_SLACK_PX (rounding, glyph slack) are not issues
+    (("Edge", 49, 600, 400, 80), []),
+    (("Edge", 45, 600, 400, 80), ['text "Edge" inside the 5% title-safe margin: move it right 9 px']),
+    (("Low", 100, 1495, 400, 80), []),                                   # 5 px over the controls' 1570
+    (("Tag", 795, 1000, 90, 80), []),                                    # 5 px under the buttons' 880
+])
+def test_a_safe_area_nudge_under_the_slack_is_not_an_issue(box, want):
+    assert [i["text"] for i in lc.measured_issues({}, _texts(box), 1080, 1920, 1, "ov")] == want
 
 
 # ── the step ──────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -151,7 +182,7 @@ def test_look_reports_the_overflowing_overlay_and_not_the_clean_one_and_writes_n
     fake = _fake_measure({"ov-wide": [("A very long headline", 600, 400, 900, 120)]})
     out = look.run(str(path), measure_fn=fake)
     assert out["ok"] is False and out["overlays"] == 2 and "looked" not in out, "text mode renders no frame"
-    assert out["issues"] == ['2.0s ov-wide: text "A very long headline" runs off the frame']
+    assert out["issues"] == ['2.0s ov-wide: text "A very long headline" runs off the frame: move it left 474 px']
     assert sorted(c[0] for c in fake.calls) == ["ov-clean", "ov-wide"]
     assert ("ov-wide", 30, 60, 1080, 1920) in fake.calls, "the middle of its span, its whole length, the design canvas"
     assert hashlib.sha256(path.read_bytes()).hexdigest() == before
@@ -162,6 +193,11 @@ def test_look_measures_at_most_12_overlays_and_says_how_many_it_left(tmp_path):
     path, _ = _project(tmp_path, base=((0, 20),), overlays=[{"id": f"ov-{k}", "start": k, "end": k + 1} for k in range(15)])
     fake = _fake_measure({})
     out = look.run(str(path), measure_fn=fake)
+    # PL89: this fixture's bare stretches are still holds too; this test is about the measure cap
+    out["issues"] = [i for i in out.get("issues", []) if "still for" not in i]
+    if not out["issues"]:
+        out.pop("issues")
+        out["ok"] = True
     assert out == {"ok": True, "overlays": 12, "unmeasured": 3}
     assert len(fake.calls) == 12
 
@@ -169,7 +205,7 @@ def test_look_measures_at_most_12_overlays_and_says_how_many_it_left(tmp_path):
 def test_look_answers_a_measure_that_failed_as_an_issue(tmp_path):
     path, _ = _project(tmp_path, overlays=[{"id": "ov-bad", "start": 1, "end": 3}])
     out = look.run(str(path), measure_fn=lambda *a: (None, "overlay_eval_failed"))
-    assert out["issues"] == ["2.0s ov-bad: overlay_eval_failed"]
+    assert [i for i in out["issues"] if "still for" not in i] == ["2.0s ov-bad: overlay_eval_failed"]
 
 
 def test_look_image_adds_one_sheet_of_the_times_and_detail_adds_the_facts(tmp_path):
@@ -182,6 +218,177 @@ def test_look_image_adds_one_sheet_of_the_times_and_detail_adds_the_facts(tmp_pa
     out = look.run(str(path), image=True, detail=True, measure_fn=_fake_measure({}), sheet_fn=fake_sheet)
     assert len(sheets) == 1 and sheets[0] == out["times"]
     assert out["sheet"].endswith("look-x.png") and out["items"] == ["ov-a"] and isinstance(out["wallMs"], int)
+
+
+def test_a_pass_measures_every_overlay_in_one_call(tmp_path, monkeypatch):
+    # PL89g: one sample_overlay process (and its own Chromium) per overlay made a pass 10-16 s; the pass now hands every
+    # overlay to one call (measure_many: sample_overlay --jobs, one browser per lane).
+    path, _ = _project(tmp_path, overlays=[{"id": f"ov-{k}", "start": k, "end": k + 1} for k in (1, 3, 5)])
+    calls = []
+
+    def many(entries):
+        calls.append([e["item"]["id"] for e in entries])
+        return [(_texts(("Fits", 200, 600, 500, 90)), None) for _ in entries]
+    monkeypatch.setattr(look, "measure_many", many)
+    out = look.run(str(path), detail=True)
+    assert calls == [["ov-1", "ov-3", "ov-5"]] and out["overlays"] == 3, (calls, out)
+
+
+def test_a_failed_batch_falls_back_to_one_measure_each(tmp_path, monkeypatch):
+    path, _ = _project(tmp_path, overlays=[{"id": "ov-a", "start": 1, "end": 2}, {"id": "ov-b", "start": 3, "end": 4}])
+    monkeypatch.setattr(look, "measure_many", lambda entries: None)
+    one = _fake_measure({"ov-a": [("Fits", 200, 600, 500, 90)], "ov-b": [("Fits", 200, 600, 500, 90)]})
+    monkeypatch.setattr(look, "measure", one)
+    assert look.run(str(path), detail=True)["overlays"] == 2
+
+
+# PL89g: white and pale-blue labels over Sam's light shirt read poorly. look measures each text's fill against the
+# picture behind it (the frame of everything under the overlay's track, read over the glyphs; or the text's own plate)
+# and calls anything under CONTRAST_MIN : 1 an issue, with the fix.
+def _backdrop(tmp_path, rgb):
+    from PIL import Image
+    path = tmp_path / f"bg-{'-'.join(map(str, rgb))}.png"
+    Image.new("RGB", (1080, 1920), rgb).save(path)
+    return str(path)
+
+
+def _coloured(text, box, color, plate=None):
+    t = _texts((text, *box))
+    t["texts"][0]["color"] = color
+    if plate:
+        t["texts"][0]["plate"] = plate
+    return t
+
+
+def test_a_label_with_too_little_contrast_against_the_picture_behind_it_is_an_issue(tmp_path):
+    shirt, room = _backdrop(tmp_path, (182, 194, 191)), _backdrop(tmp_path, (32, 22, 20))
+    white = _coloured("computer", (400, 900, 280, 50), "rgb(255, 255, 255)")
+    got = [i["text"] for i in lc.contrast_issues({}, white, 1080, 1920, 22.0, "ov-chain", shirt)]
+    assert len(got) == 1 and got[0].startswith('text "computer" is 1.8 : 1 against the picture behind it'), got
+    assert got[0].endswith("give it a plate, or a darker fill"), got
+    assert lc.contrast_issues({}, white, 1080, 1920, 22.0, "ov-chain", room) == []
+    ink = _coloured("camera", (400, 900, 200, 50), "rgb(40, 40, 46)")
+    assert lc.contrast_issues({}, ink, 1080, 1920, 1, "ov", room)[0]["text"].endswith("or a lighter fill")
+    # a plate under the text is what it is read against, not the picture
+    plated = _coloured("computer", (400, 900, 280, 50), "rgb(255, 255, 255)", plate="rgb(20, 20, 24)")
+    assert lc.contrast_issues({}, plated, 1080, 1920, 1, "ov", shirt) == []
+    # no colour measured (an older measure), or no picture: nothing is said
+    assert lc.contrast_issues({}, _texts(("computer", 400, 900, 280, 50)), 1080, 1920, 1, "ov", shirt) == []
+    assert lc.contrast_issues({}, white, 1080, 1920, 1, "ov", None) == []
+
+
+# PL89j: the footage card's credit sits on the card's own paper (a box-shadow, not a background, so no plate). look read
+# it against the b-roll under the card (1.2 : 1, three times) and missed the card's pale labels on that paper. With the
+# overlay's own render, a text is read against what is around its glyphs: the overlay's own paint where it covers, else
+# the picture.
+def _card_png(tmp_path, paper, glyphs=(), name="card"):
+    """A rendered overlay at the design size: `paper` over the whole frame (None: transparent), and each glyph run as
+    a filled box ((x, y, w, h), rgb) the way text lands in its glyph box."""
+    from PIL import Image, ImageDraw
+    path = tmp_path / f"{name}.png"
+    im = Image.new("RGBA", (1080, 1920), (*paper, 255) if paper else (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    for (x, y, w, h), rgb in glyphs:
+        for k in range(x + 2, x + w - 2, 9):   # strokes, with paper between them, as letters have
+            d.rectangle((k, y + 4, k + 3, y + h - 4), fill=(*rgb, 255))
+    im.save(path)
+    return str(path)
+
+
+def test_a_text_on_its_own_card_is_read_against_the_card_not_the_picture_under_it(tmp_path):
+    video = _backdrop(tmp_path, (110, 110, 110))
+    credit = _coloured("Footage: Unitree", (400, 900, 280, 30), "rgb(120, 120, 120)")
+    # against the video alone it looks unreadable (the old false positive)...
+    assert lc.contrast_issues({}, credit, 1080, 1920, 27.6, "ov-card", video) != []
+    # ...but it sits on the card's cream paper, where it reads
+    card = _card_png(tmp_path, (235, 233, 226), [((400, 900, 280, 30), (120, 120, 120))])
+    assert lc.contrast_issues({}, credit, 1080, 1920, 27.6, "ov-card", video, card) == []
+
+
+def test_a_pale_label_on_its_own_card_is_an_issue_even_with_no_picture(tmp_path):
+    label = _coloured("hurts", (650, 1050, 160, 40), "rgb(232, 170, 150)")
+    card = _card_png(tmp_path, (230, 228, 220), [((650, 1050, 160, 40), (232, 170, 150))])
+    got = [i["text"] for i in lc.contrast_issues({}, label, 1080, 1920, 45.9, "ov-force", None, card)]
+    assert len(got) == 1 and got[0].startswith('text "hurts" is 1.') and "against its own background" in got[0], got
+    assert got[0].endswith("give it a darker fill"), got
+
+
+def test_a_text_on_a_transparent_overlay_is_still_read_against_the_picture(tmp_path):
+    shirt = _backdrop(tmp_path, (182, 194, 191))
+    white = _coloured("computer", (400, 900, 280, 50), "rgb(255, 255, 255)")
+    clear = _card_png(tmp_path, None, [((400, 900, 280, 50), (255, 255, 255))])
+    got = [i["text"] for i in lc.contrast_issues({}, white, 1080, 1920, 22.0, "ov-chain", shirt, clear)]
+    assert len(got) == 1 and "against the picture behind it" in got[0], got
+    # a transparent overlay and no picture: nothing to read it against
+    assert lc.contrast_issues({}, white, 1080, 1920, 22.0, "ov-chain", None, clear) == []
+
+
+def test_a_dimmed_label_is_read_at_the_strength_it_is_drawn(tmp_path):
+    # PL89j: the gauge's end labels are dark ink at opacity 0.32 until their state comes; the colour alone says 15 : 1
+    paper = (230, 228, 220)
+    dim = 0.32
+    drawn = tuple(round(c * dim + p * (1 - dim)) for c, p in zip((29, 27, 22), paper))
+    card = _card_png(tmp_path, paper, [((150, 1050, 200, 40), drawn)])
+    label = _coloured("slips", (150, 1050, 200, 40), "rgb(29, 27, 22)")
+    label["texts"][0]["opacity"] = dim
+    got = [i["text"] for i in lc.contrast_issues({}, label, 1080, 1920, 45.9, "ov-force", None, card)]
+    assert len(got) == 1 and '"slips"' in got[0] and "against its own background" in got[0], got
+    label["texts"][0]["opacity"] = 1
+    full = _card_png(tmp_path, paper, [((150, 1050, 200, 40), (29, 27, 22))], name="full")
+    assert lc.contrast_issues({}, label, 1080, 1920, 45.9, "ov-force", None, full) == []
+    label["texts"][0]["opacity"] = 0.05   # not in yet: nothing to read
+    assert lc.contrast_issues({}, label, 1080, 1920, 45.9, "ov-force", None, card) == []
+
+
+def test_look_reads_a_card_label_against_the_card_it_measured(tmp_path):
+    path, _ = _project(tmp_path, overlays=[{"id": "ov-card", "start": 1, "end": 3}])
+    video = _backdrop(tmp_path, (110, 110, 110))
+
+    def measure(item, path_, frame, duration, fps, w, h, out):
+        _card_png(Path(os.path.dirname(out)), (235, 233, 226), [((400, 900, 280, 30), (120, 120, 120))],
+                  name=os.path.basename(out)[:-4])
+        return _coloured("Footage: Unitree", (400, 900, 280, 30), "rgb(120, 120, 120)"), None
+    out = look.run(str(path), detail=True, measure_fn=measure, backdrops_fn=lambda pp, p, entries: {e["label"]: video for e in entries})
+    assert not any(": 1 against" in i for i in out.get("issues", [])), out
+
+
+def test_look_measures_one_of_each_overlay_before_repeats(tmp_path):
+    # PL89j: 17 footage cards filled the 12 measures, so the two explainer cards late in the cut went unmeasured
+    cards = [{"id": f"card-{k}", "start": k, "end": k + 1, "src": "./overlays/card.jsx", "jsx": None} for k in range(14)]
+    path, _ = _project(tmp_path, base=((0, 20),), overlays=cards + [{"id": "ov-grip", "start": 16, "end": 17}])
+    (path.parent / "overlays" / "card.jsx").write_text("export default function C() { return <div>c</div> }")
+    fake = _fake_measure({})
+    out = look.run(str(path), at=[k + 0.5 for k in range(14)], measure_fn=fake)   # every card on screen, the grip not
+    assert "ov-grip" in [c[0] for c in fake.calls], fake.calls
+    assert len(fake.calls) == 12 and out["unmeasured"] == 3
+
+
+def test_the_picture_behind_an_overlay_is_every_track_below_it_without_captions():
+    p = {"settings": {"fps": 30}, "captions": {"segments": [{"text": "hi", "start": 0, "end": 1}]},
+         "tracks": [{"id": "main", "items": [{"id": "v", "type": "video", "src": "/x.mp4", "start": 0, "end": 5}]},
+                    {"id": "card", "items": [{"id": "c", "type": "overlay", "src": "./c.jsx", "start": 0, "end": 5}]},
+                    {"id": "labels", "items": [{"id": "l", "type": "overlay", "src": "./l.jsx", "start": 0, "end": 5}]},
+                    {"id": "top", "items": [{"id": "t", "type": "overlay", "src": "./t.jsx", "start": 0, "end": 5}]}]}
+    b = lc.backdrop_project(p, 2)
+    assert "captions" not in b
+    assert [[it["id"] for it in t["items"]] for t in b["tracks"]] == [["v"], ["c"], [], []]
+
+
+def test_look_reports_a_label_hard_to_read_on_its_picture(tmp_path):
+    path, _ = _project(tmp_path, overlays=[{"id": "ov-chain", "start": 1, "end": 3}])
+    shirt = _backdrop(tmp_path, (182, 194, 191))
+
+    def measure(item, *a):
+        return _coloured("computer", (400, 600, 280, 50), "rgb(255, 255, 255)"), None
+    seen = []
+
+    def backdrops(project_path, project, entries):
+        seen.append([e["label"] for e in entries])
+        return {e["label"]: shirt for e in entries}
+    out = look.run(str(path), detail=True, measure_fn=measure, backdrops_fn=backdrops)
+    assert seen == [["ov-chain"]] and any("1.8 : 1 against the picture" in i for i in out["issues"]), out
+    out = look.run(str(path), detail=True, measure_fn=measure, backdrops_fn=lambda *a: {})
+    assert not any("against the picture" in i for i in out.get("issues", [])), out
 
 
 def test_look_at_given_times(tmp_path):
@@ -200,8 +407,9 @@ def _has_render():
 def test_look_through_the_real_measurer_finds_the_text_off_the_frame(tmp_path):
     wide = ("export default function O() { return <div style={{position: 'absolute', left: 700, top: 500, "
             "fontSize: 120, whiteSpace: 'nowrap', color: 'white'}}>A headline far too long</div> }")
-    fits = ("export default function O() { return <div style={{position: 'absolute', left: 200, top: 700, "
-            "fontSize: 60, color: 'white'}}>Fits</div> }")
+    # it moves with the runtime's Motion global (PL89b), so the real render also proves Motion is there
+    fits = ("export default function O() { const m = Motion.motion(frame, fps, duration); return <div style={{position: 'absolute', left: 200, top: 700, "
+            "fontSize: 60, color: 'white', ...m.style}}>Fits</div> }")
     path, _ = _project(tmp_path, overlays=[{"id": "ov-wide", "start": 1, "end": 3, "jsx": wide},
                                            {"id": "ov-fits", "start": 4, "end": 6, "jsx": fits}])
     out = look.run(str(path), detail=True)
@@ -209,6 +417,44 @@ def test_look_through_the_real_measurer_finds_the_text_off_the_frame(tmp_path):
     wide_issues = [i for i in out["issues"] if "ov-wide" in i]
     assert any("runs off the frame" in i for i in wide_issues), out
     assert not any("ov-fits" in i for i in out["issues"]), out
+
+
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+def test_the_real_measurer_reads_a_card_credit_against_the_cards_own_paper(tmp_path):
+    # PL89j: the footage card's paper is a box-shadow (no plate). Its grey credit is fine on the paper; a pale label on
+    # the same paper is not, whatever the picture under the card.
+    card = ("export default function O() { return <div style={{position: 'absolute', inset: 0}}>"
+            "<div style={{position: 'absolute', left: 60, top: 500, width: 960, height: 540, boxShadow: '0 0 0 3000px #ebe9e2'}} />"
+            "<div style={{position: 'absolute', left: 380, top: 1080, fontSize: 30, color: 'rgb(120, 120, 120)'}}>Footage: Unitree</div>"
+            "<div style={{position: 'absolute', left: 700, top: 1300, fontSize: 40, color: 'rgb(232, 170, 150)'}}>hurts</div>"
+            "</div> }")
+    # and a label drawn dim (ink at opacity 0.32, its state not yet come) on the same paper
+    gauge = ("export default function O() { return <div style={{position: 'absolute', inset: 0, background: '#ebe9e2'}}>"
+             "<div style={{position: 'absolute', left: 200, top: 1100, fontSize: 40, color: '#1D1B16', opacity: 0.32}}>slips</div>"
+             "</div> }")
+    path, _ = _project(tmp_path, overlays=[{"id": "ov-card", "start": 1, "end": 3, "jsx": card},
+                                           {"id": "ov-gauge", "start": 4, "end": 6, "jsx": gauge}])
+    video = _backdrop(tmp_path, (110, 110, 110))
+    out = look.run(str(path), detail=True, backdrops_fn=lambda pp, p, entries: {e["label"]: video for e in entries})
+    assert out["overlays"] == 2, out
+    said = [i for i in out.get("issues", []) if ": 1 against" in i]
+    assert len(said) == 2, out
+    assert '"hurts"' in said[0] and "against its own background" in said[0], out
+    assert '"slips"' in said[1] and "ov-gauge" in said[1], out
+
+
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+def test_the_real_pass_runs_one_measure_process_for_all_its_overlays(tmp_path, monkeypatch):
+    jsx = lambda word, top: ("export default function O() { return <div style={{position: 'absolute', left: 200, top: " + str(top) +  # noqa: E731
+                             ", fontSize: 60, color: 'white'}}>" + word + "</div> }")
+    path, _ = _project(tmp_path, overlays=[{"id": f"ov-{k}", "start": 1 + 2 * k, "end": 2 + 2 * k, "jsx": jsx(w, 300 + 200 * k)}
+                                           for k, w in enumerate(("One", "Two", "Three"))])
+    spawned = []
+    real = look._run_group
+    monkeypatch.setattr(look, "_run_group", lambda cmd, timeout: (spawned.append(cmd), real(cmd, timeout))[1])
+    out = look.run(str(path), detail=True)
+    assert out["overlays"] == 3, out
+    assert len(spawned) == 1 and "--jobs" in spawned[0], spawned
 
 
 # ── review 1: a measure that times out ends its whole process group ──────────────────────────────────────────────
@@ -243,7 +489,8 @@ def test_text_across_the_captions_while_a_caption_shows_is_reported(tmp_path):
     # pop draws at 72.6-76.0% of a 1920 frame: y 1394-1459 (measured)
     path, _ = _with_captions(tmp_path, overlays=[{"id": "ov-low", "start": 2, "end": 4}, {"id": "ov-late", "start": 5, "end": 7}])
     out = look.run(str(path), measure_fn=_fake_measure({"ov-low": [("Name", 100, 1380, 400, 60)], "ov-late": [("Name", 100, 1380, 400, 60)]}))
-    assert out["issues"] == ['3.0s ov-low: text "Name" crosses the captions (1.0-3.0s)'], out
+    assert out["issues"] == ['3.0s ov-low: text "Name" crosses the captions (1.0-3.0s): move it up 47 px'], out
+    assert "once more" in out["then"]
 
 
 def test_a_bigger_or_moved_caption_moves_its_band(tmp_path):
@@ -291,6 +538,80 @@ def test_text_that_spills_out_of_its_own_box_is_reported_not_ok():
 def test_app_zones_apply_to_tall_frames_and_the_title_safe_margin_to_every_frame(box, frame, want):
     got = [i["text"] for i in lc.measured_issues({}, _texts(box), *frame, 1, "ov")]
     assert [w for w in want if not any(w in g for g in got)] == [] and len(got) == len(want), got
+
+
+@pytest.mark.parametrize("item,box,frame,want", [
+    # PL89c: the agent guessed each fix in another rewrite. Each safe-area issue says how far to move the text box,
+    # in the overlay's own px (the item's scale undone), to clear the zone it is in.
+    ({}, ("Edge", 20, 600, 400, 80), (1080, 1920), ['text "Edge" inside the 5% title-safe margin: move it right 34 px']),
+    ({}, ("Edge", 600, 1270, 400, 60), (1080, 1350), ['text "Edge" inside the 5% title-safe margin: move it up 48 px']),
+    ({}, ("Name", 100, 1700, 400, 80), (1080, 1920), ["text \"Name\" over the apps' bottom controls: move it up 210 px"]),
+    ({}, ("Tag", 800, 1000, 200, 80), (1080, 1920), ["text \"Tag\" under the apps' right-side buttons: move it left 120 px"]),
+    ({}, ("Title", 900, 100, 400, 80), (1080, 1920), ['text "Title" runs off the frame: move it left 274 px']),
+    ({}, ("Corner", 20, 30, 400, 80), (1080, 1920), ['text "Corner" inside the 5% title-safe margin: move it right 34 px and down 66 px']),
+    ({"scale": 0.5}, ("Edge", -480, 600, 400, 80), (1080, 1920), ['text "Edge" inside the 5% title-safe margin: move it right 48 px']),
+    ({}, ("Wide", 30, 600, 1040, 80), (1080, 1920), ['text "Wide" inside the 5% title-safe margin: make it at most 972 px wide, keeping it centred']),
+])
+def test_a_safe_area_issue_says_how_far_to_move_the_text(item, box, frame, want):
+    assert [i["text"] for i in lc.measured_issues(item, _texts(box), *frame, 1, "ov")] == want
+
+
+# PL89e: "move it up 65 px" took a credit off the apps' controls and onto the captions (1292-1432 px for "outline"),
+# and "move it left 40 px" slid a centred stack off-centre. The hint clears every zone at once (the margin, the
+# controls, the right-side buttons, any caption band on screen), narrows a centred block instead of sliding it, and
+# says the room when nothing fits. One hint per text, on its first issue, so it is applied once.
+BAND = [(1292, 1432, 47.7, 51.8)]
+
+
+@pytest.mark.parametrize("box,bands,want", [
+    (("PhoneBot", 100, 1470, 760, 165), BAND,
+     ["text \"PhoneBot\" over the apps' bottom controls: move it up 343 px"]),
+    (("old phone", 140, 1000, 800, 80), (),
+     ["text \"old phone\" under the apps' right-side buttons: make it at most 680 px wide, keeping it centred"]),
+    (("Tag", 200, 1350, 400, 60), BAND,
+     ['text "Tag" crosses the captions (47.7-51.8s): move it down 82 px']),
+    (("Big", 100, 300, 600, 1400), BAND,
+     ['text "Big" crosses the captions (47.7-51.8s): make it at most 1196 px tall, the most room clear of every zone',
+      "text \"Big\" over the apps' bottom controls"]),
+])
+def test_the_move_hint_clears_every_zone_at_once(box, bands, want):
+    assert [i["text"] for i in lc.measured_issues({}, _texts(box), 1080, 1920, 1, "ov", bands)] == want
+
+
+# PL89f: a centred title written as a full-width box always measured as "inside the title-safe margin" (its element
+# spans the width), and the hint told the agent to narrow "UCLA" to 972 px. The zone checks and their hints use the
+# text's own glyphs when the measurer gives them; with none (an older measure), the box as before.
+def _glyphed(text, box, glyphs):
+    t = _texts((text, *box))
+    t["texts"][0]["glyphs"] = dict(zip("xywh", glyphs))
+    return t
+
+
+def test_a_full_width_centred_title_is_judged_by_its_glyphs():
+    assert lc.measured_issues({}, _glyphed("UCLA", (0, 300, 1080, 110), (430, 310, 220, 90)), 1080, 1920, 1, "ov") == []
+    edge = _glyphed("Edge", (0, 600, 1080, 80), (20, 610, 400, 60))
+    assert [i["text"] for i in lc.measured_issues({}, edge, 1080, 1920, 1, "ov")] == [
+        'text "Edge" inside the 5% title-safe margin: move it right 34 px']
+    # the glyphs, not the box, decide the captions and the controls too
+    low = _glyphed("Low", (0, 1300, 1080, 300), (440, 1200, 200, 60))
+    assert lc.measured_issues({}, low, 1080, 1920, 1, "ov", [(1292, 1432, 1, 2)]) == []
+
+
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+def test_the_real_measurer_does_not_call_a_full_width_centred_title_inside_the_margin(tmp_path):
+    title = ("export default function O() { return <div style={{position: 'absolute', "
+             "left: 0, top: 300, width: 1080, textAlign: 'center', fontSize: 96, color: 'white'}}>UCLA</div> }")
+    path, _ = _project(tmp_path, overlays=[{"id": "ov-title", "start": 1, "end": 3, "jsx": title}])
+    out = look.run(str(path), detail=True)
+    assert out["overlays"] == 1, out   # measured, not failed
+    assert not any("ov-title" in i and ("margin" in i or "error" in i) for i in out.get("issues", [])), out
+
+
+def test_an_answer_with_move_hints_says_to_run_look_again():
+    hinted = [{"t": 1.0, "id": "ov", "text": "text \"Tag\" crosses the captions (1-2s): move it down 82 px"}]
+    plain = [{"t": 1.0, "id": "ov", "text": "text \"Tag\" spills out of its box"}]
+    assert lc.answer(hinted)["then"] == "Run look once more after these edits, not after each one."
+    assert "then" not in lc.answer(plain)
 
 
 def test_a_switched_off_track_draws_nothing(tmp_path):
@@ -373,3 +694,315 @@ def test_a_tight_heading_at_the_top_edge_is_not_off_the_frame(tmp_path, monkeypa
     path, _ = _project(tmp_path, overlays=[{"id": "ov-top", "start": 1, "end": 3, "jsx": tight}])
     out = look.run(str(path), detail=True)
     assert out["overlays"] == 1 and not any("runs off the frame" in i or "spills" in i for i in out.get("issues", [])), out
+
+
+# ── PL89b: motion and type a phone can read ───────────────────────────────────────────────────────────────────────
+
+MOVING = ("export default function O() {\n  const m = Motion.motion(frame, fps, duration)\n"
+          "  return <div style={m.style}>hi</div>\n}\n")
+
+
+def _motion(tmp_path, jsx, files=()):
+    d = tmp_path / "m"
+    (d / "overlays" / "_shared").mkdir(parents=True, exist_ok=True)
+    for name, text in files:
+        (d / "overlays" / name).write_text(text)
+    (d / "overlays" / "o.jsx").write_text(jsx)
+    item = {"id": "ov-o", "type": "overlay", "src": "./overlays/o.jsx", "start": 2, "end": 6}
+    return [i["text"] for i in lc.motion_issues(item, str(d), "ov-o")]
+
+
+def test_an_overlay_using_motion_or_springs_and_its_duration_moves_well(tmp_path):
+    assert _motion(tmp_path, MOVING) == []
+    eased = ("export default function O() {\n  const s = spring({frame, fps})\n"
+             "  const out = interpolate(frame, [duration - 4, duration], [1, 0])\n"
+             "  return <div style={{opacity: out, transform: `scale(${s})`}}>hi</div>\n}\n")
+    assert _motion(tmp_path, eased) == []
+    # motion in a shared module the overlay imports counts too
+    shared = "export const enter = (f, fps, d) => Motion.motion(f, fps, d)\n"
+    assert _motion(tmp_path, "import { enter } from './_shared/anim.js'\nexport default function O() { return <div style={enter(frame, fps, duration).style}>x</div> }",
+                   files=[("_shared/anim.js", shared)]) == []
+
+
+def test_a_still_overlay_and_a_linear_one_that_never_exits_are_said(tmp_path):
+    still = _motion(tmp_path, "export default function O() { return <div>hi</div> }")
+    assert len(still) == 1 and "no motion" in still[0] and "Motion.motion" in still[0]
+    linear = _motion(tmp_path, "export default function O() {\n  const a = interpolate(frame, [0, 10], [0, 1])\n"
+                               "  return <div style={{opacity: a}}>hi</div>\n}\n")
+    assert any("never leaves" in t for t in linear) and any("linear" in t for t in linear), linear
+
+
+def _sized(*texts):
+    return {"texts": [{"text": t, "fontSize": f"{px}px", "bbox": {"x": 100, "y": 300 + 100 * k, "w": 300, "h": px},
+                       "overflow": {}, "clippingAncestor": None} for k, (t, px) in enumerate(texts)]}
+
+
+def test_text_under_the_phone_floors_is_said_once_per_kind_at_its_size_on_screen():
+    item = {"id": "ov-a", "type": "overlay", "start": 0, "end": 4}
+    said = [i["text"] for i in lc.type_floor_issues(item, _sized(("FOOTAGE", 18), ("PhoneBot", 64), ("UCLA", 24)), 1080, 1920, 2, "ov-a")]
+    assert len(said) == 2, said
+    assert any('"FOOTAGE" is 18 px' in t and "36 px" in t for t in said), said
+    assert any('"PhoneBot" is 64 px' in t and "72 px" in t for t in said), said
+    # the item's own scale counts: at 2x the same texts are 36, 128 and 48 px on screen
+    assert lc.type_floor_issues({**item, "scale": 2}, _sized(("FOOTAGE", 18), ("PhoneBot", 64), ("UCLA", 24)), 1080, 1920, 2, "ov-a") == []
+    # one size alone is a label, not a missing title
+    assert lc.type_floor_issues(item, _sized(("sensors", 40), ("compute", 40)), 1080, 1920, 2, "ov-a") == []
+
+
+def test_look_reports_motion_and_type_floors_with_the_rest(tmp_path):
+    path, _ = _project(tmp_path, overlays=[{"id": "ov-still", "start": 1, "end": 4, "jsx": "export default function O() { return <div>hi</div> }"},
+                                           {"id": "ov-good", "start": 5, "end": 9, "jsx": MOVING}])
+
+    def measure(item, *a):
+        return (_sized(("tiny", 20)) if item["id"] == "ov-still" else _sized(("Big title", 96), ("label", 40))), None
+    out = look.run(str(path), measure_fn=measure, detail=True)
+    mine = [i for i in out["issues"] if "ov-still" in i]
+    assert any("no motion" in i for i in mine) and any('"tiny" is 20 px' in i for i in mine), out["issues"]
+    assert not any("ov-good" in i for i in out["issues"]), out["issues"]
+
+
+# ── caption ink: data only ────────────────────────────────────────────────────────────────────────────────────────
+
+def _ink_project(segs, card=True, style="pop"):
+    items = [{"id": "paper", "type": "overlay", "src": "engine:scene3d", "start": 0, "end": 4, "opaque": True}] if card else []
+    return {"id": "p", "settings": {"resolution": [1080, 1920], "fps": 30},
+            "tracks": [{"id": "main", "items": [{"id": "v", "type": "video", "src": "/x/a.mp4", "start": 0, "end": 8,
+                                                 "inPoint": 0, "outPoint": 8}]}, {"id": "ovl", "items": items}],
+            "captions": {"style": style, "segments": [{"id": f"cap-{i}", "text": "x", "words": [], **s}
+                                                      for i, s in enumerate(segs)]}}
+
+
+def test_a_caption_over_a_card_whose_ink_was_not_checked_is_reported():
+    issues = lc.caption_ink_issues(_ink_project([{"start": 1, "end": 2}]))
+    assert len(issues) == 1 and issues[0]["id"] == "captions" and issues[0]["t"] == 1.5
+    assert "paper" in issues[0]["text"] and "run caption_ink" in issues[0]["text"]
+
+
+def test_a_caption_whose_ink_was_checked_for_this_card_is_fine():
+    assert lc.caption_ink_issues(_ink_project([{"start": 1, "end": 2, "ink": "dark", "inkAuto": {"card": "paper", "ink": "dark"}}])) == []
+
+
+def test_ink_set_for_a_card_that_is_gone_is_reported():
+    issues = lc.caption_ink_issues(_ink_project([{"start": 5, "end": 6, "ink": "dark", "inkAuto": {"card": "paper", "ink": "dark"}}]))
+    assert len(issues) == 1 and "paper" in issues[0]["text"] and "now over footage" in issues[0]["text"]
+
+
+def test_a_persons_ink_is_never_flagged():
+    auto = {"card": "paper", "ink": "dark"}
+    assert lc.caption_ink_issues(_ink_project([{"start": 1, "end": 2, "ink": "light"},
+                                                {"start": 5, "end": 6, "ink": "dark"},
+                                                {"start": 1, "end": 2, "ink": "light", "inkAuto": auto},
+                                                {"start": 5, "end": 6, "ink": "light", "inkAuto": auto},
+                                                {"start": 1, "end": 2, "inkAuto": auto},
+                                                {"start": 5, "end": 6, "inkAuto": auto}])) == []
+
+
+def test_ink_the_step_wrote_for_another_card_is_reported():
+    auto = {"card": "old", "ink": "dark"}
+    issues = lc.caption_ink_issues(_ink_project([{"start": 1, "end": 2, "ink": "dark", "inkAuto": auto}]))
+    assert len(issues) == 1 and "paper" in issues[0]["text"] and "not had its ink checked" in issues[0]["text"]
+
+
+def test_translations_and_the_boxed_styles_are_not_flagged_for_ink():
+    segs = [{"start": 1, "end": 2, "ink": "dark", "inkAuto": {"card": "paper", "ink": "dark"}},
+            {"start": 1, "end": 2, "lang": "es", "translationOf": ["cap-0"]}]
+    assert lc.caption_ink_issues(_ink_project(segs)) == []
+    for style in ("plate", "subtitle"):
+        assert lc.caption_ink_issues(_ink_project([{"start": 1, "end": 2}], style=style)) == []
+
+
+def test_look_reports_the_unchecked_caption_ink_in_its_answer(tmp_path):
+    path, p = _project(tmp_path, base=((0, 8),))
+    p["tracks"][1]["items"].append({"id": "paper", "type": "overlay", "src": "engine:scene3d", "start": 0, "end": 4, "opaque": True})
+    p["captions"] = {"style": "pop", "segments": [{"id": "cap-0", "text": "x", "start": 1, "end": 2, "words": []}]}
+    path.write_text(json.dumps(p))
+    out = look.run(str(path), detail=True)
+    assert any("run caption_ink" in i for i in out["issues"])
+
+
+def test_a_paper_matte_that_only_measuring_can_find_is_not_flagged_before_the_step_ran():
+    p = _ink_project([{"start": 1, "end": 2}], card=False)
+    p["tracks"][1]["items"].append({"id": "matte", "type": "overlay", "src": "./overlays/footage-card.jsx", "start": 0, "end": 4})
+    assert lc.caption_ink_issues(p) == []
+
+
+def test_a_3d_scene_with_a_backdrop_is_flagged_without_opaque(tmp_path):
+    scenes = tmp_path / "models" / "scenes" / "specs"
+    scenes.mkdir(parents=True)
+    (scenes / "active.json").write_text(json.dumps({"scene": {"backdrop": {"style": "color"}}}))
+    p = _ink_project([{"start": 1, "end": 2}], card=False)
+    p["tracks"][1]["items"].append({"id": "s", "type": "overlay", "src": "engine:scene3d", "start": 0, "end": 4,
+                                    "props": {"scene": "specs"}})
+    issues = lc.caption_ink_issues(p, str(tmp_path))
+    assert len(issues) == 1 and "over s" in issues[0]["text"] and "not had its ink checked" in issues[0]["text"]
+    (scenes / "active.json").write_text(json.dumps({"scene": {"backdrop": {"style": "transparent"}}}))
+    assert lc.caption_ink_issues(p, str(tmp_path)) == []
+
+
+def test_ink_set_for_a_matte_is_fine_while_the_matte_is_on_screen_and_reported_when_it_is_not():
+    p = _ink_project([{"start": 1, "end": 2, "ink": "dark", "inkAuto": {"card": "matte", "ink": "dark"}},
+                      {"start": 5, "end": 6, "ink": "dark", "inkAuto": {"card": "matte", "ink": "dark"}}], card=False)
+    p["tracks"][1]["items"].append({"id": "matte", "type": "overlay", "src": "./overlays/footage-card.jsx", "start": 0, "end": 4})
+    issues = lc.caption_ink_issues(p)
+    assert len(issues) == 1 and issues[0]["t"] == 5.5 and "now over footage" in issues[0]["text"]
+
+
+# ── the top slot (PL89d) ──────────────────────────────────────────────────────────────────────────────────────────
+# 52's round-5 notes: six keyword chips at top 120 and a diagram strip at y 150, one after another: a page heading over
+# every shot. Three or more overlays whose text sits in the same top slot are one issue; two are a choice.
+
+def test_three_overlays_in_the_top_slot_are_one_issue_naming_them():
+    top = [{"x": 340, "y": 120, "w": 400, "h": 90}]
+    placed = [("kw-1", 2, 4, top), ("kw-2", 9, 11, top), ("flow", 14, 17, [{"x": 100, "y": 150, "w": 880, "h": 60}]),
+              ("mid", 20, 22, [{"x": 340, "y": 900, "w": 400, "h": 90}])]
+    out = lc.top_slot_issues(placed, 1080, 1920)
+    assert len(out) == 1, out
+    assert out[0]["t"] == 14 and out[0]["id"] == "top-slot"
+    for s in ["kw-1, kw-2, flow", "one top slot", "mid-frame", "beside what it explains"]:
+        assert s in out[0]["text"], out[0]["text"]
+    assert lc.top_slot_issues(placed[:2] + placed[3:], 1080, 1920) == [], "two are a choice"
+    assert lc.top_slot_issues([(f"kw-{k}", k, k + 1, top) for k in range(3)], 1920, 1080) != [], "a wide frame too"
+
+
+def test_look_reports_the_top_slot(tmp_path):
+    path, _ = _project(tmp_path, base=((0, 20),), overlays=[{"id": f"kw-{k}", "start": 1 + 5 * k, "end": 3 + 5 * k} for k in range(3)])
+    fake = _fake_measure({f"kw-{k}": [("keyword", 340, 120, 400, 90)] for k in range(3)})
+    out = look.run(str(path), measure_fn=fake, detail=True)
+    assert any("top-slot" in i and "one top slot" in i for i in out["issues"]), out["issues"]
+
+
+# PL89e: the UCLA footage went out on cards with no credit. A footage card (frame_broll's) for third-party footage
+# (its source has a title, URL or provenance, or is a download) with an empty credit is said.
+def _card_project(tmp_path, src_name, credit):
+    clip = {"id": "br-1", "type": "video", "src": f"/x/{src_name}", "start": 1, "end": 3, "inPoint": 0, "outPoint": 2}
+    card = {"id": "ov-card", "type": "overlay", "src": "./overlays/footage-card.jsx", "start": 1, "end": 3,
+            "props": {"credit": credit, "for": "br-1"}}
+    path, p = _project(tmp_path, extra_tracks=[{"id": "b", "items": [clip]}, {"id": "c", "items": [card]}])
+    return path, p
+
+
+def test_a_third_party_footage_card_with_no_credit_is_said(tmp_path):
+    path, p = _card_project(tmp_path, "youtube-phonebot-o_Q4rFSNZuE.mp4", "")
+    found = [i for i in lc.data_issues(p, str(path.parent)) if i["id"] == "ov-card"]
+    assert found and "credit" in found[0]["text"] and "Footage: Phonebot · YouTube" in found[0]["text"]
+
+
+def test_own_footage_or_a_credited_card_is_not_said(tmp_path):
+    a = tmp_path / "a"
+    a.mkdir()
+    path, p = _card_project(a, "IMG_1167.MOV", "")
+    assert [i for i in lc.data_issues(p, str(path.parent)) if "credit" in i["text"]] == []
+    b = tmp_path / "b"
+    b.mkdir()
+    path, p = _card_project(b, "youtube-phonebot-o_Q4rFSNZuE.mp4", "Footage: UCLA")
+    assert [i for i in lc.data_issues(p, str(path.parent)) if "credit" in i["text"]] == []
+
+
+# ── a font that fell back to serif (PL89e) ────────────────────────────────────────────────────────────────────────
+# 52's round-6 notes: the ring's label drew in Times, given "JetBrains Mono" bare with no font loading it.
+
+def test_text_whose_face_fell_back_to_serif_is_one_issue_naming_the_face():
+    m = {"texts": [{"text": "live video", "bbox": {"x": 300, "y": 900, "w": 400, "h": 60}, "overflow": {}, "clippingAncestor": None,
+                    "fontFamily": '"JetBrains Mono"', "fellBack": True},
+                   {"text": "again", "bbox": {"x": 300, "y": 1000, "w": 400, "h": 60}, "overflow": {}, "clippingAncestor": None,
+                    "fontFamily": '"JetBrains Mono"', "fellBack": True}], "anyOverflow": False}
+    out = [i for i in lc.measured_issues({}, m, 1080, 1920, 3.0, "ov-ring") if "serif" in i["text"]]
+    assert len(out) == 1, out
+    assert '"live video" draws in serif' in out[0]["text"] and "JetBrains Mono" in out[0]["text"]
+    assert "googleFonts" in out[0]["text"] and "generic family" in out[0]["text"]
+    ok = {"texts": [dict(m["texts"][0], fellBack=False)], "anyOverflow": False}
+    assert not [i for i in lc.measured_issues({}, ok, 1080, 1920, 3.0, "ov-ring") if "serif" in i["text"]]
+
+
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+def test_the_real_measurer_sees_a_face_that_did_not_load(tmp_path):
+    bare = ("export default function O() { const m = Motion.motion(frame, fps, duration); return <div style={{position: 'absolute', "
+            "left: 200, top: 700, fontSize: 60, color: 'white', fontFamily: 'Nonexistent Face', ...m.style}}>live video</div> }")
+    stacked = bare.replace("'Nonexistent Face'", "'Nonexistent Face, sans-serif'")
+    path, _ = _project(tmp_path, overlays=[{"id": "ov-bare", "start": 1, "end": 3, "jsx": bare},
+                                           {"id": "ov-stack", "start": 4, "end": 6, "jsx": stacked}])
+    out = look.run(str(path), detail=True)
+    assert any("ov-bare" in i and "draws in serif" in i for i in out["issues"]), out
+    assert not any("ov-stack" in i and "serif" in i for i in out["issues"]), out
+
+
+# ── a label on its own part (PL89e) ───────────────────────────────────────────────────────────────────────────────
+# 52's round-6 notes: "sensors" sat on the phone's edge. An overlay that imports a direct_scene mark file
+# (overlays/_marks/<scene>.json) has its labels checked against the marked parts at the scene's moment: a label over a
+# part is an issue (labels go at the leader's `to`, beside the model).
+
+def _marked(tmp_path, box):
+    jsx = ("import mark from './_marks/stack.json'\n"
+           "export default function O() { const m = Motion.motion(frame, fps, duration); return <div style={m.style}>sensors</div> }")
+    scene = {"id": "s3d", "items": [{"id": "s3d-1", "type": "overlay", "src": "engine:scene3d", "start": 2, "end": 8,
+                                     "props": {"scene": "stack", "inPoint": 1}}]}
+    path, _ = _project(tmp_path, base=((0, 10),), overlays=[{"id": "ov-labels", "start": 2, "end": 8, "jsx": jsx}], extra_tracks=[scene])
+    part = lambda x: {"cast": 0, "part": "sensors", "pixel": [x, 1000], "box": [x - 200, 900, x + 200, 1100], "inView": True,
+                      "leader": {"side": "right", "from": [x + 200, 1000], "to": [x + 500, 1000], "align": "start"}}
+    mark = {"kind": "mark", "at": 0, "size": {"width": 2160, "height": 3840}, "parts": [part(1000)], "casts": [],
+            "track": [{"t": 0, "parts": [part(1000)], "casts": []}, {"t": 4, "parts": [part(1000)], "casts": []}]}
+    (path.parent / "overlays" / "_marks").mkdir()
+    (path.parent / "overlays" / "_marks" / "stack.json").write_text(json.dumps(mark))
+    return look.run(str(path), measure_fn=_fake_measure({"ov-labels": [box]}), detail=True)
+
+
+def test_a_label_over_its_marked_part_is_an_issue_and_one_beside_it_is_not(tmp_path):
+    # the part's box at 2160 x 3840 is 800-1200 x 900-1100: 400-600 x 450-550 on the 1080 canvas
+    out = _marked(tmp_path / "on", ("sensors", 430, 470, 160, 60))
+    assert any("ov-labels" in i and 'label "sensors" sits on the part sensors' in i for i in out["issues"]), out["issues"]
+    out = _marked(tmp_path / "beside", ("sensors", 780, 470, 160, 60))
+    assert not any("sits on the part" in i for i in out["issues"]), out["issues"]
+
+
+# Sam (2026-10-26, a paid run's 13 tracks: 4 b-roll tracks of one clip each, 3 for 3D beats, 3 for labels): tracks of one
+# kind (video, 3D beats, graphics) that never overlap in time, with nothing between them drawing over the lower one's
+# items, are one issue each: they could be one track.
+def test_same_kind_tracks_that_could_be_one_are_said():
+    v = lambda i, s, e: {"id": i, "type": "video", "src": "/x/b.mp4", "start": s, "end": e}
+    o = lambda i, s, e, src=None: {"id": i, "type": "overlay", "src": src or f"./overlays/{i}.jsx", "start": s, "end": e}
+    p = {"tracks": [{"id": "trk-0", "items": [v("v0", 0, 50)]},
+                    {"id": "b1", "items": [v("br1", 4, 7)]}, {"id": "b2", "items": [v("br2", 24, 27)]},
+                    {"id": "s1", "items": [o("specs", 7, 13, "engine:scene3d")]}, {"id": "s2", "items": [o("mount", 13, 24, "engine:scene3d")]},
+                    {"id": "g1", "items": [o("lab1", 7, 13)]}, {"id": "g2", "items": [o("lab2", 13, 24)]},
+                    {"id": "g3", "items": [o("lab3", 8, 9)]}]}    # lab3 overlaps lab1: g3 stays its own track
+    out = [i for i in lc.merge_track_issues(p)]
+    texts = " | ".join(i["text"] for i in out)
+    assert len(out) == 3, texts
+    assert any(i["id"] == "b2" and "b1" in i["text"] for i in out), texts
+    assert any(i["id"] == "s2" and "s1" in i["text"] for i in out), texts
+    assert any(i["id"] == "g2" and "g1" in i["text"] for i in out), texts
+    assert "edit_timeline" in texts and "track" in texts
+    # a 3D beat between two graphics tracks, over both tracks' items: either merge would change what draws on top
+    p2 = {"tracks": [p["tracks"][0], {"id": "g1", "items": [o("lab1", 7, 9)]}, {"id": "s1", "items": [o("specs", 7, 13, "engine:scene3d")]},
+                     {"id": "g2", "items": [o("lab2", 10, 12)]}]}
+    assert lc.merge_track_issues(p2) == []
+
+
+# 52's PL89f glyph box: the overlap, top-slot and label-on-part checks read the text's own glyphs too, so a full-width
+# centred label is not taken for one that covers a part or crosses another overlay.
+def test_overlaps_and_the_label_on_part_check_read_the_glyphs(tmp_path, monkeypatch):
+    wide = {"x": 0, "y": 470, "w": 1080, "h": 60}
+    a = ("ov-a", 0, 4, [{**wide, "glyphs": {"x": 100, "y": 470, "w": 200, "h": 60}}])
+    b = ("ov-b", 1, 5, [{**wide, "glyphs": {"x": 700, "y": 470, "w": 200, "h": 60}}])
+    assert lc.text_overlaps([a, b]) == [], "glyphs apart, boxes crossing: no overlap"
+    # a full-width label whose glyphs sit beside the marked part (400-600 x 450-550 on the 1080 canvas) is not on it
+    real = _fake_measure
+    monkeypatch.setattr(sys.modules[__name__], "_fake_measure", lambda boxes: (lambda *a: (_glyphed("sensors", (0, 470, 1080, 60), (780, 470, 160, 60)), None)))
+    out = _marked(tmp_path / "beside", ("sensors", 0, 470, 1080, 60))
+    monkeypatch.setattr(sys.modules[__name__], "_fake_measure", real)
+    assert not any("sits on the part" in i for i in out["issues"]), out["issues"]
+
+
+# Round 9 (52's notes): the mount was marked, but no overlay read its marks, so its labels were dropped. A mark file no
+# overlay imports is named.
+def test_a_mark_no_overlay_reads_is_named(tmp_path):
+    jsx = "import mark from './_marks/specs.json'\nexport default function O() { const m = Motion.motion(frame, fps, duration); return <div style={m.style}>x</div> }"
+    path, _ = _project(tmp_path, base=((0, 10),), overlays=[{"id": "ov-specs", "start": 1, "end": 4, "jsx": jsx}])
+    marks = path.parent / "overlays" / "_marks"
+    marks.mkdir()
+    for name in ("specs", "mount"):
+        (marks / f"{name}.json").write_text(json.dumps({"kind": "mark", "at": 0, "size": {"width": 1080, "height": 1920}, "parts": [], "casts": []}))
+    out = look.run(str(path), measure_fn=_fake_measure({}), detail=True)
+    named = [i for i in out["issues"] if "_marks/mount.json" in i]
+    assert len(named) == 1 and "scene_labels" in named[0], out["issues"]
+    assert not any("_marks/specs.json" in i for i in out["issues"]), "specs is read"

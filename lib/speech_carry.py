@@ -110,6 +110,7 @@ import re
 from dataclasses import dataclass, field, fields
 
 from lib.caption_group import group
+from lib.caption_marks import carry_stamp, stamp, stamped
 from lib.common import fail
 from lib.item_ids import id_suffix
 from lib.keyframe_curves import rebase
@@ -912,7 +913,7 @@ class _Carry:
                 continue
             changed = changed or parts != [seg]
             out.extend(parts)
-        made = self.new_speech_segments(taken) if segs else []
+        made = self.new_speech_segments(taken, stamped(segs)) if segs else []
         if made:
             out.extend(made)
             changed = True
@@ -960,6 +961,7 @@ class _Carry:
             js = [x[2] for x in g]
             if js != list(range(len(words))):
                 part["text"] = " ".join(str(w.get("word", "")) for w in new_words)
+            carry_stamp(part, [seg])
             f, l = g[0], g[-1]
             if _num(seg.get("start")):
                 st = seg["start"] + (f[0] - words[0]["start"]) if f[2] == 0 and not f[3] else f[0]
@@ -977,7 +979,7 @@ class _Carry:
             self.counts["captionWords"] += len(new_words)
         return parts
 
-    def new_speech_segments(self, taken):
+    def new_speech_segments(self, taken, stamp_them=False):
         """Segments for speech the old cut never played, from the refined sidecar words."""
         ws = []
         for n, w in self.tm.unplayed_words():
@@ -992,6 +994,8 @@ class _Carry:
         nums = [int(m.group(1)) for s in taken if isinstance(s, str) and (m := re.match(r"^cap-(\d+)$", s))]
         nxt = max(nums, default=0) + 1
         for seg in made:
+            if stamp_them:
+                seg["auto"] = stamp(seg["text"])   # speech the AI restored is the AI's (§585)
             while f"cap-{nxt}" in taken:
                 nxt += 1
             seg["id"] = f"cap-{nxt}"

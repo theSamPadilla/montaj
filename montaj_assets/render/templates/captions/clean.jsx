@@ -27,7 +27,7 @@ export default function Clean({
   if (!active.length) return null
 
   const theme = { frame, fps, color, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }
-  return <>{captionGroups(active).map((g, i) => renderSegment(g.seg, g.seg.id ?? i, segmentTheme(g.seg, theme), g.lines.map(l => renderLine(l, segmentTheme(l, theme)))))}</>
+  return <>{captionGroups(active).map((g, i) => renderSegment(g.seg, g.seg.id ?? i, segmentTheme(g.seg, theme), g.lines.map(l => renderLine(l, segmentTheme(l, theme), isDark(g.seg)))))}</>
 }
 
 /**
@@ -135,9 +135,9 @@ function renderSegment(seg, key, { frame, fps, color, fontSize, fontFamily, font
 
 /** The segment's text in clean's look: the caption itself, and (§244) each
  *  translation stacked under it. */
-function renderLine(seg, { color, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }) {
+function renderLine(seg, { color, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }, dark = isDark(seg)) {
   const style = {
-    color: seg.color ?? color,
+    color: dark ? INK : (seg.color ?? color),
     fontSize,
     fontFamily,
     fontWeight,
@@ -146,12 +146,24 @@ function renderLine(seg, { color, fontSize, fontFamily, fontWeight, textAlign, l
     maxWidth: '92%',
     letterSpacing,
     textTransform,
-    textShadow: '0 2px 10px rgba(0,0,0,0.75), 0 0 34px rgba(0,0,0,0.45)',
+    textShadow: dark ? 'none' : '0 2px 10px rgba(0,0,0,0.75), 0 0 34px rgba(0,0,0,0.45)',
   }
   return isTranslation(seg)
     ? <div key={seg.id ?? seg.start} data-caption-id={seg.id} style={style}>{seg.text}</div>
     : <div style={style}>{seg.text}</div>
 }
+
+/**
+ * Caption ink. A segment with `ink: "dark"` (written by the caption_ink step
+ * or chosen by a person) is drawn as dark ink on paper: the base text takes
+ * INK and loses its outline and shadow. Accents (the spoken word, a word's
+ * own colour, highlight-box's box) stay as they are. A translation stacked
+ * under a caption takes the ink of the caption it sits under. Duplicated in
+ * the seven text-over-picture templates (plate and subtitle draw their own
+ * box and ignore it); keep INK and isDark identical in each.
+ */
+const INK = '#1c1c1e'
+const isDark = seg => seg.ink === 'dark'
 
 /**
  * One segment's theme: a styling field set on the segment wins over the

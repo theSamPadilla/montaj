@@ -1,7 +1,7 @@
 {
   "name": "generate_sfx",
   "provenance": {"provider": "elevenlabs"},
-  "description": "Generate a sound effect from a text description via ElevenLabs. Generation step — produces a file on disk; composition happens at render time.",
+  "description": "Generate a sound effect from a text description via ElevenLabs. Generation step — produces a file on disk; composition happens at render time. Whooshes, hits, clicks and risers are synth_audio's, free: this is for a sound it cannot make.",
   "output": {
     "type": "audio",
     "description": "Path to the generated sound effect (plus duration metadata when --json)"

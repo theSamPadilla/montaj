@@ -14,6 +14,7 @@ from lib import web_image
 from lib.common import ffmpeg_bin
 from lib.disk_space import is_disk_full, remove_partial
 from lib.fs_safe import _is_link, open_write_no_follow
+from lib.path_match import spaced_twins
 from serve import disk_full
 from serve.common import (
     resolve_workspace, find_project_dir, _is_under, _allowed_file_roots,
@@ -265,15 +266,13 @@ async def serve_file(path: str, request: Request, project: str | None = None):
     else:
         p = Path(path)
     if not p.is_file():
-        # macOS screenshot filenames use NARROW NO-BREAK SPACE (\u202f) before AM/PM,
-        # but paths written by the agent (or pasted) use a regular space.
-        parent = p.parent
-        if parent.is_dir():
-            target = p.name.replace('\u202f', ' ')
-            for candidate in parent.iterdir():
-                if candidate.name.replace('\u202f', ' ') == target:
-                    p = candidate
-                    break
+        # macOS screenshot and screen recording names have U+202F before AM/PM, and a path written by the agent (or
+        # pasted) has a plain space: read the one file it means (lib/path_match.py), naming them when several do.
+        hits = spaced_twins(str(p))
+        if len(hits) > 1:
+            raise bad_request("ambiguous_path", f"No file at {path}; several match once spaces are read alike: "
+                              + ", ".join(os.path.basename(h) for h in hits) + ". Name one exactly.")
+        p = Path(hits[0]) if hits else p
         if not p.is_file():
             raise not_found("not_found", f"File not found: {path}")
 

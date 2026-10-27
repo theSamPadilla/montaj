@@ -1,0 +1,385 @@
+"""The project brief (PL89, Sam 2026-10-26): what the AI needs for its first decisions on a pending project, in one read.
+
+Measured on kung fu run 3: the AI spent 18 turns and 37 calls (82 KB, 10 images, 774K tokens of cache reads) finding
+what this answers at once: which sources are talking heads and which b-roll, every take's words with their times, which
+takes say which script line, where the b-roll's moments are, the workflow's steps and the profile's style. A turn
+re-reads the whole context, so this is complete on purpose: nothing the first decisions need is left for another call.
+
+`brief(project, project_dir)` -> {"text", "sheets": [png], "skills": [skill names the steps use], "stamp"}. Cached in
+render/brief/ under a stamp of everything it reads, so a second read is free. Line ids are speech_lines' (A1, B2...),
+the ids cut's plan uses.
+"""
+import hashlib
+import json
+import math
+import os
+import re
+import subprocess
+
+from lib import shots as shots_lib
+from lib import transcripts
+from lib.common import ffprobe_bin, ff_path
+from lib.speech_lines import norm, sidecar_for
+
+BRIEF_VERSION = 6     # 6: the b-roll rules; 5: the canvas line, caption by default, sound effects (CV)
+LONG_BROLL_S = 20.0          # b-roll at least this long gets its shots listed and a sheet
+PROFILE_SECTIONS = ("Titles & overlays", "Format")
+LOOKED = ("probe", "snapshot")   # steps whose answer the brief already holds   # the style profile's sections that bear on the edit
+_HDR = ("arib-std-b67", "smpte2084")
+
+
+def _probe(path):
+    """(fps, transfer) of the first video stream, or (None, None)."""
+    try:
+        r = subprocess.run([ffprobe_bin(), "-v", "error", "-select_streams", "v:0", "-show_entries",
+                            "stream=avg_frame_rate,color_transfer", "-of", "json", ff_path(path)],
+                           capture_output=True, text=True, timeout=30)
+        s = (json.loads(r.stdout).get("streams") or [{}])[0]
+        a, b = (s.get("avg_frame_rate") or "0/1").split("/")
+        fps = float(a) / float(b) if float(b) else None
+        return (round(fps, 2) if fps else None), s.get("color_transfer")
+    except (OSError, ValueError, subprocess.SubprocessError, ZeroDivisionError):
+        return None, None
+
+
+def _heads_sheet(frames, labels, out, box=False):
+    """One sheet of `frames` ([(media path, seconds)]), each tile labelled: the talking heads at a glance, in the one look
+    sheet layout (lib.sheet.look_sheet, 1280 px, which the app delivers whole). `box`: takes of mixed shapes, each fitted
+    into a square box; takes of one shape keep it."""
+    import tempfile
+    from lib.common import ffmpeg_bin
+    from lib import sheet
+    with tempfile.TemporaryDirectory() as work:
+        paths = []
+        for i, (media, t) in enumerate(frames):
+            p = os.path.join(work, f"h_{i:03d}.png")
+            subprocess.run([ffmpeg_bin(), "-nostdin", "-v", "error", "-y", "-ss", f"{max(0.0, t):.3f}", "-i", ff_path(media),
+                            "-frames:v", "1", "-vf", "scale=640:-2", p], check=True, timeout=60)
+            paths.append(p)
+        sheet.look_sheet(paths, labels, out, box=box)
+    return out
+
+
+def _silences(path):
+    from lib.speech_pauses import silences
+    return silences(path)
+
+
+def _stat(path):
+    try:
+        st = os.stat(path)
+        return [st.st_size, int(st.st_mtime)]
+    except OSError:
+        return None
+
+
+def _abs(path, project_dir):
+    return path if not path or os.path.isabs(path) else os.path.join(project_dir, path)
+
+
+def _sources(project, project_dir):
+    out = []
+    for s in project.get("sources") or []:
+        if isinstance(s, dict) and s.get("src"):
+            s = dict(s)
+            s["src"] = _abs(s["src"], project_dir)
+            if s.get("proxySrc"):
+                s["proxySrc"] = _abs(s["proxySrc"], project_dir)
+            out.append(s)
+    return out
+
+
+def _stamp(project, project_dir, montaj_root):
+    """Everything the brief reads: the prompt, workflow, profile, timeline's size, and each source and sidecar's size
+    and mtime."""
+    parts = {"v": BRIEF_VERSION, "prompt": project.get("editingPrompt"), "workflow": project.get("workflow"),
+             "profile": project.get("profileSnapshot"), "status": project.get("status"),
+             "canvas": [((project.get("settings") or {}).get(k)) for k in ("resolution", "resolutionSource", "aspectSource")],
+             "items": sum(len(t.get("items") or []) for t in project.get("tracks") or [] if isinstance(t, dict))}
+    for s in _sources(project, project_dir):
+        sc = sidecar_for(s)
+        parts[s["id"] if s.get("id") else s["src"]] = [s["src"], _stat(s["src"]), sc and _stat(sc),
+                                                       _stat(shots_lib.sidecar_path(s["src"]))]
+    from lib.workflow import resolve_workflow_path
+    wf = resolve_workflow_path(project.get("workflow"), montaj_root) if project.get("workflow") else None
+    parts["wf"] = [wf, wf and _stat(wf)]
+    return hashlib.sha1(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def _script(prompt):
+    """[("section", name) | ("line", text)] of the editing prompt's script: the part before a "-----" line, `<...>`
+    lines as sections, the rest split into sentences."""
+    script = re.split(r"\n-{3,}\s*\n", prompt or "", maxsplit=1)[0]
+    out = []
+    for raw in script.splitlines():
+        raw = raw.strip()
+        if not raw or re.match(r"(?i)^edit this video", raw):
+            continue
+        m = re.fullmatch(r"<(.+)>", raw)
+        if m:
+            out.append(("section", m.group(1).strip()))
+            continue
+        out += [("line", s.strip()) for s in re.split(r"(?<=[.!?])\s+", raw) if s.strip()]
+    return out
+
+
+def _pairs(words):
+    return {(a, b) for a, b in zip(words, words[1:])}
+
+
+def _said_by(script_lines, takes):
+    """{script line index: [transcript line ids]}: a transcript line goes to the script line it shares the most word
+    pairs with (2 at least), and to any other it says a quarter of, so retakes, partial and reworded sayings land on
+    their line."""
+    sp = [_pairs([norm(t) for t in text.split() if norm(t)]) for text in script_lines]
+    out = {i: [] for i in range(len(script_lines))}
+    if not sp:
+        return out
+    for letter, lines in takes:
+        for ln in lines:
+            lp = _pairs([w.norm for w in ln.words])
+            best = max(range(len(sp)), key=lambda i: (len(lp & sp[i]), -i))
+            for i, pairs in enumerate(sp):
+                n = len(lp & pairs)
+                if (i == best and n >= 2) or (n >= 1 and n >= 0.25 * len(pairs)):
+                    out[i].append(ln.id)
+    return out
+
+
+def _profile_text(project):
+    snap = project.get("profileSnapshot") or {}
+    pref = snap.get("preferences") or {}
+    out = []
+    bits = [f"captions `{pref['captionStyle']}`" if pref.get("captionStyle") else None,
+            f"font {pref['fontFamily']}" if pref.get("fontFamily") else None,
+            f"palette {', '.join(pref['palette'])}" if pref.get("palette") else None,
+            *(f"{k} {pref[k]}" for k in ("primaryColor", "secondaryColor", "accentColor") if pref.get(k))]
+    if pref.get("name") or any(bits):
+        out.append(f"{pref.get('name') or snap.get('name') or 'Profile'}: " + ", ".join(b for b in bits if b) + "."
+                   + (" Caption in it unless the prompt says no." if pref.get("captionStyle") else ""))
+    path = snap.get("styleProfilePath")
+    try:
+        text = open(path, encoding="utf-8").read() if path else ""
+    except OSError:
+        text = ""
+    m = re.search(r"(?m)^style_summary:\s*(.+)$", text)
+    if m:
+        out.append(f"Style: {m.group(1).strip()}")
+    for name in PROFILE_SECTIONS:
+        m = re.search(rf"(?ms)^## {re.escape(name)}\s*\n(.*?)(?=^## |\Z)", text)
+        if m and m.group(1).strip():
+            out += ["", f"**{name}** (the profile's notes)", m.group(1).strip()]
+    return out
+
+
+# CV (52's visual compare; Sam: "primarily bad b-roll placement"): general rules for placing b-roll, kept short.
+BROLL_RULES = ("A shot under a line that names an action shows that action: find its moment (shot labels, a half-second "
+               "sheet around it, an app's own on-screen readout) and look at a frame of the placed span; with no footage "
+               "of it, a graphic, never a near miss. Crop to what the line is about, never window chrome or sidebars, never "
+               "past the action. A list gets one shot per item, each from its own moment and labelled item → effect the "
+               "same way. A small change gets a ring or an arrow when it happens. Before finishing, walk the script: "
+               "every beat its own visual.")
+
+
+def _canvas_line(project):
+    """CV (Sam): a canvas taken from the footage is a default, never the AI's choice; it picks the aspect itself."""
+    st = project.get("settings") or {}
+    res = st.get("resolution")
+    if st.get("resolutionSource") not in ("footage", "default") or st.get("aspectSource") == "explicit" \
+            or not (isinstance(res, list) and len(res) == 2 and all(isinstance(v, int) and v > 0 for v in res)):
+        return None
+    g = math.gcd(*res)
+    return (f"Canvas {res[0]}x{res[1]} ({res[0] // g}:{res[1] // g}), taken from the footage: a default, not a choice. "
+            "Pick the aspect from the prompt and profile (short-form social is 9:16, 1080x1920), set it before building "
+            "(save_project settings, all of them with resolution changed: the field is replaced whole), and say so in one "
+            "line.")
+
+
+def _status_line(project):
+    items = sum(len(t.get("items") or []) for t in project.get("tracks") or [] if isinstance(t, dict))
+    wf = project.get("workflow")
+    head = f"Status {project.get('status') or 'unknown'}" + (f", workflow **{wf}**" if wf else "") + "."
+    if items == 0:
+        return head + " The timeline is empty: the sources below are the footage. Start with cut (Steps below): it builds the talking-head spine from the takes you pick."
+    return head + f" The timeline holds {items} items laid by Montaj before you, not an edit: cut rebuilds the spine from the plan."
+
+
+def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None, shots_fn=None, sheet_fn=None,
+          heads_fn=None):
+    """The brief's text, sheets and skills, computed (no cache)."""
+    heads_fn = heads_fn or _heads_sheet
+    probe_fn = probe_fn or _probe
+    silences_fn = silences_fn or _silences
+    shots_fn = shots_fn or (lambda src, scan: shots_lib.shots_for(src, scan_path=scan)["shots"])
+    sheet_fn = sheet_fn or (lambda src, shots, out, scan: shots_lib.sheet(src, shots, out, scan_path=scan))
+    W = []
+    W.append(f"# {project.get('name') or project.get('id') or 'Project'}")
+    W.append(_status_line(project))
+    if _canvas_line(project):
+        W.append(_canvas_line(project))
+    W.append("This brief is everything the first decisions need, in full: no other read is needed to start.")
+    W.append("")
+
+    # sources and their roles (cut's own speech test)
+    # the one transcript reader (lib/transcripts.py): the same lettering, refinement and cache as the transcripts step
+    heads = transcripts.talking_heads(project, project_dir, silences_fn=silences_fn)
+    letter_of = {s["src"]: letter for s, letter, _ in heads}
+    rolls, rows = [], []
+    for s in _sources(project, project_dir):
+        sc = sidecar_for(s)
+        dur = float(s.get("sourceDuration") or 0)
+        fps, trc = probe_fn(s["src"])
+        pic = (f"{s['sourceWidth']}x{s['sourceHeight']}" if s.get("sourceWidth") else "")
+        pic += " HDR" if trc in _HDR else ""
+        if s["src"] in letter_of:
+            role = f"talking head {letter_of[s['src']]}"
+        else:
+            rolls.append(s)
+            role = "b-roll" + (" (no speech)" if sc else "")
+        rows.append(f"| {s.get('id', '')} | {os.path.basename(s['src'])} | {role} | {dur:.1f} s | {fps or '?'} | {pic.strip()} |")
+    W += ["## Sources", "| id | file | role | length | fps | picture |", "|---|---|---|---|---|---|", *rows]
+    sheets = []
+    if heads:   # Sam (2026-10-26): the first looks come with the brief; a frame of each take, mid its first line
+        out = os.path.join(project_dir, "render", "brief", "talking-heads.jpg")
+        frames = [(s.get("proxySrc") or s["src"], (lns[0].words[0].start + lns[0].words[-1].end) / 2 if lns else 0.0)
+                  for s, _, lns in heads]
+        labels = [f"{letter}  {s.get('id', '')}" for s, letter, _ in heads]   # the file is in the table above
+        try:
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            shapes = {(s.get("sourceWidth") or 0) > (s.get("sourceHeight") or 0) for s, _, _ in heads}
+            sheets.append(heads_fn(frames, labels, out, box=len(shapes) > 1))
+            W.append("The first sheet with this brief shows a frame of each talking head, labelled by letter and clip.")
+        except Exception:  # noqa: BLE001: no sheet, the brief still answers
+            pass
+    W.append("")
+
+    # script -> takes: each script line, then every take line that says it (the full transcripts are cut's plan's)
+    script = _script(project.get("editingPrompt"))
+    lines = [t for k, t in script if k == "line"]
+    by_id = {ln.id: ln for _, _, lns in heads for ln in lns}
+
+    def take(lid):
+        ln = by_id[lid]
+        return f"   - {lid} {ln.words[0].start:.1f}-{ln.words[-1].end:.1f}: \"{' '.join(w.text for w in ln.words)}\""
+    if lines and heads:
+        said = _said_by(lines, [(letter, lns) for _, letter, lns in heads])
+        W += ["## Script → takes",
+              "Each script line, then every take line that says it in recording order: id (cut's plan uses it), seconds "
+              "in its source, the words Whisper heard. Retakes and partial sayings are all listed, so the last one is "
+              "usually the last full saying. Caption and spell by the script's words, not Whisper's. \"not recorded as "
+              "written\": look for it by meaning with run_step transcripts (every take's lines). The takes are yours to pick.", ""]
+        k = 0
+        for kind, text in script:
+            if kind == "section":
+                W.append(f"**<{text}>**")
+                continue
+            ids = said[k]
+            k += 1
+            W.append(f"{k}. {text}")
+            W += [take(lid) for lid in ids] or ["   - not recorded as written"]
+        used = {lid for ids in said.values() for lid in ids}
+        rest = [lid for lid in by_id if lid not in used]
+        if rest:   # asides, an outro, false starts with no script words: named so none is kept by accident
+            W += ["", "**Not in the script:** take lines no script line matches (asides, an outro, a false start)."]
+            W += [take(lid)[2:] for lid in rest]
+        W.append("")
+    elif heads:   # no script: the takes as they were recorded
+        W += ["## Takes", "Every take line in recording order: id, seconds in its source, words."]
+        W += [take(lid)[2:] for lid in by_id]
+        W.append("")
+
+    # b-roll shots
+    long_rolls = [s for s in rolls if float(s.get("sourceDuration") or 0) >= LONG_BROLL_S]
+    if rolls:
+        W.append("## B-roll")
+        for s in rolls:
+            dur = float(s.get("sourceDuration") or 0)
+            if s not in long_rolls:
+                W.append(f"**{s.get('id', '')} {os.path.basename(s['src'])}**, {dur:.1f} s: one shot.")
+                continue
+            scan = s.get("proxySrc") or s["src"]
+            try:
+                shots = shots_fn(s["src"], scan) or []
+            except Exception:  # noqa: BLE001: no shots, the brief still answers
+                shots = []
+            if not shots:
+                W.append(f"**{s.get('id', '')} {os.path.basename(s['src'])}**, {dur:.1f} s: its shots could not be found.")
+                continue
+            out = os.path.join(project_dir, "render", "brief", f"shots-{s.get('id') or len(sheets)}.jpg")
+            try:
+                os.makedirs(os.path.dirname(out), exist_ok=True)
+                sheets.append(sheet_fn(s["src"], shots, out, scan))
+                seen = " The sheet with this brief shows each shot at its middle, numbered."
+            except Exception:  # noqa: BLE001
+                seen = ""
+            W.append(f"**{s.get('id', '')} {os.path.basename(s['src'])}**, {dur:.1f} s, {len(shots)} shots (seconds in "
+                     f"the source).{seen}")
+            bare = sum(1 for sh in shots if not sh.get("label"))
+            if bare:   # run 4 (#50-56): b-roll added by unlabelled number swapped the mannequin and the lift
+                W.append(f"Label the shots first, from the sheet, before adding any: run_step {{name: \"shots\", params: {{clip: "
+                         f"\"{s.get('id', '')}\", labels: {{\"1\": \"a few words\", ...}}}}}} names each by what happens in it; {bare} of {len(shots)} "
+                         "have no label yet. Every later read shows them.")
+            W += [f"- {sh['n']}: {sh['start']:.1f}-{sh['end']:.1f}" + (f" {sh['label']}" if sh.get("label") else "")
+                  for sh in shots]
+            W.append(f"Then add b-roll by shot: edit_timeline {{op: \"add\", item: {{source: \"{s.get('id', '')}\", shot: n, "
+                     "start}}, which takes the shot's span; for a closer look at a moment, snapshot the clip.")
+        W.append(BROLL_RULES)
+        W.append("")
+
+    # steps
+    skills = []
+    try:
+        from lib.workflow import read_workflow
+        wf = read_workflow(project.get("workflow"), montaj_root) if project.get("workflow") else None
+    except Exception:  # noqa: BLE001
+        wf = None
+    if wf and wf.get("steps"):
+        W.append("## Steps, in order")
+        looked = [str(st.get("uses") or "").split("/")[-1] for st in wf["steps"]]
+        looked = [u for u in looked if u in LOOKED]
+        if looked:   # what these steps show is above: run 3 spent six snapshots on it
+            W.append(f"({' and '.join(dict.fromkeys(looked))}: this brief covers them with the sources, transcripts and "
+                     "b-roll sheet above, so the first step is the one numbered 1.)")
+        i = 0
+        for st in wf["steps"]:
+            uses = str(st.get("uses") or "").split("/")[-1]
+            if uses and uses not in skills:
+                skills.append(uses)
+            if uses in LOOKED:
+                continue
+            i += 1
+            note = st.get("note") or f"its guide is the {uses} skill in the Recipe below"
+            params = st.get("params")
+            W.append(f"{i}. **{st.get('id')}** ({uses})" + (f" with {json.dumps(params)}" if params else "") + f": {note}")
+        W.append("")
+
+    prof = _profile_text(project)
+    if prof:
+        W += ["## Profile", *prof, ""]
+    # CV (Sam): sound effects are made, never bought, and what the prompt asks for needs no second yes
+    W += ["Sound effects: `synth_audio`, free (whoosh, hit, click, riser, in one call; no credits, no question). "
+          "Paid music or a voice the prompt asks for is a yes to spend on it.", ""]
+    return {"text": "\n".join(W).rstrip() + "\n", "sheets": sheets, "skills": skills}
+
+
+def brief(project, project_dir, montaj_root, **fns):
+    """`build`, cached in render/brief/brief.json under `_stamp` (a later read of an unchanged project is free)."""
+    stamp = _stamp(project, project_dir, montaj_root)
+    cache = os.path.join(project_dir, "render", "brief", "brief.json")
+    try:
+        with open(cache, encoding="utf-8") as f:
+            got = json.load(f)
+        if got.get("stamp") == stamp and all(os.path.isfile(p) for p in got.get("sheets") or []):
+            return got
+    except (OSError, ValueError):
+        pass
+    got = {**build(project, project_dir, montaj_root, **fns), "stamp": stamp}
+    try:
+        os.makedirs(os.path.dirname(cache), exist_ok=True)
+        tmp = cache + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(got, f)
+        os.replace(tmp, cache)
+    except OSError:
+        pass
+    return got

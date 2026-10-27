@@ -479,7 +479,7 @@ The Recharts globals are for carousel slides: the carousel renderer screenshots 
 - **Data.** `points` (`[[t, y], ...]`) for timed data; `values` (`[y, ...]`) to spread a curve evenly over the item's length; `series` for up to 3 lines (`[{ name, color, points | values }]`, a legend names them), for a run against a baseline. Each takes an array or a JSON string. Points are sorted by `t`; at most 2000 per line.
 - **Axes.** `xFrom`/`xTo` label the x axis in the data's own units (e.g. `0` and `1000000` steps) while the timing stays in seconds; without them the x labels are seconds. `yMin`/`yMax` fix the y range; by default it fits all of the data, so the axes hold still while the line draws. `title`, `xLabel`, `yLabel` are the copy.
 - **Look.** `lineColor`, `axisColor` (white by default, for footage), `bgColor` (`transparent` by default; any colour draws a rounded card, which keeps a chart legible over a busy or light shot), `fontFamily`, `fontSize`, `strokeWidth`, `fill` (a soft area under a single line), `showValue` (the value at the tip, single line only), `boxWidth`/`boxHeight` (design px, default 720 by 405). Take the colours from the brand: the line in the accent, a second and third line in the palette, so the chart matches the rest of the video. Place and size it with the item's `offsetX`, `offsetY` and `scale` like any overlay; an inset in a corner is a smaller `scale` and an offset.
-- **Check it** with `sample_frame` near the start, the middle and the end of the item: the tip should be further along each time.
+- **Check it** with `sample_frame` near the start, the middle and the end of the item (repeat `--at` for one sheet): the tip should be further along each time.
 
 ### Non-negotiable rule: disable animations
 

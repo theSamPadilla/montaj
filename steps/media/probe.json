@@ -1,6 +1,6 @@
 {
   "name": "probe",
-  "description": "Extract metadata from a video file: duration, resolution, fps, codec, audio",
+  "description": "Only for fps, codec or audio: a project's sources already hold each clip's size and length (get_project). Extracts a video file's metadata: duration, resolution, fps, codec, audio",
   "input": {
     "type": "video",
     "description": "Video file to probe"

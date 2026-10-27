@@ -6,7 +6,7 @@ Moved verbatim from steps/edit/cut.py, renamed public; `transcribe_missing` take
 import contextlib, io, json, os, re, shutil, tempfile
 from pathlib import Path
 
-from lib import write_places
+from lib import speech_runs, write_places
 from lib.common import fail
 from lib.project_tracks import normalize_tracks
 from lib.speech_lines import _ends_sentence, load_words, sidecar_for
@@ -127,18 +127,125 @@ def install_sidecar(tmp_json, dest):
     return True
 
 
-def transcribe_missing(project, track_id, project_path, project_dir, model, language, transcribe):
+def keep_copy(path, data, ext):
+    """Write `data` beside `path` as <stem>.full<ext> (<stem>.full-2<ext>, ... when that exists), never over a file:
+    the copy of a transcript the redo replaces. The path written, or None."""
+    stem = os.path.splitext(path)[0]
+    for n in range(1, 100):
+        dest = f"{stem}.full{ext}" if n == 1 else f"{stem}.full-{n}{ext}"
+        try:
+            fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            continue
+        except OSError:
+            return None
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        return dest
+    return None
+
+
+def replace_sidecar(tmp_json, dest, old_bytes):
+    """Put the by-runs transcript at dest over montaj's own older full-file transcript, and nothing else: dest must be
+    a plain file that still holds exactly old_bytes (what was read before the new one was made) and still reads as
+    montaj's full-file transcript. A file a person saved meanwhile, a link or anything else is kept. The old file is
+    kept first as <stem>.full.json (`keep_copy`); with no copy, nothing is replaced. True when replaced."""
+    try:
+        new = Path(tmp_json).read_bytes()
+        if os.path.islink(dest) or not os.path.isfile(dest) or Path(dest).read_bytes() != old_bytes:
+            return False
+        if not speech_runs.is_full_file_montaj(dest) or speech_runs.runs_of(tmp_json) is None:
+            return False
+        if keep_copy(dest, old_bytes, ".json") is None:
+            return False
+        stage = f"{dest}.{os.getpid()}.tmp"
+        Path(stage).write_bytes(new)
+        # nothing between the last look and the swap but the swap: a write there is the one race left
+        if Path(dest).read_bytes() != old_bytes:
+            os.unlink(stage)
+            return False
+        os.replace(stage, dest)
+    except OSError:
+        return False
+    return True
+
+
+def _install_srt(tmp_srt, dest, warnings, name):
+    """The redo's .srt at dest, the one there (a link is never touched) kept first as <stem>.full.srt."""
+    try:
+        new = Path(tmp_srt).read_bytes()
+        if os.path.islink(dest):
+            return
+        if os.path.exists(dest):
+            if keep_copy(dest, Path(dest).read_bytes(), ".srt") is None:
+                warnings.append(f"kept the older captions file of {name}: no copy of it could be made")
+                return
+        stage = f"{dest}.{os.getpid()}.tmp"
+        Path(stage).write_bytes(new)
+        os.replace(stage, dest)
+    except OSError as e:
+        warnings.append(f"the new captions file of {name} was not written ({e.strerror})"[:300])
+
+
+def _redo_by_runs(r, src, project_path, project_dir, model, language, transcribe, warnings):
+    """Transcribe the clip again by runs when its transcript is montaj's own full-file one (PL89 A1). True when the
+    transcript was replaced. A failure or a result that is not by runs leaves the old one."""
+    dest = os.path.splitext(src)[0] + ".json"
+    name = os.path.basename(src)
+    if not speech_runs.is_full_file_montaj(dest):
+        return False
+    if (write_places.real(dest) == write_places.real(project_path)
+            or not write_places.sidecar_folder_ok(os.path.dirname(dest) or ".", project_dir)):
+        warnings.append(f"kept the older transcript of {name}: its folder may not be written, so it was not "
+                        "transcribed again by runs (its word times may drift)")
+        return False
+    try:
+        old = Path(dest).read_bytes()
+    except OSError as e:
+        warnings.append(f"kept the older transcript of {name}: it could not be read ({e.strerror})"[:300])
+        return False
+    tmp = tempfile.mkdtemp(prefix="montaj-cut-")
+    try:
+        prefix = os.path.join(tmp, "transcript")
+        ok, res = quiet(transcribe, src, prefix, model, language)
+        if not ok:
+            warnings.append(f"kept the older transcript of {os.path.basename(src)}: transcribing it again by runs "
+                            f"failed: {res.get('message', '')}"[:300])
+            return False
+        if not os.path.isfile(prefix + ".json") or speech_runs.runs_of(prefix + ".json") is None:
+            # no voiced run (the full-file fallback): nothing better to install
+            warnings.append(f"kept the older transcript of {name}: no voice was found to transcribe it by runs")
+            return False
+        if not replace_sidecar(prefix + ".json", dest, old):
+            warnings.append(f"kept the transcript of {name}: it changed meanwhile")
+            return False
+        _install_srt(prefix + ".srt", os.path.splitext(src)[0] + ".srt", warnings, name)
+        return True
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def transcribe_missing(project, track_id, project_path, project_dir, model, language, transcribe, redo_full_file=False):
     """Transcribe every clip of the track with no transcript. Whisper writes into a temp folder; only the
     `.json` is installed, as `<stem>.json` beside the clip's src as the project holds it (where speech_text
     looks), and never over an existing file. The `.srt` is never written. A clip whose transcript may not be
-    written there is left untranscribed, with a warning. (transcribed clip ids, failed clip ids, warnings)."""
+    written there is left untranscribed, with a warning. With redo_full_file (cut passes it; place does not), a clip
+    whose transcript is montaj's own older full-file one is transcribed again, once, by runs, and the new file replaces that one only (`replace_sidecar`; the old one is kept
+    as <stem>.full.json, and the redo's .srt is written too, the one there kept as <stem>.full.srt); its id joins the
+    transcribed. Every redo that is skipped says so in the warnings: the older transcript's times may drift. (transcribed clip ids, failed clip ids, warnings)."""
     _, track = find_track(normalize_tracks(project), track_id)
-    done, failed, warnings, seen, failed_srcs = [], [], [], {}, set()
+    done, failed, warnings, seen, failed_srcs, redone = [], [], [], {}, set(), {}
     for it in media_items(track):
         r = resolved_item(it, project_dir)
-        if sidecar_for(r):
-            continue
         src = r["src"]
+        sc = sidecar_for(r)
+        if sc:
+            if redo_full_file and os.path.normcase(os.path.abspath(sc)) == os.path.normcase(os.path.abspath(os.path.splitext(src)[0] + ".json")):
+                if src not in redone:
+                    redone[src] = _redo_by_runs(r, src, project_path, project_dir, model, language, transcribe, warnings)
+                if redone[src]:
+                    done.append(it["id"])
+            continue
         if src not in seen:
             why = sidecar_refusal(src, project_path, project_dir)
             if why:

@@ -104,19 +104,20 @@ def test_new_projects_are_born_with_object_shape_tracks(tmp_path):
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
     assert [set(t) for t in project["tracks"]] == [{"id", "items"}]
     assert project["tracks"][0]["id"] == "trk-0"
-    assert len(project["tracks"][0]["items"]) == 1
+    assert project["tracks"][0]["items"] == []       # §590: the clips are sources
 
 
-def test_normal_project_clip_in_primary_track(tmp_path):
+def test_a_new_projects_timeline_is_empty_and_its_clips_are_sources(tmp_path):
+    """§590: nothing is laid for the person or the AI; cut builds the spine from the sources."""
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(b"fake")
     result = run_init("--clips", str(clip), "--prompt", "test",
                       env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
-    primary = track_items(project)[0]
-    assert len(primary) == 1
-    item = primary[0]
+    assert project["tracks"] == [{"id": "trk-0", "items": []}]
+    assert len(project["sources"]) == 1
+    item = project["sources"][0]
     assert item["id"] == "clip-0"
     assert item["type"] == "video"
     assert item["src"].endswith("clip.mp4")
@@ -192,7 +193,7 @@ def test_canvas_and_clips_are_mutually_exclusive(tmp_path):
     assert err["error"] == "mutually_exclusive"
 
 
-def test_multiple_clips_all_in_primary_track(tmp_path):
+def test_multiple_clips_are_all_sources_in_order(tmp_path):
     clip1 = tmp_path / "a.mp4"
     clip2 = tmp_path / "b.mp4"
     clip1.write_bytes(b"fake")
@@ -201,10 +202,8 @@ def test_multiple_clips_all_in_primary_track(tmp_path):
                       env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
-    primary = track_items(project)[0]
-    assert len(primary) == 2
-    assert primary[0]["id"] == "clip-0"
-    assert primary[1]["id"] == "clip-1"
+    assert track_items(project)[0] == []
+    assert [c["id"] for c in project["sources"]] == ["clip-0", "clip-1"]
 
 
 # ---------------------------------------------------------------------------
@@ -536,7 +535,7 @@ def test_init_normalize_preserves_clip_order(tmp_path):
                       env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
-    track = track_items(project)[0]
+    track = project["sources"]
     assert len(track) == 4
     for i, item in enumerate(track):
         assert item["id"] == f"clip-{i}"
@@ -572,7 +571,7 @@ def test_init_normalizes_clips_in_parallel(tmp_path):
     # (audio resampled at compose time). Conformant SDR clips with bad audio
     # rate skip normalize entirely. So we just assert init finished with the
     # right number of items, not what filename they carry.
-    assert len(track_items(project)[0]) == 4
+    assert len(project["sources"]) == 4
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
@@ -603,7 +602,7 @@ def test_init_continues_when_one_clip_fails(tmp_path, monkeypatch):
                       env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
-    track = track_items(project)[0]
+    track = project["sources"]
     assert len(track) == 2
     # Good clip: normalized to project color space.
     assert track[0]["src"].endswith("_normalized_sdr_bt709.mp4")
@@ -728,7 +727,7 @@ def test_init_preserves_source_resolution_at_intake(tmp_path):
     assert project["settings"]["resolution"] == [640, 480]
 
     # The clip's normalized output must still be 1280x720 (source preserved).
-    track = track_items(project)[0]
+    track = project["sources"]
     src_path = track[0]["src"]
     r = subprocess.run(
         ["ffprobe", "-v", "quiet", "-print_format", "json",
@@ -760,7 +759,7 @@ def test_init_contract_every_clip_is_normalized(tmp_path):
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
     project_color_space = project["settings"].get("colorSpace", "sdr_bt709")
-    for item in track_items(project)[0]:
+    for item in project["sources"]:
         info = probe_video(item["src"])
         assert info is not None, f"probe failed for {item['src']}"
         assert is_normalized(item["src"], info, project_color_space), \
@@ -918,7 +917,7 @@ def test_init_smart_detects_hdr_hlg_from_iphone_clips(tmp_path):
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
     assert project["settings"]["colorSpace"] == "hdr_hlg"
     # No clip should have been normalized — sources are conformant for HLG project.
-    for item in track_items(project)[0]:
+    for item in project["sources"]:
         assert "_normalized_" not in item["src"], \
             f"HLG clip should pass through HLG project unchanged: {item['src']}"
 
@@ -957,7 +956,7 @@ def test_init_smart_detects_sdr_on_tie(tmp_path):
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
     assert project["settings"]["colorSpace"] == "sdr_bt709"
-    track = track_items(project)[0]
+    track = project["sources"]
     # Clip order follows --clips arg order (a=hlg, b=sdr) — see
     # test_init_normalize_preserves_clip_order. The HLG clip is tone-mapped
     # down into the SDR project (transcode through the Montaj Vivid LUT), so
@@ -1009,7 +1008,7 @@ def test_init_eager_sdr_into_hdr_keeps_src_on_the_staged_original(tmp_path):
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
     assert project["settings"]["colorSpace"] == "hdr_hlg"
-    for item in (track_items(project)[0][0], project["sources"][0]):
+    for item in (project["sources"][0],):
         staged = Path(item["src"])
         assert staged.name == "sdr.mp4" and staged.parent != tmp_path
         assert item["normalizedSrc"] == str(staged.with_name("sdr_normalized_hdr_hlg_w203.mp4"))
@@ -1491,7 +1490,7 @@ def test_normalize_lazy_skips_transcode(tmp_path):
     proj_json = _project_path_from_stdout(result.stdout)
     data = json.loads(proj_json.read_text())
     assert data["settings"].get("normalize") == "lazy"
-    assert "_normalized_" not in track_items(data)[0][0]["src"]
+    assert "_normalized_" not in data["sources"][0]["src"]
     proj_dir = proj_json.parent
     assert not list(proj_dir.glob("*_normalized_*.mp4"))
 
@@ -1605,7 +1604,7 @@ def test_init_eager_proxy_written_to_sources_and_tracks(tmp_path):
                       env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
-    track_item = track_items(project)[0][0]
+    track_item = project["sources"][0]
     source_item = project["sources"][0]
 
     assert "proxySrc" in track_item
@@ -1630,7 +1629,7 @@ def test_init_proxy_inline_duration_gate_defers_long_sources(tmp_path):
                       env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
-    assert "proxySrc" not in track_items(project)[0][0]
+    assert "proxySrc" not in project["sources"][0]
     assert "proxy deferred" in (result.stderr + result.stdout)
     # Nothing was encoded.
     assert not list(ws.rglob("*_proxy_*.mp4"))
@@ -1657,7 +1656,7 @@ def test_init_proxy_inline_duration_gate_sums_across_clips(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
-    track = track_items(project)[0]
+    track = project["sources"]
     assert len(track) == 3
     for item in track:
         assert "proxySrc" not in item
@@ -1688,7 +1687,7 @@ def test_init_proxy_inline_duration_gate_under_total_budget_encodes_inline(tmp_p
     )
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
-    track = track_items(project)[0]
+    track = project["sources"]
     assert len(track) == 3
     for item in track:
         assert "proxySrc" in item
@@ -1710,7 +1709,7 @@ def test_init_no_proxy_flag_skips_and_persists_setting(tmp_path):
                       env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
-    assert "proxySrc" not in track_items(project)[0][0]
+    assert "proxySrc" not in project["sources"][0]
     assert project["settings"].get("proxy") is False
     assert not list(ws.rglob("*_proxy_*.mp4"))
 
@@ -1767,8 +1766,8 @@ def test_init_eager_proxy_command_tonemaps_for_hdr_project(tmp_path):
     assert result.returncode == 0, result.stderr  # proxy failure is non-blocking
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
     assert project["settings"]["colorSpace"] == "hdr_hlg"
-    assert track_items(project)[0][0]["src"].endswith("clip.mp4")  # skip path: no _normalized_ master
-    assert "proxySrc" not in track_items(project)[0][0]  # the spy's exit 1 forced a failure
+    assert project["sources"][0]["src"].endswith("clip.mp4")  # skip path: no _normalized_ master
+    assert "proxySrc" not in project["sources"][0]  # the spy's exit 1 forced a failure
     assert "proxy FAILED" in result.stderr
 
     vf = _last_ffmpeg_vf(log)
@@ -1793,7 +1792,7 @@ def test_init_eager_sdr_into_hdr_proxy_comes_from_the_original_ungraded(tmp_path
         env_override={"MONTAJ_WORKSPACE_DIR": str(ws), "MONTAJ_FFMPEG": str(wrapper)},
     )
     assert result.returncode == 0, result.stderr
-    item = track_items(json.loads(_project_path_from_stdout(result.stdout).read_text()))[0][0]
+    item = json.loads(_project_path_from_stdout(result.stdout).read_text())["sources"][0]
     assert item["normalizedSrc"]  # converted, as a cache
     assert _proxy_encodes(log) == [(item["src"], UNTAGGED_PROXY_VF)]
     assert item["proxySrc"]
@@ -1833,7 +1832,7 @@ def test_init_lazy_marked_conversion_proxy_comes_from_its_original(tmp_path):
         env_override={"MONTAJ_WORKSPACE_DIR": str(ws), "MONTAJ_FFMPEG": str(wrapper)},
     )
     assert result.returncode == 0, result.stderr
-    items = track_items(json.loads(_project_path_from_stdout(result.stdout).read_text()))[0]
+    items = json.loads(_project_path_from_stdout(result.stdout).read_text())["sources"]
     staged_original = next(i["src"] for i in items if Path(i["src"]).name == "screen.mp4")
     assert _proxy_encodes(log) == [(os.path.realpath(staged_original), PLAIN_PROXY_VF)]
     assert items[0]["proxySrc"] == items[1]["proxySrc"]
@@ -1887,7 +1886,7 @@ def test_init_eager_proxy_failure_does_not_block_import(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
-    track_item = track_items(project)[0][0]
+    track_item = project["sources"][0]
     assert "proxySrc" not in track_item
     assert track_item["src"].endswith("_normalized_sdr_bt709.mp4")  # normalize still succeeded
     assert "proxy FAILED" in result.stderr
@@ -1911,7 +1910,7 @@ def test_init_lazy_proxy_written_for_sdr_source(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
-    track_item = track_items(project)[0][0]
+    track_item = project["sources"][0]
     source_item = project["sources"][0]
 
     assert "_normalized_" not in track_item["src"]  # lazy: src stays the original
@@ -1975,7 +1974,7 @@ def test_init_lazy_proxy_command_uses_tonemap_for_hdr_source(tmp_path):
     )
     assert result.returncode == 0, result.stderr  # proxy failure is non-blocking
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
-    assert "proxySrc" not in track_items(project)[0][0]  # the spy's exit 1 forced a failure
+    assert "proxySrc" not in project["sources"][0]  # the spy's exit 1 forced a failure
     assert "proxy FAILED" in result.stderr
 
     vf = _last_ffmpeg_vf(log)
@@ -2010,7 +2009,7 @@ def test_init_lazy_proxy_concurrent_children_freshness_short_circuits(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
-    track = track_items(project)[0]
+    track = project["sources"]
     assert len(track) == 2
     assert track[0]["src"] != track[1]["src"]  # distinct local symlinks...
     assert "proxySrc" in track[0] and "proxySrc" in track[1]
@@ -2051,7 +2050,7 @@ def test_init_removes_consumed_uploads(tmp_path):
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
 
     # Copies live in the project dir and are what the project references.
-    assert Path(track_items(project)[0][0]["src"]).is_file()
+    assert Path(project["sources"][0]["src"]).is_file()
     assert Path(project["assets"][0]["src"]).is_file()
     # Consumed staged sources are gone; the bystander survives.
     assert not clip.exists()
@@ -2089,7 +2088,7 @@ def test_init_symlink_clips_keeps_staged_upload(tmp_path):
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
     assert clip.exists()
     # The project's clip src resolves back to the staged file.
-    assert Path(track_items(project)[0][0]["src"]).resolve() == clip.resolve()
+    assert Path(project["sources"][0]["src"]).resolve() == clip.resolve()
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,48 @@
+{
+  "name": "frame_broll",
+  "category": "edit",
+  "description": "Frame a landscape clip on a vertical timeline (b-roll) in one call, never a blind centre crop: track follows its moving subject with a keyframed crop; card insets the whole frame on paper with corner brackets and a 'Footage: <source>' credit, above the captions; auto (default) cards landscape action across the frame (its whole width, zoomed to the subject, burned-in text left out where it can) and tracks only a subject a 9:16 crop holds with room to move, clear of the captions; when the profile's titles and overlays notes ask for mattes for wide footage, auto cards it on that matte (its colour, small centred credit). A human edit since the read is refused. Answers with a sheet of the clip's range.",
+  "input": {
+    "type": "project",
+    "description": "The project id, its folder, or the absolute path of its project.json"
+  },
+  "output": {
+    "type": "json",
+    "description": "{id, mode (track, card or none), why (what it chose and why; the clip is done), keys? (crop keys), found? (frames with the subject), card? (the overlay's id), path (the sheet)}; for a list, {items: [one each, or {id, error, message}], path}. detail adds the crop width and the card's box."
+  },
+  "params": [
+    {
+      "name": "project",
+      "type": "path",
+      "required": true,
+      "description": "The project id, its folder, or the absolute path of its project.json"
+    },
+    {
+      "name": "item",
+      "type": "string",
+      "required": false,
+      "repeatable": true,
+      "description": "The b-roll clip's item id on an upper track (add it there first); a list frames all in one call, one write and one sheet. id=track or id=card sets that item's own mode. Left out, the answer names the b-roll."
+    },
+    {
+      "name": "mode",
+      "type": "enum",
+      "options": ["auto", "track", "card"],
+      "default": "auto",
+      "description": "auto: card action across the frame; track only a subject a 9:16 crop holds. track: a crop that follows the subject. card: the whole frame inset.",
+      "hint": "to read an item's framing, get_project tracks"
+    },
+    {
+      "name": "source",
+      "type": "string",
+      "required": false,
+      "description": "Where the footage is from, for the card's credit: 'PhoneBot project video' gives 'Footage: PhoneBot project video'. Left out, the credit comes from the source's title, site or downloaded file name."
+    },
+    {
+      "name": "detail",
+      "type": "bool",
+      "required": false,
+      "description": "Also answer the crop width and the card's box."
+    }
+  ]
+}

@@ -15,8 +15,9 @@ MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__fil
 def flag_value(flag: str, val, numeric: bool) -> list[str]:
     """`[flag, value]`, or one `flag=value` token for a negative number on an int/float param: argparse reads
     `-3e1` or `-inf` standing alone as a flag of its own, but always reads what follows `=` as the value (§563).
-    Shared by serve's build_cli_args and the CLI's _build_step_flags."""
-    text = str(val)
+    Shared by serve's build_cli_args and the CLI's _build_step_flags. An object or a list (an element of a repeated
+    param: place's items) goes as JSON, never Python's repr (PL89b)."""
+    text = json.dumps(val) if isinstance(val, (dict, list)) else str(val)
     if numeric and text.startswith("-"):
         return [f"{flag}={text}"]
     return [flag, text]

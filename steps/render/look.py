@@ -84,10 +84,84 @@ def measure(item, path, frame, duration, fps, width, height, out):
         return None, "measure answered no JSON"
 
 
+MEASURE_LANES = 3        # PL89g: browsers side by side in one measure_many call
+
+
+def measure_many(entries):
+    """PL89g: every overlay of a pass in one sample_overlay --jobs call (one process, MEASURE_LANES browsers, a page each)
+    instead of a process and a Chromium per overlay. `entries`: [{item, path, frame, duration, fps, width, height,
+    out}]. [(measurements, None) | (None, why)] in order, or None when the call itself failed (look then measures them
+    one by one)."""
+    if not entries:
+        return []
+    jobs = [{"component": e["path"], "props": e["item"].get("props") or {}, "frame": e["frame"], "fps": e["fps"],
+             "width": e["width"], "height": e["height"], "duration": e["duration"], "out": e["out"],
+             "googleFonts": [f for f in e["item"].get("googleFonts") or [] if isinstance(f, str) and f]} for e in entries]
+    jobs_path = os.path.join(os.path.dirname(entries[0]["out"]), "look-jobs.json")
+    with open(jobs_path, "w", encoding="utf-8") as f:
+        json.dump(jobs, f)
+    rounds = -(-len(jobs) // MEASURE_LANES)
+    r = _run_group([sys.executable, SAMPLE_OVERLAY_PY, "--jobs", jobs_path, "--lanes", str(MEASURE_LANES)],
+                   MEASURE_TIMEOUT_S * rounds)
+    if r is None or r[0] != 0:
+        return None
+    try:
+        results = json.loads(r[1].strip().splitlines()[-1])["results"]
+    except (ValueError, IndexError, KeyError, TypeError):
+        return None
+    if not isinstance(results, list) or len(results) != len(entries):
+        return None
+    out = []
+    for res in results:
+        if isinstance(res, dict) and "measurements" in res:
+            out.append((res["measurements"] or {}, None))
+        else:
+            out.append((None, str((res or {}).get("message") or (res or {}).get("error") or "measure failed")[:120]))
+    return out
+
+
+BACKDROP_TIMEOUT_S = 60   # PL89g: per time, for the pictures behind the measured overlays
+
+
+def backdrops(project_path, project, entries):
+    """PL89g: the picture under each measured overlay at its measured time, at the design size: {label: png}. One
+    sample_frames call per track the overlays sit on (lc.backdrop_project: the tracks below it, no captions), from the
+    proxies; a later pass whose tracks below did not change reads them from the frame cache. A track that fails is left
+    out (its labels go unchecked), never an issue."""
+    from lib.common import node_child_env
+    from steps.render.sample_frame import SAMPLE_FRAME_JS
+    project_dir = os.path.dirname(project_path)
+    width, height = lc.design_size(project)
+    out = {}
+    by_track = {}
+    for e in entries:
+        by_track.setdefault(e["ti"], []).append(e)
+    for ti, group in by_track.items():
+        folder = os.path.join(project_dir, "render", "samples", "look", f"backdrop-{ti}")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, "project.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(lc.backdrop_project(project, ti), f)
+        cmd = ["node", SAMPLE_FRAME_JS, "--mode", "frame", "--project", path, "--prefer-proxy", "--no-captions",
+               "--max-short-edge", str(min(width, height)), "--project-dir", project_dir]
+        for e in group:
+            cmd += ["--at", str(e["mid"])]
+        # one time takes the single-frame form (--out), which node insists on
+        cmd += ["--out", os.path.join(folder, "f_0000.png")] if len(group) == 1 else ["--frames-dir", folder]
+        r = _run_group_env(cmd, BACKDROP_TIMEOUT_S * len(group), node_child_env())
+        if r is None or r[0] != 0:
+            continue   # a picture that cannot be had leaves its labels unchecked
+        pngs = [ln.strip() for ln in r[1].splitlines() if ln.strip().endswith(".png")]
+        if len(pngs) == len(group):
+            out.update({e["label"]: p for e, p in zip(group, pngs)})
+    return out
+
+
 def overlays_to_measure(project, project_dir, times):
-    """[(track index, item, path)] of overlays to measure: those on screen at a looked-at time first, then the rest,
-    in time order; at most MAX_MEASURES. The count of the rest is returned too."""
-    found = []
+    """[(track index, item, path)] of overlays to measure: the first of each overlay file, then the rest on screen at a
+    looked-at time, then the others, each in time order; at most MAX_MEASURES. The count of the rest is returned too.
+    PL89j: 17 footage cards filled the measures and the two explainer cards went unmeasured."""
+    found, files = [], set()
     for ti, row in enumerate(lc.drawn_tracks(project)):
         if ti == 0:
             continue
@@ -97,7 +171,11 @@ def overlays_to_measure(project, project_dir, times):
             p = lc.overlay_path(it, project_dir)
             if p and os.path.isfile(p):
                 seen = any(lc._num(it.get("start")) <= x <= lc._num(it.get("end")) for x in times)
-                found.append((0 if seen else 1, lc._num(it.get("start")), ti, it, p))
+                found.append([0 if seen else 1, lc._num(it.get("start")), ti, it, p])
+    for f in sorted(found, key=lambda x: (x[0], x[1])):
+        if f[4] not in files:
+            files.add(f[4])
+            f[0] = -1
     found.sort(key=lambda x: (x[0], x[1]))
     keep = found[:lc.MAX_MEASURES]
     return [(ti, it, p) for _, _, ti, it, p in keep], len(found) - len(keep)
@@ -121,8 +199,8 @@ def sheet(project_path, project_dir, times):
     return out, None
 
 
-def run(project_path, at=None, image=False, detail=False, measure_fn=measure, sheet_fn=sheet, clock=time.monotonic,
-        render_fn=None):
+def run(project_path, at=None, image=False, detail=False, measure_fn=None, sheet_fn=sheet, clock=time.monotonic,
+        render_fn=None, backdrops_fn=None):
     t0 = clock()
     project_dir = os.path.dirname(project_path)
     try:
@@ -132,28 +210,53 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=measure, sh
     except (OSError, ValueError):
         fail("not_found", f"Project not readable: {project_path}")
     if isinstance(raw, dict) and raw.get("projectType") == "carousel":
-        return carousel_run(project_path, raw, at=at, image=image, detail=detail, measure_fn=measure_fn,
+        return carousel_run(project_path, raw, at=at, image=image, detail=detail, measure_fn=measure_fn or measure,
                             render_fn=render_fn or render_slides, clock=clock)
     width, height = lc.design_size(project)
     fps = _fps(project)
     times = lc.pick_times(project, at, cap=IMAGE_TIMES if image else lc.MAX_TIMES)
     issues = lc.data_issues(project, project_dir)
+    issues += lc.caption_ink_issues(project, project_dir)   # captions over a card whose ink was not checked
+    issues += lc.still_holds(project, project_dir)   # PL89: a stretch over 4 s with no beat and nothing moving
     to_measure, unmeasured = overlays_to_measure(project, project_dir, times)
     samples = os.path.join(project_dir, "render", "samples", "look")
     os.makedirs(samples, exist_ok=True)
 
-    def one(entry):
+    def prep(entry):
         ti, it, path = entry
         s, e = lc._num(it.get("start")), lc._num(it.get("end"))
         mid = (s + e) / 2
         frame, duration = int(round((mid - s) * fps)), max(1, int(round((e - s) * fps)))
         label = lc._label(it, ti)
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in label)[:40]
-        m, why = measure_fn(it, path, frame, duration, fps, width, height, os.path.join(samples, f"{safe}-f{frame}.png"))
-        return ti, it, label, s, e, mid, m, why
+        return {"ti": ti, "item": it, "path": path, "label": label, "s": s, "e": e, "mid": mid, "frame": frame,
+                "duration": duration, "fps": fps, "width": width, "height": height,
+                "out": os.path.join(samples, f"{safe}-f{frame}.png")}
 
-    with ThreadPoolExecutor(max_workers=MEASURE_WORKERS) as pool:
-        results = list(pool.map(one, to_measure))
+    entries = [prep(x) for x in to_measure]
+    # PL89g: the pictures behind the overlays (for their labels' contrast), sampled while the overlays are measured. A
+    # caller's own measure_fn (tests) checks contrast only with its own backdrops_fn.
+    pictures_fn = backdrops_fn or (backdrops if measure_fn is None else None)
+    picture_pool = ThreadPoolExecutor(max_workers=1) if pictures_fn and entries else None
+    pictures = picture_pool.submit(pictures_fn, project_path, project, entries) if picture_pool else None
+    # PL89g: the whole pass in one call; a caller's own measure_fn (tests, or a failed call) measures one at a time
+    got = measure_many(entries) if measure_fn is None else None
+    if got is None:
+        one_fn = measure_fn or measure
+
+        def one(x):
+            return one_fn(x["item"], x["path"], x["frame"], x["duration"], fps, width, height, x["out"])
+        with ThreadPoolExecutor(max_workers=MEASURE_WORKERS) as pool:
+            got = list(pool.map(one, entries))
+    results = [(x["ti"], x["item"], x["label"], x["s"], x["e"], x["mid"], m, why) for x, (m, why) in zip(entries, got)]
+    renders = {x["label"]: x["out"] for x in entries if os.path.isfile(x["out"])}   # each overlay as measured, alone
+    try:
+        behind = pictures.result() if pictures else {}
+    except Exception:  # noqa: BLE001 — no pictures: the labels' contrast goes unchecked
+        behind = {}
+    finally:
+        if picture_pool:
+            picture_pool.shutdown(wait=False)
     placed, checked, notes = [], [], []
     for ti, it, label, s, e, mid, m, why in results:
         if m is None:
@@ -161,11 +264,23 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=measure, sh
             continue
         bands = lc.caption_bands(project, s, e, width, height)
         issues += lc.measured_issues(it, m, width, height, mid, label, bands)
-        placed.append((label, s, e, [b for _, b, _, _ in lc.text_boxes(m, it, width, height)]))
+        issues += lc.type_floor_issues(it, m, width, height, mid, label)   # PL89b
+        issues += lc.mark_cover_issues(project, project_dir, it, m, width, height, mid, label)   # PL89e
+        issues += lc.contrast_issues(it, m, width, height, mid, label, behind.get(label), renders.get(label))   # PL89g, j
+        placed.append((label, s, e, [lc.glyphs_of(b) for _, b, _, _ in lc.text_boxes(m, it, width, height)]))   # the text's own extent
         checked.append(label)
         if it.get("keyframes"):
             notes.append(f"{label}: keyframed geometry read at its base values")
     issues += lc.text_overlaps(placed)
+    issues += lc.top_slot_issues(placed, width, height)   # PL89d: keywords stacked in one top slot
+    issues += lc.unread_marks_issues(project, project_dir)   # round 9: a beat marked, never labelled
+    # PL89b: every overlay's motion, from its code (no render): none, no exit, or linear only
+    for ti, row in enumerate(lc.drawn_tracks(project)):
+        if ti == 0:
+            continue
+        for it in row:
+            if it.get("type") == "overlay":
+                issues += lc.motion_issues(it, project_dir, lc._label(it, ti))
     extra = {"overlays": len(checked)}
     if unmeasured:
         extra["unmeasured"] = unmeasured
@@ -388,7 +503,8 @@ def carousel_run(project_path, project, *, at, image, detail, measure_fn, render
                 add(0, "no slide could be rendered")
         finally:
             shutil.rmtree(render_dir, ignore_errors=True)
-    answer = lc.answer(issues, extra=extra, line=lambda i: (f'slide {i["t"]}: ' if i["t"] else "") + i["text"])
+    answer = lc.answer(issues, extra=extra, cap=300,   # a carousel keeps its short answer (PL89g widened the video's)
+                       line=lambda i: (f'slide {i["t"]}: ' if i["t"] else "") + i["text"])
     if detail:
         answer.update({"issues": [(f'slide {i["t"]}: ' if i["t"] else "") + i["text"] for i in sorted(issues, key=lambda x: x["t"])],
                        "shown": numbers, "wallMs": int((clock() - t0) * 1000)})

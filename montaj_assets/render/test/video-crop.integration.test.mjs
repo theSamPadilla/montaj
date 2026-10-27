@@ -60,8 +60,9 @@ before(() => {
 after(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
 
 const SDR = { segStart: 0, duration: 1, projectColorSpace: 'sdr_bt709', zscaleAvailable: true, lut3dAvailable: true, sdrCurve: null }
+// probedPixFmt as render.js stamps it for the stripes clip: the one-pixel x path.
 const vid = (keyframes) => ({ type: 'video', src: clip, start: 0, duration: 1, scale: 1, offsetX: 0, offsetY: 0,
-  sourceWidth: 640, sourceHeight: 360, keyframes })
+  sourceWidth: 640, sourceHeight: 360, probedPixFmt: 'yuv420p', keyframes })
 
 /** The chain, with console.warn quiet (the 1/S branch warns by design). */
 function chainParts(item, opts) {
@@ -147,6 +148,17 @@ test('past the pixel budget the video zoom renders at 1/S and still narrows into
   assert.ok(isBlue(probeY(item, 135, 160, 0.6, TINY)), 'right quarter is blue once zoomed')
 })
 
+test('the even-x path (a format unknown, or deep 4:2:x) keeps the stale-clamp guard, at full resolution and 1/S', { timeout: 60_000, ...SKIP }, () => {
+  // The SAME geometry as the zoom tests above, for the same reason (read ZOOM's comment).
+  for (const opts of [{}, TINY]) {
+    const item = { ...vid(ZOOM), probedPixFmt: null }
+    assert.match(chainParts(item, opts).filterParts.join(';'), /x='2\*floor\(clip\(/)
+    assert.ok(isLime(probeY(item, 45, 160, 0, opts)), `left quarter is lime at t0 ${JSON.stringify(opts)}`)
+    assert.ok(isBlue(probeY(item, 45, 160, 0.6, opts)), `left quarter is blue once zoomed ${JSON.stringify(opts)}`)
+    assert.ok(isBlue(probeY(item, 135, 160, 0.6, opts)), `right quarter is blue once zoomed ${JSON.stringify(opts)}`)
+  }
+})
+
 // The HDR paths: the colour conversion (zscale, and the Vivid LUT for HDR into
 // SDR) follows the fixed crop, on a constant frame. Built and run for 1 s in
 // the real binary, at full resolution and at 1/S (odd crop sizes, which the
@@ -173,4 +185,38 @@ for (const [name, source, colorTransfer, projectColorSpace, canvasFmt] of [
       assert.equal(r.status, 0, r.stderr)
     })
   }
+}
+
+// A keyed pan on a deeper-than-8-bit 4:2:0 clip: at an odd x, ffmpeg's exact
+// crop misreads the chroma, and the frame comes out magenta (MEASURED, ffmpeg
+// 8.1.2: 61 of 129 frames of an HLG b-roll). A flat colour whose luma differs
+// from its chroma shows it (a neutral grey does not): every one of the 25
+// frames must keep the source's chroma, read in 8 bits after the composite.
+const FLAT = (fmt, tags) => `color=0x3060a0:size=640x360:rate=25:duration=1,format=${fmt},setparams=${tags}:range=tv`
+/** Every frame's mean U and V at `label`, in 8 bits. */
+function chromaPerFrame(inputs, graph, label) {
+  const r = spawnSync(FFMPEG, ['-hide_banner', '-v', 'info', '-nostdin', ...inputs,
+    '-filter_complex', `${graph}${label}format=yuv420p,signalstats,metadata=mode=print:file=-[out]`,
+    '-map', '[out]', '-f', 'null', '-'], { encoding: 'utf8', timeout: 60_000 })
+  assert.equal(r.status, 0, r.stderr)
+  const u = [...r.stdout.matchAll(/signalstats\.UAVG=([\d.]+)/g)].map((m) => Number(m[1]))
+  const v = [...r.stdout.matchAll(/signalstats\.VAVG=([\d.]+)/g)].map((m) => Number(m[1]))
+  return u.map((x, i) => [x, v[i]])
+}
+for (const [name, source, probedPixFmt, colorTransfer, projectColorSpace, canvasFmt] of [
+  ['an HLG yuv420p10le clip in an HLG project', FLAT('yuv420p10le', 'color_trc=arib-std-b67:color_primaries=bt2020:colorspace=bt2020nc'),
+    'yuv420p10le', 'arib-std-b67', 'hdr_hlg', 'yuv420p10le'],
+  ['an SDR yuv420p clip in an SDR project', FLAT('yuv420p', 'color_trc=bt709:color_primaries=bt709:colorspace=bt709'),
+    'yuv420p', 'bt709', 'sdr_bt709', 'yuv420p'],
+]) {
+  test(`a keyed pan on ${name} keeps the source's chroma on every frame`, { timeout: 60_000, ...SKIP }, () => {
+    const [want] = chromaPerFrame(['-f', 'lavfi', '-i', source], '', '[0:v]')
+    const item = { ...vid(PAN), src: 'lavfi-placeholder', colorTransfer, probedPixFmt }
+    const { filterParts } = chainParts(item, { projectColorSpace })
+    const got = chromaPerFrame(['-f', 'lavfi', '-i', `color=black:size=${CW}x${CH}:rate=25:duration=1,format=${canvasFmt}`,
+      '-f', 'lavfi', '-i', source], `${filterParts.join(';')};`, '[iv1]')
+    assert.equal(got.length, 25)
+    const bad = got.flatMap(([u, v], i) => (Math.max(Math.abs(u - want[0]), Math.abs(v - want[1])) > 3 ? [`frame ${i}: U ${u} V ${v}`] : []))
+    assert.deepEqual(bad, [], `chroma off the source's (U ${want[0]} V ${want[1]})`)
+  })
 }

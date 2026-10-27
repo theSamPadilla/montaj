@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -284,7 +285,7 @@ def test_a_change_outside_the_tracks_is_kept_and_not_refused(tmp_path, monkeypat
 def test_the_measured_issues_come_back_short(tmp_path):
     d = make_project(tmp_path)
     out = run(d, at="2", preset="callout", measure_fn=fake_measure((("3x faster", 900, 500, 400, 120),)))
-    assert out["issues"] == ['3.5s ' + out["id"] + ': text "3x faster" runs off the frame']
+    assert out["issues"] == ['3.5s ' + out["id"] + ': text "3x faster" runs off the frame: move it left 274 px']
     assert len(json.dumps(out)) <= 300
 
 
@@ -308,6 +309,162 @@ def test_each_preset_renders_its_props_inside_the_frame_and_the_safe_areas(tmp_p
     shown = " ".join(out["text"])
     for word in props["text"].split()[:2]:
         assert word in shown, out
+
+
+# ── animation first (PL89c): ready moving patterns, placed in one call ─────────────────────────────────────────────
+# 52's PL89c comparison: sections 05, 07 and 09 got nouns or nothing where Claude alone animated the idea (a command
+# travelling phone -> computer -> motors, a call ring, "flat ground only" drawn under the robot), and the profile says
+# animation is always preferred to plain text. Three presets make that one place call with props, no JSX written.
+
+ANIMATED = {
+    "flow": {"points": "phone > small computer > motors"},
+    "ring": {"x": "0.5", "y": "0.4", "label": "LIVE"},
+    "rule": {"text": "flat ground only", "y": "0.5"},
+}
+
+
+def test_the_animated_presets_are_place_presets_and_listed_in_its_schema():
+    for name in ANIMATED:
+        assert name in place.PRESETS, name
+        assert (Path(place.PRESETS_DIR) / place.PRESETS[name]).is_file(), name
+    schema = json.loads((REPO_ROOT / "steps" / "edit" / "place.json").read_text())
+    preset = next(p for p in schema["params"] if p["name"] == "preset")
+    assert set(ANIMATED) <= set(preset["options"])
+    for name in ANIMATED:
+        assert name in preset["description"], name
+
+
+@pytest.mark.parametrize("name", sorted(ANIMATED))
+def test_an_animated_preset_moves_by_the_look_check_and_places_with_its_props(tmp_path, name):
+    d = make_project(tmp_path)
+    out = run(d, at="2", for_s=4, preset=name, props=json.dumps(ANIMATED[name]))
+    item = tracks(d)[1]["items"][0]
+    assert item["src"] == "./overlays/" + place.PRESETS[name]
+    assert {k: item["props"][k] for k in ANIMATED[name]} == ANIMATED[name]
+    assert lc.motion_issues(item, str(d), "x") == [], "eased in, alive while held, out before its end"
+    assert not out.get("issues"), out
+
+
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+@pytest.mark.parametrize("name,words", [
+    ("flow", ["phone", "small", "computer", "motors"]),
+    ("ring", ["LIVE"]),
+    ("rule", ["flat", "ground", "only"]),
+    ("flow", ["camera", "phone", "cloud", "operator", "robot"]),
+])
+def test_an_animated_preset_renders_every_word_inside_the_frame_and_the_safe_areas(tmp_path, name, words):
+    d = make_project(tmp_path)
+    props = dict(ANIMATED[name])
+    if words[0] == "camera":
+        props["points"] = " > ".join(words)
+    out = run(d, at="2", for_s=4, preset=name, props=json.dumps(props), measure_fn=look.measure, detail=True)
+    assert out["issues"] == [], out
+    shown = " ".join(out["text"])
+    for w in words:
+        assert w in shown, out
+
+
+# ── fonts a preset is given (PL89e) ───────────────────────────────────────────────────────────────────────────────
+# 52's round-6 notes: the ring got fontFamily "JetBrains Mono" bare, no font loaded it, and the label drew in Times.
+# A preset's face loads (place gives the item its Google Font) and ends in a generic family, so it never falls to serif.
+
+@pytest.mark.parametrize("name", sorted(place.PRESETS) + ["footage_card"])
+def test_every_preset_ends_a_bare_face_in_a_generic_family(name):
+    code = (Path(place.PRESETS_DIR) / place.COPIED_PRESETS[name]).read_text()
+    assert "p.fontFamily ||" not in code, f"{name}: a bare face would fall back to serif"
+    assert "withGeneric(p.fontFamily" in code, name
+
+
+def test_a_preset_given_a_font_gets_it_as_a_google_font(tmp_path):
+    d = make_project(tmp_path)
+    out = run(d, at="2", preset="ring", props=json.dumps({"label": "LIVE", "fontFamily": "JetBrains Mono", "fontWeight": "700"}))
+    item = tracks(d)[1]["items"][0]
+    assert any(s.startswith("JetBrains+Mono") for s in item.get("googleFonts", [])), item
+    assert out.get("fonts") == item["googleFonts"]
+    run(d, at="10", preset="callout", props=json.dumps({"text": "3x"}))
+    assert "googleFonts" not in tracks(d)[1]["items"][1], "no font named, none added (the preset's own default)"
+
+
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+def test_a_bare_face_renders_with_its_generic_family(tmp_path):
+    d = make_project(tmp_path)
+    out = run(d, at="2", for_s=3, preset="rule", props=json.dumps({"text": "flat ground only", "fontFamily": "Nonexistent Face"}),
+              measure_fn=look.measure, detail=True)
+    assert not out.get("issues"), out
+
+
+# ── configured, not written (PL89 round 9: cost) ──────────────────────────────────────────────────────────────────
+# Round 6 wrote 15K characters of overlay JSX in 12 calls, most of it labels following a 3D shot (Motion.follow over a
+# direct_scene mark) and stat numerals. scene_labels and stat make those one place item with props.
+
+def _marks(d, scene="specs"):
+    part = lambda x: {"cast": 0, "part": "screen", "pixel": [x, 700], "box": [x - 60, 600, x + 60, 800], "inView": True,
+                      "leader": {"side": "right", "from": [x + 60, 700], "to": [x + 260, 700], "align": "start"}}
+    cast = {"cast": 0, "top": [540, 500], "bottom": [540, 1000], "box": [400, 500, 680, 1000], "metres": 0.48, "inView": True,
+            "rule": {"side": "left", "x": 330, "top": 500, "bottom": 1000, "label": [300, 750], "align": "end"}}
+    mark = {"kind": "mark", "at": 0, "size": {"width": 1080, "height": 1920}, "parts": [part(540)], "casts": [cast],
+            "track": [{"t": 0, "parts": [part(540)], "casts": [cast]}, {"t": 2, "parts": [part(520)], "casts": [cast]}]}
+    (d / "overlays" / "_marks").mkdir(parents=True, exist_ok=True)
+    (d / "overlays" / "_marks" / f"{scene}.json").write_text(json.dumps(mark))
+
+
+LABELS = {"marks": "specs", "labels": [{"part": "screen", "text": "camera", "at": 0.5}], "rule": {"text": "19 in", "at": 1}}
+
+
+def test_scene_labels_is_one_place_item_reading_the_scenes_marks(tmp_path):
+    d = make_project(tmp_path)
+    _marks(d)
+    out = run(d, at="2", for_s=4, preset="scene_labels", props=json.dumps(LABELS))
+    item = tracks(d)[1]["items"][0]
+    assert item["src"] == "./overlays/scene-labels-specs.jsx"
+    code = (d / "overlays" / "scene-labels-specs.jsx").read_text()
+    assert "import mark from './_marks/specs.json'" in code and "__SCENE__" not in code
+    assert lc.motion_issues(item, str(d), "x") == []
+    assert not out.get("issues"), out
+    # a second scene gets its own file; the same scene reuses its own
+    _marks(d, "mount")
+    run(d, at="8", preset="scene_labels", props=json.dumps({**LABELS, "marks": "mount"}))
+    assert tracks(d)[1]["items"][1]["src"] == "./overlays/scene-labels-mount.jsx"
+
+
+@pytest.mark.parametrize("props,word", [({"labels": []}, "marks"), ({"marks": "nope"}, "direct_scene"), ({"marks": "../x"}, "marks")])
+def test_scene_labels_needs_a_scene_with_marks(tmp_path, capsys, props, word):
+    d = make_project(tmp_path)
+    err = refused(capsys, run, d, at="2", preset="scene_labels", props=json.dumps(props))
+    assert err["error"] == "invalid_params" and word in err["message"], err
+
+
+def test_stat_is_a_place_preset(tmp_path):
+    d = make_project(tmp_path)
+    run(d, at="2", for_s=5, preset="stat", props=json.dumps({"stats": [{"value": "4", "unit": "lb", "at": 0.3}, {"value": "$400", "sub": "the robot", "at": 2}]}))
+    item = tracks(d)[1]["items"][0]
+    assert item["src"] == "./overlays/stat.jsx" and lc.motion_issues(item, str(d), "x") == []
+
+
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+def test_scene_labels_and_stat_render_inside_the_frame(tmp_path, monkeypatch):
+    # an overlay reads a project file (the marks) only inside the workspace, where a real project is
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(tmp_path))
+    d = make_project(tmp_path)
+    _marks(d)
+    out = run(d, at="2", for_s=4, preset="scene_labels", props=json.dumps(LABELS), measure_fn=look.measure, detail=True)
+    assert not out.get("issues"), out
+    assert "camera" in " ".join(out["text"]) and "19" in " ".join(out["text"]), out
+    out = run(d, at="8", for_s=4, preset="stat", props=json.dumps({"stats": [{"value": "4", "unit": "lb", "at": 0.2}]}), measure_fn=look.measure, detail=True)
+    assert not out.get("issues"), out
+    assert "4" in " ".join(out["text"]), out
+
+
+# Round 9: the agent gave stat's times as timeline seconds (10.3, 11.5 for an item at 10.2 for 2.4 s) and placed it three
+# times over. A time past the item's length that falls inside its span on the timeline is read as timeline seconds.
+def test_stat_times_given_on_the_timeline_are_made_seconds_into_the_item(tmp_path):
+    d = make_project(tmp_path)
+    out = run(d, at="10.2", for_s=2.4, preset="stat", props=json.dumps({"stats": [{"value": "4", "unit": "lb", "at": 10.3}, {"value": "$400", "at": 11.5}]}))
+    stats = tracks(d)[1]["items"][0]["props"]["stats"]
+    assert [x["at"] for x in stats] == [0.1, 1.3], stats
+    assert any("seconds into the item" in i for i in out.get("issues", [])), out
+    run(d, at="20", for_s=3, preset="stat", props=json.dumps({"stats": [{"value": "1", "at": 0.5}, {"value": "2", "at": 2}]}))
+    assert [x["at"] for x in tracks(d)[1]["items"][1]["props"]["stats"]] == [0.5, 2], "item seconds stay as given"
 
 
 # ── review 1 (write safety) ───────────────────────────────────────────────────────────────────────────────────────
@@ -437,10 +594,12 @@ def test_words_on_a_b_roll_clip_never_anchor_a_graphic(tmp_path, capsys):
     assert refused(capsys, run, d, at='{"phrase": "three times faster"}', preset="callout")["error"] == "phrase_not_found"
 
 
-def test_clean_says_when_cut_keeps_another_take(tmp_path):
+def test_clean_picks_the_last_clean_take_and_says_nothing_more(tmp_path):
+    # three sayings: the last of a clear retake is the clean one; cut keeps every take until the agent picks (PL89),
+    # so place never says which take cut keeps
     d = make_project(tmp_path)
     out = run(d, at='{"phrase": "three times faster"}', preset="callout")
-    assert out["take"] == "clean" and out["note"] == "cut keeps the take at 6.54s"
+    assert out["take"] == "clean" and out["start"] > 10 and "note" not in out, out
 
 
 def test_a_phrase_said_once_never_carries_a_fallback(tmp_path):
@@ -569,3 +728,171 @@ def test_a_malformed_language_is_refused(tmp_path, capsys, bad):
 def test_a_language_code_passes_the_check(tmp_path, ok):
     d = make_project(tmp_path)
     run(d, at="2", preset="callout", language=ok)
+
+
+# ── PL89b: what the paid ucla run (final-ucla-pl89b, calls 56-78) did twice ──────────────────────────────────────
+
+def test_an_id_not_on_the_timeline_names_a_new_item_when_there_is_something_to_place(tmp_path, capsys):
+    """Run calls 56-60 each passed an id for a new overlay, were refused ("No item ov-specs on the timeline"), then sent
+    again without it (61-65). An id that is new and comes with an overlay or a preset is the new item's id."""
+    d = make_project(tmp_path)
+    out = run(d, item_id="ov-specs", at="2", for_s=3, preset="callout", props='{"text": "19 in"}')
+    assert out["id"] == "ov-specs"
+    assert [it["id"] for it in tracks(d)[1]["items"]] == ["ov-specs"]
+    # an id with nothing to place is still an update of an item that is not there
+    assert refused(capsys, run, d, item_id="ov-nope", at="1")["error"] == "item_not_found"
+    # an id taken by a non-overlay item, or not a plain name, is refused
+    assert refused(capsys, run, d, item_id="clip-0", at="1", preset="callout")["error"] == "not_an_overlay"
+    assert refused(capsys, run, d, item_id="a b/c", at="1", preset="callout")["error"] == "invalid_id"
+
+
+def fake_sheet():
+    calls = []
+
+    def fn(project_path, times, out):
+        calls.append(list(times))
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_bytes(b"png")
+        return out
+    fn.calls = calls
+    return fn
+
+
+def test_items_places_every_overlay_in_one_call_with_one_sheet(tmp_path):
+    """Run calls 56-65 placed five overlays one call each (ten with the refusals). items places them all, checked
+    before any is written, and answers one sheet of the middle of each."""
+    d = make_project(tmp_path)
+    (d / "overlays" / "specs.jsx").write_text("export default function S() { return <div>19 in</div> }")
+    sheet = fake_sheet()
+    out = place.run_many(str(d / "project.json"), json.dumps([
+        {"overlay": "overlays/specs.jsx", "at": 2, "for": 3, "id": "ov-specs"},
+        {"preset": "lower_third", "at": 10, "for": 2, "props": {"text": "PhoneBot paper", "subtitle": "UCLA"}},
+        {"preset": "callout", "at": 20, "until": 22, "props": {"text": "4 lb"}},
+    ]), measure_fn=fake_measure(), transcribe=no_transcribe, sampler=sheet)
+    assert [p["id"] for p in out["placed"]][0] == "ov-specs" and len(out["placed"]) == 3
+    assert [(p["start"], p["end"]) for p in out["placed"]] == [(2.0, 5.0), (10.0, 12.0), (20.0, 22.0)]
+    assert sheet.calls == [[3.5, 11.0, 21.0]], "one sheet, each overlay at its middle"
+    assert out["path"] == out["sheet"] and out["sheet"].endswith(".png")
+    assert sum(len(t["items"]) for t in tracks(d)[1:]) == 3
+
+
+def test_items_checks_every_placement_before_writing_any(tmp_path, capsys):
+    d = make_project(tmp_path)
+    before = tracks(d)
+    err = refused(capsys, place.run_many, str(d / "project.json"), json.dumps([
+        {"preset": "callout", "at": 1}, {"overlay": "overlays/nope.jsx", "at": 3}]),
+        measure_fn=fake_measure(), transcribe=no_transcribe, sampler=fake_sheet())
+    assert err["error"] == "overlay_not_found" and err["message"].startswith("items[1]: ")
+    assert tracks(d) == before, "nothing placed"
+    assert refused(capsys, place.run_many, str(d / "project.json"), "{}", sampler=fake_sheet())["error"] == "invalid_items"
+
+
+def vendored(tmp_path, monkeypatch, faces):
+    """The bundled font set the render serves from (MONTAJ_FONTS_DIR's families.json): {family: [normal weights]}."""
+    base = tmp_path / "fonts"
+    base.mkdir()
+    (base / "families.json").write_text(json.dumps({"families": sorted(faces), "faces": {f: {"normal": w} for f, w in faces.items()}}))
+    monkeypatch.setenv("MONTAJ_FONTS_DIR", str(base))
+
+
+def test_a_bundled_family_short_of_a_weight_keeps_its_bundled_faces_and_asks_google_for_the_rest(tmp_path, monkeypatch):
+    """The bundled JetBrains Mono has 400 and 700; the run's overlays used 500 and 800."""
+    vendored(tmp_path, monkeypatch, {"JetBrains Mono": [400, 700]})
+    d = make_project(tmp_path)
+    (d / "overlays" / "m.jsx").write_text("export default function M() { return <div style={{ fontFamily: '\"JetBrains Mono\", monospace', fontWeight: 800 }}><i style={{ fontWeight: 500 }}>x</i></div> }")
+    run(d, at="1", overlay="overlays/m.jsx")
+    assert tracks(d)[1]["items"][0]["googleFonts"] == ["JetBrains+Mono", "JetBrains+Mono:wght@500;800"]
+
+
+def test_a_placed_overlay_gets_its_google_fonts_from_its_own_font_stacks(tmp_path, monkeypatch):
+    """Run calls 72 and 78 were edit_timeline calls that only set googleFonts on overlays whose shared style named
+    "JetBrains Mono". place reads the overlay and its local imports: the first family of each font stack that is not a
+    system font, with the weights the files use: one spec when the bundled set has them all, else the family as it
+    surely loads plus a spec of the missing weights on its own (a weight Google lacks then fails that link alone)."""
+    vendored(tmp_path, monkeypatch, {"JetBrains Mono": [400, 500, 700, 800]})
+    d = make_project(tmp_path)
+    (d / "overlays" / "_shared").mkdir()
+    (d / "overlays" / "_shared" / "style.js").write_text(
+        "export const S = { mono: '\"JetBrains Mono\", ui-monospace, Menlo, monospace', body: 'Helvetica, Arial, sans-serif' }\nexport default S\n")
+    (d / "overlays" / "specs.jsx").write_text(
+        "import S from './_shared/style.js'\nexport default function P() {\n"
+        "  return <div style={{ fontFamily: S.mono, fontWeight: 800 }}><span style={{ fontWeight: 500 }}>in</span>"
+        "<b style={{ fontFamily: \"'Anton', sans-serif\" }}>19</b></div>\n}\n")
+    out = run(d, at="2", overlay="overlays/specs.jsx")
+    item = tracks(d)[1]["items"][0]
+    assert sorted(item["googleFonts"]) == ["Anton", "Anton:wght@500;800", "JetBrains+Mono:wght@500;800"]
+    assert out["fonts"] == item["googleFonts"] and "issues" not in out
+
+
+def test_an_overlay_s_own_googleFonts_export_wins_and_a_preset_or_system_font_gets_none(tmp_path):
+    d = make_project(tmp_path)
+    (d / "overlays" / "t.jsx").write_text(
+        "export const googleFonts = ['Playfair+Display:ital@1']\n"
+        "export default function T() { return <div style={{ fontFamily: '\"Inter\", sans-serif' }}>t</div> }\n")
+    run(d, at="1", overlay="overlays/t.jsx")
+    (d / "overlays" / "sys.jsx").write_text("export default function T() { return <div style={{ fontFamily: '-apple-system, Helvetica, sans-serif' }}>t</div> }\n")
+    run(d, at="5", overlay="overlays/sys.jsx")
+    run(d, at="9", preset="callout")
+    items = {it["src"]: it for it in tracks(d)[1]["items"]}
+    assert items["./overlays/t.jsx"]["googleFonts"] == ["Playfair+Display:ital@1"]
+    assert "googleFonts" not in items["./overlays/sys.jsx"] and "googleFonts" not in items["./overlays/callout.jsx"]
+
+
+def test_fonts_an_item_already_names_are_kept(tmp_path):
+    d = make_project(tmp_path, overlays=[{"id": "ov-a", "start": 1, "end": 3, "googleFonts": ["Syne:wght@800"]}])
+    (d / "overlays" / "ov-a.jsx").write_text("export default function A() { return <div style={{ fontFamily: '\"Anton\", sans-serif' }}>a</div> }")
+    run(d, item_id="ov-a", at="5")
+    assert tracks(d)[1]["items"][0]["googleFonts"] == ["Syne:wght@800"]
+
+
+# Sam (2026-10-26, a paid run's 13 tracks): graphics share one track unless they overlap, and a new graphic never lands
+# under a 3D beat or another item drawing over its span. The choice walks down from the top: a track that draws nothing
+# over the span is passed, the first graphics track free there is taken, and anything drawing over the span stops the walk
+# (a new track on top, where the item draws over it).
+def _tracks_doc(*tracks):
+    return {"tracks": [{"id": "trk-0", "items": [{"id": "v0", "type": "video", "src": "/x/a.mp4", "start": 0, "end": 60}]}, *tracks]}
+
+
+def _ov(id_, s, e, src=None):
+    return {"id": id_, "type": "overlay", "src": src or f"./overlays/{id_}.jsx", "start": s, "end": e}
+
+
+def test_the_default_track_is_the_highest_free_graphics_track_with_nothing_drawn_over_the_span():
+    low = {"id": "g-low", "items": [_ov("a", 0, 2)]}
+    beat = {"id": "3d", "items": [_ov("specs", 8, 14, "engine:scene3d")]}
+    high = {"id": "g-high", "items": [_ov("b", 20, 22)]}
+    broll = {"id": "b", "items": [{"id": "br", "type": "video", "src": "/x/b.mp4", "start": 9, "end": 12}]}
+    doc = _tracks_doc(low, beat, high, broll)
+    assert place.choose_track(doc, 9, 12) == (3, None), "over the 3D beat, never under it; a video track draws under overlays"
+    assert place.choose_track(doc, 30, 32) == (3, None), "the top graphics track, not the first one"
+    assert place.choose_track(doc, 21, 23) == (None, None), "b draws over that span: a new track on top"
+    doc = _tracks_doc(low, beat)
+    assert place.choose_track(doc, 9, 12) == (None, None), "the beat draws over it: a new track, not g-low under it"
+    assert place.choose_track(doc, 3, 5) == (1, None), "the beat draws nothing then: g-low"
+
+
+# Round 9 (52's PL89h notes, section 05): with its own points (`at`), flow's line and travelling dot ran straight
+# through its labels ("phone—computer—motors"). The line stays in the gaps between labels.
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+@pytest.mark.parametrize("props", [
+    {"points": "phone > computer > motors", "at": [[190, 1530], [500, 1530], [800, 1530]], "fontSize": 44, "accent": "#ff0000"},
+    {"points": "phone > small computer > motors", "accent": "#ff0000"},
+    {"points": "camera > phone > cloud", "at": [[540, 400], [540, 700], [540, 1000]], "accent": "#ff0000"},
+])
+def test_flows_line_and_dot_stay_out_of_its_labels(tmp_path, props):
+    from PIL import Image
+    src = Path(place.PRESETS_DIR) / "flow.jsx"
+    for frame in (75, 108):   # the chain drawn, then the dot travelling it
+        png = tmp_path / f"f{frame}.png"
+        res = subprocess.run([sys.executable, str(REPO_ROOT / "steps" / "render" / "sample_overlay.py"), "--overlay", str(src),
+                              "--frame", str(frame), "--duration", "120", "--fps", "30", "--props", json.dumps(props),
+                              "--measure", "--out", str(png)], capture_output=True, text=True, timeout=180)
+        assert res.returncode == 0, res.stderr[-400:]
+        m = json.loads(res.stdout)["measurements"]
+        img = Image.open(png).convert("RGBA")
+        for t in m["texts"]:
+            b = t.get("glyphs") or t["bbox"]
+            x0, y0, x1, y1 = int(b["x"]) + 2, int(b["y"]) + 2, int(b["x"] + b["w"]) - 2, int(b["y"] + b["h"]) - 2
+            red = sum(1 for x in range(max(0, x0), min(img.width, x1)) for y in range(max(0, y0), min(img.height, y1))
+                      if (lambda p: p[3] > 128 and p[0] > 200 and p[1] < 80 and p[2] < 80)(img.getpixel((x, y))))
+            assert red == 0, f"frame {frame}: {red} line pixels inside {t['text']!r}"

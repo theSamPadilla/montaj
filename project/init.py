@@ -1261,7 +1261,8 @@ def _main():
             "colorSpaceSource": "auto" if args.color_space == "auto" else "explicit",
             "language": args.language,
         },
-        "tracks": [{"id": "trk-0", "items": [] if args.canvas else clips}],
+        # §590: nothing is laid for the person or the AI; the clips are sources, and cut builds the spine from them
+        "tracks": [{"id": "trk-0", "items": []}],
         "assets": assets,
         "audio": {},
         **({"profile": args.profile} if args.profile else {}),

@@ -32,6 +32,52 @@ test('relocateFileUrls: each file:// URL is copied once and becomes a relative p
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+// PL89 (a user's carousel export lost its images): the URL was cut at the first space. A macOS screenshot's name has
+// spaces and a U+202F before AM/PM, and the slide kept the absolute path to the user's disk. A file URL now runs to its
+// own closing delimiter: the attribute's quote (&quot; inside a serialized style), or url(...)'s paren.
+test('relocateFileUrls: a name with spaces, U+202F, & or #, an encoded one, and CSS url() forms are all copied', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-cpages-'))
+  try {
+    const shot = join(dir, 'Screenshot 2026-10-24 at 2.32 Background Removed.11\u202FPM.png')
+    const amp = join(dir, 'cats & dogs #1.png')
+    const enc = join(dir, 'two words.png')
+    const css = join(dir, 'paper texture.png')
+    for (const f of [shot, amp, enc, css]) writeFileSync(f, 'x')
+    const lit = (p) => `file://${p}`
+    const html = [
+      `<img src="${lit(shot)}">`,
+      `<img src='${lit(amp).replace(/&/g, '&amp;')}'>`,
+      `<img src="${pathToFileURL(enc).href}">`,
+      `<div style="background-image: url(&quot;${lit(css)}&quot;)"></div>`,
+      `<div style="background: url('${lit(css)}') center"></div>`,
+      `<style>.a { background: url(${lit(css)}); }</style>`,
+    ].join('')
+    const warnings = []
+    const out = relocateFileUrls(html, join(dir, 'out'), new Map(), warnings, { n: 0 })
+    assert.deepEqual(warnings, [])
+    assert.doesNotMatch(out, /file:\/\//, 'no absolute path to the disk is left')
+    const copies = readdirSync(join(dir, 'out', 'assets')).sort()
+    assert.equal(copies.length, 4, copies.join(' | '))
+    assert.ok(copies.some((c) => c.endsWith('Removed.11\u202FPM.png')))
+    assert.ok(copies.some((c) => c.endsWith('cats & dogs #1.png')))
+    assert.match(out, /url\(&quot;assets\/\d\d-paper texture\.png&quot;\)/)
+    assert.match(out, /url\('assets\/\d\d-paper texture\.png'\) center/)
+    assert.match(out, /url\(assets\/\d\d-paper texture\.png\); \}/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('relocateFileUrls: a real #fragment copies the file before it and keeps the fragment', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-cpages-'))
+  try {
+    const sprite = join(dir, 'icons.svg')
+    writeFileSync(sprite, '<svg/>')
+    const warnings = []
+    const out = relocateFileUrls(`<use href="file://${sprite}#star"/>`, join(dir, 'out'), new Map(), warnings, { n: 0 })
+    assert.deepEqual(warnings, [])
+    assert.match(out, /href="assets\/01-icons\.svg#star"/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('swipePage: every slide in its own frame, scroll-snapped, sized to the slide', () => {
   const html = swipePage({ files: ['slide-01.html', 'slide-02.html'], width: 1080, height: 1350, title: 'Trail <tips>' })
   assert.equal((html.match(/<iframe /g) ?? []).length, 2)
