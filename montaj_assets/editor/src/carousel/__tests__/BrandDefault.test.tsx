@@ -97,6 +97,7 @@ const last = (a: FakeAdapter) => a.saveCalls[a.saveCalls.length - 1].project
 const elementsOf = (p: Project) => p.slides![0].elements
 const byId = (p: Project, id: string) => elementsOf(p).find((e) => e.id === id)!
 const propsOf = (p: Project, id: string) => (byId(p, id) as unknown as { overlay: { props: Record<string, unknown> } }).overlay.props
+const fontsOf = (p: Project, id: string) => (byId(p, id) as unknown as { googleFonts?: string[] }).googleFonts
 const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 30)) })
 
 async function click(id: string) {
@@ -140,6 +141,41 @@ describe('Use brand default (§587 r2 note 8)', () => {
     await press(options[0])
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
     expect(propsOf(last(adapter), 'el-t').fontFamily).toBe('"Poppins", system-ui, sans-serif')
+    expect(fontsOf(last(adapter), 'el-t')).toEqual(['Poppins:wght@400;700'])
+  })
+
+  it('font picker: the family and its googleFonts are one write and one undo step', async () => {
+    const { adapter, r } = await mount('rail', { brand: BRAND })
+    await click('el-t')
+    await press(tb(r, 'Font family'))
+    await press(within(r.getByRole('listbox')).getAllByRole('option')[0])
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    await undo()
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(propsOf(last(adapter), 'el-t').fontFamily).toBe('"Inter", system-ui, sans-serif')
+    expect(fontsOf(last(adapter), 'el-t')).toBeUndefined()
+  })
+
+  it('font picker: a list pick writes its spec, and System clears it', async () => {
+    const { adapter, r } = await mount('rail')
+    await click('el-t')
+    await press(tb(r, 'Font family'))
+    await press(within(r.getByRole('listbox')).getByRole('option', { name: 'Bebas Neue' }))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(fontsOf(last(adapter), 'el-t')).toEqual(['Bebas+Neue:wght@400;700'])
+    await press(tb(r, 'Font family'))
+    await press(within(r.getByRole('listbox')).getByRole('option', { name: 'System' }))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(fontsOf(last(adapter), 'el-t')).toBeUndefined()
+    expect(propsOf(last(adapter), 'el-t').fontFamily).toContain('system-ui')
+  })
+
+  it('font picker: a locked element is not changed', async () => {
+    const { adapter, r } = await mount('rail', { brand: BRAND })
+    await click('el-locked')
+    expect(tb(r, 'Font family').disabled).toBe(true)
+    await settle()
+    expect(adapter.saveCalls).toHaveLength(0)
   })
 
   it('font picker: no brand font, no row', async () => {

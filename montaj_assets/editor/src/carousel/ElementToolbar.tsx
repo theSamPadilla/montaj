@@ -62,6 +62,9 @@ export interface ElementToolbarProps {
   onOpenTextColour?: () => void
   /** The profile's font, for the font picker's "Use brand default". */
   brandFont?: string
+  brandGoogleFonts?: string[]
+  /** A font pick: the family and its `googleFonts` in one write (locked elements are refused by the host). */
+  onSetFont?: (slideId: string, elementId: string, fontFamily: string, googleFonts: string[]) => void
 }
 
 // Montaj's tools: 10px squares, muted at rest, ink on hover; on = the brand tint.
@@ -98,6 +101,8 @@ function TextGroup({
   onToggleEffects,
   onOpenTextColour,
   brandFont,
+  brandGoogleFonts,
+  onSetFont,
 }: {
   slideId: string
   element: OverlayElement
@@ -107,6 +112,8 @@ function TextGroup({
   onToggleEffects: () => void
   onOpenTextColour?: () => void
   brandFont?: string
+  brandGoogleFonts?: string[]
+  onSetFont?: (fontFamily: string, googleFonts: string[]) => void
 }) {
   const fmt = textFormatting(slideId, element, update)
   const { supported } = fmt
@@ -120,9 +127,10 @@ function TextGroup({
       {supported.has('fontFamily') && (
         <FontFamilyPicker
           value={fmt.fontFamilyValue}
-          onChange={fmt.setFontFamily}
+          onChange={(family, specs) => (onSetFont ? onSetFont(family, specs ?? []) : fmt.setFontFamily(family))}
           disabled={disabled}
           brandFont={brandFont}
+          brandGoogleFonts={brandGoogleFonts}
           variant="rail"
           className="w-32"
           buttonClassName={`flex h-8 w-full items-center gap-1 ${fieldBox} px-3 text-[13px] ${railInk} ${railHoverBg} disabled:cursor-not-allowed disabled:opacity-40 ${railFocus}`}
@@ -235,6 +243,8 @@ export default function ElementToolbar({
   mode = 'dark',
   onOpenTextColour,
   brandFont,
+  brandGoogleFonts,
+  onSetFont,
 }: ElementToolbarProps) {
   const element = selection.length === 1 ? selection[0] : undefined
   const image = element?.type === 'image' ? element : undefined
@@ -284,7 +294,7 @@ export default function ElementToolbar({
       >
         {text && (
           <>
-            <TextGroup slideId={slideId} element={text} update={update} disabled={locked || !canEdit} effectsOpen={popover === 'effects'} onToggleEffects={toggle('effects')} onOpenTextColour={onOpenTextColour && run(onOpenTextColour)} brandFont={brandFont} />
+            <TextGroup slideId={slideId} element={text} update={update} disabled={locked || !canEdit} effectsOpen={popover === 'effects'} onToggleEffects={toggle('effects')} onOpenTextColour={onOpenTextColour && run(onOpenTextColour)} brandFont={brandFont} brandGoogleFonts={brandGoogleFonts} onSetFont={onSetFont && ((family, specs) => { beforeAction(); onSetFont(slideId, text.id, family, specs) })} />
             <Sep />
           </>
         )}

@@ -155,17 +155,20 @@ export function findFontOption(cssValue: string): FontOption | null {
 
 type FontFamilyPickerProps = {
   value: string
-  onChange: (value: string) => void
+  /** `googleFonts` is the picked family's fetch specs (empty for System): a caller that persists the family persists them with it. */
+  onChange: (value: string, googleFonts?: string[]) => void
   disabled?: boolean
   className?: string
   buttonClassName?: string
   /** The linked profile's font (a CSS font-family value): leads the list as "Use brand default". */
   brandFont?: string
+  /** The fetch specs for `brandFont`, handed to `onChange` with it. */
+  brandGoogleFonts?: string[]
   /** 'rail' draws the list in the carousel's look (§587 R5c). The default is the video editor's. */
   variant?: 'default' | 'rail'
 }
 
-export function FontFamilyPicker({ value, onChange, disabled, className, buttonClassName, brandFont, variant = 'default' }: FontFamilyPickerProps) {
+export function FontFamilyPicker({ value, onChange, disabled, className, buttonClassName, brandFont, brandGoogleFonts, variant = 'default' }: FontFamilyPickerProps) {
   const [open, setOpen] = useState(false)
   const wrapperRef = useRef<HTMLDivElement | null>(null)
 
@@ -225,7 +228,7 @@ export function FontFamilyPicker({ value, onChange, disabled, className, buttonC
                   role="option"
                   aria-selected={false}
                   onClick={() => {
-                    onChange(brandFont)
+                    onChange(brandFont, brandGoogleFonts ?? [])
                     setOpen(false)
                   }}
                   className={
@@ -247,7 +250,7 @@ export function FontFamilyPicker({ value, onChange, disabled, className, buttonC
                     role="option"
                     aria-selected={isActive}
                     onClick={() => {
-                      onChange(opt.value)
+                      onChange(opt.value, opt.spec ? [opt.spec] : [])
                       setOpen(false)
                     }}
                     style={{ fontFamily: opt.value }}
