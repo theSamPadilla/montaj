@@ -562,7 +562,10 @@ def sync_refusal(project_id, who, fields=(), files=(), *, everything: bool = Fal
         return None
     if not everything and not fields and not files and not derived:
         return None
-    clashes = sync_clash.load(project_id)
+    clashes = sync_clash.load_settled(project_id)
+    if clashes.unsure and who.kind not in ("resolve", "untrusted"):
+        # An unsure read is not a clash (Sam, 1.5.1): retryable, and it never tells the AI a person must resolve it.
+        return sync_clash.busy()
     if who.kind == "drive":
         names = sync_clash.unheld_touched(clashes, [*fields, *derived], files, everything)
         return sync_clash.refusal(names) if names else None
@@ -578,8 +581,9 @@ def sync_refusal(project_id, who, fields=(), files=(), *, everything: bool = Fal
 
 
 def sync_exception(body: dict) -> HTTPException:
-    """The answer for a refusal body: 403 for `untrusted`, else the binding 409."""
-    return HTTPException(403 if body.get("error") == "untrusted" else 409, detail=body)
+    """The answer for a refusal body: 503 for `sync_state_busy`, 403 for `untrusted`, else the binding 409."""
+    status = 503 if body.get("error") == "sync_state_busy" else 403 if body.get("error") == "untrusted" else 409
+    return HTTPException(status, detail=body)
 
 
 def check_sync(headers, project_id, fields=(), files=(), *, everything: bool = False, derived=()) -> None:

@@ -21,8 +21,11 @@ names-only sidecar per synced project, `<dir>/<projectId>/clash-set.json`:
 - Anything else that is not a valid sidecar (a relative path, which names a different folder for every working
   directory, a state folder that exists but is not a readable folder, a dangling link as the state folder or above it,
   a project folder that cannot be read, a corrupt file, an unknown `v`, an id that cannot name a folder, a link out of
-  the folder): UNSURE, which refuses every non-human write. An unreadable state folder hides every project's folder,
-  so it stays closed for all: nothing can tell a synced project from a never-synced one.
+  the folder): UNSURE. UNSURE IS NOT A CLASH (Sam, 1.5.1: a false "person must resolve it" stopped the AI on a project
+  with no clash). It is logged with its reason (once per id and reason a minute), re-read a few times
+  (`load_settled`, so an atomic rename in flight passes), and when it stays unsure a non-human write is answered with
+  the retryable `busy()` body (HTTP 503 `sync_state_busy`), never the clash text. Only a recorded clash that covers
+  what the write touches refuses, and a whole-project one reads "the whole project", not `*`.
 
 Read fresh on every write (a few hundred bytes, no cache): a cache keyed on the file's stat can miss an in-place
 rewrite, and the shell's atomic rename is the common case.
@@ -40,6 +43,7 @@ import os
 import re
 import stat
 import sys
+import time
 import unicodedata
 
 STATE_ENV = "MONTAJ_SYNC_STATE_DIR"
@@ -113,6 +117,23 @@ class ClashSet:
 NO_CLASH = ClashSet()
 UNSURE = ClashSet(unsure=True)
 
+# An UNSURE read is not a clash (Sam, 1.5.1): it is logged, re-read (load_settled) and, when it stays unsure, answered
+# with a retryable busy answer. The reason is only ever logged, never the contents of a path.
+_UNSURE_LOG_EVERY = 60.0
+_unsure_logged: dict = {}
+
+
+def _unsure(project_id, reason: str) -> ClashSet:
+    """UNSURE, having logged `reason` to stderr: once per project id and reason a minute."""
+    ident = project_id if valid_project_id(project_id) else "<invalid id>"
+    now = time.monotonic()
+    key = (ident, reason)
+    last = _unsure_logged.get(key)
+    if last is None or now - last >= _UNSURE_LOG_EVERY:
+        _unsure_logged[key] = now
+        print(f"sync_clash: unsure for {ident}: {reason}", file=sys.stderr, flush=True)
+    return UNSURE
+
 
 def _names(value) -> "list | None":
     if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value):
@@ -124,20 +145,20 @@ def _parse(raw: bytes, project_id: str) -> ClashSet:
     try:
         doc = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
-        return UNSURE
+        return _unsure(project_id, "the sidecar is not valid JSON")
     if not isinstance(doc, dict) or type(doc.get("v")) is not int or doc["v"] != 1 \
             or doc.get("projectId") != project_id:
-        return UNSURE
+        return _unsure(project_id, "the sidecar is not a v1 sidecar of this project")
     fields, files, clashes = _names(doc.get("fields")), _names(doc.get("files")), doc.get("clashes")
     if fields is None or files is None or not isinstance(clashes, list):
-        return UNSURE
+        return _unsure(project_id, "the sidecar's fields, files or clashes are malformed")
     ids, by_id, held, unheld = set(), {}, set(), set()
     for clash in clashes:
         if not isinstance(clash, dict) or not isinstance(clash.get("id"), str) or not clash["id"]:
-            return UNSURE
+            return _unsure(project_id, "a clash entry has no id")
         more_fields, more_files = _names(clash.get("fields")), _names(clash.get("files"))
         if more_fields is None or more_files is None:
-            return UNSURE
+            return _unsure(project_id, "a clash entry's fields or files are malformed")
         ids.add(clash["id"])
         (held if clash.get("held") is True else unheld).add(clash["id"])
         own_fields, own_files = by_id.get(clash["id"], (frozenset(), {}))
@@ -213,40 +234,42 @@ def startup() -> None:
 def load(project_id) -> ClashSet:
     """The project's clash set. Call only with state_dir() set."""
     base = state_dir()
-    if not base or not valid_project_id(project_id):
-        return UNSURE
+    if not base:
+        return _unsure(project_id, "the state folder is not named")
+    if not valid_project_id(project_id):
+        return _unsure(project_id, "the project id cannot name a folder")
     root = _state_root(base)
     if root is None:
-        return UNSURE
+        return _unsure(project_id, "the state folder cannot be read")
     if root == _MISSING_ROOT:
         return NO_CLASH
     try:
         folder = os.path.realpath(os.path.join(root, project_id))
     except (OSError, ValueError):
-        return UNSURE
+        return _unsure(project_id, "the project's state folder path cannot be resolved")
     # The id's folder, directly in the state folder: never a link to anywhere else, not even a sibling.
     if os.path.dirname(folder) != root or os.path.basename(folder) != project_id:
-        return UNSURE
+        return _unsure(project_id, "the project's state folder is a link out of the state folder")
     path = os.path.join(folder, SIDECAR)
     try:
         seen = os.lstat(path)
     except FileNotFoundError:
         return NO_CLASH
     except OSError:
-        return UNSURE
+        return _unsure(project_id, "the sidecar cannot be looked at")
     if not stat.S_ISREG(seen.st_mode):
-        return UNSURE   # a link, a folder, a pipe
+        return _unsure(project_id, "the sidecar is not a plain file")   # a link, a folder, a pipe
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
     try:
         fd = os.open(path, flags)
     except FileNotFoundError:
         return NO_CLASH   # removed between the two calls: the shell's own clear
     except OSError:
-        return UNSURE
+        return _unsure(project_id, "the sidecar cannot be opened")
     try:
         opened = os.fstat(fd)
         if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (seen.st_dev, seen.st_ino):
-            return UNSURE   # swapped for something else between lstat and open
+            return _unsure(project_id, "the sidecar was swapped between lstat and open")
         chunks, size = [], 0
         while True:
             chunk = os.read(fd, 65536)
@@ -254,13 +277,25 @@ def load(project_id) -> ClashSet:
                 break
             size += len(chunk)
             if size > _MAX_BYTES:
-                return UNSURE
+                return _unsure(project_id, "the sidecar is larger than the limit")
             chunks.append(chunk)
     except OSError:
-        return UNSURE
+        return _unsure(project_id, "the sidecar cannot be read")
     finally:
         os.close(fd)
     return _parse(b"".join(chunks), project_id)
+
+
+def load_settled(project_id, tries: int = 4, wait: float = 0.05) -> ClashSet:
+    """`load`, re-read up to `tries` more times, `wait` seconds apart, while it is unsure: a transient state (the app's
+    atomic rename of a sidecar, a push rewriting files) passes. The last read is the answer. About 0.2 s at most; it
+    runs inside serve's async step route."""
+    clashes = load(project_id)
+    while clashes.unsure and tries > 0:
+        tries -= 1
+        time.sleep(wait)
+        clashes = load(project_id)
+    return clashes
 
 
 def _file_hit(written_key: str, clashed_key: str) -> bool:
@@ -379,7 +414,7 @@ def _held_by_others(clashes: ClashSet, clash_id: str) -> "tuple[frozenset, dict]
 
 def message(names) -> str:
     """The app wrapper's syncConflictText (desktop/mcp/app-tools.mjs), word for word."""
-    named = ", ".join(names) if names else "some fields"
+    named = ", ".join("the whole project" if n == EVERYTHING else n for n in names) if names else "some fields"
     return (f"This project has an open Studio sync clash on {named}, so nothing was saved. A person must resolve "
             f"it in Montaj. Do not retry, and do not edit those fields.")
 
@@ -387,6 +422,13 @@ def message(names) -> str:
 def refusal(names) -> dict:
     """The binding body, exactly: {error, fields, message}."""
     return {"error": "sync_conflict", "fields": list(names), "message": message(names)}
+
+
+def busy() -> dict:
+    """The answer to a write whose clash set stayed unreadable after the re-reads: retryable, and not a clash."""
+    return {"error": "sync_state_busy",
+            "message": "Montaj couldn't read this project's Studio sync state just now, so nothing was saved. "
+                       "Run the same call again in a moment."}
 
 
 _MISSING = object()
@@ -423,8 +465,17 @@ class SyncConflict(RuntimeError):
         self.body = body
 
 
+class SyncBusy(RuntimeError):
+    """A step's write that could not read the clash set (still unsure after the re-reads); `body` is `busy()`."""
+
+    def __init__(self, body: dict):
+        super().__init__(body["message"])
+        self.body = body
+
+
 def check_step_write(project_id, fields=(), files=()) -> None:
-    """For a step's own write, under the project lock: raise SyncConflict when it touches a clashed name. Off with
+    """For a step's own write, under the project lock: raise SyncConflict when it touches a clashed name, and SyncBusy
+    when the clash set stays unreadable (never a clash). Off with
     the variable unset; a step the window ran (MONTAJ_WRITE_ORIGIN=human, set only by serve) passes, and one it ran
     while the person's AI drove it (`drive`) passes on held names only."""
     origin = os.environ.get(ORIGIN_ENV)
@@ -432,7 +483,9 @@ def check_step_write(project_id, fields=(), files=()) -> None:
         return
     if not fields and not files:
         return
-    clashes = load(project_id)
+    clashes = load_settled(project_id)
+    if clashes.unsure:
+        raise SyncBusy(busy())
     names = unheld_touched(clashes, fields, files) if origin == DRIVE_ORIGIN else touched(clashes, fields, files)
     if names:
         raise SyncConflict(refusal(names))
@@ -448,6 +501,7 @@ def check_step_document(before: dict, after: dict, files=()) -> None:
 
 
 def exit_refused(body: dict) -> None:
-    """A step's structured exit for a refusal: the binding body on stderr, exit 1 (serve answers it as 409)."""
+    """A step's structured exit for a refusal: the binding body on stderr, exit 1 (serve answers a sync_conflict as
+    409 and a sync_state_busy as 503)."""
     print(json.dumps(body), file=sys.stderr)
     sys.exit(1)

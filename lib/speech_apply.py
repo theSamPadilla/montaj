@@ -105,7 +105,7 @@ def _check_sync(before: dict, after: dict, text_file: bool = True) -> None:
     sync clashes (a no-op with MONTAJ_SYNC_STATE_DIR unset, or for the window's run). A refusal ends the step with it."""
     try:
         sync_clash.check_step_document(before, after, files=[SPEECH_TEXT_FILE] if text_file else [])
-    except sync_clash.SyncConflict as e:
+    except (sync_clash.SyncConflict, sync_clash.SyncBusy) as e:
         sync_clash.exit_refused(e.body)
 
 

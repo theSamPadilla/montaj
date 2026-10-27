@@ -697,6 +697,9 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
             # §482: the step's write refused under the lock, answered in the binding shape.
             raise HTTPException(409, detail=sync_clash.refusal(
                 [f for f in err["fields"] if isinstance(f, str)]))
+        if err.get("error") == "sync_state_busy":
+            # An unreadable clash set is not a clash: the same retryable answer serve gives itself.
+            raise HTTPException(503, detail=sync_clash.busy())
         # §541: a step that ran out of disk is the 507 with one plain sentence.
         full = child_disk_full(err, stderr_text, disk_full_root())
         if full is not None:

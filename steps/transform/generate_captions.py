@@ -44,7 +44,7 @@ from lib.project_versions import commit_version  # noqa: E402
 from lib.caption_profile_look import caption_words_args, resolve_style_and_look  # noqa: E402
 from serve.caption_theme import seed_prev  # noqa: E402
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, update_project  # noqa: E402
-from lib.sync_clash import SyncConflict, exit_refused  # noqa: E402
+from lib.sync_clash import SyncBusy, SyncConflict, exit_refused  # noqa: E402
 
 # The whisper run before this write took minutes: a short lock wait must not throw it away.
 STEP_LOCK_TIMEOUT = 30.0
@@ -214,7 +214,7 @@ def main():
             fail("project_locked", str(e))
         except ProjectReadOnly as e:
             fail("project_read_only", str(e))
-        except SyncConflict as e:   # §482: captions in an open Studio sync clash
+        except (SyncConflict, SyncBusy) as e:   # §482: captions in an open Studio sync clash
             exit_refused(e.body)
         except (OSError, ValueError):
             fail("project_not_found", f"project.json for {args.project_id} not readable")

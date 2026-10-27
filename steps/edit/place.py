@@ -407,7 +407,7 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
         def sync_check(rel):
             try:
                 sync_clash.check_step_write(on_disk.get("id"), (), [rel])
-            except sync_clash.SyncConflict as e:
+            except (sync_clash.SyncConflict, sync_clash.SyncBusy) as e:
                 sync_clash.exit_refused(e.body)
         referenced = {it.get("src") for t in project["tracks"] for it in t.get("items", []) if isinstance(it.get("src"), str)}
         rel, made = preset_file(project_dir, preset, referenced, sync_check, scene)

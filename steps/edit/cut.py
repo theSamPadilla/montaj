@@ -692,7 +692,7 @@ def _write_plan(project_path, project_id, text):
     with project_lock_or_fail(project_path, fail):
         try:
             sync_clash.check_step_write(project_id, files=[PLAN_FILE, PREV_PLAN_FILE, "cut-plan.prev-"])
-        except sync_clash.SyncConflict as e:
+        except (sync_clash.SyncConflict, sync_clash.SyncBusy) as e:
             sync_clash.exit_refused(e.body)
         return out_path, write()
 
@@ -1525,7 +1525,7 @@ def _write_silence(project_path, project_dir, disk, b, track_id, max_pause, mark
     lifted, candidate = candidate, lowered(candidate)
     try:
         sync_clash.check_step_document(disk, candidate, files=[])
-    except sync_clash.SyncConflict as e:
+    except (sync_clash.SyncConflict, sync_clash.SyncBusy) as e:
         sync_clash.exit_refused(e.body)
     speech_apply._validate(candidate)
     version = commit_version(project_dir, VERSION_MESSAGE)

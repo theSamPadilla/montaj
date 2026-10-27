@@ -10,8 +10,8 @@ pull (trusted `tool` + origin `sync`) and the shell's human resolve (trusted `to
 binding 409 `{"error": "sync_conflict", "fields": [...], "message": "..."}` when it touches a clashed name.
 
 Unset: serve never reads a sidecar and behaves exactly as before. Set but unreadable (a corrupt or unknown
-sidecar, a state folder that exists but cannot be read, an id that cannot name a folder): fail closed, every non-human
-write is refused. A state folder that does not exist at all records no clash (review 40, 3a).
+sidecar, a state folder that exists but cannot be read, an id that cannot name a folder): not a clash (1.5.1, Sam): the
+read is retried, and when it stays unsure every non-human write answers 503 sync_state_busy, retryable. A state folder that does not exist at all records no clash (review 40, 3a).
 
 The design is montaj-app docs/plans/s482-m4-design.md §4 (its 15 pytest cases are marked `case N`). Real FastAPI
 app, real lock; every path lives under tmp_path."""
@@ -181,6 +181,14 @@ def _refused(resp, names):
     assert resp.status_code == 409, resp.text
     body = resp.json()["detail"]
     assert body == {"error": "sync_conflict", "fields": list(names), "message": _message(names)}
+
+
+def _busy(resp):
+    """An unsure clash set is not a clash (1.5.1, Sam): 503 sync_state_busy, never "A person must resolve it"."""
+    assert resp.status_code == 503, resp.text
+    body = resp.json()["detail"]
+    assert body == _sc().busy()
+    assert "person must resolve" not in body["message"] and "Do not retry" not in body["message"]
 
 
 def _disk(d):
@@ -445,13 +453,13 @@ def test_case5_a_held_name_lets_a_driven_write_through_but_not_its_unheld_neighb
     assert _put(ws, {"tracks": []}, DRIVE, read=False).status_code == 200
 
 
-def test_case5_the_window_while_the_ai_drives_it_is_refused_on_an_unsure_clash_set(ws, state):
-    """The app could not have held a version it cannot read either: fail closed, as for the AI."""
+def test_case5_the_window_while_the_ai_drives_it_is_busy_on_an_unsure_clash_set(ws, state):
+    """The app could not have held a version it cannot read either: busy (not a clash), as for the AI."""
     d = _project(ws)
     (state / PID).mkdir()
     (state / PID / "clash-set.json").write_text("nope")
     before = _disk(d)
-    _refused(_put(ws, {"tracks": []}, DRIVE, read=False), ["tracks"])
+    _busy(_put(ws, {"tracks": []}, DRIVE, read=False))
     assert _disk(d) == before
 
 
@@ -1007,16 +1015,15 @@ def _unsure(state):
 
 
 def _refused_unsure(resp):
-    """An unsure set names the write's own names (sync_clash.touched): only the refusal itself is asserted."""
-    assert resp.status_code == 409, resp.text
-    assert resp.json()["detail"]["error"] == "sync_conflict"
+    """An unsure set is not a clash (1.5.1): the retryable busy answer."""
+    _busy(resp)
 
 
-def test_case10_restore_by_the_window_passes_driven_or_not_and_driven_on_an_unsure_set_is_refused(ws, state):
+def test_case10_restore_by_the_window_passes_driven_or_not_and_driven_on_an_unsure_set_is_busy(ws, state):
     d = _project(ws)
     sha = _commit(d)
     _unsure(state)
-    _refused(_client().post(f"/api/projects/{PID}/versions/{sha}/restore", headers=DRIVE), ["*"])
+    _busy(_client().post(f"/api/projects/{PID}/versions/{sha}/restore", headers=DRIVE))
     _held(state, fields=["notes"])
     assert _client().post(f"/api/projects/{PID}/versions/{sha}/restore", headers=DRIVE).status_code == 200
     assert _client().post(f"/api/projects/{PID}/versions/{sha}/restore", headers=EDITOR).status_code == 200
@@ -1030,7 +1037,7 @@ def test_case10_restore_with_the_guard_off_still_refuses_the_ai(ws, state, monke
     _refused(_client().post(f"/api/projects/{PID}/versions/{sha}/restore", headers=AI), ["overlays/a.jsx"])
 
 
-def test_case10_rerun_by_the_window_passes_driven_or_not_and_driven_on_an_unsure_set_is_refused(ws, state):
+def test_case10_rerun_by_the_window_passes_driven_or_not_and_driven_on_an_unsure_set_is_busy(ws, state):
     d = _project(ws, sources=[{"id": "clip-0", "src": "/x.mp4"}])
     _unsure(state)
     before = _disk(d)
@@ -1041,7 +1048,7 @@ def test_case10_rerun_by_the_window_passes_driven_or_not_and_driven_on_an_unsure
     assert _client().post(f"/api/projects/{PID}/rerun", json={}, headers=EDITOR).status_code == 200
 
 
-def test_case10_include_asset_by_the_window_passes_driven_or_not_and_driven_on_an_unsure_set_is_refused(ws, state, tmp_path, monkeypatch):
+def test_case10_include_asset_by_the_window_passes_driven_or_not_and_driven_on_an_unsure_set_is_busy(ws, state, tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".montaj" / "profiles" / "brand" / "assets").mkdir(parents=True)
     (home / ".montaj" / "profiles" / "brand" / "assets" / "logo.png").write_bytes(b"png")
@@ -1268,10 +1275,10 @@ def corrupt(request, ws, state, monkeypatch):
 
 @pytest.mark.parametrize("corrupt", CORRUPT, indirect=True)
 @pytest.mark.parametrize("headers", [AI, TOOL, APP, DRIVE], ids=["ai", "tool", "tool-app", "drive"])
-def test_case13_an_unsure_clash_set_refuses_every_non_human_write(ws, corrupt, headers):
+def test_case13_an_unsure_clash_set_is_busy_for_every_non_human_write(ws, corrupt, headers):
     d = _project(ws)
     before = _disk(d)
-    _refused(_put(ws, {"notes": []}, headers, read=headers is not DRIVE), ["notes"])
+    _busy(_put(ws, {"notes": []}, headers, read=headers is not DRIVE))
     assert _disk(d) == before
 
 
@@ -1282,11 +1289,11 @@ def test_case13_an_unsure_clash_set_lets_the_human_and_the_shell_through(ws, cor
     assert _put(ws, {"notes": []}, headers, read=headers is not EDITOR).status_code == 200
 
 
-def test_case13_an_unsure_set_refuses_a_whole_project_write_with_a_star(ws, state):
+def test_case13_an_unsure_set_is_busy_for_a_whole_project_write(ws, state):
     _project(ws)
     (state / PID).mkdir()
     (state / PID / "clash-set.json").write_text("nope")
-    _refused(_client().delete(f"/api/projects/{PID}", headers=AI), ["*"])
+    _busy(_client().delete(f"/api/projects/{PID}", headers=AI))
 
 
 # ── case 14: no stale cache ───────────────────────────────────────────────────
@@ -1379,7 +1386,7 @@ def test_id_rule_a_bad_id_reads_as_unsure_and_never_builds_a_path(state, monkeyp
 def test_id_rule_a_project_with_a_bad_id_fails_closed(ws, state):
     pid = "bad id"
     _project(ws, pid=pid)
-    _refused(_put(ws, {"notes": []}, AI, pid=pid), ["notes"])
+    _busy(_put(ws, {"notes": []}, AI, pid=pid))
     assert _put(ws, {"notes": []}, EDITOR, pid=pid, read=False).status_code == 200
 
 
@@ -1390,14 +1397,14 @@ def test_id_rule_a_project_folder_that_resolves_outside_the_state_dir_fails_clos
     (elsewhere / "clash-set.json").write_text(
         json.dumps({"v": 1, "projectId": PID, "fields": [], "files": [], "clashes": []}))
     (state / PID).symlink_to(elsewhere, target_is_directory=True)
-    _refused(_put(ws, {"notes": []}, AI), ["notes"])
+    _busy(_put(ws, {"notes": []}, AI))
 
 
 def test_id_rule_a_project_folder_linked_to_a_sibling_fails_closed(ws, state):
     _project(ws)
     _sidecar(state, pid="sibling")
     (state / PID).symlink_to(state / "sibling", target_is_directory=True)
-    _refused(_put(ws, {"notes": []}, AI), ["notes"])
+    _busy(_put(ws, {"notes": []}, AI))
 
 
 def test_id_rule_a_symlinked_sidecar_fails_closed(ws, state, tmp_path):
@@ -1406,7 +1413,7 @@ def test_id_rule_a_symlinked_sidecar_fails_closed(ws, state, tmp_path):
     real.write_text(json.dumps({"v": 1, "projectId": PID, "fields": [], "files": [], "clashes": []}))
     (state / PID).mkdir()
     (state / PID / "clash-set.json").symlink_to(real)
-    _refused(_put(ws, {"notes": []}, AI), ["notes"])
+    _busy(_put(ws, {"notes": []}, AI))
 
 
 def test_id_rule_without_o_nofollow_a_symlinked_sidecar_still_fails_closed(ws, state, tmp_path, monkeypatch):
@@ -1416,7 +1423,7 @@ def test_id_rule_without_o_nofollow_a_symlinked_sidecar_still_fails_closed(ws, s
     real.write_text(json.dumps({"v": 1, "projectId": PID, "fields": [], "files": [], "clashes": []}))
     (state / PID).mkdir()
     (state / PID / "clash-set.json").symlink_to(real)
-    _refused(_put(ws, {"notes": []}, AI), ["notes"])
+    _busy(_put(ws, {"notes": []}, AI))
 
 
 def test_id_rule_without_o_nofollow_a_regular_sidecar_still_reads(ws, state, monkeypatch):
@@ -1475,7 +1482,7 @@ def test_crash_a_torn_sidecar_written_in_place_fails_closed(ws, state):
     _project(ws)
     side = _sidecar(state, fields=["captions"])
     side.write_text(side.read_text()[:-5])
-    _refused(_put(ws, {"notes": []}, AI), ["notes"])
+    _busy(_put(ws, {"notes": []}, AI))
     assert _put(ws, {"notes": []}, EDITOR, read=False).status_code == 200
 
 
@@ -1783,14 +1790,14 @@ def test_r3a_pin_a_state_folder_that_is_a_dangling_link_fails_closed(ws, tmp_pat
     link.symlink_to(tmp_path / "nowhere", target_is_directory=True)
     monkeypatch.setenv("MONTAJ_SYNC_STATE_DIR", str(link))
     _project(ws)
-    _refused(_put(ws, {"notes": []}, AI), ["notes"])
+    _busy(_put(ws, {"notes": []}, AI))
 
 
 def test_r3a_pin_a_state_folder_under_a_file_fails_closed(ws, tmp_path, monkeypatch):
     (tmp_path / "a-file").write_text("x")
     monkeypatch.setenv("MONTAJ_SYNC_STATE_DIR", str(tmp_path / "a-file" / "studio-sync"))
     _project(ws)
-    _refused(_put(ws, {"notes": []}, AI), ["notes"])
+    _busy(_put(ws, {"notes": []}, AI))
 
 
 def _unreadable_dirs_apply():
@@ -1803,8 +1810,8 @@ def test_r3a_pin_an_unreadable_state_folder_fails_closed_for_every_project(ws, s
     _project(ws, pid="never-synced")
     state.chmod(0)
     try:
-        _refused(_put(ws, {"notes": []}, AI), ["notes"])
-        _refused(_put(ws, {"notes": []}, AI, pid="never-synced"), ["notes"])
+        _busy(_put(ws, {"notes": []}, AI))
+        _busy(_put(ws, {"notes": []}, AI, pid="never-synced"))
         assert _put(ws, {"notes": []}, EDITOR, read=False).status_code == 200
     finally:
         state.chmod(0o755)
@@ -1817,7 +1824,7 @@ def test_r3a_pin_a_project_whose_own_state_folder_is_unreadable_fails_closed(ws,
     (state / PID).mkdir()
     (state / PID).chmod(0)
     try:
-        _refused(_put(ws, {"notes": []}, AI), ["notes"])
+        _busy(_put(ws, {"notes": []}, AI))
         assert _put(ws, {"notes": []}, AI, pid="never-synced").status_code == 200
     finally:
         (state / PID).chmod(0o755)
@@ -2531,10 +2538,10 @@ def test_harden_a_relative_state_dir_is_misconfigured_and_fails_closed(ws, tmp_p
     monkeypatch.setenv("MONTAJ_SYNC_STATE_DIR", value)
     d = _project(ws)
     before = _disk(d)
-    _refused(_put(ws, {"notes": []}, AI), ["notes"])
-    _refused(_put(ws, {"notes": []}, TOOL), ["notes"])
+    _busy(_put(ws, {"notes": []}, AI))
+    _busy(_put(ws, {"notes": []}, TOOL))
     assert _disk(d) == before
-    with pytest.raises(_sc().SyncConflict):
+    with pytest.raises(_sc().SyncBusy):
         _sc().check_step_write(PID, ["notes"])
     assert _put(ws, {"notes": []}, EDITOR, read=False).status_code == 200
 
@@ -2548,9 +2555,9 @@ def test_harden_a_state_dir_under_a_dangling_link_fails_closed(ws, tmp_path, mon
     monkeypatch.setenv("MONTAJ_SYNC_STATE_DIR", str(vol / under))
     d = _project(ws)
     before = _disk(d)
-    _refused(_put(ws, {"notes": []}, AI), ["notes"])
+    _busy(_put(ws, {"notes": []}, AI))
     assert _disk(d) == before
-    with pytest.raises(_sc().SyncConflict):
+    with pytest.raises(_sc().SyncBusy):
         _sc().check_step_write(PID, ["notes"])
     assert _put(ws, {"notes": []}, EDITOR, read=False).status_code == 200
 
