@@ -1206,6 +1206,37 @@ describe('Images on the canvas: the host API', () => {
     expect(adapter.saveProject).not.toHaveBeenCalled()
   })
 
+  it('addImage resolves true when it added and false when it did nothing', async () => {
+    const adapter = makeFakeAdapter()
+    const { api } = await mountWithApi(adapter)
+    await selectSlide('slide-1')
+    await act(async () => { expect(await api().addImage('/media/pic.png')).toBe(true) })
+    const ro = await mountWithApi(makeFakeAdapter(), makeProject({ status: 'storyboard_ready' }))
+    await act(async () => { expect(await ro.api().addImage('/media/pic.png')).toBe(false) })
+  })
+
+  it('canAddImage is ok on a selected slide and names the reason otherwise, agreeing with addImage', async () => {
+    const adapter = makeFakeAdapter()
+    const { r, api } = await mountWithApi(adapter)
+    await selectSlide('slide-1')
+    expect(api().canAddImage()).toEqual({ ok: true })
+    await selectSlide('slide-0')
+    await plainClick('el-img')
+    await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
+    expect(api().canAddImage()).toEqual({ ok: false, reason: 'crop' })
+    await act(async () => { expect(await api().addImage('/media/pic.png')).toBe(false) })
+  })
+
+  it('canAddImage says read-only for a project that cannot be edited or is pending', async () => {
+    const ro = await mountWithApi(makeFakeAdapter(), makeProject({ status: 'storyboard_ready' }))
+    expect(ro.api().canAddImage()).toEqual({ ok: false, reason: 'read-only' })
+    const provide = vi.fn()
+    render(<CarouselEditor project={makeProject({ status: 'pending', slides: [] })} adapter={makeFakeAdapter()} onProjectChange={vi.fn()} onProvideCarouselApi={provide} />)
+    const pending = provide.mock.calls[0][0] as CarouselApi
+    expect(pending.canAddImage()).toEqual({ ok: false, reason: 'read-only' })
+    expect(await pending.addImage('/media/pic.png')).toBe(false)
+  })
+
   it('writes nothing once the editor is gone', async () => {
     const gate = deferred<{ width: number; height: number } | null>()
     loadSize.mockImplementation(() => gate.promise)
@@ -1221,7 +1252,7 @@ describe('Images on the canvas: the host API', () => {
     const adapter = makeFakeAdapter()
     ;(adapter.saveProject as ReturnType<typeof vi.fn>).mockImplementation(async () => { throw new Error('HTTP 500') })
     const { r, api } = await mountWithApi(adapter)
-    await act(async () => { await expect(api().addImage('/media/pic.png')).resolves.toBeUndefined() })
+    await act(async () => { await expect(api().addImage('/media/pic.png')).resolves.toBe(true) })
     // The save error is the editor's own, shown once.
     await waitFor(() => expect(r.getByText('HTTP 500')).toBeTruthy())
   })

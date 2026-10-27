@@ -1477,9 +1477,19 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   }
 
   /** The host's `addImage`: the image goes to the slide selected now, at its centre. */
-  async function addImage(src: string) {
-    if (!selectedSlide || !canAddImages) return
+  async function addImage(src: string): Promise<boolean> {
+    if (!selectedSlide || !canAddImages) return false
     await addImages(selectedSlide.id, [() => Promise.resolve(src)])
+    return true
+  }
+
+  /** Why `addImage` would do nothing now, or ok. Checks the same conditions as `canAddImages`, one at a time, so the reason can name the first that fails. */
+  function canAddImage(): { ok: true } | { ok: false; reason: 'crop' | 'no-slide' | 'grid' | 'read-only' } {
+    if (!canEdit || showPendingSurface) return { ok: false, reason: 'read-only' }
+    if (cropElementId) return { ok: false, reason: 'crop' }
+    if (railLayout && gridOpen) return { ok: false, reason: 'grid' }
+    if (!selectedSlide) return { ok: false, reason: 'no-slide' }
+    return { ok: true }
   }
 
   /** The host's `setBackgroundImage`: the image at `src` becomes the selected slide's background (as Set as background does), in one write. */
@@ -1508,8 +1518,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // `addImage`) and withdrawn with null on unmount, like the notes api.
   const addImageRef = useRef(addImage)
   addImageRef.current = addImage
+  const canAddImageRef = useRef(canAddImage)
+  canAddImageRef.current = canAddImage
   const carouselApi = useMemo<CarouselApi>(() => ({
     addImage: (src) => addImageRef.current(src),
+    canAddImage: () => canAddImageRef.current(),
     setAsBackground: (elementId) => setAsBackgroundRef.current(elementId),
     setBackgroundImage: (src, options) => setBackgroundImageRef.current(src, options),
   }), [])
