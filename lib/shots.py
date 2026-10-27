@@ -2,7 +2,9 @@
 agent's labels in a sidecar beside the file, and draw one sheet with a tile per shot.
 
 - Detection (`detect`): ffmpeg's scene score on a small, 10 fps decode (cheap on a 4K 120 fps screen recording: 74 s
-  in about 25 s), a cut where the score passes CUT_SCORE, no shot shorter than MIN_SHOT_S, then the shortest shots
+  in about 25 s), a cut where the score passes CUT_SCORE, then each cut placed at the file's own frames (`refine_cut`:
+  a shot starts at its first frame's time and ends at its last frame's, never on the scan's 0.1 s grid, so an outPoint
+  at a shot's end shows no frame of the next; run 5's flash), no shot shorter than MIN_SHOT_S, then the shortest shots
   merged into a neighbour until there are at most MAX_SHOTS (`cap_shots`). Each shot's `motion` is its mean scene
   score inside (the cut frames left out): a shot where something happens scores higher than a held one.
 - The sidecar (`<stem>.shots.json` beside the file): {version, source, size, mtime, shots: [{n, start, end, motion,
@@ -18,7 +20,7 @@ import tempfile
 
 from lib.common import ff_input, ffmpeg_bin, get_duration, run
 
-VERSION = 1
+VERSION = 2          # 2: shot edges at the file's own frame times (1: on the 10 fps scan's grid); labels carry over
 CUT_SCORE = 0.15
 MIN_SHOT_S = 0.6
 MAX_SHOTS = 36
@@ -46,6 +48,28 @@ def frame_scores(path, timeout=1800):
         with open(out, encoding="utf-8", errors="replace") as f:
             text = f.read()
     return [(float(a), float(b)) for a, b in _SCORE_RE.findall(text)]
+
+
+def refine_cut(path, t):
+    """(the old shot's last frame, the new shot's first frame), in seconds at the file's own frame times, for a cut the
+    scan put at its sample `t` (the cut lies in the scan interval before it): the frame with the highest scene score in
+    a short native-rate decode around it. None when that decode reads fewer than two frames."""
+    a = max(0.0, t - 1.5 / SCAN_FPS)
+    with tempfile.TemporaryDirectory() as work:
+        out = os.path.join(work, "cut.txt")
+        try:
+            run([ffmpeg_bin(), "-nostdin", "-v", "error", "-ss", f"{a:.6f}", "-i", ff_input(path), "-t",
+                 f"{t + 0.5 / SCAN_FPS - a:.6f}", "-an", "-vf",
+                 f"scale={SCAN_WIDTH}:-2,select='gte(scene,0)',metadata=print:file={out}", "-f", "null", "-"], timeout=120)
+            with open(out, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except Exception:
+            return None
+    frames = [(a + float(x), float(y)) for x, y in _SCORE_RE.findall(text)]
+    if len(frames) < 2:
+        return None
+    k = max(range(1, len(frames)), key=lambda i: frames[i][1])
+    return frames[k - 1][0], frames[k][0]
 
 
 def cap_shots(shots, limit=MAX_SHOTS):
@@ -80,10 +104,13 @@ def detect(path, duration=None):
             cuts.append(t)
             prev = t
     edges = [0.0] + cuts + [duration]
+    exact = [refine_cut(path, t) or (t, t) for t in cuts]          # (old shot's last frame, new shot's first)
+    starts = [0.0] + [first for _, first in exact]
+    ends = [last for last, _ in exact] + [duration]
     raw = []
-    for a, b in zip(edges, edges[1:]):
+    for n, (a, b) in enumerate(zip(edges, edges[1:])):
         inner = [s for t, s in scores if a + 1.5 / SCAN_FPS < t < b - 0.5 / SCAN_FPS]
-        raw.append({"start": a, "end": b, "motion": sum(inner) / len(inner) if inner else 0.0})
+        raw.append({"start": starts[n], "end": ends[n], "motion": sum(inner) / len(inner) if inner else 0.0})
     return [{"n": s["n"], "start": round(s["start"], 3), "end": round(s["end"], 3), "motion": round(s["motion"], 3)}
             for s in cap_shots(raw)]
 
@@ -97,8 +124,9 @@ def _stamp(path):
     return st.st_size, round(st.st_mtime, 3)
 
 
-def read_sidecar(path):
-    """The sidecar's shots when it belongs to this version of the file, else None."""
+def read_sidecar(path, any_version=False):
+    """The sidecar's shots when it belongs to this version of the file (and of this module's detection, unless
+    `any_version`: an older detection's labels carry over), else None."""
     try:
         with open(sidecar_path(path), encoding="utf-8") as f:
             doc = json.load(f)
@@ -106,6 +134,8 @@ def read_sidecar(path):
     except (OSError, ValueError):
         return None
     if not isinstance(doc, dict) or doc.get("size") != size or abs(float(doc.get("mtime", -1)) - mtime) > 0.01:
+        return None
+    if not any_version and doc.get("version") != VERSION:
         return None
     shots = doc.get("shots")
     return shots if isinstance(shots, list) else None
@@ -145,8 +175,8 @@ def shots_for(path, redetect=False, scan_path=None):
     if stored is not None and not redetect:
         return {"shots": stored, "detected": False}
     old = stored
-    if old is None:   # an older version's labels are not this file's
-        old = []
+    if old is None:   # an older detection's labels of this same file carry over; another file's never do
+        old = read_sidecar(path, any_version=True) or []
     found = _carry_labels(old, detect(scan_path or path, get_duration(path)))
     write_sidecar(path, found)
     return {"shots": found, "detected": True}

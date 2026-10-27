@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from lib import shots as sh  # noqa: E402
-from lib.common import ffmpeg_bin  # noqa: E402
+from lib.common import ffmpeg_bin, ffprobe_bin  # noqa: E402
 
 
 def make_clip(path, parts=(("white", 2.0, False), ("0x707070", 3.0, True), ("0x181818", 2.0, False))):
@@ -182,3 +182,31 @@ def test_snapshot_declares_inputs_and_names_and_serve_passes_them():
     assert [b for a, b in pairs if a == "--inputs"] == ["/a.mp4", "/b.mp4"]
     assert [b for a, b in pairs if a == "--names"] == ["clip-9", "clip-3"]
     assert "--input" not in args
+
+
+# Run 5 (Sam saw a 1-2 frame flash): a variable-frame-rate screen recording, shots reported on the 10 fps scan's grid
+# (48.6 for a cut at 48.567), and an outPoint at the shot's end showed a frame of the next shot.
+def vfr_clip(path):
+    """48 fps for 40 frames, then about 36 fps (timebase 1/600): a hard cut from grey to near-black at frame 59."""
+    first, cut = 40, 59
+    pts = f"if(lt(N,{first}),N/48,{first}/48+(N-{first})/36)/TB"
+    subprocess.run([ffmpeg_bin(), "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0x909090:s=320x180:r=48:d=3",
+                    "-vf", f"geq=lum='if(lt(N,{cut}),144,20)':cb=128:cr=128,setpts='{pts}'",
+                    "-fps_mode", "vfr", "-video_track_timescale", "600", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-g", "1", str(path)], check=True)
+    # the frames' own times, as written (the encoder rounds them to its timebase): the new shot's first, the old's last
+    times = [float(x.strip(",")) for x in subprocess.run([ffprobe_bin(), "-v", "error", "-select_streams", "v", "-show_entries",
+                                               "frame=pts_time", "-of", "csv=p=0", str(path)],
+                                              check=True, capture_output=True, text=True).stdout.split()]
+    assert round(times[cut] * 10) != times[cut] * 10, "the cut is off the 0.1 s grid"
+    return path, times[cut], times[cut - 1]
+
+
+def test_a_cut_is_reported_at_the_exact_frame_times_never_on_the_scan_grid(tmp_path):
+    path, first_new, last_old = vfr_clip(tmp_path / "vfr.mp4")
+    found = sh.detect(str(path))
+    assert len(found) == 2, found
+    one, two = found
+    assert abs(two["start"] - first_new) < 0.002, (two["start"], first_new)       # 1.355, not the scan's 1.4
+    assert abs(one["end"] - last_old) < 0.002, (one["end"], last_old)             # the old shot's last frame
+    assert one["end"] < two["start"]
