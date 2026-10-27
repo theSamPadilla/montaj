@@ -34,7 +34,7 @@ const photo = `data:image/svg+xml,${encodeURIComponent(
 const image = (id: string, extra: Partial<ImageElement>): ImageElement =>
   ({ id, type: 'image', src: photo, x: 0, y: 0, w: 300, h: 300, rotation: 0, ...extra })
 const overlay = (id: string, template: string, box: { x: number; y: number; w: number; h: number }, props: Record<string, unknown>): OverlayElement =>
-  ({ id, type: 'overlay', ...box, rotation: 0, overlay: { template: `/rt/templates/overlays/${template}/${template}.jsx`, props } }) as OverlayElement
+  ({ id, type: 'overlay', ...box, rotation: 0, overlay: { template: `/rt/render/templates/overlays/${template}/${template}.jsx`, props } }) as OverlayElement
 
 const project = {
   version: '1', id: 'p', name: 'Live resize', workflow: 'carousel', status: 'draft', editingPrompt: '',

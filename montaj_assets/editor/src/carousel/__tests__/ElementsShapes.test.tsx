@@ -27,7 +27,7 @@ function makeProject(slides: Slide[]): Project {
 const three = () => makeProject([slide(0, [img('el-0')]), slide(1, [img('el-1')]), slide(2, [img('el-2')])])
 
 const sys = (name: string, description: string, category: string | undefined, props: GlobalOverlay['props']): GlobalOverlay =>
-  ({ name, description, jsxPath: `/rt/templates/overlays/${name}/${name}.jsx`, props, ...(category ? { category } : {}) }) as GlobalOverlay
+  ({ name, description, jsxPath: `/rt/render/templates/overlays/${name}/${name}.jsx`, props, ...(category ? { category } : {}) }) as GlobalOverlay
 const FILL: GlobalOverlay['props'] = [
   { name: 'fill', type: 'string', default: '#bdbdbd', format: 'color' },
   { name: 'stroke', type: 'string', default: '#111111', format: 'color' },
@@ -142,6 +142,17 @@ describe('Elements panel: shapes, lines and frames', () => {
     expect(adapter.listSystemOverlays).toHaveBeenCalled()
   })
 
+  it('a shape tile previews at the box the element is added in, so px props are in scale (a rounded rectangle is not a circle)', async () => {
+    const ROUNDED = sys('shape-rounded-rect', 'Rounded rectangle', 'shape', [...FILL, { name: 'cornerRadius', type: 'int', default: 48 }])
+    const Fake = (_f: number, _fps: number, _d: number, p: Record<string, unknown>) => <svg width={p.boxWidth as number}><rect data-testid="thumb-rect" rx={p.cornerRadius as number} width={p.boxWidth as number} /></svg>
+    await mount(three(), { listSystemOverlays: vi.fn(async () => [ROUNDED]), compileOverlay: vi.fn(async () => Fake as never) })
+    await openRail('Elements')
+    await tile('Rounded rectangle')
+    await settle()
+    const rect = within(panel()).getAllByTestId('thumb-rect')[0]
+    expect(Number(rect.getAttribute('rx')) / Number(rect.getAttribute('width'))).toBeLessThan(0.2)
+  })
+
   it('the Shapes tiles sit in order: a section with no template is not shown', async () => {
     await mount(three(), { listSystemOverlays: vi.fn(async () => [RECT]) })
     await openRail('Elements')
@@ -244,7 +255,7 @@ describe('Edit popover for a shape: colour and option props', () => {
 
 describe('Edit popover for a shape: numeric props step', () => {
   it("the shipped dashed line's strokeWidth has a stepper (int in the sidecar)", async () => {
-    const dashed = { ...dashedSidecar, name: 'line-dashed', jsxPath: '/rt/templates/overlays/line-dashed/line-dashed.jsx' } as GlobalOverlay
+    const dashed = { ...dashedSidecar, name: 'line-dashed', jsxPath: '/rt/render/templates/overlays/line-dashed/line-dashed.jsx' } as GlobalOverlay
     const el: OverlayElement = {
       id: 'el-dash', type: 'overlay', frame: 59, x: 100, y: 500, w: 648, h: 54, rotation: 0,
       overlay: { template: dashed.jsxPath, props: { stroke: '#111111', strokeWidth: 8, dash: 24, gap: 16, arrowhead: 'none' } },

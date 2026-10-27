@@ -8,7 +8,7 @@ import OverlayErrorBoundary from './OverlayErrorBoundary'
 import { ensureGoogleFontsLoaded } from '../lib/google-fonts'
 import { TEXT_PRESETS, newTextElement, type TextPresetId } from './newText'
 import { railField, railKeycap, railNote, railPrimaryBtn, railTile, railTitle } from './railStyles'
-import { aspectBox, ELEMENT_CATEGORIES, elementAspect, elementCategory, loadOverlays, newOverlayElement, orderElements, OVERLAY_BOX, overlayTileLabel, TEMPLATE_DND_MIME, type ElementCategory } from './overlayElement'
+import { ELEMENT_CATEGORIES, elementCategory, loadOverlays, newOverlayBox, newOverlayElement, orderElements, OVERLAY_BOX, overlayTileLabel, TEMPLATE_DND_MIME, type ElementCategory } from './overlayElement'
 
 // §587 M4b: the Text, Elements and AI image rail panels. Each adds to the slide
 // it was opened for through `onAddElement` (the editor's own add, which applies
@@ -109,6 +109,7 @@ function PreviewSlot({ shown, ...thumb }: { shown: boolean; overlay: GlobalOverl
 
 // §587: the shipped shapes, arrows, lines, frames and callouts, drawn small in their own tiles.
 const SHAPE_TILE = 48
+const THUMB_SLIDE = [1080, 1350] as const
 const SHAPE_SECTIONS: Record<ElementCategory, { title: string; preview: { w: number; h: number } }> = {
   shape: { title: 'Shapes', preview: { w: 100, h: 100 } },
   arrow: { title: 'Arrows', preview: { w: 100, h: 100 } },
@@ -121,7 +122,8 @@ const SHAPE_SECTIONS: Record<ElementCategory, { title: string; preview: { w: num
 const ShapeThumb = memo(function ShapeThumb({ overlay, projectId, adapter }: { overlay: GlobalOverlay; projectId: string; adapter: EditorAdapter<Project> }) {
   const category = elementCategory(overlay) ?? 'shape'
   const section = SHAPE_SECTIONS[category].preview
-  const { w, h } = category === 'line' || category === 'frame' ? section : aspectBox(section.w, elementAspect(overlay))
+  // Shapes, arrows and callouts preview in the box they are added in (their px props are in scale), then shrink to the tile.
+  const { w, h } = category === 'line' || category === 'frame' ? section : newOverlayBox(overlay, THUMB_SLIDE)
   const scale = Math.min(SHAPE_TILE / w, SHAPE_TILE / h)
   const slide = useMemo<Slide>(() => {
     const el = newOverlayElement({ ...overlay, category: undefined }, [w, h])

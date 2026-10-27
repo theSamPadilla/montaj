@@ -12,7 +12,7 @@ import LineStraight from '../../../render/templates/overlays/line-straight/line-
 
 const line: OverlayElement = {
   id: 'l', type: 'overlay', x: 140, y: 600, w: 800, h: 80, rotation: 0,
-  overlay: { template: '/rt/templates/overlays/line-straight/line-straight.jsx', props: { stroke: '#111111', strokeWidth: 12, arrowhead: 'none' } },
+  overlay: { template: '/rt/render/templates/overlays/line-straight/line-straight.jsx', props: { stroke: '#111111', strokeWidth: 12, arrowhead: 'none' } },
 } as OverlayElement
 
 const project = {

@@ -109,6 +109,20 @@ describe('the shipped shape set (§587 F-I)', () => {
     }
   })
 
+  it('the stroke rule skips a project overlay named like a shipped one', () => {
+    const mk = (template: string) => ({ id: 'p', type: 'overlay', x: 0, y: 0, w: 1, h: 1, rotation: 0, overlay: { template, props: {} } }) as unknown as CarouselElement
+    expect(strokeStateOf(mk('/proj/overlays/callout-box.jsx'))).toBeNull()
+    expect(strokeStateOf(mk('/proj/overlays/line-straight/line-straight.jsx'))).toBeNull()
+    expect(strokeStateOf(mk(path('callout-box')))).not.toBeNull()
+  })
+
+  it('Polygon defaults to a count no other tile has (not 6 or 8)', () => {
+    const d = prop(SIDECARS['shape-polygon'], 'points')?.default
+    expect(d).not.toBe(6)
+    expect(d).not.toBe(8)
+    expect(d).toBe(5)
+  })
+
   it('a ring declares its thickness; a capped line its cap', () => {
     expect(prop(SIDECARS['shape-ring'], 'thickness')).toMatchObject({ type: 'int', default: 30 })
     expect(prop(SIDECARS['line-dot-ends'], 'cap')).toMatchObject({ default: 'dot', enum: ['dot', 'circle', 'square', 'bar'] })

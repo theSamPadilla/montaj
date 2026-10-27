@@ -8,7 +8,7 @@
  *   fill        — fill colour (default '#bdbdbd')
  *   stroke      — stroke colour (default '#111111')
  *   strokeWidth — px, 0 for none (default '0'); drawn inside the box
- *   points      — how many corners, 3 to 24 (default '6')
+ *   points      — how many corners, 3 to 24 (default '5')
  *   strokeStyle — 'solid' | 'long-dash' | 'short-dash' | 'dotted' (default 'solid')
  *   roundJoins  — rounded corners (default true)
  */
@@ -61,13 +61,13 @@ function fitPoints(pts, W, H, sw) {
   return pts.map(([x, y]) => `${r2(sw / 2 + ((x - minX) / spanX) * iw)},${r2(sw / 2 + ((y - minY) / spanY) * ih)}`).join(' ')
 }
 
-export default function ShapePolygon({ fill = '#bdbdbd', stroke = '#111111', strokeWidth = '0', points = '6', strokeStyle = 'solid', roundJoins = true, boxWidth, boxHeight }) {
+export default function ShapePolygon({ fill = '#bdbdbd', stroke = '#111111', strokeWidth = '0', points = '5', strokeStyle = 'solid', roundJoins = true, boxWidth, boxHeight }) {
   const W = side(boxWidth)
   const H = side(boxHeight)
   const sw = clamp(num(strokeWidth, 0), 0, Math.min(W, H) / 2)
   const look = strokeLook(strokeStyle, sw, isOn(roundJoins))
   const paint = { fill, stroke: sw > 0 ? stroke : 'none', strokeWidth: sw }
-  const n = Math.round(clamp(num(points, 6), 3, 24))
+  const n = Math.round(clamp(num(points, 5), 3, 24))
   const pts = Array.from({ length: n }, (_, i) => {
     const a = -Math.PI / 2 + (i * 2 * Math.PI) / n
     return [Math.cos(a), Math.sin(a)]
