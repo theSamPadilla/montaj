@@ -6,6 +6,7 @@ overlay-scoped (not profile-scoped) so they share scan_overlays.
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -64,7 +65,7 @@ def scan_overlays(overlays_dir: Path) -> list[dict]:
         # Optional settings from the sidecar, passed through only when present
         # and of the right type; anything else is ignored. `defaults` is passed
         # through only as {"props": {...}}; other keys under it are dropped.
-        def _num(v):  return isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+        def _num(v):  return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0
         def _int(v):  return isinstance(v, int) and not isinstance(v, bool) and v > 0
         for key, ok in (("durationSeconds", _num), ("fps", _num), ("width", _int), ("height", _int)):
             if ok(schema.get(key)):
@@ -74,6 +75,13 @@ def scan_overlays(overlays_dir: Path) -> list[dict]:
             entry["googleFonts"] = fonts
         if isinstance(schema.get("opaque"), bool):
             entry["opaque"] = schema["opaque"]
+        # §587: the editor's Elements panel groups the shipped shapes, lines and frames by it.
+        category = schema.get("category")
+        if isinstance(category, str) and category:
+            entry["category"] = category
+        # §587 F-I: a shipped shape's width over its height, for the box it is added in (a pill is 2).
+        if _num(schema.get("aspect")):
+            entry["aspect"] = schema["aspect"]
         defaults = schema.get("defaults")
         if isinstance(defaults, dict) and isinstance(defaults.get("props"), dict):
             entry["defaults"] = {"props": defaults["props"]}

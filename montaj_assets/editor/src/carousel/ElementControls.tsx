@@ -3,8 +3,11 @@ import { ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, Eye, EyeOff, type L
 import type { CarouselElement, EditorAdapter, GlobalOverlay, GlobalOverlayProp, ImageElement, OverlayElement, Project, Slide } from '../types'
 import type { ReorderDirection } from '../state/project-reducer'
 import { STANDARD_TEXT_PROPS } from '../overlays/contract'
-import { cn, inspectorInputClass, NumberField, stepValue, SwatchInput } from '../ui'
+import { cn, inspectorInputClass, NumberField, Select, stepValue, SwatchInput } from '../ui'
 import { Loader } from '../ui/Loader'
+import { elementCategory } from './overlayElement'
+import { shippedTemplateKey } from './shippedTemplate'
+import { railEyebrow, railFieldShape, railOutlineTool } from './railStyles'
 
 // The element controls the classic SlidePropertyPanel and the rail layout's
 // element toolbar (§587 M3) share: the typed transform fields, the image's
@@ -13,7 +16,7 @@ import { Loader } from '../ui/Loader'
 // background colour (for the Background rail panel).
 
 /** Small muted label above an inspector control. */
-export const fieldLabelClass = 'text-[11px] uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]'
+export const fieldLabelClass = railEyebrow
 
 // `label` doubles as NumberField's accessible `name` — there is no separate
 // visible `<label htmlFor>` wired to the box, just the wrapping `<label>`
@@ -62,6 +65,7 @@ export function numInput(
           max={opts?.max}
           step={step}
           onStep={d => h.onStep(stepValue(value, d, { step, min: opts?.min, max: opts?.max }))}
+          className={railFieldShape}
         />
       </div>
     </label>
@@ -168,8 +172,7 @@ const LAYER_BUTTONS: { direction: ReorderDirection; label: string; Icon: LucideI
   { direction: 'back', label: 'Send to back', Icon: ArrowDownToLine },
 ]
 
-const layerButtonClass =
-  'flex h-7 flex-1 items-center justify-center rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] transition-colors hover:border-[var(--editor-accent)] hover:text-[var(--editor-text)] focus:outline-none focus:ring-1 focus:ring-[var(--editor-accent)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-[var(--editor-border)]'
+const layerButtonClass = cn(railOutlineTool, 'h-7 flex-1')
 
 /** Front, forward, backward, back: the layer-order keys' four moves. A locked element may still be layered. */
 export function LayerOrderButtons({ onMove, disabled }: { onMove: (direction: ReorderDirection) => void; disabled?: boolean }) {
@@ -202,9 +205,26 @@ export function SlideBackgroundField({ slide, onSlideChange }: { slide: Slide; o
   )
 }
 
+/** Schemas by `jsxPath`. A shipped shape, line or frame is also found by its
+ *  shipped key (§569) when the exact path misses: it stores the maker's own
+ *  runtime path, which another Mac does not have. */
+class OverlaySchemaMap extends Map<string, GlobalOverlay> {
+  private shipped = new Map<string, GlobalOverlay>()
+  addShipped(o: GlobalOverlay) {
+    const key = shippedTemplateKey(o.jsxPath)
+    if (key && !this.shipped.has(key)) this.shipped.set(key, o)
+  }
+  override get(path: string): GlobalOverlay | undefined {
+    const exact = super.get(path)
+    if (exact) return exact
+    const key = shippedTemplateKey(path)
+    return key ? this.shipped.get(key) : undefined
+  }
+}
+
 /**
- * The overlay prop schemas, by template path (`jsxPath`): the global ones and
- * the project profile's. `enabled` false loads nothing (a layout that has
+ * The overlay prop schemas, by template path (`jsxPath`): the shipped shapes,
+ * lines and frames, the global ones and the project profile's. `enabled` false loads nothing (a layout that has
  * another loader).
  */
 export function useOverlaySchemas(
@@ -217,13 +237,21 @@ export function useOverlaySchemas(
   useEffect(() => {
     if (!enabled) return
     setLoading(true)
-    const promises: Promise<GlobalOverlay[]>[] = [adapter.listGlobalOverlays()]
+    const promises: Promise<GlobalOverlay[]>[] = [
+      // The shipped shapes, lines and frames (§587). The shipped text template
+      // is left out: the text controls write its props.
+      Promise.resolve(adapter.listSystemOverlays?.())
+        .then(list => (list ?? []).filter(o => elementCategory(o) !== null))
+        .catch(() => []),
+      adapter.listGlobalOverlays(),
+    ]
     if (profile) {
       promises.push(adapter.listProfileOverlays?.(profile) ?? Promise.resolve([]))
     }
     Promise.all(promises)
       .then(results => {
-        const map = new Map<string, GlobalOverlay>()
+        const map = new OverlaySchemaMap()
+        for (const o of results[0]) map.addShipped(o)
         for (const list of results) {
           for (const o of list) {
             map.set(o.jsxPath, o)
@@ -260,16 +288,16 @@ function PropEditor({
       <label className="flex cursor-pointer items-center gap-2" title={description}>
         <input
           type="checkbox"
-          checked={Boolean(value)}
+          checked={value === true || value === 'true'}
           onChange={e => onChange(e.target.checked)}
-          className="h-4 w-4 accent-[var(--editor-accent)]"
+          className="h-4 w-4 accent-[var(--editor-accent-text,var(--editor-accent))]"
         />
         <span className="text-sm text-[var(--editor-text)]">{name}</span>
       </label>
     )
   }
 
-  if (type === 'color') {
+  if (type === 'color' || prop.format === 'color') {
     return (
       <div className="flex flex-col gap-1" title={description}>
         <span className={fieldLabelClass}>{name}</span>
@@ -277,8 +305,21 @@ function PropEditor({
           value={String(value ?? '#000000')}
           onChange={v => onChange(v)}
           ariaLabel={name}
+          // A string colour can be see-through (an 8-digit hex): a shape with no fill.
+          alpha={prop.format === 'color' ? true : undefined}
         />
       </div>
+    )
+  }
+
+  if (prop.enum && prop.enum.length > 0) {
+    const current = String(value ?? prop.default ?? '')
+    const options = (prop.enum.includes(current) ? prop.enum : [current, ...prop.enum]).map(v => ({ value: v, label: v }))
+    return (
+      <label className="flex flex-col gap-1" title={description}>
+        <span className={fieldLabelClass}>{name}</span>
+        <Select value={current} options={options} onChange={e => onChange(e.target.value)} className={cn(inspectorInputClass, railFieldShape)} />
+      </label>
     )
   }
 
@@ -295,6 +336,7 @@ function PropEditor({
           onPreview={onChange}
           onCommit={() => {}}
           onStep={d => onChange(stepValue(Number(value ?? 0), d, { step: type === 'float' ? 0.1 : 1 }))}
+          className={railFieldShape}
         />
       </label>
     )
@@ -308,7 +350,7 @@ function PropEditor({
         type="text"
         value={String(value ?? '')}
         onChange={e => onChange(e.target.value)}
-        className={inspectorInputClass}
+        className={cn(inspectorInputClass, railFieldShape)}
       />
     </label>
   )
@@ -330,12 +372,15 @@ export function schemaPropsFor(schema: GlobalOverlay | null | undefined, exclude
   return (schema?.props ?? []).filter(prop => !exclude?.has(prop.name))
 }
 
-/** An overlay's Frame and its schema-driven props. */
+/** An overlay's Frame (not a shape's) and its schema-driven props. */
 export function OverlayPropsSection({ element, schema, loading, onElementChange, exclude }: OverlayPropsSectionProps) {
   const props = schemaPropsFor(schema, exclude)
+  // A shipped shape, line or frame does not animate: its Frame does nothing.
+  // Not shown while the schema loads either, so it does not flash and go.
+  const showFrame = !loading && !(schema && elementCategory(schema) !== null)
   return (
     <>
-      <div className="grid grid-cols-2 gap-3">
+      {showFrame && <div className="grid grid-cols-2 gap-3">
         {numInput(
           'Frame',
           element.frame,
@@ -346,7 +391,7 @@ export function OverlayPropsSection({ element, schema, loading, onElementChange,
           },
           { min: 0 },
         )}
-      </div>
+      </div>}
 
       {loading && (
         <Loader size="sm" label="Loading overlay props" />

@@ -11,6 +11,11 @@ import { shownCrop } from '../crop/crop-math'
  * source's real size: an uncropped image is drawn contain and a side resize
  * changes a crop's shape, so the box says nothing about it. The same array
  * comes back when the element is missing, not an image, or locked.
+ *
+ * It replaces the slide's current background: the back-most element, when it
+ * is a locked, unrotated image covering the whole slide, goes (Sam, 2026-10-26:
+ * a second pick swaps, it does not stack hidden covers). One write, so one undo
+ * brings the previous background back.
  */
 export function setImageAsBackground(
   elements: CarouselElement[],
@@ -31,5 +36,12 @@ export function setImageAsBackground(
   const full = w > 0.995 && h > 0.995
   const { crop: _old, ...rest } = el
   const covered = { ...rest, x: 0, y: 0, w: slideW, h: slideH, rotation: 0, ...(full ? {} : { crop }), locked: true as const }
-  return [covered, ...elements.filter((e) => e.id !== elementId)]
+  const back = elements[0]
+  const replaces = back && back.id !== elementId && isBackground(back, slideW, slideH)
+  return [covered, ...elements.filter((e) => e.id !== elementId && !(replaces && e.id === back.id))]
+}
+
+/** A slide background as `setImageAsBackground` leaves one: a locked, unrotated image covering the whole slide. */
+export function isBackground(el: CarouselElement, slideW: number, slideH: number): boolean {
+  return el.type === 'image' && isLocked(el) && !el.rotation && el.x <= 0 && el.y <= 0 && el.x + el.w >= slideW && el.y + el.h >= slideH
 }

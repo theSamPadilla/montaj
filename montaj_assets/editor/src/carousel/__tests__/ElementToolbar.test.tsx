@@ -211,37 +211,19 @@ describe('Element toolbar (§587 M3, layout="rail")', () => {
     await waitFor(() => expect(propsOf(last(adapter), 'el-t').effect).toBe('shadow'))
   })
 
-  it('Position edits X as one undo step; Esc reverts a typed value, and the next Esc closes the popover', async () => {
-    const { adapter, r } = await mount()
+  it('Position holds align and layer order only, no number fields; Esc closes it', async () => {
+    const { r } = await mount()
     await click('el-img')
     await press(tb(r, 'Position'))
     expect(tb(r, 'Position').getAttribute('aria-expanded')).toBe('true')
     const pop = popover(r, 'Position')
-    const x = field(pop, 'X')
-    await type(x, '555')
-    expect(adapter.saveCalls).toHaveLength(0)
-    await act(async () => { fireEvent.keyDown(x, { key: 'Enter' }) })
-    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
-    expect(byId(last(adapter), 'el-img')).toMatchObject({ x: 555 })
-    await undo()
-    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
-    expect(byId(last(adapter), 'el-img')).toMatchObject({ x: 100 })
-
-    // Esc gives a typed value up: nothing is written and the box shows the stored value.
-    const x2 = field(popover(r, 'Position'), 'X')
-    await type(x2, '777')
-    await act(async () => { fireEvent.keyDown(x2, { key: 'Escape' }) })
-    await settle()
-    expect(adapter.saveCalls).toHaveLength(2)
-    expect(field(popover(r, 'Position'), 'X').value).toBe('100')
-    expect(wrapperOf('el-img').style.left).not.toBe('777px')
-
-    // The popover is still open; the next Esc closes it before anything is deselected.
+    for (const name of ['X', 'Y', 'W', 'H', 'Rotation']) expect(within(pop).queryByLabelText(name)).toBeNull()
+    expect(within(pop).queryAllByRole('spinbutton')).toHaveLength(0)
+    expect(within(pop).queryAllByRole('textbox')).toHaveLength(0)
+    expect(within(pop).getAllByRole('button').length).toBeGreaterThan(0)
     await key('Escape')
     expect(r.queryByRole('dialog', { name: 'Position' })).toBeNull()
     expect(toolbar(r)).toBeTruthy()
-    await key('Escape')
-    expect(r.queryByRole('toolbar', { name: 'Element' })).toBeNull()
   })
 
   it('align and layer order in the Position popover, each one undo step', async () => {
@@ -319,7 +301,7 @@ describe('Element toolbar (§587 M3, layout="rail")', () => {
 
     await press(tb(r, 'Position'))
     const pop = popover(r, 'Position')
-    expect(field(pop, 'X')).toBeDisabled()
+    expect(within(pop).queryAllByRole('spinbutton')).toHaveLength(0)
     expect(within(pop).getByRole('button', { name: 'Align left' })).toBeDisabled()
     await press(within(pop).getByRole('button', { name: 'Send to back' }))
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
@@ -398,6 +380,8 @@ describe('Element toolbar: Edit, hide and popover closing (§587 M3)', () => {
     await press(show)
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
     expect(propsOf(last(adapter), 'el-ov').show).toBe('false')
+    // A bool prop saved as the string 'false' reads as off.
+    expect((within(popover(r, 'Edit')).getByRole('checkbox', { name: 'show' }) as HTMLInputElement).checked).toBe(false)
     await undo()
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
     expect(propsOf(last(adapter), 'el-ov').show).toBe(true)

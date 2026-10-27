@@ -73,6 +73,7 @@ export type {
   CarouselLayout,
   CarouselRailItemId,
   CarouselBrand,
+  AskAiRequest,
   CarouselEditorProps,
   VideoEditorProps,
   RenderModalContext,

@@ -572,6 +572,61 @@ describe('Images on the canvas: a drag from the host', () => {
   })
 })
 
+// ── a file dropped from Finder also joins the project's media (§587) ─────────
+
+describe('Images on the canvas: files from Finder join project.assets', () => {
+  it('two files: one save adds both assets and both elements, and one undo removes both', async () => {
+    const adapter = makeFakeAdapter()
+    await mount(adapter)
+    const { box, at } = pinCanvas()
+    await fire(box, dragEvent('drop', at(540, 675), transfer({ files: [png('a1.png'), png('b1.png')] })))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const saved = lastSave(adapter)
+    expect(saved.assets).toEqual([
+      { id: expect.any(String), src: '/proj/assets/a1.png', type: 'image', name: 'a1.png' },
+      { id: expect.any(String), src: '/proj/assets/b1.png', type: 'image', name: 'b1.png' },
+    ])
+    expect(elementsOf(saved).map((e) => (e as ImageElement).src)).toEqual(['a.png', '/proj/assets/a1.png', '/proj/assets/b1.png'])
+    await undo()
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(lastSave(adapter).assets).toEqual([])
+    expect(elementsOf(lastSave(adapter)).map((e) => e.id)).toEqual(['el-img'])
+    await undo()
+    expect(adapter.saveCalls).toHaveLength(2)
+  })
+
+  it('the asset is named after the file it landed as (a de-dup suffix, a converted type), not the dropped file', async () => {
+    const adapter = makeFakeAdapter()
+    adapter.uploadFile = vi.fn(async (file: File) => (file.name === 'a1.png' ? '/proj/assets/a1-2.png' : 'C:\\proj\\assets\\b1.jpg'))
+    await mount(adapter)
+    const { box, at } = pinCanvas()
+    await fire(box, dragEvent('drop', at(540, 675), transfer({ files: [png('a1.png'), png('b1.heic')] })))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(lastSave(adapter).assets?.map((a) => a.name)).toEqual(['a1-2.png', 'b1.jpg'])
+  })
+
+  it('a file whose path already is an asset adds no duplicate', async () => {
+    const adapter = makeFakeAdapter()
+    const existing = { id: 'asset-1', src: '/proj/assets/a1.png', type: 'image' as const, name: 'a1.png' }
+    await mount(adapter, makeProject({ assets: [existing] }))
+    const { box, at } = pinCanvas()
+    await fire(box, dragEvent('drop', at(540, 675), transfer({ files: [png('a1.png')] })))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(lastSave(adapter).assets).toEqual([existing])
+    expect(elementsOf(lastSave(adapter))).toHaveLength(2)
+  })
+
+  it('a Media-card drag adds no asset', async () => {
+    const adapter = makeFakeAdapter()
+    await mount(adapter)
+    const { box, at } = pinCanvas()
+    await startHostDrag()
+    await fire(box, dragEvent('drop', at(540, 675), payload('/media/pic.png', 'pic')))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(lastSave(adapter).assets).toEqual([])
+  })
+})
+
 // ── only a drag that started in this page is a host image (§556 review) ─────
 //
 // Any page or app can put `IMAGE_DND_MIME` on a drag, and its `src` (a remote
@@ -1151,6 +1206,37 @@ describe('Images on the canvas: the host API', () => {
     expect(adapter.saveProject).not.toHaveBeenCalled()
   })
 
+  it('addImage resolves true when it added and false when it did nothing', async () => {
+    const adapter = makeFakeAdapter()
+    const { api } = await mountWithApi(adapter)
+    await selectSlide('slide-1')
+    await act(async () => { expect(await api().addImage('/media/pic.png')).toBe(true) })
+    const ro = await mountWithApi(makeFakeAdapter(), makeProject({ status: 'storyboard_ready' }))
+    await act(async () => { expect(await ro.api().addImage('/media/pic.png')).toBe(false) })
+  })
+
+  it('canAddImage is ok on a selected slide and names the reason otherwise, agreeing with addImage', async () => {
+    const adapter = makeFakeAdapter()
+    const { r, api } = await mountWithApi(adapter)
+    await selectSlide('slide-1')
+    expect(api().canAddImage()).toEqual({ ok: true })
+    await selectSlide('slide-0')
+    await plainClick('el-img')
+    await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
+    expect(api().canAddImage()).toEqual({ ok: false, reason: 'crop' })
+    await act(async () => { expect(await api().addImage('/media/pic.png')).toBe(false) })
+  })
+
+  it('canAddImage says read-only for a project that cannot be edited or is pending', async () => {
+    const ro = await mountWithApi(makeFakeAdapter(), makeProject({ status: 'storyboard_ready' }))
+    expect(ro.api().canAddImage()).toEqual({ ok: false, reason: 'read-only' })
+    const provide = vi.fn()
+    render(<CarouselEditor project={makeProject({ status: 'pending', slides: [] })} adapter={makeFakeAdapter()} onProjectChange={vi.fn()} onProvideCarouselApi={provide} />)
+    const pending = provide.mock.calls[0][0] as CarouselApi
+    expect(pending.canAddImage()).toEqual({ ok: false, reason: 'read-only' })
+    expect(await pending.addImage('/media/pic.png')).toBe(false)
+  })
+
   it('writes nothing once the editor is gone', async () => {
     const gate = deferred<{ width: number; height: number } | null>()
     loadSize.mockImplementation(() => gate.promise)
@@ -1166,7 +1252,7 @@ describe('Images on the canvas: the host API', () => {
     const adapter = makeFakeAdapter()
     ;(adapter.saveProject as ReturnType<typeof vi.fn>).mockImplementation(async () => { throw new Error('HTTP 500') })
     const { r, api } = await mountWithApi(adapter)
-    await act(async () => { await expect(api().addImage('/media/pic.png')).resolves.toBeUndefined() })
+    await act(async () => { await expect(api().addImage('/media/pic.png')).resolves.toBe(true) })
     // The save error is the editor's own, shown once.
     await waitFor(() => expect(r.getByText('HTTP 500')).toBeTruthy())
   })

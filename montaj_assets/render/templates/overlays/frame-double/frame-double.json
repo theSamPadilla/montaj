@@ -1,0 +1,11 @@
+{
+  "description": "Double frame",
+  "category": "frame",
+  "props": [
+    { "name": "stroke",      "type": "string", "default": "#111111", "format": "color" },
+    { "name": "strokeWidth", "type": "int", "default": 4 },
+    { "name": "gap",         "type": "int", "default": 12 },
+    { "name": "strokeStyle", "type": "string", "default": "solid", "enum": ["solid", "long-dash", "short-dash", "dotted"] },
+    { "name": "roundJoins", "type": "bool", "default": false }
+  ]
+}

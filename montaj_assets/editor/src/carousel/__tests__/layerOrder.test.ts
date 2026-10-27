@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { CarouselElement } from '../../types'
-import { reorderSelection } from '../layerOrder'
+import { moveToLayer, reorderSelection } from '../layerOrder'
 
 // Index 0 is the back of the slide, the last index the front (the canvas draws
 // elements in array order).
@@ -99,5 +99,23 @@ describe('reorderSelection: nothing to change', () => {
     expect(elements.every((e, i) => e === before[i])).toBe(true)
     expect(out).not.toBe(elements)
     expect(out[2]).toBe(elements[0])
+  })
+})
+
+describe('moveToLayer: a Layers row dropped (front first on screen)', () => {
+  it('puts the ids just above or below the target row', () => {
+    // On screen: c, b, a.
+    expect(ids(moveToLayer(list('a', 'b', 'c'), ['c'], 'a', 'below'))).toEqual(['c', 'a', 'b'])
+    expect(ids(moveToLayer(list('a', 'b', 'c'), ['a'], 'c', 'above'))).toEqual(['b', 'c', 'a'])
+  })
+  it('keeps the moved ids in their own order, whatever order they come in', () => {
+    expect(ids(moveToLayer(list('a', 'b', 'c', 'd'), ['b', 'd'], 'a', 'below'))).toEqual(['b', 'd', 'a', 'c'])
+  })
+  it('gives the same array back when nothing would change', () => {
+    const els = list('a', 'b', 'c')
+    expect(moveToLayer(els, ['b'], 'b', 'above')).toBe(els)
+    expect(moveToLayer(els, ['b'], 'c', 'below')).toBe(els)
+    expect(moveToLayer(els, ['b'], 'x', 'below')).toBe(els)
+    expect(moveToLayer(els, [], 'a', 'below')).toBe(els)
   })
 })

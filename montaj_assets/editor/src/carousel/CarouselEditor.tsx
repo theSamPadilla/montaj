@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom'
 import { RefreshCw, AlertCircle, Download, Info, Undo2, Redo2, Plus } from 'lucide-react'
 import type { Project, Slide, CarouselElement, ImageElement, CarouselEditorProps, OverlayFactory, SlideNotesApi, CarouselApi, ImageDropPayload, GlobalOverlay } from '../types'
 import { IMAGE_DND_MIME } from '../types'
-import type { SlideNote } from '../schema'
+import type { Asset, SlideNote } from '../schema'
 import { applyTheme, defaultMontajTheme, isLightTheme } from '../theme'
 import { useProjectState } from '../state/use-project-state'
 import SlideCanvas, { type CropExit, type SlideCanvasCropControl } from './SlideCanvas'
@@ -16,7 +16,8 @@ import { setImageAsBackground } from './background'
 import { TextPanel, ElementsPanel, AiImagePanel, type AiImageState } from './RailPanels'
 import { generateImageElement } from './newImage'
 import ColourPanel from './ColourPanel'
-import { collectColours, normalizeHex, replaceColour, setOverlayPropIn } from './colours'
+import { collectColours, elementColours, elementColourTarget, normalizeHex, replaceColour, setOverlayPropIn, type ElementColourTarget } from './colours'
+import { usePhotoColours } from './usePhotoColours'
 import ElementToolbar, { type ElementToolbarPopover } from './ElementToolbar'
 import { useOverlaySchemas } from './ElementControls'
 import StackedSlides, { SlideHeader, type StackSlideMode } from './StackedSlides'
@@ -34,8 +35,9 @@ import { useKeymap, matchesDelete, matchesEscape, matchesPlainKey, matchesRedo, 
 import type { ReorderDirection } from '../state/project-reducer'
 import { COPY_OFFSET, cloneElement, copyElements, duplicateCopies, insertCopies, pasteElements, withoutLock, type ElementClipboard } from './clipboard'
 import { isLocked, toggleLock } from './lock'
-import { reorderSelection } from './layerOrder'
+import { moveToLayer, reorderSelection } from './layerOrder'
 import { newTextElement } from './newText'
+import { elementCategory, newOverlayElement, overlayTileLabel, TEMPLATE_DND_MIME } from './overlayElement'
 import { applyTextStyle, isTextOverlay, pickTextStyle, type TextStyle } from './textStyle'
 import { Button, ColourPanelContext, type ColourRequest } from '../ui'
 import { shortcutText } from '../ui/modifierKeys'
@@ -370,7 +372,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 // ── CarouselEditor ────────────────────────────────────────────────────────────
 
-export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, onProvideRenderTrigger, onProvideCarouselApi, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default', onError, renderSaveTimeoutMs = RENDER_SAVE_TIMEOUT_MS, lockKey = false, layout = 'classic', railPanels, brand }: Props<P>) {
+export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, onProvideRenderTrigger, onProvideCarouselApi, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default', onError, renderSaveTimeoutMs = RENDER_SAVE_TIMEOUT_MS, lockKey = false, layout = 'classic', railPanels, brand, onAskAi }: Props<P>) {
   const state = useProjectState(adapter, initialProject.id, initialProject)
   const project = state.project
   const slides = project.slides ?? []
@@ -747,6 +749,20 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     })
   }
 
+  /** A font pick: `fontFamily` and `googleFonts` together, one undo step; a locked text is left alone. */
+  function setTextFont(slideId: string, elementId: string, fontFamily: string, googleFonts: string[]) {
+    void state.editElements(slideId, (els) => {
+      let changed = false
+      const next = els.map((el) => {
+        if (el.id !== elementId || isLocked(el) || !isTextOverlay(el)) return el
+        const styled = applyTextStyle(el, { props: { fontFamily }, googleFonts: googleFonts.length ? googleFonts : undefined })
+        if (styled !== el) changed = true
+        return styled
+      })
+      return changed ? next : els
+    })
+  }
+
   /** The lock badge: unlocks one element (not the selection), as its own undo
    *  step; a pending crop is applied first, like the lock key. */
   function unlockElement(elementId: string) {
@@ -793,18 +809,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   function moveLayers(ids: string[], targetId: string, where: 'above' | 'below') {
     if (!selectedSlide || !canEdit) return
     if (cropElementId) flushSync(applyCrop)
-    const moving = new Set(ids)
-    if (moving.has(targetId)) return
-    void state.editElements(selectedSlide.id, (els) => {
-      const front = [...els].reverse()
-      const picked = front.filter((el) => moving.has(el.id))
-      const rest = front.filter((el) => !moving.has(el.id))
-      const at = rest.findIndex((el) => el.id === targetId)
-      if (at < 0 || picked.length === 0) return els
-      rest.splice(where === 'above' ? at : at + 1, 0, ...picked)
-      const next = rest.reverse()
-      return next.every((el, i) => el === els[i]) ? els : next
-    })
+    // A drop that would not change the order records nothing.
+    if (moveToLayer(selectedSlide.elements, ids, targetId, where) === selectedSlide.elements) return
+    void state.editElements(selectedSlide.id, (els) => moveToLayer(els, ids, targetId, where))
   }
   /** Set image as background (C4): covers the slide, goes to the back, locks; one editElements. The source's size is read first. */
   async function setAsBackground(elementId: string) {
@@ -832,6 +839,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       hiddenElementIds={hiddenElementIds}
       onToggleElementVisibility={onToggleElementVisibility}
       resolveImageSrc={adapter.resolveImageSrc}
+      overlayLabel={(t) => { const o = overlaySchemas.get(t); return o && elementCategory(o) ? overlayTileLabel(o) : undefined }}
       canEdit={canEdit}
       onSelect={selectLayer}
       onToggleLock={toggleLayerLock}
@@ -839,12 +847,19 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       onMove={moveLayers}
     />
   )
+  const brandColours = useMemo(
+    () => (brand?.colors ?? []).map(c => normalizeHex(c)).filter((c): c is string => !!c),
+    [brand?.colors],
+  )
   const backgroundPanel = selectedSlide && (
     <BackgroundPanel
       color={selectedSlide.base_color || '#ffffff'}
       onColorChange={(v) => { if (cropElementId) flushSync(applyCrop); handleSlideChange({ base_color: v }) }}
       canSetImage={canEdit && selectedImageForBg?.type === 'image' && !isLocked(selectedImageForBg)}
       onSetImage={() => { if (selectedElementId) setAsBackground(selectedElementId) }}
+      brandColours={brandColours}
+      images={slots?.carouselBackgroundImages}
+      canSetImages={slideLive && canEdit}
     />
   )
 
@@ -1432,7 +1447,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
    *  further down and right. The new images become the selection, unless the
    *  person has gone to another slide or into crop mode meanwhile. One that
    *  cannot be uploaded is reported once and the rest are still added. */
-  async function addImages(slideId: string, sources: Array<() => Promise<string>>, at?: { x: number; y: number }) {
+  async function addImages(slideId: string, sources: Array<() => Promise<string>>, at?: { x: number; y: number }, files?: File[], options?: { asset?: { name?: string } }): Promise<boolean> {
     const resolution = project.settings.resolution as [number, number]
     const settled = await Promise.allSettled(
       sources.map(async (source) => newImageElement(adapter, resolution, await source(), at)),
@@ -1444,32 +1459,72 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     // The uploads and size reads took time. Write only if the editor is still
     // up and the slide still there, onto the elements it has now.
     const slide = slidesRef.current.find((s) => s.id === slideId)
-    if (!mountedRef.current || !slide || added.length === 0) return
+    if (!mountedRef.current || !slide || added.length === 0) return false
     // An arrow-key nudge still open would fold into this edit's undo step.
     flushNudge()
     const placed = added.map((el, i) => ({ ...el, x: el.x + i * COPY_OFFSET, y: el.y + i * COPY_OFFSET }))
-    const saved = state.editElements(slideId, (els) => [...els, ...placed])
+    // A new file also joins `project.assets`, in the same step (one save, one undo); a path already there is skipped.
+    const assets: Asset[] | undefined = files || options?.asset
+      ? placed.map((el): Asset => ({ id: crypto.randomUUID(), src: (el as ImageElement).src, type: 'image', name: options?.asset?.name ?? (el as ImageElement).src.split(/[\\/]/).pop() }))
+      : undefined
+    const saved = state.editElements(slideId, (els) => [...els, ...placed], assets)
     // Selected, unless the user has gone to another slide meanwhile, or into
     // crop mode: their selection is theirs, and moving it off the image being
     // cropped would leave the crop on one image and the selection on another.
     if (selectedSlideIdRef.current === slideId && !cropElementIdRef.current) setSelectedElementIds(placed.map((el) => el.id))
     // A save that fails is rolled back and shown by `state.lastError`.
     await saved.catch(() => {})
+    return true
   }
 
-  /** The host's `addImage`: the image goes to the slide selected now, at its centre. */
-  async function addImage(src: string) {
-    if (!selectedSlide || !canAddImages) return
-    await addImages(selectedSlide.id, [() => Promise.resolve(src)])
+  /** The host's `addImage`: the image goes to the slide selected now, at its centre. `options.asset` also lists it in `project.assets`, in the same step. Resolves whether it wrote. */
+  async function addImage(src: string, options?: { asset?: { name?: string } }): Promise<boolean> {
+    if (!selectedSlide || !canAddImages) return false
+    return addImages(selectedSlide.id, [() => Promise.resolve(src)], undefined, undefined, options)
   }
+
+  /** Why `addImage` would do nothing now, or ok. Checks the same conditions as `canAddImages`, one at a time, so the reason can name the first that fails. */
+  function canAddImage(): { ok: true } | { ok: false; reason: 'crop' | 'no-slide' | 'grid' | 'read-only' } {
+    if (!canEdit || showPendingSurface) return { ok: false, reason: 'read-only' }
+    if (cropElementId) return { ok: false, reason: 'crop' }
+    if (railLayout && gridOpen) return { ok: false, reason: 'grid' }
+    if (!selectedSlide) return { ok: false, reason: 'no-slide' }
+    return { ok: true }
+  }
+
+  /** The host's `setBackgroundImage`: the image at `src` becomes the selected slide's background (as Set as background does), in one write. */
+  async function setBackgroundImage(src: string, options?: { asset?: { name?: string } }): Promise<boolean> {
+    if (!selectedSlide || !canAddImages) return false
+    const slideId = selectedSlide.id
+    const resolution = project.settings.resolution as [number, number]
+    let el: ImageElement
+    try { el = await newImageElement(adapter, resolution, src) } catch (e) { reportError("Couldn't add the image", e); return false }
+    let size: ImageSize | null = null
+    try { size = await loadImageNaturalSize(adapter.resolveImageSrc(el)) } catch { /* unreadable */ }
+    if (!mountedRef.current || !slidesRef.current.some((s) => s.id === slideId)) return false
+    flushNudge()
+    const natural = size ?? { width: el.w, height: el.h }
+    const assets: Asset[] | undefined = options?.asset
+      ? [{ id: crypto.randomUUID(), src: (el as ImageElement).src, type: 'image', name: options.asset.name }]
+      : undefined
+    let wrote = true
+    await state.editElements(slideId, (els) => setImageAsBackground([...els, el], el.id, w, h, natural), assets).catch(() => { wrote = false })
+    return wrote
+  }
+  const setBackgroundImageRef = useRef(setBackgroundImage)
+  setBackgroundImageRef.current = setBackgroundImage
 
   // Host api: handed up once (it is stable, and always runs the latest
   // `addImage`) and withdrawn with null on unmount, like the notes api.
   const addImageRef = useRef(addImage)
   addImageRef.current = addImage
+  const canAddImageRef = useRef(canAddImage)
+  canAddImageRef.current = canAddImage
   const carouselApi = useMemo<CarouselApi>(() => ({
-    addImage: (src) => addImageRef.current(src),
+    addImage: (src, options) => addImageRef.current(src, options),
+    canAddImage: () => canAddImageRef.current(),
     setAsBackground: (elementId) => setAsBackgroundRef.current(elementId),
+    setBackgroundImage: (src, options) => setBackgroundImageRef.current(src, options),
   }), [])
   useEffect(() => {
     if (!onProvideCarouselApi) return
@@ -1537,9 +1592,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     // A DataTransfer can only be read during its event. A payload from a drag
     // that did not begin in this page is not believed.
     const src = pageDragOn() ? hostImageSrc(data) : null
+    const dropped = src !== null ? [] : Array.from(data.files ?? []).filter(isImageFile)
     const sources = src !== null
       ? [() => Promise.resolve(src)]
-      : Array.from(data.files ?? []).filter(isImageFile).map((file) => () => adapter.uploadFile(file, project.id, 'drop'))
+      : dropped.map((file) => () => adapter.uploadFile(file, project.id, 'drop'))
     if (sources.length === 0) return
 
     // Where it fell, in slide units: the canvas draws the slide at `slideScale`.
@@ -1549,8 +1605,52 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       : undefined
     // A drop on another stacked slide makes it the active one first.
     if (slideId !== selectedSlideId) activateSlide(slideId)
-    void addImages(slideId, sources, at)
+    void addImages(slideId, sources, at, src === null ? dropped : undefined)
   }
+
+  // ── Shapes onto the canvas (§587) ──
+  // A tile of the Elements panel hands its template over on dragstart and takes
+  // it back on dragend. Only that drag adds a shape: the type on a drag from
+  // another page or app adds nothing, and any other drag goes on to the image
+  // drop above.
+  const templateDragRef = useRef<GlobalOverlay | null>(null)
+  const onTemplateDrag = useCallback((overlay: GlobalOverlay | null) => { templateDragRef.current = overlay }, [])
+  const isTemplateDrag = (types: ArrayLike<string> | undefined) =>
+    templateDragRef.current !== null && !!types && Array.from(types).includes(TEMPLATE_DND_MIME)
+
+  function handleSlideDragOver(e: React.DragEvent<HTMLDivElement>, slideId: string) {
+    if (!isTemplateDrag(e.dataTransfer?.types)) return handleCanvasDragOver(e, slideId)
+    if (!canDropOn(slideId)) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+  }
+
+  /** A tile dropped on a slide: the shape is added there, centred on the drop point, one undo step. */
+  function handleSlideDrop(e: React.DragEvent<HTMLDivElement>, slideId: string) {
+    const overlay = templateDragRef.current
+    if (!overlay || !isTemplateDrag(e.dataTransfer?.types)) return handleCanvasDrop(e, slideId)
+    e.preventDefault()
+    templateDragRef.current = null
+    if (!canDropOn(slideId)) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const at = slideScale > 0
+      ? { x: (e.clientX - rect.left) / slideScale, y: (e.clientY - rect.top) / slideScale }
+      : undefined
+    const element = newOverlayElement(overlay, project.settings.resolution, at)
+    if (slideId !== selectedSlideIdRef.current) {
+      // A drop on another stacked slide makes it the active one, the shape selected.
+      activateSlide(slideId)
+      void state.addElement(slideId, element)
+      setSelectedElementId(element.id)
+      return
+    }
+    handleAddElement(slideId, element)
+  }
+
+  // "Ask your AI for a custom shape": the host's, kept stable for the memoised panel.
+  const onAskAiRef = useRef(onAskAi)
+  onAskAiRef.current = onAskAi
+  const askAiStable = useCallback((request: Parameters<NonNullable<typeof onAskAi>>[0]) => onAskAiRef.current?.(request), [])
 
   // A locked element's props and crop are not written, whoever asks (the canvas'
   // inline editor, the panel's text controls, a host slot).
@@ -1568,6 +1668,25 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     lockedNow(slideId, elementId) ? Promise.resolve() : state.resizeElement(slideId, elementId, box)
   const rotateElement: typeof state.rotateElement = (slideId, elementId, rotation) =>
     lockedNow(slideId, elementId) ? Promise.resolve() : state.rotateElement(slideId, elementId, rotation)
+  // A live overlay prop (the toolbar's stroke weight drag): transient until the
+  // release commits it as one undo step. Nothing previewed, nothing committed.
+  const propPreviewOpen = useRef(false)
+  const previewOverlayProp = (slideId: string, elementId: string, key: string, value: string) => {
+    if (lockedNow(slideId, elementId)) return
+    propPreviewOpen.current = true
+    state.previewSlides(all => setOverlayPropIn(all, slideId, elementId, key, value))
+  }
+  const commitPropPreview = () => {
+    if (!propPreviewOpen.current) return
+    propPreviewOpen.current = false
+    void state.commit()
+  }
+  // Escape in the weight field: the preview is given up, nothing is saved.
+  const cancelPropPreview = () => {
+    if (!propPreviewOpen.current) return
+    propPreviewOpen.current = false
+    state.discardTransient()
+  }
 
   // Property-panel transform/frame edits → committed mutators.
   function handlePanelElementChange(patch: Partial<CarouselElement>) {
@@ -1673,27 +1792,44 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // ── Colour panel (§587 M5, `layout="rail"`) ──
   // Any colour control opens it (the OS picker is not used); it takes the side
   // panel until closed or the selection moves.
-  const [colourOpen, setColourOpen] = useState<{ request: ColourRequest; seq: number } | null>(null)
+  // `shown`: the colour the open panel shows now, which the toolbar swatch follows (§587 R9).
+  const [colourOpen, setColourOpen] = useState<{ request: ColourRequest; seq: number; shown?: string } | null>(null)
   const colourSeq = useRef(0)
   function openColourPanel(request: ColourRequest) {
     beforeToolbarAction()
     setColourOpen({ request, seq: ++colourSeq.current })
   }
-  function openTextColour() {
+  /** Opens the panel on one colour prop of the single selected element (previews transient, one undo step per pick). */
+  function openElementColour(pick: (el: CarouselElement) => ElementColourTarget | null) {
     const sel = selectedElements.length === 1 ? selectedElements[0] : undefined
-    if (!selectedSlide || !sel || !isTextOverlay(sel)) return
+    const target = sel && pick(sel)
+    if (!selectedSlide || !sel || !target) return
     const slideId = selectedSlide.id
-    const raw = sel.overlay.props.color
-    const set = (v: string) => state.previewSlides(all => setOverlayPropIn(all, slideId, sel.id, 'color', v))
+    const set = (v: string) => state.previewSlides(all => setOverlayPropIn(all, slideId, sel.id, target.key, v))
     openColourPanel({
-      label: 'Text color',
-      value: (typeof raw === 'string' && normalizeHex(raw)) || '#111111',
-      alpha: true,
+      label: target.label,
+      value: target.value,
+      alpha: target.alpha,
       preview: set,
       commit: v => { set(v); void state.commit() },
       cancel: () => state.discardTransient(),
     })
   }
+  /** The toolbar's text colour ("A"). */
+  const openTextColour = () => openElementColour(el => (isTextOverlay(el) ? elementColourTarget(el) : null))
+  /** The toolbar's colour swatch: text colour, a shape's fill or stroke. */
+  const openSwatchColour = () => openElementColour(elementColourTarget)
+  const showColour = (seq: number, v: string) =>
+    setColourOpen(o => (o && o.seq === seq && o.shown !== v ? { ...o, shown: v } : o))
+  // The panel open on a colour of the selected element: the swatch shows that colour.
+  const colourShown = colourOpen && colourOpen.request.target !== 'slide' ? colourOpen.shown ?? colourOpen.request.value : null
+  const colourElement = colourOpen && selectedElements.length === 1 ? selectedElements[0] : undefined
+  const colourTargetColours = colourElement && colourOpen?.request.target !== 'slide' ? elementColours(colourElement) : []
+  const photoSrcs = useMemo(
+    () => (selectedSlide?.elements ?? []).filter((el): el is ImageElement => el.type === 'image').map(el => adapter.resolveImageSrc(el)),
+    [selectedSlide?.elements, adapter],
+  )
+  const photoColours = usePhotoColours(photoSrcs, !!colourOpen)
   // Each call replaces from the saved slides (a stacked preview no longer holds `from`).
   const previewColourEverywhere = (from: string, to: string) => {
     state.discardTransient()
@@ -1704,10 +1840,6 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     void state.editSlides(all => replaceColour(all, from, to))
   }
   const usedColours = useMemo(() => collectColours(slides), [slides])
-  const brandColours = useMemo(
-    () => (brand?.colors ?? []).map(c => normalizeHex(c)).filter((c): c is string => !!c),
-    [brand?.colors],
-  )
   // The selection moving on closes the panel (a preview left open is given up).
   const selectionKey = `${selectedSlideId}|${selectedElements.map(el => el.id).join(',')}`
   const lastSelectionKey = useRef(selectionKey)
@@ -1716,6 +1848,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     lastSelectionKey.current = selectionKey
     setColourOpen(null)
   }, [selectionKey])
+  // The stroke popover closing or the selection moving mid-edit (a typed weight
+  // whose field unmounts without a blur): keep what was previewed, as one step.
+  useEffect(() => {
+    commitPropPreview()
+  }, [toolbarPopover, selectionKey])
 
   function handleSlideChange(patch: Partial<Slide>) {
     if (selectedSlideId) void state.updateSlide(selectedSlideId, patch)
@@ -2023,8 +2160,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     exitCrop: () => setCropElementId(null),
     enterCrop,
     unlockElement,
-    dragOver: handleCanvasDragOver,
-    drop: handleCanvasDrop,
+    dragOver: handleSlideDragOver,
+    drop: handleSlideDrop,
     contextMenu: openContextMenu,
     placeArmedNote,
   }
@@ -2203,6 +2340,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           scale={railScale}
           renderHeader={renderRailHeader}
           renderSlide={renderRailSlide}
+          selectedElementIds={liveSelectedIds}
+          // Scrolled far out of view, the selection goes, as a press on another slide takes it.
+          onSelectionScrolledAway={() => { applyCrop(); setSelectedElementId(null) }}
         />
       )}
       {errorBanner}
@@ -2255,9 +2395,6 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             beforeAction={beforeToolbarAction}
             updateOverlayProp={updateOverlayProp}
             onElementChange={handlePanelElementChange}
-            onElementPreview={handlePanelElementPreview}
-            onElementCommit={handlePanelElementCommit}
-            onElementCancel={handlePanelElementCancel}
             onAlignSelection={handleAlignSelection}
             onMoveInStack={moveSelectionInStack}
             onToggleLock={toggleSelectionLock}
@@ -2280,6 +2417,15 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             onToggleElementVisibility={onToggleElementVisibility}
             mode={mode}
             onOpenTextColour={openTextColour}
+            onOpenElementColour={openSwatchColour}
+            colourShown={colourShown}
+            onCloseColour={() => setColourOpen(null)}
+            brandFont={brand?.fonts?.heading}
+            brandGoogleFonts={brand?.fonts?.googleFonts}
+            onSetFont={setTextFont}
+            onPreviewOverlayProp={previewOverlayProp}
+            onCommitPropPreview={commitPropPreview}
+            onCancelPropPreview={cancelPropPreview}
           />
         ) : undefined
       }
@@ -2291,6 +2437,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           disabled={!canEdit || (colourOpen.request.target !== 'slide' && selectedElements.some(isLocked))}
           brandColours={brandColours}
           usedColours={usedColours}
+          targetColours={colourTargetColours}
+          photoColours={photoColours}
+          onShow={(v) => showColour(colourOpen.seq, v)}
           onPreviewEverywhere={previewColourEverywhere}
           onCommitEverywhere={commitColourEverywhere}
           onDiscardPreview={() => state.discardTransient()}
@@ -2304,13 +2453,12 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       canvas={railCanvas}
       panels={{
         media: slots?.carouselMediaPanel,
-        brand: slots?.carouselBrandPanel,
         notes: slots?.carouselNotesPanel,
         layers: layersPanel || undefined,
         background: backgroundPanel || undefined,
         // The editor's own panels; a host's `railPanels` entry wins.
         text: <TextPanel project={project} slideId={panelSlideId} onAddElement={handleAddElement} textTemplate={textTemplate} fonts={brand?.fonts} />,
-        elements: <ElementsPanel projectId={project.id} profile={project.profile} width={w} height={h} adapter={adapter} slideId={panelSlideId} onAddElement={addElementStable} />,
+        elements: <ElementsPanel projectId={project.id} profile={project.profile} width={w} height={h} adapter={adapter} slideId={panelSlideId} onAddElement={addElementStable} onTemplateDrag={onTemplateDrag} onAskAi={onAskAi ? askAiStable : undefined} />,
         'ai-image': <AiImagePanel adapter={adapter} slideId={panelSlideId} state={aiImage} onChange={(patch) => setAiImage((s) => ({ ...s, ...patch }))} onGenerate={generateAiImage} />,
         ...railPanels,
       }}

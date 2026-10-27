@@ -78,6 +78,20 @@ describe('Layers panel', () => {
     expect(document.querySelector('[data-layer-background]')?.textContent).toBe('Background')
   })
 
+  it('names a shipped shape, line or frame by its tile label, any other overlay by its template', async () => {
+    const RECT = { name: 'shape-rect', description: 'Rectangle', jsxPath: '/Users/A/render/templates/overlays/shape-rect/shape-rect.jsx', category: 'shape', props: [] }
+    const shape: OverlayElement = { id: 's', type: 'overlay', overlay: { template: '/Users/B/render/templates/overlays/shape-rect/shape-rect.jsx', props: {} }, frame: 0, x: 10, y: 10, w: 50, h: 50, rotation: 0 }
+    const project = makeProject([slide('s0', [shape, badge('c')])])
+    const adapter = makeAdapter(project)
+    adapter.listSystemOverlays = vi.fn(async () => [RECT])
+    const r = render(<CarouselEditor project={project} adapter={adapter} onProjectChange={vi.fn()} layout="rail" />)
+    await waitFor(() => expect(document.querySelectorAll('[data-slide-section]').length).toBe(1))
+    await openRail(r, 'Layers')
+    await waitFor(() => expect(row('s').textContent).toContain('Rectangle'))
+    expect(row('s').textContent).not.toContain('shape-rect')
+    expect(row('c').textContent).toContain('sticker')
+  })
+
   it('selects on click and toggles on shift-click', async () => {
     const { r } = await mount(base())
     await openRail(r, 'Layers')
@@ -90,18 +104,82 @@ describe('Layers panel', () => {
     expect(within(row('b')).getByRole('button', { name: /^Select/ }).getAttribute('aria-pressed')).toBe('false')
   })
 
-  it('a drag reorder is one save', async () => {
+  // The rows' places on screen: 40 px each, front first from y = 0. jsdom does no layout.
+  const stubRows = () => vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    const i = rowIds().indexOf(this.dataset.layerId)
+    const top = i * 40
+    return { x: 0, y: top, left: 0, top, right: 200, bottom: top + 40, width: 200, height: 40, toJSON() {} } as DOMRect
+  })
+  // This jsdom has no PointerEvent, and fireEvent.pointer* drops clientX/Y: a
+  // MouseEvent named for the pointer event carries them (and `buttons`: a move with none down is a lost release).
+  const pointer = (target: EventTarget, type: string, clientY: number) =>
+    target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 50, clientY, button: 0, buttons: type === 'pointerup' ? 0 : 1 }))
+  /** A press on `id`'s name, a move to `toY` and a release there, then the click the browser sends when it ends on the same button. */
+  async function dragRow(id: string, toY: number, { clickAfter = false } = {}) {
+    const name = within(row(id)).getByRole('button', { name: /^Select/ })
+    const y = rowIds().indexOf(id) * 40 + 20
+    await act(async () => {
+      pointer(name, 'pointerdown', y)
+      pointer(window, 'pointermove', y + Math.sign(toY - y) * 6)
+      pointer(window, 'pointermove', toY)
+      pointer(window, 'pointerup', toY)
+      if (clickAfter) fireEvent.click(name)
+    })
+  }
+
+  it('a drag reorder is one save, through the stack, with a drop line while it moves', async () => {
     const { r, adapter } = await mount(base())
     await openRail(r, 'Layers')
+    stubRows()
     const before = adapter.saveCalls.length
-    // Drag the front row (c) below the back row (a): c becomes the back.
-    await act(async () => {
-      fireEvent.dragStart(row('c'))
-      fireEvent.dragOver(row('a'), { clientY: 5 })
-      fireEvent.drop(row('a'), { clientY: 5 })
-    })
+    // Drag the front row (c) into the lower half of the back row (a): c becomes the back.
+    const name = within(row('c')).getByRole('button', { name: /^Select/ })
+    await act(async () => { pointer(name, 'pointerdown', 20); pointer(window, 'pointermove', 30); pointer(window, 'pointermove', 110) })
+    expect(document.querySelector('[data-layer-drop-line]')?.closest('[data-layer-id]')?.getAttribute('data-layer-id')).toBe('a')
+    expect(document.querySelector('[data-layer-drop-line]')?.getAttribute('data-layer-drop-line')).toBe('below')
+    await act(async () => { pointer(window, 'pointerup', 110) })
+    expect(document.querySelector('[data-layer-drop-line]')).toBeNull()
     await waitFor(() => expect(adapter.saveCalls.length).toBe(before + 1))
     expect(elIds(lastSave(adapter))).toEqual(['c', 'a', 'b'])
+  })
+
+  it('rows are grab handles, not native drags', async () => {
+    const { r } = await mount(base())
+    await openRail(r, 'Layers')
+    expect(row('c').style.cursor).toBe('grab')
+    expect(row('c').getAttribute('draggable')).toBeNull()
+  })
+
+  it('a locked element reorders too', async () => {
+    const { r, adapter } = await mount(makeProject([slide('s0', [img('a'), img('b', { locked: true }), img('c')])]))
+    await openRail(r, 'Layers')
+    stubRows()
+    await dragRow('b', 2)
+    await waitFor(() => expect(elIds(lastSave(adapter))).toEqual(['a', 'c', 'b']))
+  })
+
+  it('a drag of a selected row moves the whole selection', async () => {
+    const { r, adapter } = await mount(makeProject([slide('s0', [img('a'), img('b'), img('c'), img('d')])]))
+    await openRail(r, 'Layers')
+    await act(async () => { fireEvent.click(within(row('d')).getByRole('button', { name: /^Select/ })) })
+    await act(async () => { fireEvent.click(within(row('b')).getByRole('button', { name: /^Select/ }), { shiftKey: true }) })
+    stubRows()
+    // d, c, b, a on screen: d and b go below a, keeping their order.
+    await dragRow('d', 150)
+    await waitFor(() => expect(elIds(lastSave(adapter))).toEqual(['b', 'd', 'a', 'c']))
+  })
+
+  it('a press that does not move selects and saves nothing; a drag back to its own place saves and selects nothing', async () => {
+    const { r, adapter } = await mount(base())
+    await openRail(r, 'Layers')
+    stubRows()
+    const before = adapter.saveCalls.length
+    await dragRow('b', 32, { clickAfter: true })
+    expect(within(row('b')).getByRole('button', { name: /^Select/ }).getAttribute('aria-pressed')).toBe('false')
+    const name = within(row('b')).getByRole('button', { name: /^Select/ })
+    await act(async () => { pointer(name, 'pointerdown', 60); pointer(window, 'pointermove', 61); pointer(window, 'pointerup', 61); fireEvent.click(name) })
+    expect(name.getAttribute('aria-pressed')).toBe('true')
+    expect(adapter.saveCalls.length).toBe(before)
   })
 
   it('lock toggle locks and unlocks one element', async () => {
@@ -275,5 +353,17 @@ describe('setImageAsBackground', () => {
   it('leaves a locked image alone', () => {
     const els = [img('a', { locked: true })]
     expect(setImageAsBackground(els, 'a', 1000, 1000, sq)).toBe(els)
+  })
+  it('a second pick replaces the current background, it does not stack', () => {
+    const first = setImageAsBackground([img('a'), img('b', { x: 300 })], 'a', 1000, 1000, sq)
+    const second = setImageAsBackground(first, 'b', 1000, 1000, sq)
+    expect(second.map((e) => e.id)).toEqual(['b'])
+    expect(second[0]).toMatchObject({ x: 0, y: 0, w: 1000, h: 1000, locked: true })
+  })
+  it('keeps a back element that is not a background (unlocked, or not covering the slide)', () => {
+    const unlockedCover = img('a', { x: 0, y: 0, w: 1000, h: 1000 })
+    expect(setImageAsBackground([unlockedCover, img('b')], 'b', 1000, 1000, sq).map((e) => e.id)).toEqual(['b', 'a'])
+    const lockedSmall = img('c', { locked: true, w: 200, h: 200 })
+    expect(setImageAsBackground([lockedSmall, img('b')], 'b', 1000, 1000, sq).map((e) => e.id)).toEqual(['b', 'c'])
   })
 })

@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { shortcutText } from '../ui/modifierKeys'
+import { railHoverBg, railMenu, railMuted } from './railStyles'
 
 // The rail layout's right-click menu (§587 M7): one list at the pointer. It
 // only draws the list and moves through it; each entry's `run` is the handler
@@ -96,7 +97,7 @@ export default function CanvasContextMenu({
       role="menu"
       aria-label="Canvas menu"
       data-testid="canvas-context-menu"
-      className="fixed z-50 min-w-[200px] rounded-lg border border-[var(--editor-border)] bg-[var(--editor-surface)] py-1 text-xs text-[var(--editor-text)] shadow-lg"
+      className={`fixed z-50 min-w-[200px] text-sm text-[var(--editor-text)] ${railMenu}`}
       style={pos}
       onContextMenu={(e) => e.preventDefault()}
     >
@@ -112,10 +113,10 @@ export default function CanvasContextMenu({
             tabIndex={-1}
             aria-disabled={entry.disabled ? 'true' : undefined}
             data-active={active ? 'true' : undefined}
-            className={`flex items-center justify-between gap-6 px-3 py-1.5 ${
+            className={`flex items-center justify-between gap-6 px-3 py-2 ${
               entry.disabled
                 ? 'cursor-default opacity-40'
-                : `cursor-pointer ${active ? 'bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)]' : ''} hover:bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)]`
+                : `cursor-pointer ${active ? 'bg-[color-mix(in_srgb,var(--editor-text)_4%,transparent)]' : ''} ${railHoverBg}`
             }`}
             onPointerEnter={() => { if (!entry.disabled) setActiveId(entry.id) }}
             onClick={() => {
@@ -125,7 +126,7 @@ export default function CanvasContextMenu({
             }}
           >
             <span>{entry.label}</span>
-            {entry.keys && <span className="opacity-60">{shortcutText(entry.keys)}</span>}
+            {entry.keys && <span className={railMuted}>{shortcutText(entry.keys)}</span>}
           </div>
         )
       })}

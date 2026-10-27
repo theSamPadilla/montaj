@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, act, waitFor, fireEvent, within } from '@testing-library/react'
 import type { EditorAdapter, ImageElement, Project, RenderEvent, Slide } from '../../types'
 import CarouselEditor from '../CarouselEditor'
+import { SELECTION_AWAY_PX } from '../StackedSlides'
 
 // §587 M2: the rail layout's stacked slides, their headers and the grid view.
 
@@ -70,6 +71,13 @@ async function layoutInView(ratios: Record<string, number>) {
       return { target: el, intersectionRatio: r, isIntersecting: r > 0 } as unknown as IntersectionObserverEntry
     })
   await act(async () => { io.cb(entries, io as unknown as IntersectionObserver) })
+}
+
+/** Lays the stack out 800 x 600 at the origin and `id`'s element at `top` (100 px tall): jsdom has no layout. */
+function placeElement(id: string, top: number) {
+  const rect = (t: number, h: number, w: number) => () => ({ left: 0, top: t, right: w, bottom: t + h, width: w, height: h, x: 0, y: t, toJSON: () => ({}) }) as DOMRect
+  document.querySelector<HTMLElement>('[data-slide-stack]')!.getBoundingClientRect = rect(0, 600, 800)
+  wrapper(id).getBoundingClientRect = rect(top, 100, 200)
 }
 
 const realIO = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver
@@ -197,7 +205,27 @@ describe('CarouselEditor layout="rail": stacked slides (§587 M2)', () => {
     await act(async () => { fireEvent.change(slider, { target: { value: '40' } }) })
     await layoutInView({ s0: 0.7, s1: 1 })
     expect(counter(r).textContent).toContain('1 / 3')
-    // The person scrolls: the slide most in view takes over.
+    // The person scrolls slide 2 more into view, the selected element still
+    // in view: the selection holds its slide (§587 R8).
+    placeElement('el-0', 10)
+    await inView({ s0: 0.5, s1: 1 })
+    expect(counter(r).textContent).toContain('1 / 3')
+    expect(chromeOf('el-0').style.outline).toContain('solid')
+    // Just out of view, within a slide header's height: still held.
+    placeElement('el-0', -100 - SELECTION_AWAY_PX + 2)
+    await inView({ s0: 0.4, s1: 1 })
+    expect(counter(r).textContent).toContain('1 / 3')
+    expect(chromeOf('el-0').style.outline).toContain('solid')
+    // Scrolled far out of view: the selection goes and the slide most in view takes over.
+    placeElement('el-0', -100 - SELECTION_AWAY_PX - 2)
+    await inView({ s0: 0.3, s1: 1 })
+    expect(counter(r).textContent).toContain('2 / 3')
+    expect(document.querySelector('[data-chrome-for="el-0"]')).toBeNull()
+  })
+
+  it('with nothing selected, a scroll to another slide makes it active', async () => {
+    const { r } = await mount(three())
+    await inView({ s0: 1, s1: 0.4 })
     await inView({ s0: 0.5, s1: 1 })
     expect(counter(r).textContent).toContain('2 / 3')
   })
@@ -254,6 +282,11 @@ describe('CarouselEditor layout="rail": stacked slides (§587 M2)', () => {
     const { adapter, r } = await mount(three())
     await inView({ s0: 1, s1: 0.4 })
     await pickCrop()
+    // Slide 2 most in view alone keeps the crop; the image far out of view applies it.
+    await inView({ s0: 0.4, s1: 1 })
+    expect(inCrop()).toBe(true)
+    expect(adapter.saveCalls).toHaveLength(0)
+    placeElement('el-0', -400)
     await inView({ s0: 0.1, s1: 1 })
     await waitFor(() => expectCropApplied(lastSave(adapter).slides![0].elements[0]))
     expect(inCrop()).toBe(false)
@@ -435,6 +468,16 @@ describe('CarouselEditor layout="rail": stacked slides (§587 M2)', () => {
     expect(gridBtn.getAttribute('aria-pressed')).toBe('false')
     expect(scrollTo).toHaveBeenCalled()
     delete (HTMLElement.prototype as { scrollTo?: unknown }).scrollTo
+  })
+
+  it('canAddImage says grid while the grid is open, and addImage adds nothing', async () => {
+    const provide = vi.fn()
+    const { r } = await mount(three(), { onProvideCarouselApi: provide })
+    const api = provide.mock.calls[0][0] as { canAddImage(): unknown; addImage(s: string): Promise<boolean> }
+    expect(api.canAddImage()).toEqual({ ok: true })
+    await act(async () => { fireEvent.click(within(r.getByRole('contentinfo', { name: 'Bottom bar' })).getByRole('button', { name: 'Grid view' })) })
+    expect(api.canAddImage()).toEqual({ ok: false, reason: 'grid' })
+    await act(async () => { expect(await api.addImage('/media/pic.png')).toBe(false) })
   })
 
   it('the grid add tile adds a slide at the end', async () => {

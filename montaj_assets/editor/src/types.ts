@@ -247,6 +247,10 @@ export interface GlobalOverlayProp {
   type: 'string' | 'int' | 'float' | 'bool' | 'color'
   default?: unknown
   description?: string
+  /** The values a string prop takes: the prop editor shows a select. */
+  enum?: string[]
+  /** `'color'`: a string prop holding a colour, edited with a swatch (as `type: 'color'`). */
+  format?: string
 }
 
 /**
@@ -262,6 +266,15 @@ export interface GlobalOverlay {
   jsxPath: string
   group?: string
   empty?: boolean
+  /**
+   * A shipped template's kind, from its sidecar (§587): `'shape'`, `'arrow'`,
+   * `'line'`, `'frame'` or `'callout'` put it in that section of the rail
+   * layout's Elements panel, added in a box of that kind's shape. Absent for
+   * every other template.
+   */
+  category?: string
+  /** A shipped shape's own width over its height, from its sidecar (§587): the box it is added in (a pill is 2). Absent: square. */
+  aspect?: number
 }
 
 // ── Version history (optional capability) ─────────────────────────────────────
@@ -719,9 +732,20 @@ export interface CarouselApi {
    * the slide; the old centred square when its size cannot be read), and
    * selects it. Resolves when its save settles; a save that fails is shown by
    * the editor, not rejected. Does nothing when no slide is selected, when the
-   * project cannot be edited, and in crop mode.
+   * project cannot be edited, in crop mode and in the slide grid; resolves
+   * `true` when it wrote the image, `false` when it did nothing (or the image
+   * could not be read, or the slide went meanwhile). With `options.asset` the
+   * image also joins `project.assets` (named `name`, a path already there is
+   * skipped) in the same save, so one undo takes both back.
    */
-  addImage(src: string): Promise<void>
+  addImage(src: string, options?: { asset?: { name?: string } }): Promise<boolean>
+  /**
+   * Whether `addImage` would add now, by the same conditions, and if not why:
+   * `crop` (crop mode), `no-slide` (no slide on show), `grid` (the slide grid
+   * is open), `read-only` (the project cannot be edited right now). A host that
+   * copies a file before calling `addImage` checks this first.
+   */
+  canAddImage(): { ok: true } | { ok: false; reason: 'crop' | 'no-slide' | 'grid' | 'read-only' }
   /**
    * Makes image `elementId` on the selected slide its background: it covers the
    * slide with a crop at the slide's aspect centred on the part it showed, goes
@@ -729,6 +753,16 @@ export interface CarouselApi {
    * missing image or a project that cannot be edited.
    */
   setAsBackground(elementId: string): Promise<void>
+  /**
+   * Makes the image at `src` (a host path) the selected slide's background:
+   * it is added as `setAsBackground` leaves an image (covering, at the back,
+   * locked), in one undo step. Does nothing when no slide is selected, when
+   * the project cannot be edited, in crop mode, in the grid view and on a
+   * pending surface: it then resolves `false`, and `true` once it wrote.
+   * `asset` also adds the image to `project.assets` (named `asset.name`) in the
+   * same step, skipping a `src` already there.
+   */
+  setBackgroundImage(src: string, options?: { asset?: { name?: string } }): Promise<boolean>
 }
 
 // ── Adapter ────────────────────────────────────────────────────────────────
@@ -1256,8 +1290,8 @@ export interface EditorSlots {
   carouselTopRight?: ReactNode
   /** `layout="rail"` only: the Media rail item's side panel. */
   carouselMediaPanel?: ReactNode
-  /** `layout="rail"` only: the Brand rail item's side panel. */
-  carouselBrandPanel?: ReactNode
+  /** `layout="rail"`: the images row under the colours in the Background panel (the host's Library, brand kit). */
+  carouselBackgroundImages?: ReactNode
   /** `layout="rail"` only: the Notes rail item's right panel. */
   carouselNotesPanel?: ReactNode
 }
@@ -1266,7 +1300,7 @@ export interface EditorSlots {
 export type CarouselLayout = 'classic' | 'rail'
 
 /** The rail layout's items, in order. `notes` opens the right panel; the others the side panel. */
-export type CarouselRailItemId = 'media' | 'elements' | 'text' | 'brand' | 'ai-image' | 'layers' | 'background' | 'notes'
+export type CarouselRailItemId = 'media' | 'elements' | 'text' | 'ai-image' | 'layers' | 'background' | 'notes'
 
 // ── Controls window ───────────────────────────────────────────────────────────
 // Declared here rather than in ControlsInfoModal (which re-exports the two
@@ -1358,9 +1392,28 @@ export interface CarouselBrand {
  * `project` and is notified of edits via `onProjectChange`. The adapter drives
  * transport; theme and slots are optional, and `readOnly` disables mutation.
  */
+/**
+ * What the person asked their own AI for, from the editor (§587): `kind`
+ * `'shape'` is the Elements panel's "Ask your AI for a shape" pill, `slideId`
+ * the slide on show (null with none). `text` is what was typed, trimmed; it
+ * may be empty, and the pill sends it empty: the host opens its own modal to
+ * take the request. The host turns it into a prompt for the person's AI.
+ */
+export interface AskAiRequest {
+  kind: 'shape'
+  slideId: string | null
+  text: string
+}
+
 export interface CarouselEditorProps<P extends Project = Project> {
   /** `layout="rail"`: the brand's palette and fonts, from the host's profile. */
   brand?: CarouselBrand
+  /**
+   * `layout="rail"`: the Elements panel's "Ask your AI for a shape" pill (at
+   * its top) calls it with the slide on show and empty `text`; the host opens
+   * its own modal for the request. The editor runs no AI itself. Absent: no pill.
+   */
+  onAskAi?: (request: AskAiRequest) => void
   /**
    * `'classic'` (default) is today's layout. `'rail'` swaps in the top bar, the
    * icon rail with its side panel, the right panel and the bottom bar; the host

@@ -191,3 +191,82 @@ def test_profile_overlay_group_accepts_a_plain_name(tmp_path, monkeypatch):
     r = client.post("/api/profiles/default/overlays/groups", json={"name": "grp"})
     assert r.status_code == 201, r.text
     assert (tmp_path / ".montaj" / "profiles" / "default" / "overlays" / "grp").is_dir()
+
+
+# ── §587 R2: the shape, line and frame templates carry their `category` ───────
+
+def test_sidecar_category_is_passed_through(tmp_path):
+    from serve.routes.overlays import scan_overlays
+    _write_overlay(tmp_path, "blob", {"description": "d", "props": [], "category": "shape"})
+    e = scan_overlays(tmp_path)[0]
+    assert e["category"] == "shape"
+    assert set(e) == {"name", "description", "props", "jsxPath", "category"}
+
+
+@pytest.mark.parametrize("bad", ["", 3, None, ["shape"], {"k": "shape"}])
+def test_sidecar_category_of_the_wrong_type_is_omitted(tmp_path, bad):
+    from serve.routes.overlays import scan_overlays
+    _write_overlay(tmp_path, "blob", {"description": "d", "props": [], "category": bad})
+    assert "category" not in scan_overlays(tmp_path)[0]
+
+
+def test_system_overlays_list_the_shapes_lines_and_frames_by_category():
+    entries = client.get("/api/overlays/system").json()
+    by_name = {e.get("name"): e for e in entries}
+    assert by_name["shape-rect"]["category"] == "shape"
+    assert by_name["shape-ellipse"]["category"] == "shape"
+    assert by_name["line-dashed"]["category"] == "line"
+    assert by_name["frame-border"]["category"] == "frame"
+    # the templates without one are listed as before
+    assert "category" not in by_name["static-text"]
+
+
+# ── §587 R2 F-I: arrows and callouts, and a shape's own aspect ────────────────
+
+def test_system_overlays_list_arrows_and_callouts_by_category():
+    entries = client.get("/api/overlays/system").json()
+    by_name = {e.get("name"): e for e in entries}
+    # the block arrow moved to Arrows; the arrow line stays a line
+    assert by_name["shape-arrow"]["category"] == "arrow"
+    assert by_name["arrow-curved"]["category"] == "arrow"
+    assert by_name["line-arrow"]["category"] == "line"
+    assert by_name["callout-speech-round"]["category"] == "callout"
+    assert by_name["shape-heart"]["category"] == "shape"
+    assert by_name["line-dot-ends"]["category"] == "line"
+
+
+@pytest.mark.parametrize("category", ["arrow", "callout"])
+def test_sidecar_new_categories_are_passed_through(tmp_path, category):
+    from serve.routes.overlays import scan_overlays
+    _write_overlay(tmp_path, "blob", {"description": "d", "props": [], "category": category})
+    assert scan_overlays(tmp_path)[0]["category"] == category
+
+
+def test_sidecar_aspect_is_passed_through(tmp_path):
+    from serve.routes.overlays import scan_overlays
+    _write_overlay(tmp_path, "pill", {"description": "d", "props": [], "category": "shape", "aspect": 2})
+    _write_overlay(tmp_path, "tall", {"description": "d", "props": [], "category": "shape", "aspect": 0.5})
+    e = {x["name"]: x for x in scan_overlays(tmp_path)}
+    assert e["pill"]["aspect"] == 2
+    assert e["tall"]["aspect"] == 0.5
+    pill = client.get("/api/overlays/system").json()
+    assert {x["name"]: x for x in pill}["shape-pill"]["aspect"] == 2
+
+
+@pytest.mark.parametrize("bad", [0, -1, "2", True, None, [2]])
+def test_sidecar_aspect_of_the_wrong_type_is_omitted(tmp_path, bad):
+    from serve.routes.overlays import scan_overlays
+    _write_overlay(tmp_path, "pill", {"description": "d", "props": [], "aspect": bad})
+    assert "aspect" not in scan_overlays(tmp_path)[0]
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
+def test_sidecar_non_finite_numbers_are_omitted(tmp_path, bad):
+    """Python's json parses Infinity and NaN, but the response cannot carry them."""
+    from serve.routes.overlays import scan_overlays
+    _write_overlay(tmp_path, "pill", {"description": "d", "props": [], "aspect": bad, "durationSeconds": bad, "fps": bad})
+    e = scan_overlays(tmp_path)[0]
+    for k in ("aspect", "durationSeconds", "fps"):
+        assert k not in e
+    import json
+    json.dumps(e, allow_nan=False)

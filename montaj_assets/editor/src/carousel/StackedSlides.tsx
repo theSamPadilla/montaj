@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, ChevronUp, Copy, Plus, Trash2 } from 'lucide-react'
 import type { Slide } from '../types'
-import { Button } from '../ui'
+import { railFaintPlaceholder, railIconBtnSm, railMuted } from './railStyles'
 
 // §587 M2: the rail layout's canvas, every slide stacked in one vertical scroll.
 //
 // The ACTIVE slide is the editor's selected slide: the one last clicked, else
 // the one most in view while scrolling. This component reports the second; the
-// editor owns the first. Slides near the viewport (in view, one either side,
+// editor owns the first. While an element is selected the active slide is the
+// selection's and stays: the person scrolling the selected element far out of
+// view (see SELECTION_AWAY_PX) lets it go, and only then does the slide most in
+// view take over. Another slide coming more into view alone takes nothing. Slides near the viewport (in view, one either side,
 // and the active one) are live, interactive canvases; two away they draw as
 // their static thumbnail; further still as a placeholder the slide's size and
 // colour, so a long carousel mounts neither a canvas nor its overlays per slide.
@@ -22,6 +25,15 @@ export type StackSlideMode = 'live' | 'thumb' | 'placeholder'
 
 /** The header's height above each slide, px. It sits in the slide's top margin. */
 export const SLIDE_HEADER_H = 32
+
+/** How far past the stack's visible edge, px, the whole selection must be before
+ *  a scroll lets it go: one slide header, so a selection just out of view stays. */
+export const SELECTION_AWAY_PX = SLIDE_HEADER_H
+
+/** Whether box `a` lies wholly outside box `b` grown by `m` on every side. */
+function farOutside(a: DOMRect, b: DOMRect, m: number): boolean {
+  return a.bottom < b.top - m || a.top > b.bottom + m || a.right < b.left - m || a.left > b.right + m
+}
 
 export interface StackedSlidesProps {
   slides: Slide[]
@@ -39,10 +51,15 @@ export interface StackedSlidesProps {
   renderHeader: (slide: Slide, index: number) => ReactNode
   /** A slide's canvas, drawn as `mode` says. Return an element whose props stay the same for an unchanged slide (a memoised component), so a render of the stack renders only what changed. */
   renderSlide: (slide: Slide, index: number, mode: StackSlideMode) => ReactNode
+  /** The selected elements' ids, on the active slide. While there are any, a scroll changes no slide. */
+  selectedElementIds?: readonly string[]
+  /** The person scrolled the whole selection far out of view: the editor lets it go (and applies a crop). */
+  onSelectionScrolledAway?: () => void
 }
 
 export default function StackedSlides({
   slides, activeSlideId, onScrollActivate, scrollTarget, containerRef, margin, scale, renderHeader, renderSlide,
+  selectedElementIds, onSelectionScrolledAway,
 }: StackedSlidesProps) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const setRoot = useCallback((el: HTMLDivElement | null) => {
@@ -63,6 +80,36 @@ export default function StackedSlides({
   activeRef.current = activeSlideId
   const onScrollActivateRef = useRef(onScrollActivate)
   onScrollActivateRef.current = onScrollActivate
+  const selectedRef = useRef<readonly string[]>([])
+  selectedRef.current = selectedElementIds ?? []
+  const onAwayRef = useRef(onSelectionScrolledAway)
+  onAwayRef.current = onSelectionScrolledAway
+
+  /** The slide most in view takes over when the active one is less so: a tie keeps the slide last clicked. */
+  const activateMostInView = () => {
+    let best: string | null = null
+    let bestRatio = 0
+    for (const [id, r] of ratiosRef.current) if (r > bestRatio) { best = id; bestRatio = r }
+    const active = activeRef.current
+    if (best && best !== active && (ratiosRef.current.get(active ?? '') ?? 0) < bestRatio) onScrollActivateRef.current(best)
+  }
+
+  /** On a scroll by the person: whether the whole selection now lies far out of
+   *  view. Its elements' boxes are the ones drawn on the active slide; with none
+   *  drawn, the slide's own box stands for them. */
+  const selectionFarAway = (root: HTMLElement): boolean => {
+    const ids = selectedRef.current
+    const active = activeRef.current
+    if (ids.length === 0 || !active) return false
+    const section = sectionEls.current.get(active)
+    if (!section) return false
+    const view = root.getBoundingClientRect()
+    const boxes = [...section.querySelectorAll<HTMLElement>('[data-element-id]')]
+      .filter((el) => ids.includes(el.getAttribute('data-element-id') ?? ''))
+      .map((el) => el.getBoundingClientRect())
+    if (boxes.length === 0) boxes.push(section.getBoundingClientRect())
+    return boxes.every((b) => farOutside(b, view, SELECTION_AWAY_PX))
+  }
 
   // Only the person scrolling picks another slide. A layout change (a panel
   // opening, the zoom) or the stack's own scroll also moves what is in view, and
@@ -84,6 +131,12 @@ export default function StackedSlides({
       ownScrollRef.current = null
       if (own && Math.abs(root.scrollTop - own.top) <= 1 && Math.abs(root.scrollLeft - own.left) <= 1) return
       userScrollRef.current = true
+      if (selectionFarAway(root)) {
+        // Let go now: the observer's next report (and this one, if none comes) picks the slide in view.
+        selectedRef.current = []
+        onAwayRef.current?.()
+        activateMostInView()
+      }
     }
     const onWheel = (e: WheelEvent) => {
       if (e.ctrlKey) return
@@ -116,14 +169,9 @@ export default function StackedSlides({
       setInView((prev) => (prev.length === shown.length && prev.every((id, i) => id === shown[i]) ? prev : shown))
       const byUser = userScrollRef.current
       userScrollRef.current = false
-      if (!byUser) return
-      // The one most in view takes over only when the active one is less so:
-      // a tie keeps the slide last clicked.
-      let best: string | null = null
-      let bestRatio = 0
-      for (const [id, r] of ratios) if (r > bestRatio) { best = id; bestRatio = r }
-      const active = activeRef.current
-      if (best && best !== active && (ratios.get(active ?? '') ?? 0) < bestRatio) onScrollActivateRef.current(best)
+      // A selection holds its slide until it is scrolled far away.
+      if (!byUser || selectedRef.current.length > 0) return
+      activateMostInView()
     }, { root, threshold: THRESHOLDS })
     for (const el of sectionEls.current.values()) io.observe(el)
     return () => io.disconnect()
@@ -239,7 +287,7 @@ export interface SlideHeaderProps {
   onAddAfter: () => void
 }
 
-const headerBtn = 'h-7 w-7 p-0 text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]'
+const headerBtn = railIconBtnSm
 
 /** "Slide N", its title field and its actions. Slides have no hide of their own, so there is none. */
 export function SlideHeader({
@@ -296,15 +344,15 @@ export function SlideHeader({
           }
         }}
         onBlur={commit}
-        className="min-w-0 flex-1 h-6 px-1 rounded bg-transparent text-xs text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] placeholder:text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)] hover:bg-[var(--editor-surface)] focus:bg-[var(--editor-surface)] focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--editor-accent)]"
+        className={`min-w-0 flex-1 h-6 px-1 rounded-md bg-transparent text-xs ${railMuted} ${railFaintPlaceholder} hover:bg-[var(--editor-surface)] focus:bg-[var(--editor-surface)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)]`}
       />
       <div className={`flex items-center ${active ? '' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'}`}>
-        <Button variant="ghost" className={headerBtn} aria-label="Move slide up" title="Move up" disabled={!canEdit || index === 0} onClick={onMoveUp}><ChevronUp size={14} aria-hidden="true" /></Button>
-        <Button variant="ghost" className={headerBtn} aria-label="Move slide down" title="Move down" disabled={!canEdit || index === count - 1} onClick={onMoveDown}><ChevronDown size={14} aria-hidden="true" /></Button>
-        <Button variant="ghost" className={headerBtn} aria-label="Duplicate slide" title="Duplicate" disabled={!canEdit} onClick={onDuplicate}><Copy size={14} aria-hidden="true" /></Button>
+        <button type="button" className={headerBtn} aria-label="Move slide up" title="Move up" disabled={!canEdit || index === 0} onClick={onMoveUp}><ChevronUp size={16} aria-hidden="true" /></button>
+        <button type="button" className={headerBtn} aria-label="Move slide down" title="Move down" disabled={!canEdit || index === count - 1} onClick={onMoveDown}><ChevronDown size={16} aria-hidden="true" /></button>
+        <button type="button" className={headerBtn} aria-label="Duplicate slide" title="Duplicate" disabled={!canEdit} onClick={onDuplicate}><Copy size={16} aria-hidden="true" /></button>
         {/* Deleting a slide makes no slide active: the press stays off the header, so the active slide and its selection stay. */}
-        <Button variant="ghost" className={headerBtn} aria-label="Delete slide" title="Delete" disabled={!canEdit} onPointerDown={(e) => e.stopPropagation()} onClick={onDelete}><Trash2 size={14} aria-hidden="true" /></Button>
-        <Button variant="ghost" className={headerBtn} aria-label="Add slide after" title="Add slide after" disabled={!canEdit} onClick={onAddAfter}><Plus size={14} aria-hidden="true" /></Button>
+        <button type="button" className={headerBtn} aria-label="Delete slide" title="Delete" disabled={!canEdit} onPointerDown={(e) => e.stopPropagation()} onClick={onDelete}><Trash2 size={16} aria-hidden="true" /></button>
+        <button type="button" className={headerBtn} aria-label="Add slide after" title="Add slide after" disabled={!canEdit} onClick={onAddAfter}><Plus size={16} aria-hidden="true" /></button>
       </div>
     </div>
   )
