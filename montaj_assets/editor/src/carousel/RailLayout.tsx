@@ -1,28 +1,27 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { Images, Shapes, Type, Palette, Sparkles, Layers, PaintBucket, StickyNote, LayoutGrid, Undo2, Redo2, X, CircleHelp, type LucideIcon } from 'lucide-react'
+import { Image as ImageIcon, Blocks, TextCursor, Sparkles, Layers, PaintBucket, NotebookPen, LayoutGrid, Undo2, Redo2, X, CircleHelp, type LucideIcon } from 'lucide-react'
 import type { CarouselRailItemId } from '../types'
 import { ZOOM_MAX, ZOOM_MIN, type ZoomAction } from './zoom'
 import { shortcutText } from '../ui/modifierKeys'
+import { cn } from '../ui'
+import { railGhostBtn, railHoverBg, railIconBtn, railInk, railMenu, railMenuItem, railMuted, railNote, railTitle, railToolOn } from './railStyles'
 
 /** The rail's items, in order. Later tasks fill panels through `CarouselEditorProps.railPanels`. */
 export const CAROUSEL_RAIL_ITEMS: ReadonlyArray<{ id: CarouselRailItemId; label: string; icon: LucideIcon }> = [
-  { id: 'media', label: 'Media', icon: Images },
-  { id: 'elements', label: 'Elements', icon: Shapes },
-  { id: 'text', label: 'Text', icon: Type },
-  { id: 'brand', label: 'Brand', icon: Palette },
+  { id: 'media', label: 'Media', icon: ImageIcon },
+  { id: 'elements', label: 'Elements', icon: Blocks },
+  { id: 'text', label: 'Text', icon: TextCursor },
   { id: 'ai-image', label: 'AI image', icon: Sparkles },
   { id: 'layers', label: 'Layers', icon: Layers },
   { id: 'background', label: 'Background', icon: PaintBucket },
-  { id: 'notes', label: 'Notes', icon: StickyNote },
+  { id: 'notes', label: 'Notes', icon: NotebookPen },
 ]
 
 /** A panel nothing fills yet: its title. */
 export function RailPanelPlaceholder({ title }: { title: string }) {
-  return <div className="p-4 text-sm font-semibold text-[var(--editor-text)]">{title}</div>
+  return <div className={`p-4 ${railTitle}`}>{title}</div>
 }
 
-const barBtn =
-  'flex items-center justify-center h-8 min-w-8 px-2 rounded-md text-xs text-[var(--editor-text)] hover:bg-[var(--editor-surface)] disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)]'
 
 function gcd(a: number, b: number): number { return b ? gcd(b, a % b) : a }
 
@@ -186,9 +185,9 @@ export default function RailLayout({
       <header aria-label="Top bar" className="flex-shrink-0 flex items-center justify-between gap-3 h-12 px-3 border-b border-[var(--editor-border)] bg-[var(--editor-bg)]">
         <div className="flex items-center gap-2 min-w-0">
           {topLeft}
-          <span className="text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] whitespace-nowrap" title={`Aspect ${ratio}`}>{sizeLabel(size[0], size[1])}</span>
-          <button type="button" className={barBtn} onClick={onUndo} disabled={!canUndo} aria-label="Undo" title={`Undo (${shortcutText(['⌘', 'Z'])})`}><Undo2 size={16} /></button>
-          <button type="button" className={barBtn} onClick={onRedo} disabled={!canRedo} aria-label="Redo" title={`Redo (${shortcutText(['⌘', '⇧', 'Z'])})`}><Redo2 size={16} /></button>
+          <span className={`${railNote} whitespace-nowrap`} title={`Aspect ${ratio}`}>{sizeLabel(size[0], size[1])}</span>
+          <button type="button" className={railIconBtn} onClick={onUndo} disabled={!canUndo} aria-label="Undo" title={`Undo (${shortcutText(['⌘', 'Z'])})`}><Undo2 size={16} /></button>
+          <button type="button" className={railIconBtn} onClick={onRedo} disabled={!canRedo} aria-label="Redo" title={`Redo (${shortcutText(['⌘', '⇧', 'Z'])})`}><Redo2 size={16} /></button>
         </div>
         <div className="flex items-center gap-2 min-w-0">{topRight}</div>
       </header>
@@ -203,11 +202,12 @@ export default function RailLayout({
                 type="button"
                 aria-pressed={on}
                 onClick={() => toggle(id)}
-                className={`mx-1 flex flex-col items-center justify-center gap-1 py-2 rounded-md text-[11px] leading-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)] ${
-                  on ? 'bg-[var(--editor-surface)] text-[var(--editor-accent-text,var(--editor-accent))]' : 'text-[var(--editor-text)] hover:bg-[var(--editor-surface)]'
+                // Montaj's nav item: muted at rest; on, paper with a soft shadow and ink.
+                className={`mx-1 flex flex-col items-center justify-center gap-1 py-[10px] rounded-xl text-[11px] leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)] ${
+                  on ? `bg-[var(--editor-surface)] font-semibold ${railInk} shadow-[0_1px_3px_rgba(28,28,30,0.1)]` : `${railMuted} ${railHoverBg} hover:text-[var(--editor-text)]`
                 }`}
               >
-                <Icon size={20} aria-hidden="true" />
+                <Icon size={16} aria-hidden="true" />
                 <span>{label}</span>
               </button>
             )
@@ -247,8 +247,8 @@ export default function RailLayout({
             className="flex-shrink-0 w-[360px] flex flex-col min-h-0 border-l border-[var(--editor-border)] bg-[var(--editor-bg)] text-[var(--editor-text)]"
           >
             <div className="flex-shrink-0 flex items-center justify-between px-3 h-10 border-b border-[var(--editor-border)]">
-              <span className="text-sm font-semibold">{notesItem.label}</span>
-              <button type="button" className={barBtn} onClick={closeNotes} aria-label="Close"><X size={16} /></button>
+              <span className={railTitle}>{notesItem.label}</span>
+              <button type="button" className={railIconBtn} onClick={closeNotes} aria-label="Close"><X size={16} /></button>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto">{panels.notes ?? <RailPanelPlaceholder title={notesItem.label} />}</div>
           </aside>
@@ -259,7 +259,7 @@ export default function RailLayout({
         <input
           type="range"
           aria-label="Zoom"
-          className="w-28 accent-[var(--editor-accent)]"
+          className="w-28 accent-[var(--editor-accent-text,var(--editor-accent))]"
           min={ZOOM_MIN}
           max={ZOOM_MAX}
           step={1}
@@ -274,7 +274,7 @@ export default function RailLayout({
         <button
           ref={zoomBtnRef}
           type="button"
-          className={`${barBtn} min-w-12`}
+          className={`${railGhostBtn} min-w-12`}
           aria-haspopup="menu"
           aria-expanded={zoomOpen}
           aria-label={`Zoom level ${zoomLabel}`}
@@ -286,7 +286,7 @@ export default function RailLayout({
         <button
           ref={slidesBtnRef}
           type="button"
-          className={barBtn}
+          className={railGhostBtn}
           aria-expanded={slidesOpen}
           aria-haspopup="listbox"
           aria-label={`Slides ${idx + 1} / ${slideIds.length}`}
@@ -296,7 +296,7 @@ export default function RailLayout({
         </button>
         <button
           type="button"
-          className={`${barBtn} ${gridOpen ? 'bg-[var(--editor-surface)] text-[var(--editor-accent-text,var(--editor-accent))]' : ''}`}
+          className={cn(railIconBtn, gridOpen && railToolOn)}
           aria-label="Grid view"
           aria-pressed={gridOpen}
           title="Grid view"
@@ -304,26 +304,26 @@ export default function RailLayout({
         >
           <LayoutGrid size={16} />
         </button>
-        <button type="button" className={barBtn} onClick={onOpenControls} aria-label="Controls" title="Editor controls & shortcuts"><CircleHelp size={16} aria-hidden="true" /></button>
+        <button type="button" className={railIconBtn} onClick={onOpenControls} aria-label="Controls" title="Editor controls & shortcuts"><CircleHelp size={16} aria-hidden="true" /></button>
         {zoomOpen && (
-          <ul ref={zoomMenuRef} role="menu" aria-label="Zoom" className="absolute bottom-12 right-44 min-w-44 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] py-1 shadow-lg z-40">
+          <ul ref={zoomMenuRef} role="menu" aria-label="Zoom" className={`absolute bottom-12 right-44 min-w-44 z-40 ${railMenu}`}>
             {ZOOM_MENU.map(({ action, label, keys }) => (
               <li key={action} role="presentation">
                 <button
                   type="button"
                   role="menuitem"
-                  className="w-full flex items-center justify-between gap-4 text-left px-3 py-1.5 text-xs text-[var(--editor-text)] hover:bg-[var(--editor-bg)]"
+                  className={railMenuItem}
                   onClick={() => { onZoomAction(action); setZoomOpen(false) }}
                 >
                   <span>{label}</span>
-                  {keys && <span className="text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">{shortcutText(keys)}</span>}
+                  {keys && <span className={railMuted}>{shortcutText(keys)}</span>}
                 </button>
               </li>
             ))}
           </ul>
         )}
         {slidesOpen && (
-          <ul ref={slidesListRef} role="listbox" aria-label="Slides" className="absolute bottom-12 right-24 max-h-64 overflow-y-auto min-w-32 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] py-1 shadow-lg z-40">
+          <ul ref={slidesListRef} role="listbox" aria-label="Slides" className={`absolute bottom-12 right-24 max-h-64 overflow-y-auto min-w-32 z-40 ${railMenu}`}>
             {slideIds.map((id, i) => (
               <li key={id} role="presentation">
                 <button
@@ -331,7 +331,7 @@ export default function RailLayout({
                   role="option"
                   aria-selected={id === selectedSlideId}
                   aria-label={`Slide ${i + 1}`}
-                  className={`w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--editor-bg)] ${id === selectedSlideId ? 'font-semibold text-[var(--editor-accent-text,var(--editor-accent))]' : 'text-[var(--editor-text)]'}`}
+                  className={`${railMenuItem} ${id === selectedSlideId ? 'font-semibold' : ''}`}
                   onClick={() => { onSelectSlide(id); setSlidesOpen(false) }}
                 >
                   Slide {i + 1}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, ChevronUp, Copy, Plus, Trash2 } from 'lucide-react'
 import type { Slide } from '../types'
-import { Button } from '../ui'
+import { railFaintPlaceholder, railIconBtnSm, railMuted } from './railStyles'
 
 // §587 M2: the rail layout's canvas, every slide stacked in one vertical scroll.
 //
@@ -239,7 +239,7 @@ export interface SlideHeaderProps {
   onAddAfter: () => void
 }
 
-const headerBtn = 'h-7 w-7 p-0 text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]'
+const headerBtn = railIconBtnSm
 
 /** "Slide N", its title field and its actions. Slides have no hide of their own, so there is none. */
 export function SlideHeader({
@@ -296,15 +296,15 @@ export function SlideHeader({
           }
         }}
         onBlur={commit}
-        className="min-w-0 flex-1 h-6 px-1 rounded bg-transparent text-xs text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] placeholder:text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)] hover:bg-[var(--editor-surface)] focus:bg-[var(--editor-surface)] focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--editor-accent)]"
+        className={`min-w-0 flex-1 h-6 px-1 rounded-md bg-transparent text-xs ${railMuted} ${railFaintPlaceholder} hover:bg-[var(--editor-surface)] focus:bg-[var(--editor-surface)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)]`}
       />
       <div className={`flex items-center ${active ? '' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'}`}>
-        <Button variant="ghost" className={headerBtn} aria-label="Move slide up" title="Move up" disabled={!canEdit || index === 0} onClick={onMoveUp}><ChevronUp size={14} aria-hidden="true" /></Button>
-        <Button variant="ghost" className={headerBtn} aria-label="Move slide down" title="Move down" disabled={!canEdit || index === count - 1} onClick={onMoveDown}><ChevronDown size={14} aria-hidden="true" /></Button>
-        <Button variant="ghost" className={headerBtn} aria-label="Duplicate slide" title="Duplicate" disabled={!canEdit} onClick={onDuplicate}><Copy size={14} aria-hidden="true" /></Button>
+        <button type="button" className={headerBtn} aria-label="Move slide up" title="Move up" disabled={!canEdit || index === 0} onClick={onMoveUp}><ChevronUp size={16} aria-hidden="true" /></button>
+        <button type="button" className={headerBtn} aria-label="Move slide down" title="Move down" disabled={!canEdit || index === count - 1} onClick={onMoveDown}><ChevronDown size={16} aria-hidden="true" /></button>
+        <button type="button" className={headerBtn} aria-label="Duplicate slide" title="Duplicate" disabled={!canEdit} onClick={onDuplicate}><Copy size={16} aria-hidden="true" /></button>
         {/* Deleting a slide makes no slide active: the press stays off the header, so the active slide and its selection stay. */}
-        <Button variant="ghost" className={headerBtn} aria-label="Delete slide" title="Delete" disabled={!canEdit} onPointerDown={(e) => e.stopPropagation()} onClick={onDelete}><Trash2 size={14} aria-hidden="true" /></Button>
-        <Button variant="ghost" className={headerBtn} aria-label="Add slide after" title="Add slide after" disabled={!canEdit} onClick={onAddAfter}><Plus size={14} aria-hidden="true" /></Button>
+        <button type="button" className={headerBtn} aria-label="Delete slide" title="Delete" disabled={!canEdit} onPointerDown={(e) => e.stopPropagation()} onClick={onDelete}><Trash2 size={16} aria-hidden="true" /></button>
+        <button type="button" className={headerBtn} aria-label="Add slide after" title="Add slide after" disabled={!canEdit} onClick={onAddAfter}><Plus size={16} aria-hidden="true" /></button>
       </div>
     </div>
   )

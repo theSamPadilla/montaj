@@ -44,7 +44,7 @@ afterEach(() => {
   else delete (Element.prototype as { setPointerCapture?: unknown }).setPointerCapture
 })
 
-const ITEMS = ['Media', 'Elements', 'Text', 'Brand', 'AI image', 'Layers', 'Background', 'Notes']
+const ITEMS = ['Media', 'Elements', 'Text', 'AI image', 'Layers', 'Background', 'Notes']
 const NOTES_SLOT = { carouselNotesPanel: <div data-testid="notes" /> }
 
 function mount(extra: Partial<React.ComponentProps<typeof CarouselEditor>> = {}) {
@@ -64,7 +64,7 @@ describe('CarouselEditor layout="rail" shell', () => {
     expect(r.queryByRole('navigation', { name: 'Editor rail' })).toBeNull()
   })
 
-  it('renders the top bar, a rail of 8 items and the bottom bar', async () => {
+  it('renders the top bar, a rail of 7 items and the bottom bar', async () => {
     const r = mount({ slots: NOTES_SLOT, notes: { enabled: true } })
     await waitFor(() => wrapperOf('el-img'))
     expect(r.getByRole('banner', { name: 'Top bar' })).toBeTruthy()
@@ -105,13 +105,12 @@ describe('CarouselEditor layout="rail" shell', () => {
     expect(r.queryByRole('region', { name: 'Text panel' })).toBeNull()
   })
 
-  it('host slots fill Media, Brand and the top bar; an override prop wins', async () => {
+  it('host slots fill Media and the top bar; an override prop wins', async () => {
     const r = mount({
       slots: {
         carouselTopLeft: <div data-testid="tl" />,
         carouselTopRight: <div data-testid="tr" />,
         carouselMediaPanel: <div data-testid="media" />,
-        carouselBrandPanel: <div data-testid="brand" />,
       },
       railPanels: { layers: <div data-testid="layers-custom" /> },
     })
@@ -121,10 +120,10 @@ describe('CarouselEditor layout="rail" shell', () => {
     expect(within(top).getByTestId('tr')).toBeTruthy()
     await act(async () => { fireEvent.click(item(r, 'Media')) })
     expect(within(r.getByRole('region', { name: 'Media panel' })).getByTestId('media')).toBeTruthy()
-    await act(async () => { fireEvent.click(item(r, 'Brand')) })
-    expect(r.queryByTestId('media')).toBeNull()
-    expect(r.getByTestId('brand')).toBeTruthy()
+    // There is no Brand item.
+    expect(within(rail(r)).queryByRole('button', { name: 'Brand' })).toBeNull()
     await act(async () => { fireEvent.click(item(r, 'Layers')) })
+    expect(r.queryByTestId('media')).toBeNull()
     expect(r.getByTestId('layers-custom')).toBeTruthy()
   })
 
@@ -256,6 +255,6 @@ describe('CarouselEditor layout="rail" shell', () => {
   it('no notes option: the Notes item is hidden', async () => {
     const r = mount()
     await waitFor(() => wrapperOf('el-img'))
-    expect(within(rail(r)).getAllByRole('button').map((b) => b.textContent)).toEqual(ITEMS.slice(0, 7))
+    expect(within(rail(r)).getAllByRole('button').map((b) => b.textContent)).toEqual(ITEMS.slice(0, 6))
   })
 })

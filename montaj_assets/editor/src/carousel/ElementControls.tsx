@@ -6,6 +6,7 @@ import { STANDARD_TEXT_PROPS } from '../overlays/contract'
 import { cn, inspectorInputClass, NumberField, Select, stepValue, SwatchInput } from '../ui'
 import { Loader } from '../ui/Loader'
 import { elementCategory } from './overlayElement'
+import { railEyebrow, railFieldShape, railOutlineTool } from './railStyles'
 
 // The element controls the classic SlidePropertyPanel and the rail layout's
 // element toolbar (§587 M3) share: the typed transform fields, the image's
@@ -14,7 +15,7 @@ import { elementCategory } from './overlayElement'
 // background colour (for the Background rail panel).
 
 /** Small muted label above an inspector control. */
-export const fieldLabelClass = 'text-[11px] uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]'
+export const fieldLabelClass = railEyebrow
 
 // `label` doubles as NumberField's accessible `name` — there is no separate
 // visible `<label htmlFor>` wired to the box, just the wrapping `<label>`
@@ -63,6 +64,7 @@ export function numInput(
           max={opts?.max}
           step={step}
           onStep={d => h.onStep(stepValue(value, d, { step, min: opts?.min, max: opts?.max }))}
+          className={railFieldShape}
         />
       </div>
     </label>
@@ -169,8 +171,7 @@ const LAYER_BUTTONS: { direction: ReorderDirection; label: string; Icon: LucideI
   { direction: 'back', label: 'Send to back', Icon: ArrowDownToLine },
 ]
 
-const layerButtonClass =
-  'flex h-7 flex-1 items-center justify-center rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] transition-colors hover:border-[var(--editor-accent)] hover:text-[var(--editor-text)] focus:outline-none focus:ring-1 focus:ring-[var(--editor-accent)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-[var(--editor-border)]'
+const layerButtonClass = cn(railOutlineTool, 'h-7 flex-1')
 
 /** Front, forward, backward, back: the layer-order keys' four moves. A locked element may still be layered. */
 export function LayerOrderButtons({ onMove, disabled }: { onMove: (direction: ReorderDirection) => void; disabled?: boolean }) {
@@ -270,7 +271,7 @@ function PropEditor({
           type="checkbox"
           checked={Boolean(value)}
           onChange={e => onChange(e.target.checked)}
-          className="h-4 w-4 accent-[var(--editor-accent)]"
+          className="h-4 w-4 accent-[var(--editor-accent-text,var(--editor-accent))]"
         />
         <span className="text-sm text-[var(--editor-text)]">{name}</span>
       </label>
@@ -298,7 +299,7 @@ function PropEditor({
     return (
       <label className="flex flex-col gap-1" title={description}>
         <span className={fieldLabelClass}>{name}</span>
-        <Select value={current} options={options} onChange={e => onChange(e.target.value)} className={inspectorInputClass} />
+        <Select value={current} options={options} onChange={e => onChange(e.target.value)} className={cn(inspectorInputClass, railFieldShape)} />
       </label>
     )
   }
@@ -316,6 +317,7 @@ function PropEditor({
           onPreview={onChange}
           onCommit={() => {}}
           onStep={d => onChange(stepValue(Number(value ?? 0), d, { step: type === 'float' ? 0.1 : 1 }))}
+          className={railFieldShape}
         />
       </label>
     )
@@ -329,7 +331,7 @@ function PropEditor({
         type="text"
         value={String(value ?? '')}
         onChange={e => onChange(e.target.value)}
-        className={inspectorInputClass}
+        className={cn(inspectorInputClass, railFieldShape)}
       />
     </label>
   )

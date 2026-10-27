@@ -3,6 +3,7 @@ import type { ImageElement, OverlayFactory, Slide } from '../types'
 import SlideCanvas from './SlideCanvas'
 import { useSlideReorderDrag } from './slideReorderDrag'
 import { Button } from '../ui'
+import { railMuted } from './railStyles'
 
 // §587 M2 (P1): every slide at once, four to a row, numbered, with an add tile.
 // Drag a slide onto another to move it there (one undo step per move); a click
@@ -59,7 +60,7 @@ export default function SlideGridView({
               >
                 <SlideCanvas slide={slide} width={width} height={height} interactive={false} scale={scale} resolveImageSrc={resolveImageSrc} compileOverlay={compileOverlay} />
               </div>
-              <span data-grid-number="" className="text-xs font-semibold text-[var(--editor-text)]">{idx + 1}</span>
+              <span data-grid-number="" className={`text-xs font-semibold ${railMuted}`}>{idx + 1}</span>
             </div>
           )
         })}
@@ -70,7 +71,7 @@ export default function SlideGridView({
             title="Add slide"
             disabled={!canEdit}
             onClick={onAdd}
-            className="border-2 border-dashed border-[var(--editor-border)] text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] hover:border-[var(--editor-accent)]"
+            className={`rounded-xl border-2 border-dashed border-[var(--editor-border)] ${railMuted} hover:border-[var(--editor-accent)]`}
             style={{ width: THUMB_W, height: thumbH }}
           >
             <Plus size={28} aria-hidden="true" />
