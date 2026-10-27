@@ -1,5 +1,5 @@
 import { Check, Image as ImageIcon, Type as TypeIcon, Shapes } from 'lucide-react'
-import { useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from 'react'
+import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react'
 import type { Slide, CarouselElement, OverlayElement, ImageElement, OverlayFactory } from '../types'
 import OverlayErrorBoundary from './OverlayErrorBoundary'
 import {
@@ -96,6 +96,48 @@ function OverlayElementView({
       duration={duration}
     />
   )
+}
+
+// ── The chrome layer's frame (§586 M4) ────────────────────────────────────────
+
+/** Whether `el` clips what it holds (a scroll area, or a box that hides its overflow). */
+function clips(el: HTMLElement): boolean {
+  const cs = window.getComputedStyle(el)
+  return [cs.overflow, cs.overflowX, cs.overflowY].some((v) => !!v && v !== 'visible')
+}
+
+/**
+ * Where the chrome layer of the slide at `root` goes, in the root's display
+ * pixels: the visible part of the nearest box above it that clips (the
+ * editor's scroll area), or of the window when none does. Rounded inward, so
+ * the layer never reaches past what that box shows. A layer drawn whole inside
+ * a scroll area's visible part never adds to what it scrolls, so the handles
+ * can be drawn anywhere it shows them without a scrollbar or a shift. Null
+ * while the root is not laid out (jsdom, a hidden canvas).
+ */
+function visibleFrame(root: HTMLElement, displayW: number): { left: number; top: number; width: number; height: number } | null {
+  const own = root.getBoundingClientRect()
+  if (!(own.width > 0) || !(displayW > 0)) return null
+  // A host that zooms the canvas (a transform) draws it at this many screen px per px.
+  const zoom = own.width / displayW
+  let box: HTMLElement | null = root.parentElement
+  while (box && box !== document.body && box !== document.documentElement && !clips(box)) box = box.parentElement
+  let shown: { left: number; top: number; right: number; bottom: number }
+  if (box && box !== document.body && box !== document.documentElement) {
+    const r = box.getBoundingClientRect()
+    const k = box.offsetWidth > 0 ? r.width / box.offsetWidth : 1
+    const left = r.left + box.clientLeft * k
+    const top = r.top + box.clientTop * k
+    shown = { left, top, right: left + box.clientWidth * k, bottom: top + box.clientHeight * k }
+  } else {
+    const doc = document.documentElement
+    shown = { left: 0, top: 0, right: doc.clientWidth, bottom: doc.clientHeight }
+  }
+  const left = Math.ceil((shown.left - own.left) / zoom)
+  const top = Math.ceil((shown.top - own.top) / zoom)
+  const right = Math.floor((shown.right - own.left) / zoom)
+  const bottom = Math.floor((shown.bottom - own.top) / zoom)
+  return { left, top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) }
 }
 
 // ── SlideCanvas ───────────────────────────────────────────────────────────────
@@ -243,9 +285,10 @@ interface Props {
 
   /**
    * Room the host keeps around an interactive slide, in display pixels (§586
-   * M4). The selection outlines and handles draw out to it past the slide
-   * edge, and a press in it is a press on the empty canvas. 0 (the default)
-   * → they clip at the slide edge.
+   * M4). A press in it is a press on the empty canvas. With a margin, the
+   * selection outlines and handles are not clipped by the slide or the
+   * margin: they draw wherever the scroll area holding the canvas shows them,
+   * and never make it scroll. 0 (the default) → they clip at the slide edge.
    */
   margin?: number
 
@@ -955,6 +998,52 @@ export default function SlideCanvas({
   const displayW = width * scale
   const displayH = height * scale
 
+  // The chrome layer spans the visible part of the scroll area holding the
+  // canvas (§586 M4), its inner box kept on the slide. Written straight to the
+  // two boxes, so a scroll moves them before the next paint with no render.
+  // Placed again after every render, on a scroll of anything above the
+  // canvas, and when the canvas or that area changes size.
+  const chromeLayerRef = useRef<HTMLDivElement | null>(null)
+  const chromeInnerRef = useRef<HTMLDivElement | null>(null)
+  const unclipped = interactive && margin > 0
+  const placeChrome = () => {
+    const root = rootRef.current
+    const layer = chromeLayerRef.current
+    const inner = chromeInnerRef.current
+    if (!root || !layer || !inner) return
+    const frame = visibleFrame(root, displayW)
+    if (!frame) return
+    layer.style.left = `${frame.left}px`
+    layer.style.top = `${frame.top}px`
+    layer.style.width = `${frame.width}px`
+    layer.style.height = `${frame.height}px`
+    inner.style.left = `${-frame.left}px`
+    inner.style.top = `${-frame.top}px`
+  }
+  const placeChromeRef = useRef(placeChrome)
+  placeChromeRef.current = placeChrome
+  useLayoutEffect(() => {
+    if (unclipped) placeChrome()
+  })
+  useEffect(() => {
+    const root = rootRef.current
+    if (!unclipped || !root) return
+    const place = () => placeChromeRef.current()
+    // Capture: a scroll does not bubble, and any box above may be the one scrolled.
+    window.addEventListener('scroll', place, { capture: true, passive: true })
+    window.addEventListener('resize', place)
+    const observer = new ResizeObserver(place)
+    observer.observe(root)
+    for (let box = root.parentElement; box && box !== document.body; box = box.parentElement) {
+      if (clips(box)) { observer.observe(box); break }
+    }
+    return () => {
+      window.removeEventListener('scroll', place, { capture: true })
+      window.removeEventListener('resize', place)
+      observer.disconnect()
+    }
+  }, [unclipped])
+
   // The chrome layer and the margin box share this frame: the slide plus the
   // host's margin on every side.
   const marginBox: React.CSSProperties = {
@@ -1262,17 +1351,24 @@ export default function SlideCanvas({
         {children}
       </div>
 
-      {/* Chrome layer (§586 M4): selection outlines, handles, snap guides and
-          the crop window's handles, over the slide and out into the margin.
-          Only the handles take the pointer. A click on one ends here: its
-          press already did what it does. */}
+      {/* Chrome layer (§586 M4): selection outlines, handles, snap guides,
+          the crop window's handles and the lock badge, over the slide. With a
+          margin it is not clipped by the slide or the margin: it spans the
+          visible part of the scroll area holding the canvas (placeChrome), so
+          the chrome of an element far off the slide draws whole wherever that
+          area shows it, and, lying inside what the area shows, never makes it
+          scroll. Until it is measured, the margin box. Above the slides that
+          follow (a stack of slides), so its handles take their presses. Only
+          the handles take the pointer. A click on one ends here: its press
+          already did what it does. */}
       {interactive && (
         <div
+          ref={chromeLayerRef}
           data-slide-chrome=""
-          style={{ ...marginBox, overflow: 'hidden', pointerEvents: 'none' }}
+          style={{ ...marginBox, overflow: 'hidden', pointerEvents: 'none', ...(unclipped ? { zIndex: 1 } : null) }}
           onClick={(e) => { e.stopPropagation(); swallowClickRef.current = false }}
         >
-          <div style={{ position: 'absolute', left: margin, top: margin, width: displayW, height: displayH }}>
+          <div ref={chromeInnerRef} style={{ position: 'absolute', left: margin, top: margin, width: displayW, height: displayH }}>
             {/* Snap guides — drawn at the drag hook's reported guide axes. A
                 drag and a group drag never run at once. */}
             {(groupSnap !== NO_SNAP ? groupSnap : drag).guides.map((g: SnapGuide, i) =>
