@@ -1258,6 +1258,8 @@ export interface EditorSlots {
   carouselMediaPanel?: ReactNode
   /** `layout="rail"` only: the Brand rail item's side panel. */
   carouselBrandPanel?: ReactNode
+  /** `layout="rail"`: the images row under the colours in the Background panel (the host's Library, brand kit). */
+  carouselBackgroundImages?: ReactNode
   /** `layout="rail"` only: the Notes rail item's right panel. */
   carouselNotesPanel?: ReactNode
 }

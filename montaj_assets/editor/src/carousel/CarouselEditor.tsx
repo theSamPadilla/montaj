@@ -839,12 +839,18 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       onMove={moveLayers}
     />
   )
+  const brandColours = useMemo(
+    () => (brand?.colors ?? []).map(c => normalizeHex(c)).filter((c): c is string => !!c),
+    [brand?.colors],
+  )
   const backgroundPanel = selectedSlide && (
     <BackgroundPanel
       color={selectedSlide.base_color || '#ffffff'}
       onColorChange={(v) => { if (cropElementId) flushSync(applyCrop); handleSlideChange({ base_color: v }) }}
       canSetImage={canEdit && selectedImageForBg?.type === 'image' && !isLocked(selectedImageForBg)}
       onSetImage={() => { if (selectedElementId) setAsBackground(selectedElementId) }}
+      brandColours={brandColours}
+      images={slots?.carouselBackgroundImages}
     />
   )
 
@@ -1704,10 +1710,6 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     void state.editSlides(all => replaceColour(all, from, to))
   }
   const usedColours = useMemo(() => collectColours(slides), [slides])
-  const brandColours = useMemo(
-    () => (brand?.colors ?? []).map(c => normalizeHex(c)).filter((c): c is string => !!c),
-    [brand?.colors],
-  )
   // The selection moving on closes the panel (a preview left open is given up).
   const selectionKey = `${selectedSlideId}|${selectedElements.map(el => el.id).join(',')}`
   const lastSelectionKey = useRef(selectionKey)
@@ -2280,6 +2282,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             onToggleElementVisibility={onToggleElementVisibility}
             mode={mode}
             onOpenTextColour={openTextColour}
+            brandFont={brand?.fonts?.heading}
           />
         ) : undefined
       }

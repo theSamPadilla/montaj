@@ -173,6 +173,17 @@ export default function ColourPanel({
         </button>
       </div>
       <div className="flex flex-col gap-4 p-3">
+        {brandColours.length > 0 && (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => commit(fit(brandColours[0]) ?? brandColours[0])}
+            className="flex h-9 items-center gap-2 rounded-md border border-[var(--editor-accent)] bg-[color-mix(in_srgb,var(--editor-accent)_15%,transparent)] px-3 text-[13px] font-medium text-[var(--editor-text)] hover:bg-[color-mix(in_srgb,var(--editor-accent)_25%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--editor-accent)] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <span aria-hidden="true" className="h-4 w-4 flex-shrink-0 rounded-sm border border-[var(--editor-border)]" style={{ backgroundColor: brandColours[0] }} />
+            Use brand default
+          </button>
+        )}
         <div className="flex items-end gap-2">
           <div className="flex min-w-0 flex-1 flex-col gap-1">
             <label htmlFor="colour-hex" className={fieldLabelClass}>Hex</label>
