@@ -923,9 +923,17 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (!cropElementId) state.redo()
   }
 
+  // Zoom is a way out of crop mode, like the panels: every path (a key, the
+  // menu, the % button, the slider) applies a pending crop first.
   /** Applies a zoom action from the menu or a key, from the scale in effect. */
   function zoomBy(action: ZoomAction) {
+    if (cropElementIdRef.current) applyCrop()
     setZoom(applyZoomAction(action, railScale * 100))
+  }
+  /** The slider's percentage. */
+  function zoomToPercent(pct: number) {
+    if (cropElementIdRef.current) applyCrop()
+    setZoom({ mode: 'pct', pct: clampPct(pct) })
   }
 
   const bindings: KeyBinding[] = [
@@ -2301,7 +2309,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       onToggleGrid={toggleGrid}
       zoomLabel={zoomLabel(zoom)}
       zoomPercent={railScale * 100}
-      onZoomPercent={(pct) => setZoom({ mode: 'pct', pct: clampPct(pct) })}
+      onZoomPercent={zoomToPercent}
       onZoomAction={zoomBy}
     />
     </ColourPanelContext.Provider>

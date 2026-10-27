@@ -215,6 +215,25 @@ describe('CarouselEditor layout="rail": stacked slides (§587 M2)', () => {
     expect(counter(r).textContent).toContain('2 / 3')
   })
 
+  it.each([
+    ['a zoom key', async () => { await key('1', { metaKey: true }) }],
+    ['the zoom slider', async (r: ReturnType<typeof render>) => {
+      const sl = within(r.getByRole('contentinfo', { name: 'Bottom bar' })).getByRole('slider', { name: 'Zoom' })
+      await act(async () => { fireEvent.change(sl, { target: { value: '150' } }) })
+    }],
+    ['the zoom % button', async (r: ReturnType<typeof render>) => {
+      await act(async () => { fireEvent.click(within(r.getByRole('contentinfo', { name: 'Bottom bar' })).getByRole('button', { name: /^Zoom level/ })) })
+    }],
+  ])('%s applies a pending crop first', async (_name, zoom) => {
+    const { adapter, r } = await mount(three())
+    await inView({ s0: 1, s1: 0.4 })
+    await pickCrop()
+    expect(adapter.saveCalls).toHaveLength(0)
+    await zoom(r)
+    await waitFor(() => expectCropApplied(lastSave(adapter).slides![0].elements[0]))
+    expect(inCrop()).toBe(false)
+  })
+
   it('move down and move up each reorder in one undo step', async () => {
     const { adapter } = await mount(three())
     await act(async () => { fireEvent.click(header('s0').getByRole('button', { name: 'Move slide down' })) })
