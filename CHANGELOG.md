@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Changed (steps): `frame_broll` frames inside a split's slot, or holds a region you pick (Sam, §597).** An item may name a slot, `id=track@top`, `@bottom` or `@x,y,w,h` (canvas fractions): the crop that follows the subject takes the slot's shape, and the item is placed to fill it. Or a region of the AI's own judgement, `id=region@x,y,w,h` (source fractions, then an optional slot): a still crop holding it at the slot's or canvas's shape. Opt-in: with neither, framing is as before.
+- **Changed (steps): `cut`'s second listen uses tiny.en q5_1 (Sam, §596).** A slow phrase turbo hears once is heard again with the small English model, in English only and only when it is installed (the app downloads it, 32 MB): on the known collapsed repeats it hears what base.en does. Not installed, there is no second pass at all (a missing model would fall back to turbo).
 ## v5.37.0
 
 - **Fixed (steps, render): styled runs on a headline (§587).** `slides` drops a headline's `runs` (one word styled in the editor) whenever it rewrites the text, so they never describe text that is gone. The static-text template ignores runs whose boundary splits an emoji's two halves, as the editor does.

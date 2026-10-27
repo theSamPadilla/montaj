@@ -22,14 +22,14 @@
       "type": "string",
       "required": false,
       "repeatable": true,
-      "description": "The b-roll clip's item id on an upper track (add it there first); a list frames all in one call, one write and one sheet. id=track or id=card sets that item's own mode. Left out, the answer names the b-roll."
+      "description": "Its b-roll item id on an upper track (add it first); a list frames all in one call. id=track or id=card sets its mode; in a split, id=track@top, @bottom or @x,y,w,h fills that slot, id=region@x,y,w,h[@slot] holds a region."
     },
     {
       "name": "mode",
       "type": "enum",
       "options": ["auto", "track", "card"],
       "default": "auto",
-      "description": "auto: card action across the frame; track only a subject a 9:16 crop holds. track: a crop that follows the subject. card: the whole frame inset.",
+      "description": "auto: card action across the frame, track what a 9:16 crop holds. track: a crop following the subject. card: the frame inset.",
       "hint": "to read an item's framing, get_project tracks"
     },
     {

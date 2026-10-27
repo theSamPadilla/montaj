@@ -196,9 +196,66 @@ def place_zoom(bounds, z, grid, step=0.01):
     return best[1], best[2]
 
 
-def analyse(project, on_disk, project_path, item_id, mode, matte=None):
+SLOTS = {"top": (0.0, 0.0, 1.0, 0.5), "bottom": (0.0, 0.5, 1.0, 0.5)}
+SLOT_FORMS = "@top, @bottom or @x,y,w,h"
+
+
+def _fractions(text):
+    """(x, y, w, h) from "x,y,w,h", each 0-1, w and h over 0 and the box inside the frame; else None."""
+    try:
+        v = tuple(float(t) for t in str(text).split(","))
+    except ValueError:
+        return None
+    if len(v) != 4 or any(not 0 <= t <= 1 for t in v) or v[2] <= 0 or v[3] <= 0 or v[0] + v[2] > 1 + 1e-9 or v[1] + v[3] > 1 + 1e-9:
+        return None
+    return v
+
+
+def parse_spec(own, default):
+    """§597: an item's own spec, `mode`, `mode@slot` or `region@x,y,w,h[@slot]` -> (mode, slot, region), each slot and
+    region (x, y, w, h); None when it is none of the forms. A slot is the canvas's (top, bottom, or fractions), a region
+    the source's. card takes no slot (it insets the whole frame)."""
+    parts = (own or default).split("@")
+    mode, rest = parts[0], parts[1:]
+    if mode == "region":
+        if not rest or _fractions(rest[0]) is None or len(rest) > 2:
+            return None
+        slot = (SLOTS.get(rest[1]) or _fractions(rest[1])) if len(rest) == 2 else None
+        return None if len(rest) == 2 and slot is None else ("region", slot, _fractions(rest[0]))
+    if mode not in ("auto", "track", "card") or len(rest) > 1 or (rest and mode == "card"):
+        return None
+    slot = (SLOTS.get(rest[0]) or _fractions(rest[0])) if rest else None
+    if rest and slot is None:
+        return None
+    return ("track" if slot and mode == "auto" else mode), slot, None
+
+
+def region_crop(region, sw, sh, aspect):
+    """A still sourceCrop of `aspect` (width over height, in pixels) holding `region` (source fractions), centred on it
+    and kept inside the frame."""
+    rx, ry, rw, rh = region
+    pw, ph = rw * sw, rh * sh
+    cw, ch = (pw, pw / aspect) if pw / ph > aspect else (ph * aspect, ph)
+    if cw > sw:
+        cw, ch = sw, sw / aspect
+    if ch > sh:
+        cw, ch = sh * aspect, sh
+    x0 = min(max((rx + rw / 2) * sw - cw / 2, 0.0), sw - cw)
+    y0 = min(max((ry + rh / 2) * sh - ch / 2, 0.0), sh - ch)
+    return {"x": round(x0 / sw, 4), "y": round(y0 / sh, 4), "w": round(cw / sw, 4), "h": round(ch / sh, 4)}
+
+
+def slot_place(slot, aspect, W, H):
+    """scale, offsetX, offsetY (percent of the frame from its centre) that put a picture of `aspect` exactly in `slot`."""
+    x, y, w, h = slot
+    scale = w if aspect >= W / H else h
+    return round(scale, 4), round((x + w / 2 - 0.5) * 100, 3), round((y + h / 2 - 0.5) * 100, 3)
+
+
+def analyse(project, on_disk, project_path, item_id, mode, matte=None, slot=None, region=None):
     """What framing `item_id` takes, computed from the project as read (nothing is written): a plan for write_plans,
-    or {"id", "mode": "none", "why"} for a clip that needs nothing. Raises ItemRefused."""
+    or {"id", "mode": "none", "why"} for a clip that needs nothing. Raises ItemRefused. §597: `slot` (x, y, w, h of the
+    canvas) frames it for that slot of a split; `region` (of the source) holds the AI's own region still."""
     hit = place.find_item(project, item_id)
     if hit is None:
         if any(isinstance(src, dict) and src.get("id") == item_id for src in project.get("sources") or []):
@@ -223,9 +280,15 @@ def analyse(project, on_disk, project_path, item_id, mode, matte=None):
             raise ItemRefused("probe_failed", f"Could not read the clip's size: {dims!r}")
         probed = (int(sw), int(sh))
     W, H = lc.design_size(project)
-    canvas = W / H
+    canvas = (slot[2] * W) / (slot[3] * H) if slot else W / H        # §597: a slot's own shape
+    where = "the slot" if slot else "the canvas"
+    if region is not None:
+        return {"id": item_id, "mode": "region", "probed": probed, "slot": slot, "aspect": canvas, "W": W, "H": H,
+                "start": lc._num(item.get("start")), "end": lc._num(item.get("end")),
+                "crop": region_crop(region, sw, sh, canvas),
+                "why": f"region: held still on the region named, at {where}'s shape" + ("; it fills the slot" if slot else "")}
     if sw / sh <= canvas * 1.05:
-        return {"id": item_id, "mode": "none", "why": "the clip is already as tall as the canvas; nothing to frame"}
+        return {"id": item_id, "mode": "none", "why": f"the clip is already as tall as {where}; nothing to frame"}
     crop_w = round((sh * canvas) / sw, 4)
 
     start, end = lc._num(item.get("start")), lc._num(item.get("end"))
@@ -248,7 +311,12 @@ def analyse(project, on_disk, project_path, item_id, mode, matte=None):
     # text off the subject (Sam): the captions crossing the followed subject in most of the clip makes auto card it
     crossed = under_captions(boxes_found, band, 0.05)
     seen = f"the subject is in {path['found']}/{n} frames"
-    if mode == "auto":
+    if slot is not None:
+        if path["found"] == 0:
+            raise ItemRefused("no_subject", "No moving subject in the clip to follow in the slot; name a region instead "
+                                            "(id=region@x,y,w,h@slot).")
+        mode, why = "track", f"track: in the slot, following the subject ({seen}); it fills the slot"
+    elif mode == "auto":
         if matte:
             mode, why = "card", f"card: the profile asks for mattes for wide footage ({matte['paper']})"
         elif path["cluttered"] > 0.3 * n:
@@ -312,6 +380,7 @@ def analyse(project, on_disk, project_path, item_id, mode, matte=None):
     card_h = CARD_SCALE * (W / H) / width_ratio            # the footage's height on screen, a share of the canvas
     box = [round((1 - CARD_SCALE) / 2, 4), round(CARD_CENTER_Y - card_h / 2, 4), CARD_SCALE, round(card_h, 4)]
     return {"id": item_id, "mode": mode, "why": why, "probed": probed, "crop_w": crop_w, "box": box, "start": start,
+            "slot": slot, "aspect": canvas,
             "end": end, "W": W, "H": H, "track_keys": [(item_t(st), round(p["x"], 4)) for st, p in zip(times, path["points"])] if mode == "track" else None,
             "found_boxes": found, "found": path["found"], "n": n, "crossed": crossed, "zoom": zoom,
             "default_credit": default_credit(source_of(project, item), os.path.dirname(project_path))}
@@ -325,6 +394,7 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
     sampler = sampler or default_sampler
     if mode not in ("auto", "track", "card"):
         fail("invalid_params", "mode is auto, track or card.")
+    specs = {}
     single = isinstance(item_id, str)
     # PL89 run 5: an item may carry its own mode, `id=track` or `id=card` (`mode` is the rest's), so several modes
     # frame in one call: kung fu run 4 spent five calls, one a mode.
@@ -332,11 +402,14 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
     ids = []
     for raw in ([item_id] if single else [str(i) for i in (item_id or []) if str(i).strip()]):
         iid, _, own = str(raw).partition("=")
-        if own and own not in ("auto", "track", "card"):
-            fail("invalid_params", f"{raw}: an item's mode is auto, track or card.")
+        spec = parse_spec(own, mode)
+        if spec is None:
+            fail("invalid_params", f"{raw}: an item takes auto, track or card; for a split's slot, track with "
+                                   f"{SLOT_FORMS} (track@top); for a region of your own, region@x,y,w,h (source "
+                                   f"fractions), then {SLOT_FORMS} for its slot if it has one.")
         if iid not in modes:
             ids.append(iid)
-        modes[iid] = own or mode
+        modes[iid], specs[iid] = spec[0], spec
     if not ids:
         doc, _ = read_tracks(project_path)
         doc = normalize_tracks(doc)
@@ -352,7 +425,8 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
 
     def one(i):
         try:
-            return analyse(project, on_disk, project_path, i, modes.get(i, mode), matte)
+            _, slot, region = specs.get(i, (None, None, None))
+            return analyse(project, on_disk, project_path, i, modes.get(i, mode), matte, slot, region)
         except ItemRefused as e:
             return {"id": i, "error": e.code, "message": e.message}
     if len(ids) == 1:
@@ -363,7 +437,7 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
             plans = list(pool.map(one, ids))
     if single and "error" in plans[0]:
         fail(plans[0]["error"], plans[0]["message"])
-    todo = [pl for pl in plans if pl.get("mode") in ("track", "card")]
+    todo = [pl for pl in plans if pl.get("mode") in ("track", "card", "region")]
     if single and not todo:
         return {k: plans[0][k] for k in ("id", "mode", "why")}
 
@@ -398,11 +472,17 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
                 it.pop(k, None)
             if pl["probed"]:
                 it["sourceWidth"], it["sourceHeight"] = pl["probed"]
-            if pl["mode"] == "track":
-                keys = simplify(pl["track_keys"])
-                it["sourceCrop"] = {"x": keys[0][1], "y": 0, "w": pl["crop_w"], "h": 1}
-                keyframes.append({"prop": "cropX", "points": [{"t": t, "value": v} for t, v in keys]})
-                written[pl["id"]] = {"keys": len(keys)}
+            if pl["mode"] in ("track", "region"):
+                if pl["mode"] == "track":
+                    keys = simplify(pl["track_keys"])
+                    it["sourceCrop"] = {"x": keys[0][1], "y": 0, "w": pl["crop_w"], "h": 1}
+                    keyframes.append({"prop": "cropX", "points": [{"t": t, "value": v} for t, v in keys]})
+                    written[pl["id"]] = {"keys": len(keys)}
+                else:
+                    it["sourceCrop"] = dict(pl["crop"])
+                    written[pl["id"]] = {}
+                if pl.get("slot"):     # §597: the picture fills the slot
+                    it["scale"], it["offsetX"], it["offsetY"] = slot_place(pl["slot"], pl["aspect"], pl["W"], pl["H"])
             else:
                 if pl["zoom"]:
                     it["sourceCrop"] = dict(pl["zoom"])
@@ -475,7 +555,9 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
         if "error" in pl or pl["mode"] == "none":
             return {k: pl[k] for k in ("id", "error", "message", "mode", "why") if k in pl}
         out = {"id": pl["id"], "mode": pl["mode"], "why": pl["why"] + DONE}
-        if pl["mode"] == "track":
+        if pl["mode"] == "region":                       # §597: the crop, still, at the slot's or canvas's shape
+            out["sourceCrop"] = pl["crop"]
+        elif pl["mode"] == "track":
             out["keys"] = written[pl["id"]]["keys"]
             out["found"] = f"{pl['found']}/{pl['n']} frames"
             if pl["crossed"] > UNDER_CAPTIONS:
@@ -489,7 +571,7 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
                                  if source is not None else f"{pl['default_credit']} (from the clip's source)")
             elif not credit and not pl.get("default_credit"):
                 out["note"] = "no credit: pass source for a 'Footage: <source>' line"
-        if detail:
+        if detail and pl["mode"] != "region":
             out["crop_w"], out["box"] = pl["crop_w"], pl["box"]
         return out
     if single:

@@ -672,3 +672,37 @@ def test_the_card_zoom_keeps_a_burned_in_label_out_where_the_subject_allows():
     # with no label it centres on the subject, as before
     zx2, zy2 = fb.place_zoom((0.45, 0.35, 0.75, 0.65), 0.6, [[False] * 16 for _ in range(9)])
     assert abs((zx2 + 0.3) - 0.6) < 0.03 and abs((zy2 + 0.3) - 0.5) < 0.03
+
+
+# §597 (Sam, 2026-10-27: "so long as its not too prescriptive and the AI can still use its judgement"): a slot of a split
+# (`id=track@top`, `@bottom`, `@x,y,w,h` canvas fractions) or the AI's own region (`id=region@x,y,w,h` source fractions,
+# optionally `@slot`). Opt-in: no slot is today's framing.
+def test_track_in_a_slot_crops_to_the_slots_shape_and_fills_the_slot(tmp_path):
+    p = project(tmp_path)
+    out = fb.run(str(p), ["br-1=track@top"], sampler=stub_sampler())
+    assert out["items"][0]["mode"] == "track" and "slot" in out["items"][0]["why"], out
+    it, _ = item_of(p, "br-1")
+    slot_aspect = (1.0 * 1080) / (0.5 * 1920)                  # the top half: 1080 x 960
+    assert it["sourceCrop"]["w"] == pytest.approx(slot_aspect * 360 / 640, abs=1e-3) and it["sourceCrop"]["h"] == 1
+    assert any(k["prop"] == "cropX" for k in it.get("keyframes", []))
+    assert it["scale"] == pytest.approx(1.0) and it["offsetX"] == 0 and it["offsetY"] == pytest.approx(-25.0)
+
+
+def test_a_region_of_the_ais_choosing_is_held_still_at_the_slots_shape(tmp_path):
+    p = project(tmp_path)
+    out = fb.run(str(p), ["br-1=region@0.4,0.3,0.2,0.2@bottom"], sampler=stub_sampler())
+    assert out["items"][0]["mode"] == "region", out
+    it, _ = item_of(p, "br-1")
+    c = it["sourceCrop"]
+    assert (c["w"] * 640) / (c["h"] * 360) == pytest.approx(1080 / 960, rel=1e-3), c
+    assert c["x"] <= 0.4 and c["x"] + c["w"] >= 0.6 and c["y"] <= 0.3 and c["y"] + c["h"] >= 0.5, c
+    assert not any(str(k.get("prop", "")).startswith("crop") for k in it.get("keyframes") or [])
+    assert it["offsetY"] == pytest.approx(25.0)
+
+
+@pytest.mark.parametrize("spec", ["br-1=track@middle", "br-1=track@0,0,2,1", "br-1=region@0.1,0.1", "br-1=card@top"])
+def test_a_slot_or_region_off_the_forms_is_refused_naming_them(tmp_path, capsys, spec):
+    p = project(tmp_path)
+    with pytest.raises(SystemExit):
+        fb.run(str(p), [spec], sampler=stub_sampler())
+    assert "@top, @bottom or @x,y,w,h" in capsys.readouterr().err
