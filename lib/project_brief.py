@@ -21,7 +21,7 @@ from lib import transcripts
 from lib.common import ffprobe_bin, ff_path
 from lib.speech_lines import norm, sidecar_for
 
-BRIEF_VERSION = 6     # 6: the b-roll rules; 5: the canvas line, caption by default, sound effects (CV)
+BRIEF_VERSION = 7     # 7: the b-roll rules first, crop in a split, presets; 6: the b-roll rules; 5: the canvas line, caption by default, sound effects (CV)
 LONG_BROLL_S = 20.0          # b-roll at least this long gets its shots listed and a sheet
 PROFILE_SECTIONS = ("Titles & overlays", "Format")
 LOOKED = ("probe", "snapshot")   # steps whose answer the brief already holds   # the style profile's sections that bear on the edit
@@ -175,10 +175,11 @@ def _profile_text(project):
 # CV (52's visual compare; Sam: "primarily bad b-roll placement"): general rules for placing b-roll, kept short.
 BROLL_RULES = ("A shot under a line that names an action shows that action: find its moment (shot labels, a half-second "
                "sheet around it, an app's own on-screen readout) and look at a frame of the placed span; with no footage "
-               "of it, a graphic, never a near miss. Crop to what the line is about, never window chrome or sidebars, never "
-               "past the action. A list gets one shot per item, each from its own moment and labelled item → effect the "
-               "same way. A small change gets a ring or an arrow when it happens. Before finishing, walk the script: "
-               "every beat its own visual.")
+               "of it, a graphic, never a near miss. Crop to what the line is about (in a split, the item's sourceCrop on the "
+               "hand or the screen it moves), never window chrome or sidebars, never past the action. A list gets one shot "
+               "per item, each from its own moment and labelled item → effect the same way. A small change gets a ring or "
+               "an arrow when it happens; the labels and rings are place's presets callout and ring. Before finishing, walk "
+               "the script: every beat its own visual.")
 
 
 def _canvas_line(project):
@@ -292,6 +293,7 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
     long_rolls = [s for s in rolls if float(s.get("sourceDuration") or 0) >= LONG_BROLL_S]
     if rolls:
         W.append("## B-roll")
+        W.append(BROLL_RULES)       # 1.5.0: before the shots, read before any is placed
         for s in rolls:
             dur = float(s.get("sourceDuration") or 0)
             if s not in long_rolls:
@@ -323,7 +325,6 @@ def build(project, project_dir, montaj_root, *, probe_fn=None, silences_fn=None,
                   for sh in shots]
             W.append(f"Then add b-roll by shot: edit_timeline {{op: \"add\", item: {{source: \"{s.get('id', '')}\", shot: n, "
                      "start}}, which takes the shot's span; for a closer look at a moment, snapshot the clip.")
-        W.append(BROLL_RULES)
         W.append("")
 
     # steps
