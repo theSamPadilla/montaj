@@ -590,3 +590,27 @@ def test_seventeen_items_are_framed_in_one_call_and_the_sheet_spans_them_all(tmp
     assert len(versions) == 1 and len(s.calls) == 1
     times = s.calls[0]
     assert len(times) <= fb.MAX_SHEET_TIMES and min(times) < 2 and max(times) > 30, times
+
+
+# PL89 run 5 (Sam: fewer turns): kung fu run 4 framed its b-roll in five calls, one per mode (cards, then tracks, then
+# the title card). An item may carry its own mode, `id=track` or `id=card`; `mode` is the rest's. One call, one write.
+def test_each_item_may_carry_its_own_mode_in_one_call(tmp_path):
+    p = project(tmp_path)
+    doc = json.loads(Path(p).read_text())
+    second = dict(doc["tracks"][1]["items"][0], id="br-2", start=6, end=8)
+    doc["tracks"][1]["items"].append(second)
+    Path(p).write_text(json.dumps(doc))
+    out = fb.run(str(p), ["br-1=card", "br-2"], mode="track", source="Unitree", sampler=stub_sampler())
+    assert [(i["id"], i["mode"]) for i in out["items"]] == [("br-1", "card"), ("br-2", "track")]
+    one, _ = item_of(p, "br-1")
+    two, _ = item_of(p, "br-2")
+    assert "sourceCrop" not in one and one.get("scale"), "br-1 a card"
+    assert any(k["prop"].startswith("crop") for k in two.get("keyframes", [])) or two.get("sourceCrop"), "br-2 tracked"
+
+
+def test_an_item_mode_off_the_list_is_refused_naming_the_three(tmp_path, capsys):
+    p = project(tmp_path)
+    with pytest.raises(SystemExit):
+        fb.run(str(p), ["br-1=zoom"], sampler=stub_sampler())
+    err = capsys.readouterr().err
+    assert "auto, track or card" in err and "br-1=zoom" in err

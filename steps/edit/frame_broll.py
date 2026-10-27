@@ -251,7 +251,17 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
     if mode not in ("auto", "track", "card"):
         fail("invalid_params", "mode is auto, track or card.")
     single = isinstance(item_id, str)
-    ids = [item_id] if single else list(dict.fromkeys(str(i) for i in (item_id or []) if str(i).strip()))
+    # PL89 run 5: an item may carry its own mode, `id=track` or `id=card` (`mode` is the rest's), so several modes
+    # frame in one call: kung fu run 4 spent five calls, one a mode.
+    modes = {}
+    ids = []
+    for raw in ([item_id] if single else [str(i) for i in (item_id or []) if str(i).strip()]):
+        iid, _, own = str(raw).partition("=")
+        if own and own not in ("auto", "track", "card"):
+            fail("invalid_params", f"{raw}: an item's mode is auto, track or card.")
+        if iid not in modes:
+            ids.append(iid)
+        modes[iid] = own or mode
     if not ids:
         doc, _ = read_tracks(project_path)
         doc = normalize_tracks(doc)
@@ -267,7 +277,7 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
 
     def one(i):
         try:
-            return analyse(project, on_disk, project_path, i, mode, matte)
+            return analyse(project, on_disk, project_path, i, modes.get(i, mode), matte)
         except ItemRefused as e:
             return {"id": i, "error": e.code, "message": e.message}
     if len(ids) == 1:
