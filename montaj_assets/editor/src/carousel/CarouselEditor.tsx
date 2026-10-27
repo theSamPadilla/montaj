@@ -843,6 +843,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       onSetImage={() => { if (selectedElementId) setAsBackground(selectedElementId) }}
       brandColours={brandColours}
       images={slots?.carouselBackgroundImages}
+      canSetImages={slideLive && canEdit}
     />
   )
 
@@ -1468,18 +1469,23 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   }
 
   /** The host's `setBackgroundImage`: the image at `src` becomes the selected slide's background (as Set as background does), in one write. */
-  async function setBackgroundImage(src: string) {
-    if (!selectedSlide || !canAddImages) return
+  async function setBackgroundImage(src: string, options?: { asset?: { name?: string } }): Promise<boolean> {
+    if (!selectedSlide || !canAddImages) return false
     const slideId = selectedSlide.id
     const resolution = project.settings.resolution as [number, number]
     let el: ImageElement
-    try { el = await newImageElement(adapter, resolution, src) } catch (e) { reportError("Couldn't add the image", e); return }
+    try { el = await newImageElement(adapter, resolution, src) } catch (e) { reportError("Couldn't add the image", e); return false }
     let size: ImageSize | null = null
     try { size = await loadImageNaturalSize(adapter.resolveImageSrc(el)) } catch { /* unreadable */ }
-    if (!mountedRef.current || !slidesRef.current.some((s) => s.id === slideId)) return
+    if (!mountedRef.current || !slidesRef.current.some((s) => s.id === slideId)) return false
     flushNudge()
     const natural = size ?? { width: el.w, height: el.h }
-    await state.editElements(slideId, (els) => setImageAsBackground([...els, el], el.id, w, h, natural)).catch(() => {})
+    const assets: Asset[] | undefined = options?.asset
+      ? [{ id: crypto.randomUUID(), src: (el as ImageElement).src, type: 'image', name: options.asset.name }]
+      : undefined
+    let wrote = true
+    await state.editElements(slideId, (els) => setImageAsBackground([...els, el], el.id, w, h, natural), assets).catch(() => { wrote = false })
+    return wrote
   }
   const setBackgroundImageRef = useRef(setBackgroundImage)
   setBackgroundImageRef.current = setBackgroundImage
@@ -1491,7 +1497,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   const carouselApi = useMemo<CarouselApi>(() => ({
     addImage: (src) => addImageRef.current(src),
     setAsBackground: (elementId) => setAsBackgroundRef.current(elementId),
-    setBackgroundImage: (src) => setBackgroundImageRef.current(src),
+    setBackgroundImage: (src, options) => setBackgroundImageRef.current(src, options),
   }), [])
   useEffect(() => {
     if (!onProvideCarouselApi) return

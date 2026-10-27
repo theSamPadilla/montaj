@@ -17,10 +17,12 @@ export interface BackgroundPanelProps {
   brandColours?: string[]
   /** The host's images row (Library, brand kit), under the colours. */
   images?: ReactNode
+  /** Whether the images can be set as the background now (not in crop mode, the grid view, a pending surface or a read-only project): off, the images row is disabled. */
+  canSetImages?: boolean
 }
 
 /** The Background rail panel (§587 M4): the active slide's colour and "Set image as background". */
-export default function BackgroundPanel({ color, onColorPreview, onColorChange, onColorCancel, canSetImage, onSetImage, brandColours = [], images }: BackgroundPanelProps) {
+export default function BackgroundPanel({ color, onColorPreview, onColorChange, onColorCancel, canSetImage, onSetImage, brandColours = [], images, canSetImages = true }: BackgroundPanelProps) {
   // The swatch shows the pick as it moves; nothing is written until it commits.
   const [draft, setDraft] = useState<string | null>(null)
   return (
@@ -51,7 +53,7 @@ export default function BackgroundPanel({ color, onColorPreview, onColorChange, 
           target="slide"
         />
       </div>
-      {images}
+      {images && <fieldset disabled={!canSetImages} className="m-0 flex min-w-0 flex-col gap-4 border-0 p-0">{images}</fieldset>}
       <button
         type="button"
         disabled={!canSetImage}
