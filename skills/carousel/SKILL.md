@@ -208,8 +208,6 @@ Brand-shipped overlays (`hook`, `faq_card`) follow this pattern. Author new over
 
 ## 8 — Render
 
-Set `project.status` to `"final"` via `PUT /api/projects/{id}` before running render — the render command requires it.
-
 ```bash
 montaj render <project_workspace>/project.json
 ```

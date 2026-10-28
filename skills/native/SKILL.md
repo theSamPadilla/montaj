@@ -42,21 +42,9 @@ Both modes run on the same machine and share one filesystem, so file paths are a
 
 ---
 
-## Project lifecycle — status, and the render gate
+## Project status
 
-A project moves `pending` → `draft` → `final`. `status` is an ordinary project field: read the project, merge `{"status": "final"}`, save it.
-
-**The renderer refuses anything that is not `final`.** It checks before doing any work and fails with:
-
-```
-Project status must be 'final', got 'draft'
-```
-
-That is a gate, not a bug — status transitions are the only moments Montaj auto-commits to git, so `draft`→`final` is what makes the finished edit recoverable.
-
-**So before you render: set `status` to `"final"` and save the project.** As its own save, once the timeline is complete. A fully correct timeline renders nothing if the status was never moved, and the failure surfaces at the render call rather than at the save that omitted it — so it reads as a broken renderer. **Retrying the render will not clear it; only the status change will.**
-
-Applies in both modes, and to every workflow that ends in a render.
+`status` is a label: `pending`, `draft`, `final`. Any status renders. Moving it to `draft` or `final` is when Montaj commits the project to git, so set `final` once the edit is done.
 
 ---
 

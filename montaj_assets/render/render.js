@@ -487,22 +487,18 @@ function planExport({ exportMode, projectColorSpace, outputPath }) {
 /**
  * Step 1 of a render, shared with --estimate (§213): read and validate the
  * project, resolve its paths and settings, and name where the render writes.
- * Reads only: no file is written or created. `requireFinal` is the render's
- * status check (an estimate is asked before the project is final);
- * `overrides` (`{ resolution, fps, motionBlur }`: --estimate's, or a render's
+ * Reads only: no file is written or created. Any status renders: `status`
+ * is a label (pending, draft, final), never a gate. `overrides` (`{ resolution, fps, motionBlur }`: --estimate's, or a render's
  * --fps and --motion-blur, §284) stand in for the project's settings, in
  * memory only.
  */
-function loadRenderProject(projectPath, { out = null, requireFinal = true, overrides = null } = {}) {
+function loadRenderProject(projectPath, { out = null, overrides = null } = {}) {
   // 1. Validate + resolve paths
   const absProjectPath = resolve(projectPath)
   if (!existsSync(absProjectPath)) fail('file_not_found', `project.json not found: ${absProjectPath}`)
 
   const projectJson = JSON.parse(readFileSync(absProjectPath, 'utf8'))
 
-  if (requireFinal && projectJson.status !== 'final') {
-    fail('invalid_status', `Project status must be 'final', got '${projectJson.status ?? 'undefined'}'`)
-  }
   if (overrides) {
     projectJson.settings = {
       ...(projectJson.settings ?? {}),
@@ -1012,7 +1008,7 @@ async function estimateMain(projectPath, { out = null, workers = null, exportMod
   const {
     projectJson, pristineProject, settings, fps, motionBlur,
     renderWidth, renderHeight, workspaceDir, renderDir, segDir, outputPath,
-  } = loadRenderProject(projectPath, { out, requireFinal: false, overrides })
+  } = loadRenderProject(projectPath, { out, overrides })
 
   let estimate, reclaimBytes, memory = null
   // §434: whether the render would capture in time slices, and at what budget.

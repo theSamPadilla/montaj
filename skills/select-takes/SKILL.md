@@ -125,8 +125,6 @@ The `.srt` is in the time of the spec you transcribed, which the words JSON's `m
 
 Run step `crop_spec` with `{"input": "/path/spec.json", "keeps": [[8.5, 34.1]]}`. `input` must be a spec file on disk (save an inline spec with `write_file` first); `keeps` is a native JSON array of `[start, end]` pairs, `null` for open-ended. Never encode an intermediate file: cropping keeps `src` on the original.
 
-When this is the last editorial pass before the render, the project must be `final` before the render will run: see skill `native`, "Project lifecycle".
-
 ## What to Log
 
 Before applying, log your decisions by line:

@@ -12,7 +12,7 @@ node render/render.js <project.json> [--out <path>] [--workers <n>] [--clean]
 `stderr`: progress lines.
 `exit 1` + JSON error on failure.
 
-Project status must be `"final"` before rendering. The render is non-destructive — source files are never modified.
+A project renders at any status (`status` is a label). The render is non-destructive — source files are never modified.
 
 ---
 

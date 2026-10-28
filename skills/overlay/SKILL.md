@@ -81,8 +81,6 @@ For multiple non-overlapping overlays, images or clips, add them to the same exi
 
 Follow save discipline: **read the project**, merge the updated `tracks` array into the fresh state, then **save the project (delta)**.
 
-When this is the last editorial pass before the render, the project must be `final` before the render will run — see skill `native` → "Project lifecycle — status, and the render gate".
-
 ## Rules
 
 - **Always use absolute paths** for `src` — the render engine won't resolve relative paths
