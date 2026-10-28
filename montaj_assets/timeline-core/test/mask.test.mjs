@@ -95,9 +95,21 @@ test('maskSvg: same polygon, blur only when feathered, inverted colours', () => 
   assert.match(svg, /<polygon points="[^"]+" fill="#fff"/)
   const soft = maskSvg({ ...m, feather: 0.1 }, 200, 100)
   assert.match(soft, /<feGaussianBlur stdDeviation="10"\/>/)
+  // user-space filter region: the box plus 3 sigma, not a fraction of the shape's own box
+  assert.match(soft, /<filter id="f" filterUnits="userSpaceOnUse" x="-30" y="-30" width="260" height="160">/)
   const inv = maskSvg({ ...m, invert: true }, 200, 100)
   assert.match(inv, /<rect [^>]*fill="#fff"/)
   assert.match(inv, /<polygon points="[^"]+" fill="#000"/)
+})
+
+test('maskSvg: the filter region holds the whole blur of a small shape (box +/- 3 sigma)', () => {
+  const m = maskAt({ mask: { shape: 'ellipse', w: 0.1, h: 0.1, feather: 0.2 } }, 0)
+  const svg = maskSvg(m, 400, 400)
+  const f = svg.match(/<filter id="f" filterUnits="userSpaceOnUse" x="([-\d.]+)" y="([-\d.]+)" width="([\d.]+)" height="([\d.]+)"/)
+  assert.ok(f, svg)
+  const [x, y, w, h] = f.slice(1).map(Number)
+  const m3 = 3 * 0.2 * 400 - 0.01 // fmt rounds to 2 decimals
+  assert.ok(x <= -m3 && y <= -m3 && x + w >= 400 + m3 && y + h >= 400 + m3)
 })
 
 test('blend modes', () => {

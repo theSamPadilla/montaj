@@ -428,8 +428,14 @@ function fmt(n) {
 export function maskSvg(mask, boxW, boxH) {
   const sigma = maskSigmaPx(mask, boxW, boxH)
   const pts = maskPolygon(mask, boxW, boxH).map(([x, y]) => `${fmt(x)},${fmt(y)}`).join(' ')
+  // The filter region is in user space and spans the box plus 3 sigma on every
+  // side. A percentage-of-bounding-box region is cut at centre +/- the shape's
+  // own width, which clips the blur of any shape narrower than half the box
+  // into a hard square (a 0.25-wide ellipse at feather 0.2 read 0 where the
+  // export reads 15).
+  const pad = 3 * sigma
   const filter = sigma > 0
-    ? `<defs><filter id="f" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="${fmt(sigma)}"/></filter></defs>`
+    ? `<defs><filter id="f" filterUnits="userSpaceOnUse" x="${fmt(-pad)}" y="${fmt(-pad)}" width="${fmt(boxW + 2 * pad)}" height="${fmt(boxH + 2 * pad)}"><feGaussianBlur stdDeviation="${fmt(sigma)}"/></filter></defs>`
     : ''
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${fmt(boxW)} ${fmt(boxH)}" preserveAspectRatio="none">`
     + filter
