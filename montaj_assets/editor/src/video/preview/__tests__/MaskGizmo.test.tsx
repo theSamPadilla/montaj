@@ -321,4 +321,27 @@ describe('mask gizmo: a wipe', () => {
     drag(screen.getByLabelText('Move mask'), { x: 54, y: 20 }, { x: 54 + 0.1 * BOX_W, y: 30 })
     expect(latest.mask!.x).toBeCloseTo(0.6)
   })
+
+  it('a wipe dragged off the box still commits, on a release anywhere (the window)', () => {
+    render(<Host initial={wipe} />)
+    const move = screen.getByLabelText('Move mask')
+    fireEvent.pointerDown(move, { clientX: 54, clientY: 96, pointerId: 1, button: 0 })
+    fireEvent.pointerMove(move, { clientX: 54 + 0.8 * BOX_W, clientY: 96, pointerId: 1 })
+    // The line is off the box now; the release lands elsewhere.
+    fireEvent.pointerUp(window, { clientX: 54 + 0.8 * BOX_W, clientY: 96, pointerId: 1 })
+    expect(commits).toHaveLength(1)
+    expect(commits[0][1].maskX).toBeCloseTo(1.3)
+    expect(latest.mask!.x).toBeCloseTo(1.3)
+  })
+
+  it('unmounting mid-drag ends the gesture with one commit', () => {
+    const { unmount } = render(<Host initial={wipe} />)
+    const move = screen.getByLabelText('Move mask')
+    fireEvent.pointerDown(move, { clientX: 54, clientY: 96, pointerId: 1, button: 0 })
+    fireEvent.pointerMove(move, { clientX: 54 + 0.1 * BOX_W, clientY: 96, pointerId: 1 })
+    expect(commits).toHaveLength(0)
+    unmount()
+    expect(commits).toHaveLength(1)
+    expect(commits[0][1].maskX).toBeCloseTo(0.6)
+  })
 })

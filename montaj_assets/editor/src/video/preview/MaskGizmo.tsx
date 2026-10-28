@@ -27,11 +27,12 @@
 // press inside the outline or on a handle never reaches the clip's own move.
 // Outside the outline nothing here takes the pointer, and the clip moves.
 
-import { useRef, type CSSProperties } from 'react'
+import { useEffect, useRef, type CSSProperties } from 'react'
 import { maskPolygon } from '@bycrux/timeline-core'
 import type { OverlayCommitOptions } from './useDragOverlay'
 import {
   featherRings,
+  maskCentre,
   maskGestureChanges,
   maskHandles,
   pointsAttr,
@@ -91,17 +92,35 @@ export interface MaskGizmoProps {
   onPreview: (changes: MaskChanges) => void
   /** Once, on release (or a lost pointer), with the gesture's changes. */
   onCommit: (changes: MaskChanges, options: OverlayCommitOptions) => void
+  /** A press on the move area that never moved (a click), on release. */
+  onClick?: () => void
 }
 
-export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onPreview, onCommit }: MaskGizmoProps) {
+export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onPreview, onCommit, onClick }: MaskGizmoProps) {
   // The press in flight: what is held, the mask when it began, where it began
   // (box pixels), and the last changes it reported.
   const pressRef = useRef<{ gesture: MaskGesture; start: ResolvedMask; from: Pt; last: MaskChanges | null } | null>(null)
 
+  // The latest props, for the window listeners a press attaches (they outlive
+  // the render that made them).
+  const live = useRef({ mask, boxW, boxH, toBox, onPreview, onCommit, onClick })
+  live.current = { mask, boxW, boxH, toBox, onPreview, onCommit, onClick }
+  // Detaches the window listeners of the press in flight.
+  const detachRef = useRef<(() => void) | null>(null)
+
   const end = (changes: MaskChanges | null, altKey: boolean) => {
     pressRef.current = null
-    if (changes) onCommit(changes, { shiftAnimation: altKey })
+    detachRef.current?.()
+    detachRef.current = null
+    if (changes) live.current.onCommit(changes, { shiftAnimation: altKey })
   }
+
+  // A gesture in flight when the gizmo goes away ends where it is.
+  useEffect(() => () => {
+    const p = pressRef.current
+    if (p) end(p.last, false)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   /** The pointer handlers for a press on `gesture`'s part. */
   const press = (gesture: MaskGesture) => ({
@@ -111,32 +130,57 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
       const from = toBox({ x: e.clientX, y: e.clientY })
       if (!from) return
       ;(e.currentTarget as Element).setPointerCapture?.(e.pointerId)
+      detachRef.current?.()
       pressRef.current = { gesture, start: mask, from, last: null }
+      // The move, the release and a lost pointer are heard on the window, not
+      // the pressed part: a wipe dragged off the box unmounts its line, and
+      // the capture with it.
+      const move = (ev: PointerEvent) => {
+        const p = pressRef.current
+        if (!p) return
+        const l = live.current
+        const to = l.toBox({ x: ev.clientX, y: ev.clientY })
+        if (!to) return
+        p.last = maskGestureChanges(p.gesture, p.start, p.from, to, l.boxW, l.boxH)
+        l.onPreview(p.last)
+      }
+      const up = (ev: PointerEvent) => {
+        const p = pressRef.current
+        if (!p) return
+        const l = live.current
+        // A press that never moved changes nothing and commits nothing.
+        const to = p.last && l.toBox({ x: ev.clientX, y: ev.clientY })
+        const changes = to ? maskGestureChanges(p.gesture, p.start, p.from, to, l.boxW, l.boxH) : p.last
+        const click = !p.last
+        end(changes, ev.altKey)
+        if (click) l.onClick?.()
+      }
+      const cancel = () => { if (pressRef.current) end(pressRef.current.last, false) }
+      window.addEventListener('pointermove', move)
+      window.addEventListener('pointerup', up)
+      window.addEventListener('pointercancel', cancel)
+      detachRef.current = () => {
+        window.removeEventListener('pointermove', move)
+        window.removeEventListener('pointerup', up)
+        window.removeEventListener('pointercancel', cancel)
+      }
     },
-    onPointerMove: (e: React.PointerEvent<Element>) => {
-      const p = pressRef.current
-      if (!p) return
-      const to = toBox({ x: e.clientX, y: e.clientY })
-      if (!to) return
-      p.last = maskGestureChanges(p.gesture, p.start, p.from, to, boxW, boxH)
-      onPreview(p.last)
-    },
-    onPointerUp: (e: React.PointerEvent<Element>) => {
-      const p = pressRef.current
-      if (!p) return
-      // A press that never moved changes nothing and commits nothing.
-      const to = p.last && toBox({ x: e.clientX, y: e.clientY })
-      end(to ? maskGestureChanges(p.gesture, p.start, p.from, to, boxW, boxH) : p.last, e.altKey)
-    },
-    // The pointer went away mid-drag: the gesture ends where it is.
-    onPointerCancel: () => { if (pressRef.current) end(pressRef.current.last, false) },
-    onLostPointerCapture: () => { if (pressRef.current) end(pressRef.current.last, false) },
     // The clip's own move listens for mousedown on its wrapper.
     onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
   })
 
   const wipe = mask.shape === 'wipe'
   const outline = wipe ? wipeLine(mask, boxW, boxH) : maskPolygon(mask, boxW, boxH)
+  // A wipe's grab line stays mounted when its edge leaves the box (a full
+  // reveal): the unclipped line, so a drag in flight keeps its target.
+  const grab = wipe
+    ? (outline as Array<[number, number]> | null) ?? (() => {
+        const c = maskCentre(mask, boxW, boxH)
+        const t = (mask.rotation * Math.PI) / 180
+        const r = 2 * Math.max(boxW, boxH)
+        return [[c.x + Math.sin(t) * r, c.y - Math.cos(t) * r], [c.x - Math.sin(t) * r, c.y + Math.cos(t) * r]] as Array<[number, number]>
+      })()
+    : null
   const rings = featherRings(mask, boxW, boxH)
   const handles = maskHandles(mask, boxW, boxH)
 
@@ -174,9 +218,9 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
           overflow="visible"
           style={{ position: 'absolute', inset: 0, overflow: 'visible', pointerEvents: 'none' }}
         >
-          {outline && (wipe ? (
+          {(wipe ? grab : outline) && (wipe ? (
             <line
-              {...line(outline)}
+              {...line(grab!)}
               role="button"
               aria-label="Move mask"
               stroke="transparent"
@@ -187,7 +231,7 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
             />
           ) : (
             <polygon
-              points={pointsAttr(outline)}
+              points={pointsAttr(outline!)}
               role="button"
               aria-label="Move mask"
               fill="transparent"
