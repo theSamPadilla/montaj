@@ -516,6 +516,19 @@ describe('left out of the editor', () => {
     assert.deepEqual(clip(tl, 'plain').unsupported, [])
   })
 
+  test('a clip whose mask is turned off lists no mask or mask-track mark', () => {
+    const tl = build({
+      id: 'cmo', status: 'final', settings: { resolution: [1920, 1080], fps: 30 },
+      tracks: [{ id: 'trk-0', items: [
+        { id: 'off', type: 'video', src: '/abs/m.mp4', start: 0, end: 2, inPoint: 0, outPoint: 2,
+          mask: { shape: 'ellipse', enabled: false, x: 0.5, y: 0.5, w: 0.5, h: 0.5 },
+          keyframes: [{ prop: 'maskX', points: [{ t: 0, value: 0.2 }, { t: 1, value: 0.6 }] },
+            { prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 1, value: 1 }] }] },
+      ] }],
+    })
+    assert.deepEqual(clip(tl, 'off').unsupported, ['keyframes:opacity'])
+  })
+
   test('keyframes, loop, background removal and motion blur are marked; HDR and loudness warn', () => {
     const tl = build(load('keyframes'))
     assert.equal(tl.colorSpace, 'hdr_hlg')
