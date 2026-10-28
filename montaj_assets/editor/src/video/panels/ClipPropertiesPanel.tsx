@@ -318,7 +318,7 @@ function ClipTabs({ item, onPreviewClip, onCommitClip, onChangeClip, transformSl
               key={tab.value}
               hidden={!active}
               style={active ? undefined : { display: 'none' }}
-              className="flex flex-col overflow-hidden"
+              className="flex flex-col overflow-hidden shrink-0"
             >
               {/* Transform/Generate render the host slot DIRECTLY — each
                   already brings its own section chrome (OverlayInspector

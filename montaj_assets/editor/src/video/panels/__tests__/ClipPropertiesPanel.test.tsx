@@ -498,6 +498,12 @@ describe('ClipPropertiesPanel — clip tabs', () => {
     expect(screen.getByRole('button', { name: 'Transform' })).toHaveAttribute('aria-pressed', 'true')
   })
 
+  it('the Transform tab panel does not shrink, so the rail scrolls instead of clipping the Mask rows', () => {
+    renderPanel({ kind: 'clip', item: clipItem() }, { transformSlot: <div data-testid="transform-slot">Transform body</div> })
+    const panel = screen.getByTestId('transform-slot').parentElement!
+    expect(panel.className).toContain('shrink-0')
+  })
+
   it('an image clip offered the crop tool gets Transform and Crop only, with the crop diamond and no helper sentence', () => {
     renderPanel({ kind: 'clip', item: clipItem({ type: 'image' }) },
       { transformSlot: <div>T</div>, onOpenCrop: vi.fn(), cropNav: <div data-testid="crop-nav" /> })
