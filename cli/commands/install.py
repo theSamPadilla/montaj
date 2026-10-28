@@ -149,7 +149,7 @@ def _ensure_rvm() -> bool:
 
 
 def _ensure_connectors() -> bool:
-    print(f"{cyan('→')} installing {bold('connector')} deps {dim('(pyjwt, requests, google-genai, openai)')}\u2026")
+    print(f"{cyan('→')} installing {bold('connector')} deps {dim('(pyjwt, requests, google-genai)')}\u2026")
     r = subprocess.run([sys.executable, "-m", "pip", "install", "montaj[connectors]"])
     if r.returncode != 0:
         print(f"{red('error:')} {dim('pip install montaj[connectors]')} failed", file=sys.stderr)
