@@ -1488,3 +1488,204 @@ describe('OverlayInspector — keyframe all transform properties', () => {
     }
   })
 })
+
+// §616: the Blend row and the Mask section, on clips only. Every mask value is
+// shown in percent of the clip's box (fraction x 100) and written back as the
+// fraction; the feather likewise, 0 to 50.
+describe('OverlayInspector — blend and mask (clips, §616)', () => {
+  function clip(over: Partial<VisualItem> = {}): VisualItem {
+    return { id: 'v1', type: 'video', src: 'v.mp4', start: 0, end: 10, ...over } as VisualItem
+  }
+  const blend = () => screen.getByRole('combobox', { name: 'Blend mode' })
+  const maskSwitch = () => screen.getByRole('checkbox', { name: 'Mask' })
+
+  it('shows the Blend row and the Mask header on a clip, neither on an overlay', () => {
+    const { unmount } = renderInspector(clip(), 5)
+    expect(blend()).toHaveValue('normal')
+    expect(maskSwitch()).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByText('Mask')).toBeInTheDocument()
+    unmount()
+
+    renderInspector(overlayItem(), 5)
+    expect(screen.queryByRole('combobox', { name: 'Blend mode' })).toBeNull()
+    expect(screen.queryByRole('checkbox', { name: 'Mask' })).toBeNull()
+  })
+
+  it('offers the seven blend modes and writes the one picked', () => {
+    const { onChange } = renderInspector(clip(), 5)
+    expect([...(blend() as HTMLSelectElement).options].map(o => o.text))
+      .toEqual(['Normal', 'Screen', 'Multiply', 'Add', 'Lighten', 'Darken', 'Overlay'])
+
+    fireEvent.change(blend(), { target: { value: 'screen' } })
+
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect((onChange.mock.calls[0][0] as VisualItem).blendMode).toBe('screen')
+  })
+
+  it('Normal removes the blend key', () => {
+    const { onChange } = renderInspector(clip({ blendMode: 'multiply' }), 5)
+    expect(blend()).toHaveValue('multiply')
+
+    fireEvent.change(blend(), { target: { value: 'normal' } })
+
+    expect('blendMode' in (onChange.mock.calls[0][0] as VisualItem)).toBe(false)
+  })
+
+  it('the switch on a clip with no mask writes a default ellipse', () => {
+    const { onChange } = renderInspector(clip(), 5)
+
+    fireEvent.click(maskSwitch())
+
+    expect((onChange.mock.calls[0][0] as VisualItem).mask).toEqual({ shape: 'ellipse' })
+  })
+
+  it('the switch off sets enabled: false and keeps every setting', () => {
+    const { onChange } = renderInspector(clip({ mask: { shape: 'rect', w: 0.3, invert: true } }), 5)
+    expect(maskSwitch()).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(maskSwitch())
+
+    expect((onChange.mock.calls[0][0] as VisualItem).mask).toEqual({ shape: 'rect', w: 0.3, invert: true, enabled: false })
+  })
+
+  it('the switch on again removes enabled', () => {
+    const { onChange } = renderInspector(clip({ mask: { shape: 'rect', w: 0.3, enabled: false } }), 5)
+    expect(maskSwitch()).toHaveAttribute('aria-checked', 'false')
+
+    fireEvent.click(maskSwitch())
+
+    expect((onChange.mock.calls[0][0] as VisualItem).mask).toEqual({ shape: 'rect', w: 0.3 })
+  })
+
+  it('hides the rows while the mask is off or absent', () => {
+    const { unmount } = renderInspector(clip({ mask: { shape: 'ellipse', enabled: false } }), 5)
+    expect(screen.queryByLabelText('Mask X')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Ellipse mask' })).toBeNull()
+    unmount()
+
+    renderInspector(clip(), 5)
+    expect(screen.queryByLabelText('Mask X')).toBeNull()
+  })
+
+  it('shows every row in percent of the box when the mask is on', () => {
+    renderInspector(clip({ mask: { shape: 'ellipse', x: 0.3, h: 0.25, rotation: 20, feather: 0.04 } }), 5)
+
+    expect(screen.getByLabelText('Mask X')).toHaveValue(30)
+    expect(screen.getByLabelText('Mask Y')).toHaveValue(50) // default centre
+    expect(screen.getByLabelText('Mask width')).toHaveValue(50)
+    expect(screen.getByLabelText('Mask height')).toHaveValue(25)
+    expect(screen.getByLabelText('Mask rotation')).toHaveValue(20)
+    expect(screen.getByRole('slider', { name: 'Mask rotation dial' })).toHaveAttribute('aria-valuenow', '20')
+    expect(screen.getByLabelText('Mask feather')).toHaveValue(4)
+    expect((screen.getByRole('slider', { name: 'Mask feather slider' }) as HTMLInputElement).value).toBe('0.04')
+    expect(screen.getByRole('checkbox', { name: 'Invert mask' })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('the chevron collapses the rows and keeps the header', () => {
+    renderInspector(clip({ mask: { shape: 'ellipse' } }), 5)
+    expect(screen.getByLabelText('Mask X')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse mask' }))
+
+    expect(screen.queryByLabelText('Mask X')).toBeNull()
+    expect(maskSwitch()).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand mask' }))
+    expect(screen.getByLabelText('Mask X')).toBeInTheDocument()
+  })
+
+  it('marks the current shape, and Wipe writes shape wipe', () => {
+    const { onChange } = renderInspector(clip({ mask: { shape: 'ellipse', w: 0.3 } }), 5)
+    expect(screen.getByRole('button', { name: 'Ellipse mask' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Wipe mask' })).toHaveAttribute('aria-pressed', 'false')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Wipe mask' }))
+
+    expect((onChange.mock.calls[0][0] as VisualItem).mask).toEqual({ shape: 'wipe', w: 0.3 })
+  })
+
+  it('hides Size for a wipe, which ignores it', () => {
+    renderInspector(clip({ mask: { shape: 'wipe' } }), 5)
+
+    expect(screen.queryByLabelText('Mask width')).toBeNull()
+    expect(screen.queryByLabelText('Mask height')).toBeNull()
+    expect(screen.getByLabelText('Mask X')).toBeInTheDocument()
+  })
+
+  it('X at 30 writes mask.x = 0.3 when maskX is not keyframed', () => {
+    const { onPreview } = renderInspector(clip({ mask: { shape: 'ellipse' } }), 5)
+
+    fireEvent.change(screen.getByLabelText('Mask X'), { target: { value: '30' } })
+
+    const next = onPreview.mock.calls[0][0] as VisualItem
+    expect(next.mask).toEqual({ shape: 'ellipse', x: 0.3 })
+    expect(next.keyframes).toBeUndefined()
+  })
+
+  it('X keys maskX at the playhead when maskX is keyframed', () => {
+    const item = clip({
+      mask: { shape: 'ellipse', x: 0.5 },
+      keyframes: [{ prop: 'maskX', points: [{ t: 0, value: 0.2 }, { t: 10, value: 0.8 }] }],
+    })
+    const { onPreview } = renderInspector(item, 3) // localT = 3
+
+    fireEvent.change(screen.getByLabelText('Mask X'), { target: { value: '30' } })
+
+    const next = onPreview.mock.calls[0][0] as VisualItem
+    expect(trackFor(next, 'maskX')!.points).toEqual([
+      { t: 0, value: 0.2 }, { t: 3, value: 0.3 }, { t: 10, value: 0.8 },
+    ])
+    expect(next.mask).toEqual({ shape: 'ellipse', x: 0.5 }) // the static field is untouched
+  })
+
+  it('Feather 4 writes 0.04', () => {
+    const { onPreview } = renderInspector(clip({ mask: { shape: 'ellipse' } }), 5)
+
+    fireEvent.change(screen.getByLabelText('Mask feather'), { target: { value: '4' } })
+
+    expect((onPreview.mock.calls[0][0] as VisualItem).mask!.feather).toBe(0.04)
+  })
+
+  it('a typed feather past 50 is held at 0.5, the most the mask takes', () => {
+    const { onPreview } = renderInspector(clip({ mask: { shape: 'ellipse' } }), 5)
+
+    fireEvent.change(screen.getByLabelText('Mask feather'), { target: { value: '80' } })
+
+    expect((onPreview.mock.calls[0][0] as VisualItem).mask!.feather).toBe(0.5)
+  })
+
+  it('Invert writes invert: true', () => {
+    const { onChange } = renderInspector(clip({ mask: { shape: 'ellipse' } }), 5)
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Invert mask' }))
+
+    expect((onChange.mock.calls[0][0] as VisualItem).mask).toEqual({ shape: 'ellipse', invert: true })
+  })
+
+  it('the Position unit keys maskX and maskY together, holding their values', () => {
+    const { onChange } = renderInspector(clip({ mask: { shape: 'ellipse', x: 0.3 } }), 4) // localT = 4
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add Mask position keyframe at playhead' }))
+
+    const next = onChange.mock.calls[0][0] as VisualItem
+    expect(trackFor(next, 'maskX')!.points).toEqual([{ t: 4, value: 0.3 }])
+    expect(trackFor(next, 'maskY')!.points).toEqual([{ t: 4, value: 0.5 }])
+    expect(hasKeyframes(next, 'maskW')).toBe(false)
+  })
+
+  it('each mask unit is pressed on a keyframe at the playhead and removes it', () => {
+    const item = clip({
+      mask: { shape: 'ellipse' },
+      keyframes: [{ prop: 'maskFeather', points: [{ t: 2, value: 0.1 }, { t: 6, value: 0.2 }] }],
+    })
+    const { onChange } = renderInspector(item, 2) // localT = 2
+
+    const diamond = screen.getByRole('button', { name: 'Remove Mask feather keyframe at playhead' })
+    expect(diamond).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Add Mask size keyframe at playhead' })).toHaveAttribute('aria-pressed', 'false')
+
+    fireEvent.click(diamond)
+
+    expect(trackFor(onChange.mock.calls[0][0] as VisualItem, 'maskFeather')!.points).toEqual([{ t: 6, value: 0.2 }])
+  })
+})

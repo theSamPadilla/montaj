@@ -1,4 +1,4 @@
-import { useRef, type ComponentType, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { useRef, useState, type ComponentType, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import {
   AlignCenterHorizontal,
   AlignCenterVertical,
@@ -6,12 +6,17 @@ import {
   AlignEndVertical,
   AlignStartHorizontal,
   AlignStartVertical,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Circle,
+  Columns2,
   Diamond,
+  RectangleHorizontal,
   RotateCcw,
 } from 'lucide-react'
-import type { TransformKeyframeProp, VisualItem } from '../schema'
+import { BLEND_MODES, MASK_FIELD_OF, MASK_SHAPES, blendModeOf, maskAt } from '@bycrux/timeline-core'
+import type { BlendMode, ItemMask, KeyframeProp, MaskKeyframeProp, TransformKeyframeProp, VisualItem } from '../schema'
 import {
   KEYFRAME_TIME_EPSILON,
   addKeyframeAt,
@@ -29,7 +34,7 @@ import {
   canKeyframeProp,
 } from './keyframeOps'
 import { usePlaybackTime, type PlaybackClock } from './playback-clock'
-import { NumberField, Slider, cn, stepValue } from '../ui'
+import { NumberField, Slider, cn, inspectorInputClass, stepValue } from '../ui'
 
 /**
  * `<OverlayInspector>` — the editor's contextual right-hand **Transform**
@@ -59,6 +64,13 @@ import { NumberField, Slider, cn, stepValue } from '../ui'
  * when one does, and a click adds or removes that ONE keyframe. It never
  * deletes the animation; see keyframeOps' `removeKeyframeAt` for what removing
  * the last keyframe leaves behind.
+ *
+ * Clips (video and image) get two more controls, §616: a Blend row (the
+ * `blendMode` the clip composites with) and a collapsible Mask section (the
+ * `mask` it shows through: shape, position, size, rotation, feather, invert).
+ * Mask values are shown in percent of the clip's box and stored as fractions;
+ * every one goes through the same {@link writeProp} rule, so a keyframed mask
+ * prop is keyed at the playhead. Overlays take neither.
  *
  * Deliberately the ONLY place opacity is editable at all — the preview's drag
  * gestures (useDragOverlay) cover offset/scale/rotation but never opacity, so
@@ -108,6 +120,16 @@ interface RowSpec {
   max?: number
 }
 
+/** What a number box needs from its row: the name and the stepper's bounds. */
+type CellSpec = Pick<RowSpec, 'name' | 'step' | 'min' | 'max'>
+
+/** A Mask row (§616). `factor` converts the stored value to what the box
+ *  shows: fractions of the box show as percent (x 100), rotation as degrees. */
+interface MaskRowSpec extends CellSpec {
+  prop: MaskKeyframeProp
+  factor: number
+}
+
 // Offsets/rotation are unbounded (percent of frame / degrees, can go negative
 // or past 100/360 for effects); scale only needs a floor above zero; opacity
 // is clamped to the 0–1 range the renderer expects.
@@ -120,6 +142,26 @@ const ROWS: Record<TransformKeyframeProp, RowSpec> = {
   rotation: { prop: 'rotation', name: 'Rotation', step: 1 },
   opacity:  { prop: 'opacity',  name: 'Opacity',  step: 0.01, min: 0, max: 1 },
 }
+
+// In SHOWN units. A typed value is clamped to them on write (NumberField
+// leaves bounding to its caller), because the mask refuses a side of 0 and a
+// feather past 0.5.
+const MASK_ROWS: Record<MaskKeyframeProp, MaskRowSpec> = {
+  maskX:        { prop: 'maskX',        name: 'Mask X',        step: 1, factor: 100 },
+  maskY:        { prop: 'maskY',        name: 'Mask Y',        step: 1, factor: 100 },
+  maskW:        { prop: 'maskW',        name: 'Mask width',    step: 1, min: 1, factor: 100 },
+  maskH:        { prop: 'maskH',        name: 'Mask height',   step: 1, min: 1, factor: 100 },
+  maskRotation: { prop: 'maskRotation', name: 'Mask rotation', step: 1, factor: 1 },
+  maskFeather:  { prop: 'maskFeather',  name: 'Mask feather',  step: 1, min: 0, max: 50, factor: 100 },
+}
+
+/** The shape buttons, in timeline-core's picker order. lucide has no ellipse
+ *  glyph, so the ellipse is its circle. */
+const MASK_SHAPE_BUTTONS: { shape: ItemMask['shape']; label: string; icon: ComponentType<{ size?: number }> }[] = [
+  { shape: 'ellipse', label: 'Ellipse mask',   icon: Circle },
+  { shape: 'rect',    label: 'Rectangle mask', icon: RectangleHorizontal },
+  { shape: 'wipe',    label: 'Wipe mask',      icon: Columns2 },
+]
 
 /** Identity transform. Kept in step with `geometryAt`'s defaults in
  *  `@bycrux/timeline-core` — the same values `valueAt` falls back to when a
@@ -212,25 +254,66 @@ function normalizeDegrees(deg: number): number {
 // ── Shared chrome ────────────────────────────────────────────────────────
 
 const ROW_LABEL_CLASS = 'w-14 shrink-0 text-[11px] text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]'
+/** The caps style of a section header ("All", "Mask"). */
+const HEADER_CAPS_CLASS = 'px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)]'
 const ICON_BUTTON_CLASS =
   'flex h-5 w-5 shrink-0 items-center justify-center rounded text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)] transition-colors hover:bg-[var(--editor-surface)] hover:text-[var(--editor-text)] disabled:pointer-events-none disabled:opacity-25'
 
+/** `pressed` makes it one of a set (the mask shapes): `aria-pressed`, and an
+ *  accent wash on the current one. Left out, the button is a plain action. */
 function IconButton({
   label,
   disabled,
   onClick,
   title,
+  pressed,
   children,
 }: {
   label: string
   disabled?: boolean
   onClick: () => void
   title?: string
+  pressed?: boolean
   children: ReactNode
 }) {
   return (
-    <button type="button" aria-label={label} title={title} disabled={disabled} onClick={onClick} className={ICON_BUTTON_CLASS}>
+    <button
+      type="button"
+      aria-label={label}
+      aria-pressed={pressed}
+      title={title}
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(ICON_BUTTON_CLASS, pressed && 'bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] text-[var(--editor-text)]')}
+    >
       {children}
+    </button>
+  )
+}
+
+/** The panel's on/off switch (Uniform scale, Mask, Invert). `role="checkbox"`
+ *  on a <button> is keyboard-operable natively (Space/Enter both fire click),
+ *  so it needs no key handler of its own, only a visible focus ring. */
+function Toggle({ checked, label, title, onClick }: { checked: boolean; label: string; title?: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      aria-label={label}
+      title={title}
+      onClick={onClick}
+      className={cn(
+        'ml-auto relative h-4 w-7 shrink-0 rounded-full outline-none transition-colors focus-visible:ring-1 focus-visible:ring-[var(--editor-accent)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--editor-surface)]',
+        checked ? 'bg-[var(--editor-accent)]' : 'bg-[var(--editor-border)]',
+      )}
+    >
+      <span
+        className={cn(
+          'absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all',
+          checked ? 'right-0.5' : 'left-0.5',
+        )}
+      />
     </button>
   )
 }
@@ -307,11 +390,13 @@ const DIAL_RADIUS = 14
  */
 function RotationDial({
   rotation,
+  label = 'Rotation dial',
   onPreview,
   onCommit,
   onChange,
 }: {
   rotation: number
+  label?: string
   onPreview: (deg: number) => void
   onCommit: () => void
   onChange: (deg: number) => void
@@ -389,7 +474,7 @@ function RotationDial({
       height={DIAL_SIZE_PX}
       viewBox={`0 0 ${DIAL_SIZE_PX} ${DIAL_SIZE_PX}`}
       role="slider"
-      aria-label="Rotation dial"
+      aria-label={label}
       aria-valuemin={0}
       aria-valuemax={360}
       aria-valuenow={Math.round(rotation)}
@@ -423,7 +508,7 @@ function RotationDial({
 }
 
 interface NumberCellProps {
-  row: RowSpec
+  row: CellSpec
   /** Accessible-name override for the second box of a paired row (Scale Y). */
   name?: string
   /** Visible axis prefix. Purely decorative — the accessible name already
@@ -509,6 +594,9 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   // cheap: this component renders nothing else, so a tick that turns out to
   // target a non-overlay/no selection still only re-runs this one function.
   const playhead = usePlaybackTime(clock)
+  // The Mask section's chevron. Local UI state, like a disclosure: it is not
+  // part of the item, so it may outlive a selection change.
+  const [maskOpen, setMaskOpen] = useState(true)
 
   if (!canKeyframe(item)) {
     return (
@@ -571,7 +659,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
 
   /** Whether a keyframe on `prop` sits at the playhead: what every diamond
    *  shows. Not "is `prop` animated at all", which it used to be. */
-  function keyedHere(prop: TransformKeyframeProp): boolean {
+  function keyedHere(prop: KeyframeProp): boolean {
     return keyframeTimeAt(target, prop, localT) !== undefined
   }
 
@@ -588,7 +676,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   }
 
   /** Ascending, de-duplicated keyframe times across `props`. */
-  function keyframeTimes(props: readonly TransformKeyframeProp[]): number[] {
+  function keyframeTimes(props: readonly KeyframeProp[]): number[] {
     const times = new Set<number>()
     for (const prop of props) for (const point of trackFor(target, prop)?.points ?? []) times.add(point.t)
     return [...times].sort((a, b) => a - b)
@@ -598,7 +686,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
    *  ABSOLUTE timeline time (`item.start + t`) — keyframe `t` is item-relative
    *  (see Keyframe.t) and the clock is not. Without `onSeek` they render
    *  disabled rather than silently doing nothing. */
-  function navFor(props: readonly TransformKeyframeProp[]) {
+  function navFor(props: readonly KeyframeProp[]) {
     const times = keyframeTimes(props)
     // Strictly before/after the playhead by more than the keyframe epsilon, so
     // the keyframe the playhead is ON (after an arrow seek's float noise) is
@@ -641,13 +729,14 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   // axes. Kept separate from handleKeyframeAll so that the all-props path
   // (`transformProps(item)`, which varies with the uniform-scale lock) is
   // untouched.
+  // The mask's Position and Size pairs (§616) follow the same rule.
   const positionProps: TransformKeyframeProp[] = ['offsetX', 'offsetY']
-  const positionKeyed = positionProps.some(keyedHere)
 
-  function handlePositionToggle() {
+  function handleGroupToggle(props: readonly KeyframeProp[]) {
+    const keyed = props.some(keyedHere)
     let next = target
-    for (const prop of positionProps) {
-      next = positionKeyed ? removeKeyframeAt(next, prop, localT) : addKeyframeAt(next, prop, localT)
+    for (const prop of props) {
+      next = keyed ? removeKeyframeAt(next, prop, localT) : addKeyframeAt(next, prop, localT)
     }
     onChange(next)
   }
@@ -713,7 +802,110 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   }
 
   const headerNav = navFor(allProps)
-  const positionNav = navFor(positionProps)
+
+  /** The `‹ ◇ ›` unit for a set of props keyed as one (Position, and each
+   *  Mask row). Filled when ANY of them has a keyframe at the playhead. */
+  function groupNav(name: string, props: readonly KeyframeProp[]) {
+    const nav = navFor(props)
+    const keyed = props.some(keyedHere)
+    return (
+      <KeyframeNav
+        prevLabel={`Previous ${name} keyframe`}
+        nextLabel={`Next ${name} keyframe`}
+        diamondLabel={keyed ? `Remove ${name} keyframe at playhead` : `Add ${name} keyframe at playhead`}
+        pressed={keyed}
+        canPrev={nav.canPrev}
+        canNext={nav.canNext}
+        onPrev={nav.onPrev}
+        onNext={nav.onNext}
+        onDiamond={() => handleGroupToggle(props)}
+      />
+    )
+  }
+
+  // ── Blend and Mask (clips only, §616) ────────────────────────────────────
+
+  const isClip = target.type === 'video' || target.type === 'image'
+  const blendMode = blendModeOf(target)
+  // The mask at the playhead, every field resolved; null when there is none
+  // or it is switched off. What the switch and every Mask row read.
+  const mask = isClip ? maskAt(target, localT) : null
+
+  /** Normal is the default, so it removes the key rather than storing it. */
+  function handleBlend(mode: BlendMode) {
+    const next = { ...target }
+    if (mode === 'normal') delete next.blendMode
+    else next.blendMode = mode
+    onChange(next)
+  }
+
+  /** Off keeps every setting (`enabled: false`); on restores them, or starts a
+   *  default ellipse when there is no mask to restore. */
+  function handleMaskSwitch() {
+    const stored = target.mask
+    if (mask && stored) {
+      onChange({ ...target, mask: { ...stored, enabled: false } })
+    } else if (stored && stored.enabled === false && MASK_SHAPES.includes(stored.shape)) {
+      const on = { ...stored }
+      delete on.enabled
+      onChange({ ...target, mask: on })
+    } else {
+      onChange({ ...target, mask: { shape: 'ellipse' } })
+    }
+  }
+
+  /** A discrete write to the stored mask (shape, invert): no keyframe props. */
+  function writeMask(fields: Partial<ItemMask>) {
+    if (target.mask) onChange({ ...target, mask: { ...target.mask, ...fields } })
+  }
+
+  function handleInvert() {
+    if (!target.mask) return
+    const next = { ...target.mask }
+    if (next.invert === true) delete next.invert
+    else next.invert = true
+    onChange({ ...target, mask: next })
+  }
+
+  /** A Mask row's value as its box shows it (percent, or degrees). */
+  function shownMask(row: MaskRowSpec): number {
+    return (mask?.[MASK_FIELD_OF[row.prop]] ?? 0) * row.factor
+  }
+
+  /** A shown value back to the stored one, held to the row's bounds. */
+  function storedMask(row: MaskRowSpec, shown: number): number {
+    let v = shown
+    if (row.min !== undefined) v = Math.max(row.min, v)
+    if (row.max !== undefined) v = Math.min(row.max, v)
+    return v / row.factor
+  }
+
+  function previewMask(row: MaskRowSpec, shown: number) {
+    onPreview(writeProp(target, row.prop, localT, storedMask(row, shown)))
+  }
+
+  function commitMask(row: MaskRowSpec, shown: number) {
+    onChange(writeProp(target, row.prop, localT, storedMask(row, shown)))
+  }
+
+  function handleMaskStep(row: MaskRowSpec, direction: 1 | -1) {
+    commitMask(row, stepValue(shownMask(row), direction, row))
+  }
+
+  /** One Mask number box, bound to its row. */
+  function maskCell(prop: MaskKeyframeProp, prefix?: string) {
+    const row = MASK_ROWS[prop]
+    return (
+      <NumberCell
+        row={row}
+        prefix={prefix}
+        value={shownMask(row)}
+        onPreview={v => previewMask(row, v)}
+        onCommit={onCommit}
+        onStep={d => handleMaskStep(row, d)}
+      />
+    )
+  }
 
   /** The `‹ ◇ ›` unit for one row. */
   function rowNav(prop: TransformKeyframeProp) {
@@ -759,7 +951,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
           only hosts the ALL-properties actions (reset-all + keyframe-all); the
           muted "All" scopes them apart from each row's own per-property unit. */}
       <div className="shrink-0 flex items-center gap-1 border-b border-[var(--editor-border)] px-2 py-1.5">
-        <span className="px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)]">
+        <span className={HEADER_CAPS_CLASS}>
           All
         </span>
         <div className="ml-auto flex items-center gap-1">
@@ -842,31 +1034,15 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
             off splits that into `scaleX`/`scaleY`, and back on collapses
             them again — see handleUniformToggle for both tiebreaks. The
             state is DERIVED from the item (isUniform), never held here, so
-            selecting a different overlay shows that overlay's answer.
-            `role="checkbox"` on a <button> is keyboard-operable natively
-            (Space/Enter both fire click), so it needs no key handler of its
-            own — only a visible focus ring. */}
+            selecting a different overlay shows that overlay's answer. */}
         <div className="flex items-center gap-2">
           <span className="shrink-0 text-[11px] text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">Uniform scale</span>
-          <button
-            type="button"
-            role="checkbox"
-            aria-checked={uniform}
-            aria-label="Uniform scale"
+          <Toggle
+            checked={uniform}
+            label="Uniform scale"
             title={uniform ? 'Width and height scale together' : 'Width and height scale independently'}
             onClick={handleUniformToggle}
-            className={cn(
-              'ml-auto relative h-4 w-7 shrink-0 rounded-full outline-none transition-colors focus-visible:ring-1 focus-visible:ring-[var(--editor-accent)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--editor-surface)]',
-              uniform ? 'bg-[var(--editor-accent)]' : 'bg-[var(--editor-border)]',
-            )}
-          >
-            <span
-              className={cn(
-                'absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all',
-                uniform ? 'right-0.5' : 'left-0.5',
-              )}
-            />
-          </button>
+          />
         </div>
 
         {/* ── Position ───────────────────────────────────────────────────
@@ -896,19 +1072,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
             onCommit={onCommit}
             onStep={d => handleStep(ROWS.offsetY, d)}
           />
-          <div className="ml-auto">
-            <KeyframeNav
-              prevLabel="Previous Position keyframe"
-              nextLabel="Next Position keyframe"
-              diamondLabel={positionKeyed ? 'Remove Position keyframe at playhead' : 'Add Position keyframe at playhead'}
-              pressed={positionKeyed}
-              canPrev={positionNav.canPrev}
-              canNext={positionNav.canNext}
-              onPrev={positionNav.onPrev}
-              onNext={positionNav.onNext}
-              onDiamond={handlePositionToggle}
-            />
-          </div>
+          <div className="ml-auto">{groupNav('Position', positionProps)}</div>
         </div>
 
         {/* ── Rotate ───────────────────────────────────────────────────── */}
@@ -943,6 +1107,25 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
           <div className="ml-auto">{rowNav('opacity')}</div>
         </div>
 
+        {/* ── Blend (clips) ────────────────────────────────────────────────
+            Not keyframable, so no unit. A native select styled like the
+            number boxes. */}
+        {isClip && (
+          <div className="flex items-center gap-2">
+            <span className={ROW_LABEL_CLASS}>Blend</span>
+            <select
+              aria-label="Blend mode"
+              value={blendMode}
+              onChange={e => handleBlend(e.target.value as BlendMode)}
+              className={cn(inspectorInputClass, 'h-7 w-28 px-1.5 py-0 text-xs')}
+            >
+              {BLEND_MODES.map(mode => (
+                <option key={mode} value={mode}>{mode[0].toUpperCase() + mode.slice(1)}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
         {/* ── Align ────────────────────────────────────────────────────── */}
         <div className="flex items-center gap-2">
           <span className={ROW_LABEL_CLASS}>Align</span>
@@ -968,6 +1151,109 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
           ))}
         </div>
       </div>
+
+      {/* ── Mask (clips) ───────────────────────────────────────────────────
+          A header (chevron, "Mask", switch) between two rules, then the rows
+          while the mask is on and the section is open. The switch keeps the
+          settings when it turns the mask off (`enabled: false`). */}
+      {isClip && (
+        <>
+          <div className={cn('shrink-0 flex items-center gap-1 border-t border-[var(--editor-border)] px-2 py-1.5', maskOpen && mask && 'border-b')}>
+            <button
+              type="button"
+              aria-label={maskOpen ? 'Collapse mask' : 'Expand mask'}
+              aria-expanded={maskOpen}
+              onClick={() => setMaskOpen(open => !open)}
+              className={ICON_BUTTON_CLASS}
+            >
+              {maskOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            </button>
+            <span className={HEADER_CAPS_CLASS}>Mask</span>
+            <Toggle checked={!!mask} label="Mask" onClick={handleMaskSwitch} />
+          </div>
+
+          {maskOpen && mask && (
+            <div className="flex flex-col gap-2 p-2">
+              <div className="flex items-center gap-2">
+                <span className={ROW_LABEL_CLASS}>Shape</span>
+                <div className="flex items-center gap-0.5">
+                  {MASK_SHAPE_BUTTONS.map(({ shape, label, icon: Icon }) => (
+                    <IconButton key={shape} label={label} pressed={mask.shape === shape} onClick={() => { if (mask.shape !== shape) writeMask({ shape }) }}>
+                      <Icon size={12} />
+                    </IconButton>
+                  ))}
+                </div>
+              </div>
+
+              {/* Position and Size wrap like the transform Position row, one
+                  unit for the pair. A wipe ignores size, so it has no Size. */}
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className={ROW_LABEL_CLASS}>Position</span>
+                {maskCell('maskX', 'X')}
+                {maskCell('maskY', 'Y')}
+                <div className="ml-auto">{groupNav('Mask position', ['maskX', 'maskY'])}</div>
+              </div>
+
+              {mask.shape !== 'wipe' && (
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className={ROW_LABEL_CLASS}>Size</span>
+                  {maskCell('maskW', 'W')}
+                  {maskCell('maskH', 'H')}
+                  <div className="ml-auto">{groupNav('Mask size', ['maskW', 'maskH'])}</div>
+                </div>
+              )}
+
+              <div className="flex items-center gap-2">
+                <span className={ROW_LABEL_CLASS}>Rotate</span>
+                {maskCell('maskRotation')}
+                <RotationDial
+                  rotation={mask.rotation}
+                  label="Mask rotation dial"
+                  onPreview={deg => previewMask(MASK_ROWS.maskRotation, deg)}
+                  onCommit={onCommit}
+                  onChange={deg => commitMask(MASK_ROWS.maskRotation, deg)}
+                />
+                <div className="ml-auto">{groupNav('Mask rotation', ['maskRotation'])}</div>
+              </div>
+
+              {/* The Scale row's slider and percent box: the slider on the
+                  stored fraction, the box in percent (0 to 50). */}
+              <div className="flex items-center gap-2">
+                <span className={ROW_LABEL_CLASS}>Feather</span>
+                <Slider
+                  aria-label="Mask feather slider"
+                  value={mask.feather}
+                  min={0}
+                  max={0.5}
+                  step={0.01}
+                  onChange={v => onPreview(writeProp(target, 'maskFeather', localT, v))}
+                  onCommit={onCommit}
+                  className="min-w-0 flex-1"
+                />
+                <NumberField
+                  id="overlay-inspector-mask-feather"
+                  name={MASK_ROWS.maskFeather.name}
+                  step={1}
+                  min={0}
+                  max={50}
+                  unit="%"
+                  value={displayValue(shownMask(MASK_ROWS.maskFeather))}
+                  onPreview={v => previewMask(MASK_ROWS.maskFeather, v)}
+                  onCommit={onCommit}
+                  onStep={d => handleMaskStep(MASK_ROWS.maskFeather, d)}
+                  className="h-7 w-12 px-1.5 text-xs"
+                />
+                {groupNav('Mask feather', ['maskFeather'])}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className={ROW_LABEL_CLASS}>Invert</span>
+                <Toggle checked={mask.invert} label="Invert mask" onClick={handleInvert} />
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   )
 }
