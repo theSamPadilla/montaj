@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
-import { containsTime, geometryAt, hasCropKeyframes, resolveAt } from '@bycrux/timeline-core'
+import { containsTime, geometryAt, hasCropKeyframes, maskAt, resolveAt } from '@bycrux/timeline-core'
 import { isProxyUsable, markProxyFailed } from './proxySupport'
 import { mediaBoxStyle, perAxisRatio } from './transformStyle'
 import { sourceCropVideoStyle } from './sourceCropStyle'
@@ -11,8 +11,11 @@ import OverlayErrorBoundary from '../../carousel/OverlayErrorBoundary'
 import { getOverlayDesignCanvas } from '../design-canvas'
 import { ensureGoogleFontsLoaded } from '../../lib/google-fonts'
 import { useFontEpoch } from '../../lib/use-font-epoch'
-import type { Corner, Edge, OverlayChanges } from './useDragOverlay'
+import { applyOverlayChanges } from './useDragOverlay'
+import type { Corner, Edge, OverlayChanges, OverlayCommitOptions } from './useDragOverlay'
 import type { useDragOverlay } from './useDragOverlay'
+import MaskGizmo from './MaskGizmo'
+import { clientToBox, type ClipPlacement, type MaskChanges } from './maskGizmoMath'
 import { useMissingClips } from '../missingClips'
 import { effectiveItemAudio, enabledTrackItems, enabledTracks, withEnabledItemTracks } from '../timeline/timeline-model'
 
@@ -460,7 +463,7 @@ interface OverlayItemsLayerProps {
   tracks0NonVideo: VisualItem[]
   renderScale: number
   selectedOverlayId?: string
-  onOverlayChange?: (id: string, changes: OverlayChanges) => void
+  onOverlayChange?: (id: string, changes: OverlayChanges, options?: OverlayCommitOptions) => void
   /** Open the props dialog for an overlay (owned by VideoEditor). */
   onEditOverlay?: (id: string) => void
   containerRef: React.RefObject<HTMLDivElement | null>
@@ -534,6 +537,44 @@ export default function OverlayItemsLayer({
   // failed flips isProxyUsable() below, swapping the overlay video back to its
   // master src on the forced re-render.
   const [, bumpProxyFail] = useReducer((x: number) => x + 1, 0)
+
+  // The mask gizmo's gesture in flight (§616 U2): the selected clip's mask
+  // changes so far, drawn live (the picture's mask and the gizmo) until the
+  // release commits them through `onOverlayChange`. Applied with the commit's
+  // own rule (`applyOverlayChanges` at the playhead), so what shows mid-drag
+  // is exactly what the release writes, keyframed or not.
+  const [liveMask, setLiveMask] = useState<{ id: string; changes: MaskChanges } | null>(null)
+  const withLiveMask = (item: VisualItem): VisualItem =>
+    liveMask?.id === item.id ? applyOverlayChanges(item, liveMask.changes, currentTime) : item
+
+  // The selected clip's mask gizmo, or null: video and image clips only, with
+  // a mask on at the playhead and a host to commit to. It sits in the clip's
+  // wrapper, whose box on screen is the clip's box, beside the MediaBox and
+  // not inside it: the MediaBox carries the mask and clips to the box, and
+  // would hide the gizmo's own outside half.
+  function maskGizmoFor(item: VisualItem, shown: VisualItem, localT: number, place: ClipPlacement, boxW: number, boxH: number) {
+    if (!onOverlayChange || (item.type !== 'video' && item.type !== 'image')) return null
+    const mask = maskAt(shown, localT)
+    if (!mask || !(boxW > 0) || !(boxH > 0)) return null
+    return (
+      <MaskGizmo
+        mask={mask}
+        boxW={boxW}
+        boxH={boxH}
+        scaleX={place.scaleX}
+        scaleY={place.scaleY}
+        toBox={(p) => {
+          const rect = containerRef.current?.getBoundingClientRect()
+          return rect ? clientToBox(p, rect, place, boxW, boxH) : null
+        }}
+        onPreview={(changes) => setLiveMask({ id: item.id, changes })}
+        onCommit={(changes, options) => {
+          setLiveMask(null)
+          onOverlayChange(item.id, changes, options)
+        }}
+      />
+    )
+  }
 
   // Interactive tracks — in canvas mode this includes track 0; otherwise overlays only.
   // Enabled only: a skipped track must not be draggable in the preview either.
@@ -651,7 +692,10 @@ export default function OverlayItemsLayer({
         const scaleY   = (liveScale?.id    === item.id ? liveScale.scaleY   : null) ?? g.scaleY
         const rotation = (liveRotation?.id === item.id ? liveRotation.rotation : null) ?? g.rotation
         const hasPerAxis = item.scaleX != null || item.scaleY != null
-        const comp = compositeParts(item, localT, RENDER_W * renderScale * scaleX, RENDER_H * renderScale * scaleY)
+        const shown    = withLiveMask(item)
+        const boxW     = RENDER_W * renderScale * scaleX
+        const boxH     = RENDER_H * renderScale * scaleY
+        const comp = compositeParts(shown, localT, boxW, boxH)
         const wrapperStyle: React.CSSProperties = {
           transform: `translate(${offsetX}%, ${offsetY}%) rotate(${rotation}deg) scale(${scaleX}, ${scaleY})`,
           transformOrigin: 'center center',
@@ -704,6 +748,7 @@ export default function OverlayItemsLayer({
                 boxHeight={RENDER_H * scaleY}
               />
             </MediaBox>
+            {isSel && maskGizmoFor(item, shown, localT, { offsetX, offsetY, rotation, scaleX, scaleY }, boxW, boxH)}
             {handles}
             {isSel && onOverlayChange && (
               <FitControl locked={hasCropKeyframes(item)} value={fit} scaleX={scaleX} scaleY={scaleY} onChange={(next) => onOverlayChange(item.id, { fit: next })} />
@@ -765,9 +810,14 @@ export default function OverlayItemsLayer({
           // read its note for WHY only the incoming side ramps while the
           // outgoing side stays at 1. That is the compositing model, not an
           // oversight.
+          const shown = withLiveMask(item)
+          const boxW  = RENDER_W * renderScale * scaleX
+          const boxH  = RENDER_H * renderScale * scaleY
           const comp = item.type === 'overlay'
             ? null
-            : compositeParts(item, localT, RENDER_W * renderScale * scaleX, RENDER_H * renderScale * scaleY)
+            : compositeParts(shown, localT, boxW, boxH)
+          // Shown only once the clip is on screen (a pre-mounted video is not).
+          const maskGizmo = isSel && visible && maskGizmoFor(item, shown, localT, { offsetX, offsetY, rotation, scaleX, scaleY }, boxW, boxH)
           const opacity = comp ? comp.opacity * crossfadeFactor(item) : g.opacity
 
           function startMove(e: React.MouseEvent) {
@@ -877,6 +927,7 @@ export default function OverlayItemsLayer({
                     boxHeight={RENDER_H * scaleY}
                   />
                 </MediaBox>
+                {maskGizmo}
                 {handles}
                 {isSel && onOverlayChange && (
                   <FitControl locked={hasCropKeyframes(item)} value={fit} scaleX={scaleX} scaleY={scaleY} onChange={(next) => onOverlayChange(item.id, { fit: next })} />
@@ -951,6 +1002,7 @@ export default function OverlayItemsLayer({
                     key={`vid-${item.id}`}
                   />
                 </MediaBox>
+                {maskGizmo}
                 {handles}
               </div>
             )

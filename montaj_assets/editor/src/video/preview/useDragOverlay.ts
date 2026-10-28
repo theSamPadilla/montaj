@@ -35,6 +35,17 @@ export interface OverlayChanges {
   props?: Record<string, unknown>
   /** Legacy text overlay items only. */
   text?: string
+  /**
+   * A clip's mask fields (§616), from the on-canvas mask gizmo. Each commits
+   * like a transform prop (`writeGestureProp`): a key at the playhead when the
+   * prop is animated, else the static `mask` field. Video and image items only.
+   */
+  maskX?: number
+  maskY?: number
+  maskW?: number
+  maskH?: number
+  maskRotation?: number
+  maskFeather?: number
 }
 
 /** How a gesture's commit treats an ANIMATED property. */
@@ -49,13 +60,17 @@ export interface OverlayCommitOptions {
 /** The `OverlayChanges` fields that are keyframeable transform props. */
 const TRANSFORM_PROPS = ['offsetX', 'offsetY', 'scale', 'scaleX', 'scaleY', 'rotation'] as const satisfies readonly KeyframeProp[]
 
+/** The `OverlayChanges` fields that are keyframeable mask props (§616, the mask gizmo). */
+const MASK_PROPS = ['maskX', 'maskY', 'maskW', 'maskH', 'maskRotation', 'maskFeather'] as const satisfies readonly KeyframeProp[]
+
 /**
  * Apply one committed `OverlayChanges` to `item` with the playhead at absolute
  * timeline time `playhead`. This is VideoEditor's `handleOverlayChange` body,
  * and so the commit of every preview gesture: this hook's move, resize and
  * rotate, and PreviewPlayer's base-clip drag and wheel zoom.
  *
- * Transform props go through `writeGestureProp`, the inspector's own
+ * Transform props, and the mask props the mask gizmo sets (§616), go
+ * through `writeGestureProp`, the inspector's own
  * auto-keyframe rule: an animated prop gets a keyframe at the playhead (or,
  * with `shiftAnimation`, its whole animation moves), and a prop that is not
  * animated takes the static value exactly as before. Everything else (fit,
@@ -78,7 +93,7 @@ export function applyOverlayChanges(
   const mode = options.shiftAnimation ? 'shift' : 'key'
   const rest: OverlayChanges = { ...changes }
   let next = item
-  for (const prop of TRANSFORM_PROPS) {
+  for (const prop of [...TRANSFORM_PROPS, ...MASK_PROPS]) {
     const value = changes[prop]
     delete rest[prop]
     if (value === undefined) continue

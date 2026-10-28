@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react'
-import { containsTime, geometryAt, hasCropKeyframes } from '@bycrux/timeline-core'
+import { containsTime, geometryAt, hasCropKeyframes, maskAt } from '@bycrux/timeline-core'
 import { videoTransformContainerStyle, videoTransformBoxPct, mediaBoxStyle, perAxisRatio, zoomTo, type VideoTransform } from './transformStyle'
 import type { EditorProject as Project, VisualItem } from '../../schema'
 import type { OverlayFactory } from '../../types'
 import CaptionPreview from './CaptionPreview'
 import { getOverlayDesignCanvas } from '../design-canvas'
-import { useDragOverlay } from './useDragOverlay'
+import { applyOverlayChanges, useDragOverlay } from './useDragOverlay'
 import type { OverlayChanges, OverlayCommitOptions } from './useDragOverlay'
 import { hasKeyframes, localTimeOf } from '../keyframeOps'
 import type { CaptionEditAllPatch, CaptionEditPatch } from '../timeline/makeCaptionEdit'
@@ -22,6 +22,8 @@ import { usePlaybackTime, type PlaybackClock } from '../playback-clock'
 import { gateTimeSink, handOverToHover, useHoverScrubTime, type HoverScrub } from '../hover-scrub'
 import { sourceCropVideoStyle } from './sourceCropStyle'
 import { compositeParts } from './itemComposite'
+import MaskGizmo from './MaskGizmo'
+import { clientToBox, type MaskChanges } from './maskGizmoMath'
 import { FIT_PARENT_STYLE, fitBoxStyle } from './fitBox'
 import CarouselPreview from './CarouselPreview'
 import SocialSafeZoneOverlay, { socialStageSize, type SocialPreviewPlatform } from './SocialSafeZoneOverlay'
@@ -700,19 +702,30 @@ function PreviewSurface({
     | null
   >(null)
   const xf = liveXf ?? baseXf
+  // The mask gizmo's gesture in flight on the base clip (§616 U2), drawn live
+  // with the commit's own rule until the release commits it (see
+  // OverlayItemsLayer's `liveMask`).
+  const [liveBaseMask, setLiveBaseMask] = useState<{ id: string; changes: MaskChanges } | null>(null)
+  const baseShown = activeClip && liveBaseMask?.id === activeClip.id
+    ? applyOverlayChanges(activeClip, liveBaseMask.changes, currentTime)
+    : activeClip
+  // The base clip's box in preview pixels, at the scale on screen.
+  const baseSx = xf.scaleX ?? xf.scale ?? 1
+  const baseSy = xf.scaleY ?? xf.scale ?? 1
+  const baseBoxW = RENDER_W * renderScale * baseSx
+  const baseBoxH = RENDER_H * renderScale * baseSy
   // The base clip's compositing (§616, itemComposite.ts): its opacity at the
   // playhead and its blend mode on the transform container, a direct child of
   // the frame, so the blend's backdrop is the frame's own (isolated) group, as
   // the export composites onto its canvas; its mask on the media box, whose
   // CSS box is the clip's box. The box in preview pixels is the frame at the
   // scale on screen (a live zoom included).
-  const baseComp = activeClip
-    ? compositeParts(
-        activeClip,
-        localTimeOf(activeClip, currentTime),
-        RENDER_W * renderScale * (xf.scaleX ?? xf.scale ?? 1),
-        RENDER_H * renderScale * (xf.scaleY ?? xf.scale ?? 1),
-      )
+  const baseComp = baseShown
+    ? compositeParts(baseShown, localTimeOf(baseShown, currentTime), baseBoxW, baseBoxH)
+    : null
+  // The selected base clip's mask at the playhead, for its gizmo; null hides it.
+  const baseMask = showVideoTransform && onOverlayChange && baseShown && baseBoxW > 0 && baseBoxH > 0
+    ? maskAt(baseShown, localTimeOf(baseShown, currentTime))
     : null
   const transformContainerStyle = {
     ...videoTransformContainerStyle(xf),
@@ -918,6 +931,35 @@ function PreviewSurface({
               }}
             />
           ))}
+          {/* The mask gizmo (§616 U2), in the clip's box, after the move box so
+              a press inside the mask outline or on a mask handle lands on it
+              and never on the clip's move. The base clip shows no rotation
+              here, so its box is the plain % rect, drawn at its own size. */}
+          {baseMask && selectedClip && onOverlayChange && (
+            <div
+              className="absolute pointer-events-none"
+              style={{ left: `${xfBox.left}%`, top: `${xfBox.top}%`, width: `${xfBox.width}%`, height: `${xfBox.height}%` }}
+            >
+              <MaskGizmo
+                mask={baseMask}
+                boxW={baseBoxW}
+                boxH={baseBoxH}
+                scaleX={1}
+                scaleY={1}
+                toBox={(p) => {
+                  const rect = containerRef.current?.getBoundingClientRect()
+                  if (!rect) return null
+                  const place = { offsetX: xf.offsetX ?? 0, offsetY: xf.offsetY ?? 0, rotation: 0, scaleX: baseSx, scaleY: baseSy }
+                  return clientToBox(p, rect, place, baseBoxW, baseBoxH)
+                }}
+                onPreview={(changes) => setLiveBaseMask({ id: selectedClip.id, changes })}
+                onCommit={(changes, options) => {
+                  setLiveBaseMask(null)
+                  onOverlayChange(selectedClip.id, changes, options)
+                }}
+              />
+            </div>
+          )}
         </div>
       )}
 
