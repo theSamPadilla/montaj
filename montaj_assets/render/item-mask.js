@@ -12,7 +12,10 @@
 // list the editor preview paints as SVG (timeline-core's `maskPolygon`),
 // scan-converted by `rasterizeMask`; the feather is one `gblur` over a plane
 // that extends a margin past the box, so the blur has real black (or, inverted,
-// white) to pull in. A still mask is one PNG, looped; a moving mask is one
+// white) to pull in. `steps=6`: gblur approximates a Gaussian with that many box
+// passes; 3 drifts up to 11 codes from the true curve at a large feather on a
+// small shape (feather 0.2: exact 45, steps=3 gives 56, steps=6 gives 50), and
+// the preview's SVG blur is close to exact. A still mask is one PNG, looped; a moving mask is one
 // frame per output frame in a lossless ffv1 file.
 import { spawn } from 'child_process'
 import { maskAt, hasMaskKeyframes, maskSigmaPx, rasterizeMask } from '@bycrux/timeline-core'
@@ -96,9 +99,9 @@ export function writeItemMask(plan) {
       for (let k = 1; k < count; k++) {
         if (sigmas[k] !== sigmas[k - 1]) cmds.push(`${(k / fps).toFixed(6)} gblur@fe sigma ${sigmas[k].toFixed(4)}`)
       }
-      blur = `sendcmd=c='${cmds.join(';')}',gblur@fe=sigma=${sigmas[0].toFixed(4)}:steps=3,`
+      blur = `sendcmd=c='${cmds.join(';')}',gblur@fe=sigma=${sigmas[0].toFixed(4)}:steps=6,`
     } else {
-      blur = `gblur=sigma=${sigmas[0].toFixed(4)}:steps=3,`
+      blur = `gblur=sigma=${sigmas[0].toFixed(4)}:steps=6,`
     }
   }
   const filter = `[0:v]${blur}crop=${boxW}:${boxH}:${margin}:${margin},format=gray`

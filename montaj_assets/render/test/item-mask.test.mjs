@@ -1,9 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, existsSync } from 'node:fs'
+import { mkdtempSync, existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
+import { maskAt, maskSvg } from '@bycrux/timeline-core'
 import { planItemMask, writeItemMask } from '../item-mask.js'
 import { encodeSegment } from '../encode-segment.js'
 import { FFMPEG } from '../ffmpeg-bin.js'
@@ -76,6 +77,30 @@ test('write: a keyframed feather softens the edge frame by frame (sendcmd on gbl
     assert.ok(px(10, 46) < 250)
     assert.ok(px(10, 46) < px(5, 46) || px(5, 46) < 250)
   })
+})
+
+// The editor preview paints the mask as SVG (maskSvg, a true Gaussian); the
+// export writes it with rasterizeMask + gblur. They must agree, including for a
+// small shape with a big feather, where a thin filter region or too few gblur
+// passes each cost tens of codes.
+const hasRsvg = !spawnSync('rsvg-convert', ['--version']).error
+test('preview SVG and export gblur agree along a row (small shape, feather 0.2)', { skip: !hasRsvg }, async () => {
+  const B = 400
+  const item = { mask: { shape: 'ellipse', w: 0.25, h: 0.25, feather: 0.2 } }
+  const dir = mkdtempSync(join(tmpdir(), 'mask-parity-'))
+  writeFileSync(join(dir, 'm.svg'), maskSvg(maskAt(item, 0), B, B))
+  const svgRun = spawnSync('rsvg-convert', ['-w', String(B), '-h', String(B), '-o', join(dir, 'm.png'), join(dir, 'm.svg')])
+  assert.equal(svgRun.status, 0, String(svgRun.stderr))
+  const raw = (p) => spawnSync(FFMPEG, ['-v', 'error', '-i', p, '-vf', 'format=gray', '-f', 'rawvideo', '-']).stdout
+  const svg = raw(join(dir, 'm.png'))
+  const plan = planItemMask(item, B, B, 0, 1, 30, join(dir, 'e'))
+  await writeItemMask(plan)
+  const exp = raw(plan.path)
+  assert.equal(svg.length, B * B)
+  assert.equal(exp.length, B * B)
+  let worst = 0
+  for (let x = 0; x < B; x += 4) worst = Math.max(worst, Math.abs(svg[200 * B + x] - exp[200 * B + x]))
+  assert.ok(worst <= 6, `worst row difference ${worst} codes`)
 })
 
 // ── Task 4: masks in the export graph ───────────────────────────────────────
