@@ -260,6 +260,8 @@ export interface ItemMask {
   feather?: number
   /** Show outside the shape instead of inside. Default false. */
   invert?: boolean
+  /** Default true. False turns the mask off and keeps its settings (timeline-core's `maskAt` reads it as no mask). */
+  enabled?: boolean
 }
 
 export interface VisualItem {

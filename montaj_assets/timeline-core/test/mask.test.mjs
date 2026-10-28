@@ -31,6 +31,18 @@ test('maskAt: defaults, tracks override, invalid is null', () => {
   assert.equal(hasMaskKeyframes({ keyframes: item.keyframes }), false) // no mask, tracks do nothing
 })
 
+test('enabled: false switches the mask off and keeps its settings', () => {
+  const tracks = [{ prop: 'maskX', points: [{ t: 0, value: 0.2 }, { t: 1, value: 0.8 }] }]
+  const off = { mask: { ...ell, w: 0.3, enabled: false }, keyframes: tracks }
+  assert.equal(maskAt(off, 0), null)
+  assert.equal(hasMaskKeyframes(off), false)
+  assert.equal(isPlainComposite(off), true)
+  // true or absent is on; the resolved mask carries no `enabled`
+  assert.deepEqual(maskAt({ mask: { ...ell, enabled: true } }, 0), maskAt({ mask: ell }, 0))
+  assert.equal(hasMaskKeyframes({ ...off, mask: { ...off.mask, enabled: true } }), true)
+  assert.equal(isPlainComposite({ mask: { ...ell, enabled: true } }), false)
+})
+
 test('maskAt clamps out-of-range values', () => {
   const m = maskAt({ mask: { shape: 'rect', w: -1, radius: 3, feather: 9 } }, 0)
   assert.ok(m.w > 0)

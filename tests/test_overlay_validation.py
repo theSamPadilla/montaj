@@ -54,6 +54,8 @@ def test_valid_compositing_passes(make):
     ({"mask": {"shape": "rect", "radius": 1.5}}, "mask.radius must be a number from 0 to 1"),
     ({"mask": {"shape": "rect", "feather": 0.6}}, "mask.feather must be a number from 0 to 0.5"),
     ({"mask": {"shape": "rect", "invert": 1}}, "mask.invert must be a boolean"),
+    ({"mask": {"shape": "rect", "enabled": 0}}, "mask.enabled must be a boolean"),
+    ({"mask": {"shape": "rect", "enabled": "false"}}, "mask.enabled must be a boolean"),
     ({"blendMode": "dodge"}, "blendMode must be one of normal, screen"),
     ({"opacity": 1.2}, "opacity must be a number from 0 to 1"),
     ({"opacity": -0.1}, "opacity must be a number from 0 to 1"),
@@ -68,6 +70,14 @@ def test_bad_compositing_is_named(make, over, needle):
     errors = _errs(make(**over))
     assert any(needle in e for e in errors), errors
     assert errors[0].startswith("tracks[0].items[0].")
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_mask_enabled_is_a_bool_and_a_disabled_mask_still_takes_tracks(enabled):
+    item = _vid(
+        mask={"shape": "ellipse", "w": 0.3, "enabled": enabled},
+        keyframes=[{"prop": "maskX", "points": [{"t": 0, "value": 0.4}]}])
+    assert _errs(item) == []
 
 
 def test_nulls_and_unknown_fields_are_lenient():

@@ -183,9 +183,10 @@ def _visual_item_errors(item: dict, strict: bool = True) -> list[tuple[str, str]
             v = mask.get("feather")
             if v is not None and not (_finite(v) and 0 <= v <= MASK_FEATHER_MAX):
                 err("mask.feather", f"must be a number from 0 to {MASK_FEATHER_MAX}")
-            v = mask.get("invert")
-            if v is not None and not isinstance(v, bool):
-                err("mask.invert", "must be a boolean")
+            for k in ("invert", "enabled"):
+                v = mask.get(k)
+                if v is not None and not isinstance(v, bool):
+                    err(f"mask.{k}", "must be a boolean")
 
     keyframes = item.get("keyframes")
     if isinstance(keyframes, list):

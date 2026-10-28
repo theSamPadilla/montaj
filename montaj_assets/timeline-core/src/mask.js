@@ -61,12 +61,14 @@ import { fullOpacitySpans } from './geometry.js'
  * @property {number} [radius] Rect only: corner radius, fraction of half the rect's shorter side, 0-1. Default 0.
  * @property {number} [feather] Gaussian sigma, fraction of the box's shorter side, 0-0.5. Default 0.
  * @property {boolean} [invert] Default false.
+ * @property {boolean} [enabled] Default true. `false` turns the mask off and keeps its settings.
  */
 
 /**
- * A mask with every field resolved, as {@link maskAt} returns it.
+ * A mask with every field resolved, as {@link maskAt} returns it. No
+ * `enabled`: a mask that is off resolves to null.
  *
- * @typedef {Required<ItemMask>} ResolvedMask
+ * @typedef {Required<Omit<ItemMask, 'enabled'>>} ResolvedMask
  */
 
 /**
@@ -109,14 +111,16 @@ const BLEND_SET = new Set(/** @type {readonly string[]} */ (BLEND_MODES))
 const MASK_PROP_SET = new Set(/** @type {readonly string[]} */ (MASK_KEYFRAME_PROPS))
 
 /**
- * The item's `mask` when it is an object with a known shape, else null.
+ * The item's `mask` when it is an object with a known shape and is not
+ * switched off (`enabled: false`), else null. Every reader goes through here,
+ * so a mask that is off draws nothing anywhere and its tracks do nothing.
  *
  * @param {CompositeItem | null | undefined} item
  * @returns {ItemMask | null}
  */
 function validMask(item) {
   const mask = item?.mask
-  if (!mask || typeof mask !== 'object' || !SHAPE_SET.has(mask.shape)) return null
+  if (!mask || typeof mask !== 'object' || !SHAPE_SET.has(mask.shape) || mask.enabled === false) return null
   return mask
 }
 
@@ -148,8 +152,8 @@ function clamp(v, lo, hi) {
 
 /**
  * The item's mask at item-relative time `localT`, every field resolved, or
- * null when the item has no valid mask (no `mask` object, or an unknown
- * `shape`).
+ * null when the item has no valid mask (no `mask` object, an unknown
+ * `shape`, or `enabled: false`).
  *
  * Starts from the defaults, takes each finite numeric field of `item.mask`,
  * then lets each mask keyframe track that samples to a finite number override
@@ -468,7 +472,8 @@ export function cssBlendMode(mode) {
 }
 
 /**
- * Whether the item composites as a plain opaque layer: no valid mask, blend
+ * Whether the item composites as a plain opaque layer: no valid mask (one
+ * that is off counts as none), blend
  * mode `normal`, and full opacity for its whole life (static opacity 1 and no
  * opacity track below 1 anywhere, as {@link fullOpacitySpans} reads it).
  *

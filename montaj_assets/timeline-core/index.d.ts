@@ -1230,7 +1230,12 @@ export interface ItemMask {
   feather?: number
   /** Default false. */
   invert?: boolean
+  /** Default true. `false` turns the mask off and keeps its settings: {@link maskAt} reads it as no mask. */
+  enabled?: boolean
 }
+
+/** A mask with every field resolved, as {@link maskAt} returns it. No `enabled`: a mask that is off resolves to null. */
+export type ResolvedMask = Required<Omit<ItemMask, 'enabled'>>
 
 /** The fields of an item the compositing functions read. */
 export interface CompositeItem {
@@ -1253,17 +1258,17 @@ export declare const MASK_FIELD_OF: Readonly<{
 
 /**
  * The item's mask at item-relative `localT`, every field resolved, or null when
- * the item has no `mask` object or its `shape` is unknown. Defaults, then the
+ * the item has no `mask` object, its `shape` is unknown, or it is `enabled: false`. Defaults, then the
  * stored finite fields, then each mask track that samples to a finite number.
  * Clamped: `w`, `h` >= 1e-4; `radius` to [0, 1]; `feather` to [0, 0.5].
  */
-export declare function maskAt(item: CompositeItem | null | undefined, localT: number): Required<ItemMask> | null
+export declare function maskAt(item: CompositeItem | null | undefined, localT: number): ResolvedMask | null
 
 /** True when the item has a valid mask and a mask keyframe track with at least one point. */
 export declare function hasMaskKeyframes(item: CompositeItem | null | undefined): boolean
 
 /** The feather's Gaussian sigma in box pixels: `feather` x the box's shorter side. */
-export declare function maskSigmaPx(mask: Required<ItemMask>, boxW: number, boxH: number): number
+export declare function maskSigmaPx(mask: ResolvedMask, boxW: number, boxH: number): number
 
 /**
  * The hard mask outline as a convex polygon in box pixels, y down, clockwise:
@@ -1272,7 +1277,7 @@ export declare function maskSigmaPx(mask: Required<ItemMask>, boxW: number, boxH
  * side `4·max(boxW, boxH)` around the box centre. The ONE outline both
  * {@link rasterizeMask} and {@link maskSvg} draw.
  */
-export declare function maskPolygon(mask: Required<ItemMask>, boxW: number, boxH: number): Array<[number, number]>
+export declare function maskPolygon(mask: ResolvedMask, boxW: number, boxH: number): Array<[number, number]>
 
 /**
  * The hard mask as an 8-bit alpha plane, `(w + 2·margin) x (h + 2·margin)`,
@@ -1282,7 +1287,7 @@ export declare function maskPolygon(mask: Required<ItemMask>, boxW: number, boxH
  * blur.
  */
 export declare function rasterizeMask(
-  mask: Required<ItemMask>,
+  mask: ResolvedMask,
   w: number,
   h: number,
   options?: { margin?: number },
@@ -1293,7 +1298,7 @@ export declare function rasterizeMask(
  * {@link maskPolygon}'s outline, blurred by `feGaussianBlur` at
  * {@link maskSigmaPx} when feathered. Numbers print to at most 2 decimals.
  */
-export declare function maskSvg(mask: Required<ItemMask>, boxW: number, boxH: number): string
+export declare function maskSvg(mask: ResolvedMask, boxW: number, boxH: number): string
 
 /** The item's `blendMode` when it is one of {@link BLEND_MODES}, else `'normal'`. */
 export declare function blendModeOf(item: CompositeItem | null | undefined): BlendMode
