@@ -230,11 +230,30 @@ export async function encodeComposeGroups(plan, indices, { overlaysFor, _encodeG
          (group.parts.length > 1 ? `, ${group.parts.length} short parts` : ''))
 
     const toEncode = overlaysFor
-      ? { ...group, parts: group.parts.map(p => ({ ...p, overlays: p.overlays.map(overlaysFor) })) }
+      ? { ...group, parts: group.parts.map(p => withOverlaysFor(p, overlaysFor)) }
       : group
     await _encodeGroup(toEncode, segPath, { sdrCurve })
     return { index, path: segPath, start: group.start, end: group.end }
   }, SEGMENT_WORKERS)
+}
+
+/**
+ * A part with each of its overlays swapped for `overlaysFor(overlay)`, wherever
+ * the part names it: `overlays`, and, where an item stacks above an overlay
+ * (§308 P3), the `layers` stack and its `cullBelow`. Swapping `overlays` alone
+ * left the originals in `layers`, where encodeSegment, finding them in no
+ * overlay set, drew each one as a clip with no `src` and the render died on it
+ * (a sliced render, an image above a matte overlay).
+ */
+export function withOverlaysFor(part, overlaysFor) {
+  const swapped = new Map(part.overlays.map(o => [o, overlaysFor(o)]))
+  const swap = (x) => (swapped.has(x) ? swapped.get(x) : x)
+  return {
+    ...part,
+    overlays: part.overlays.map(swap),
+    ...(part.layers ? { layers: part.layers.map(swap) } : null),
+    ...(part.cullBelow ? { cullBelow: swap(part.cullBelow) } : null),
+  }
 }
 
 /**

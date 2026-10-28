@@ -2018,3 +2018,22 @@ test('a keyframed item\'s static geometry that is not a number never reaches its
   assert.throws(() => buildImageItemFilterParts({ ...image.item, offsetX: text }, 1080, 1920, 1, '[canvas]', 2, 0, {}), /offsetX/)
   assert.throws(() => buildVideoItemFilterParts({ ...video.item, offsetY: text }, 1080, 1920, 1, '[canvas]', opts), /offsetY/)
 })
+
+// One clip that names no file is skipped, said, and never ends the render.
+test('encodeSegment: a clip with no src is skipped with a warning, the rest encodes', async () => {
+  const { withoutSourcelessItems } = await import('../encode-segment.js')
+  const good = { id: 'good', type: 'video', start: 0, end: 2, src: '/good.mp4', hasAudio: false }
+  const bad = { id: 'bad', type: 'video', start: 0, end: 2, hasAudio: false }
+  const seg = { start: 0, end: 2, items: [good, bad], overlays: [], vw: 1080, vh: 1920, fps: 30 }
+  const warned = []
+  const warn = console.warn
+  console.warn = (m) => { warned.push(String(m)) }
+  try {
+    assert.deepEqual(withoutSourcelessItems(seg).items, [good])
+    const result = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+    assert.ok(result.inputs.some(f => f.includes('/good.mp4')))
+  } finally {
+    console.warn = warn
+  }
+  assert.ok(warned.some(m => m.includes('skipping video item bad')), warned.join('\n'))
+})

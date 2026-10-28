@@ -105,3 +105,34 @@ test('encodeComposeGroups: a subset encodes only those groups, named by global i
   assert.ok(!existsSync(join(p.segDir, 'seg-0001.mp4')))
   rmSync(dir, { recursive: true, force: true })
 })
+
+// A sliced render (overlaysFor) of a segment where an item stacks above an
+// overlay (§308 P3: the segment carries `layers`). Swapping only `overlays` left
+// the original overlay objects in `layers`, where encodeSegment drew one as a
+// clip with no `src`: "Cannot read properties of undefined (reading 'endsWith')".
+test('encodeComposeGroups: overlaysFor swaps the overlays inside layers and cullBelow too, and the encode draws them', async () => {
+  const dir = tmp()
+  const clip = { id: 'clip', type: 'video', start: 0, end: 3, src: '/clip.mp4', trackIdx: 0, layerTrack: 0, hasAudio: false }
+  const paper = { id: 'paper', type: 'image', start: 0, end: 3, src: '/paper.png', trackIdx: 4, layerTrack: 4, width: 100, height: 100 }
+  const matte = { id: 'matte', startSeconds: 0, endSeconds: 3, webmPath: '/matte.mkv', opaque: false, isCaption: false, layerTrack: 3 }
+  const p = await planCompose({
+    projectJson: project(), imageItems: [paper], videoItems: [clip], puppeteerSegments: [matte],
+    outputPath: join(dir, 'out.mp4'),
+  })
+  const part = p.groups[0].parts[0]
+  assert.ok(part.layers, 'the image above the overlay makes a stack')
+  assert.ok(part.layers.includes(matte))
+  startCompose(p)
+  const seen = []
+  const { encodeSegmentGroup } = await import('../encode-segment.js')
+  await encodeComposeGroups(p, [0], {
+    overlaysFor: ov => ({ ...ov, webmPath: `/slice/${ov.id}.webm` }),
+    _encodeGroup: async (g, path, o) => { seen.push(g); return encodeSegmentGroup(g, path, { ...o, _dryRun: true }) },
+  })
+  const sliced = seen[0].parts[0]
+  assert.equal(sliced.layers.includes(matte), false, 'no original overlay left in the stack')
+  assert.ok(sliced.layers.includes(sliced.overlays[0]), 'the stack holds the slice copy')
+  assert.equal(sliced.overlays[0].webmPath, '/slice/matte.webm')
+  assert.ok(part.layers.includes(matte), 'the shared plan is untouched')
+  rmSync(dir, { recursive: true, force: true })
+})

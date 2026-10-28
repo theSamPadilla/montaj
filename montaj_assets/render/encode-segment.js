@@ -331,6 +331,30 @@ export function decreaseFitSize(inW, inH, boxW, boxH, divisibleBy = 1) {
   return { width, height }
 }
 
+/**
+ * The segment without its clips and images that name no file (`src` missing or
+ * not a string), each logged: one such item is skipped, never the whole render.
+ * Anything in `overlays` is drawn from its capture and has no `src`; it stays.
+ */
+export function withoutSourcelessItems(segment) {
+  const overlaySet = new Set(segment.overlays ?? [])
+  const bad = new Set()
+  for (const item of [...(segment.items ?? []), ...(segment.layers ?? [])]) {
+    if (overlaySet.has(item) || bad.has(item)) continue
+    if (typeof item?.src === 'string' && item.src !== '') continue
+    bad.add(item)
+    console.warn(`[montaj] skipping ${item?.type ?? 'an'} item ${item?.id ?? '(unnamed)'} in ${Number(segment.start).toFixed(2)}-${Number(segment.end).toFixed(2)}s: it names no file to read`)
+  }
+  if (bad.size === 0) return segment
+  const keep = (x) => !bad.has(x)
+  const out = { ...segment, items: (segment.items ?? []).filter(keep) }
+  if (segment.layers) {
+    out.layers = segment.layers.filter(keep)
+    if (segment.cullBelow && bad.has(segment.cullBelow)) out.cullBelow = null
+  }
+  return out
+}
+
 function isImageItem(item) {
   return item.type === 'image' || IMAGE_EXTENSIONS.test(item.src)
 }
@@ -2008,6 +2032,7 @@ function intermediateVideoArgs(spec, duration) {
  * @returns {string | object} outputPath, or dry-run result
  */
 export async function encodeSegment(segment, outputPath, opts = {}) {
+  segment = withoutSourcelessItems(segment)
   const { start, end, overlays, vw, vh, fps } = segment
   // §308 P3: ONE bottom-to-top list of the segment's items and overlays, by
   // track in the editor's order (segment-plan.js `layers`). A segment without
