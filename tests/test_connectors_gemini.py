@@ -1198,20 +1198,16 @@ class TestBestModelDefaults:
 
 class TestCheckKeyCapabilityDefaults:
     """One Gemini key backs five generation capabilities (text, image, TTS,
-    music, video), each with its own default model that can retire independently.
+    music, video), each with its own default model.
 
-    check_key() is new and unreleased (PV29 T4b, controller decision
-    2026-09-28) with no backward compatibility to keep, and the app's
-    Connectors tile and the release guard read only
-    {default_model, default_model_ok, detail} — so default_model_ok means the
-    text, image, TTS and music defaults are all present, not just the text one,
-    and when any are missing, default_model/detail name the missing one(s)
-    instead of always describing the text default. The video default is
-    reported (video_model_ok, detail) but never counted (§550): Omni Flash is an
-    Interactions API model that models.list may not list. image_model_ok /
-    tts_model_ok / music_model_ok / video_model_ok stay as the per-capability
-    breakdown for a caller that wants to know which capability, specifically,
-    is affected."""
+    §614: models.list proves the key works, not that a model is retired. It
+    omits models Google still serves (a working key showed "Default model
+    retired" while all four defaults were current), so an unlisted default is
+    unknown: default_model_ok stays True, default_model_verified goes False,
+    the per-capability flag is None (never False), and detail names it. The
+    proof of a retired model is a real call that comes back model-not-found
+    (reason=MODEL_RETIRED). The video default is reported, never counted
+    (§550)."""
 
     @pytest.fixture(autouse=True)
     def _video_on(self, monkeypatch):
@@ -1219,135 +1215,71 @@ class TestCheckKeyCapabilityDefaults:
         import connectors.gemini as mod
         monkeypatch.setattr(mod, "VIDEO_ON", True)
 
-    def test_all_five_present(self, monkeypatch):
+    def _check(self, monkeypatch, names):
         import connectors.gemini as mod
         client = MagicMock()
-        client.models.list.return_value = [
-            _make_model(f"models/{mod.DEFAULT_MODEL}"),
-            _make_model(f"models/{mod.DEFAULT_IMAGE_MODEL}"),
-            _make_model(f"models/{mod.DEFAULT_TTS_MODEL}"),
-            _make_model(f"models/{mod.DEFAULT_MUSIC_MODEL}"),
-            _make_model(f"models/{mod.DEFAULT_VIDEO_MODEL}"),
-        ]
+        client.models.list.return_value = [_make_model(f"models/{n}") for n in names]
         monkeypatch.setattr(mod, "_client", lambda: client)
+        return mod.check_key()
 
-        result = mod.check_key()
+    def test_all_five_listed_is_verified(self, monkeypatch):
+        import connectors.gemini as mod
+        result = self._check(monkeypatch, [
+            mod.DEFAULT_MODEL, mod.DEFAULT_IMAGE_MODEL, mod.DEFAULT_TTS_MODEL,
+            mod.DEFAULT_MUSIC_MODEL, mod.DEFAULT_VIDEO_MODEL,
+        ])
         assert result["default_model_ok"] is True
+        assert result["default_model_verified"] is True
         assert result["default_model"] == mod.DEFAULT_MODEL
         assert result["image_model_ok"] is True
         assert result["tts_model_ok"] is True
         assert result["music_model_ok"] is True
         assert result["video_model_ok"] is True
+        assert "not listed" not in result["detail"]
 
-    def test_video_default_missing_alone_keeps_default_model_ok(self, monkeypatch):
-        """A key whose models.list lacks the video default (an Interactions API
-        model may not be listed): default_model_ok stays True and default_model
-        is the text one, so the Connectors tile never says "Default model
-        retired"; only video_model_ok is False, and detail names it."""
+    def test_unlisted_music_default_is_unknown_not_retired(self, monkeypatch):
+        """The §614 case: Lyria 3.5 is documented on the Interactions API and
+        a key's models.list may not carry it. The tile must not say
+        "Default model retired"."""
         import connectors.gemini as mod
-        client = MagicMock()
-        client.models.list.return_value = [
-            _make_model(f"models/{mod.DEFAULT_MODEL}"),
-            _make_model(f"models/{mod.DEFAULT_IMAGE_MODEL}"),
-            _make_model(f"models/{mod.DEFAULT_TTS_MODEL}"),
-            _make_model(f"models/{mod.DEFAULT_MUSIC_MODEL}"),
-            _make_model("models/veo-3.1-fast-generate-preview"),
-        ]
-        monkeypatch.setattr(mod, "_client", lambda: client)
-
-        result = mod.check_key()
+        result = self._check(monkeypatch, [
+            mod.DEFAULT_MODEL, mod.DEFAULT_IMAGE_MODEL, mod.DEFAULT_TTS_MODEL, mod.DEFAULT_VIDEO_MODEL,
+        ])
         assert result["default_model_ok"] is True
+        assert result["default_model_verified"] is False
         assert result["default_model"] == mod.DEFAULT_MODEL
-        assert "missing" not in result["detail"]
+        assert result["music_model_ok"] is None
+        assert result["image_model_ok"] is True
+        assert result["tts_model_ok"] is True
+        assert f"not listed, so unconfirmed: {mod.DEFAULT_MUSIC_MODEL}" in result["detail"]
+
+    def test_video_default_unlisted_alone_stays_verified(self, monkeypatch):
+        """Never counted (§550): verified stays True, video_model_ok is None, detail names it."""
+        import connectors.gemini as mod
+        result = self._check(monkeypatch, [
+            mod.DEFAULT_MODEL, mod.DEFAULT_IMAGE_MODEL, mod.DEFAULT_TTS_MODEL,
+            mod.DEFAULT_MUSIC_MODEL, "veo-3.1-fast-generate-preview",
+        ])
+        assert result["default_model_ok"] is True
+        assert result["default_model_verified"] is True
+        assert result["video_model_ok"] is None
         assert mod.DEFAULT_VIDEO_MODEL in result["detail"]
-        assert result["video_model_ok"] is False
-        assert result["image_model_ok"] is True
-        assert result["tts_model_ok"] is True
-        assert result["music_model_ok"] is True
 
-    def test_text_default_missing_is_named(self, monkeypatch):
-        """Only the text default missing: default_model_ok goes False even
-        though image/TTS/music are all fine, and default_model still names
-        the (now missing) text id."""
+    def test_none_listed_is_never_false(self, monkeypatch):
+        """Even the text default unlisted is unknown: every flag is True or None,
+        never False, and detail names the four in text, image, TTS, music order."""
         import connectors.gemini as mod
-        client = MagicMock()
-        client.models.list.return_value = [
-            _make_model(f"models/{mod.DEFAULT_IMAGE_MODEL}"),
-            _make_model(f"models/{mod.DEFAULT_TTS_MODEL}"),
-            _make_model(f"models/{mod.DEFAULT_MUSIC_MODEL}"),
-            _make_model(f"models/{mod.DEFAULT_VIDEO_MODEL}"),
-        ]
-        monkeypatch.setattr(mod, "_client", lambda: client)
-
-        result = mod.check_key()
-        assert result["default_model_ok"] is False
+        result = self._check(monkeypatch, ["some-unrelated-model"])
+        assert result["default_model_ok"] is True
+        assert result["default_model_verified"] is False
         assert result["default_model"] == mod.DEFAULT_MODEL
-        assert mod.DEFAULT_MODEL in result["detail"]
-        assert result["image_model_ok"] is True
-        assert result["tts_model_ok"] is True
-        assert result["music_model_ok"] is True
-        assert result["video_model_ok"] is True
-
-    def test_image_model_missing_fails_default_model_ok_and_is_named(self, monkeypatch):
-        """A retired image default now fails default_model_ok too — no more
-        text-only exemption — and default_model reports the IMAGE id, not
-        the text one, so a caller reading only {default_model,
-        default_model_ok} still learns which model retired."""
-        import connectors.gemini as mod
-        client = MagicMock()
-        client.models.list.return_value = [
-            _make_model(f"models/{mod.DEFAULT_MODEL}"),
-            _make_model(f"models/{mod.DEFAULT_TTS_MODEL}"),
-            _make_model(f"models/{mod.DEFAULT_MUSIC_MODEL}"),
-            _make_model(f"models/{mod.DEFAULT_VIDEO_MODEL}"),
-        ]
-        monkeypatch.setattr(mod, "_client", lambda: client)
-
-        result = mod.check_key()
-        assert result["default_model_ok"] is False
-        assert result["default_model"] == mod.DEFAULT_IMAGE_MODEL
-        assert mod.DEFAULT_IMAGE_MODEL in result["detail"]
-        assert result["image_model_ok"] is False
-        assert result["tts_model_ok"] is True
-        assert result["music_model_ok"] is True
-
-    def test_tts_and_music_missing_both_named_first_one_reported(self, monkeypatch):
-        """More than one default missing at once: default_model (a single
-        value) reports the first in text/image/TTS/music order, but detail
-        names every missing one so nothing is silently dropped."""
-        import connectors.gemini as mod
-        client = MagicMock()
-        client.models.list.return_value = [
-            _make_model(f"models/{mod.DEFAULT_MODEL}"),
-            _make_model(f"models/{mod.DEFAULT_IMAGE_MODEL}"),
-            _make_model(f"models/{mod.DEFAULT_VIDEO_MODEL}"),
-        ]
-        monkeypatch.setattr(mod, "_client", lambda: client)
-
-        result = mod.check_key()
-        assert result["default_model_ok"] is False
-        assert result["default_model"] == mod.DEFAULT_TTS_MODEL
-        assert mod.DEFAULT_TTS_MODEL in result["detail"]
-        assert mod.DEFAULT_MUSIC_MODEL in result["detail"]
-        assert result["tts_model_ok"] is False
-        assert result["music_model_ok"] is False
-        assert result["video_model_ok"] is True
-
-    def test_all_missing(self, monkeypatch):
-        import connectors.gemini as mod
-        client = MagicMock()
-        client.models.list.return_value = [_make_model("models/some-unrelated-model")]
-        monkeypatch.setattr(mod, "_client", lambda: client)
-
-        result = mod.check_key()
-        assert result["default_model_ok"] is False
-        assert result["default_model"] == mod.DEFAULT_MODEL
-        assert result["image_model_ok"] is False
-        assert result["tts_model_ok"] is False
-        assert result["music_model_ok"] is False
-        assert result["video_model_ok"] is False
-        missing = result["detail"].split("missing default(s): ", 1)[1].split(";")[0]
-        assert mod.DEFAULT_VIDEO_MODEL not in missing
+        for flag in ("image_model_ok", "tts_model_ok", "music_model_ok", "video_model_ok"):
+            assert result[flag] is None
+        unconfirmed = result["detail"].split("not listed, so unconfirmed: ", 1)[1].split(";")[0]
+        assert unconfirmed == ", ".join([
+            mod.DEFAULT_MODEL, mod.DEFAULT_IMAGE_MODEL, mod.DEFAULT_TTS_MODEL, mod.DEFAULT_MUSIC_MODEL,
+        ])
+        assert mod.DEFAULT_VIDEO_MODEL not in unconfirmed
 
 
 class TestCheckKeyVideoOff:
@@ -1372,6 +1304,7 @@ class TestCheckKeyVideoOff:
         monkeypatch.setattr(mod, "_client", lambda: client)
         result = mod.check_key()
         assert result["default_model_ok"] is True
+        assert result["default_model_verified"] is True
         assert result["default_model"] == mod.DEFAULT_MODEL
         assert result["video_model_ok"] is None
-        assert "missing" not in result["detail"]
+        assert "not listed" not in result["detail"]

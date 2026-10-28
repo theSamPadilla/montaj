@@ -27,9 +27,9 @@ Current functions:
         Pure check of a video request; a short message for the first invalid
         combination, None when the request is valid.
     check_key() -> dict
-        One free call (models.list) to validate a key and confirm each of the
-        five default models (text, image, TTS, music, video) is still
-        available, with no billed call.
+        One free call (models.list) to validate a key and report which of the
+        five default models (text, image, TTS, music, video) it lists, with no
+        billed call. An unlisted model is unknown, never retired.
 
 Private helpers:
     _generate_audio(model, contents, config, out_path, ...) -> str
@@ -337,29 +337,22 @@ def check_key() -> dict:
 
     No billed call — listing the models a key can see costs nothing.
 
-    One Gemini key backs five generation capabilities under this connector
-    (text, image, TTS, music, video), each with its own default model that can
-    be retired independently of the others. check_key() is new and unreleased
-    (PV29) with no backward compatibility to keep, and the app's
-    Connectors tile and the release guard read only default_model_ok — so
-    that field means the text, image, TTS and music defaults are all present
-    in models.list, not just the text one:
-      - default_model_ok is True only when DEFAULT_MODEL, DEFAULT_IMAGE_MODEL,
-        DEFAULT_TTS_MODEL and DEFAULT_MUSIC_MODEL are all present.
-      - The video default is not counted (§550): Omni Flash is an Interactions
-        API model, and no Google doc says models.list lists it (checked
-        2026-10-24). video_model_ok and detail still report it, so a key that
-        works for everything else never shows "Default model retired".
-      - When any are missing, default_model is set to the first missing
-        one's id (checked in text, image, TTS, music order) instead of
-        DEFAULT_MODEL, and detail names every missing one — a caller reading
-        only {default_model, default_model_ok, detail} still sees which
-        model retired, not just that something did.
+    models.list proves the key works. It does NOT prove a default model is
+    retired: it omits models Google still serves (§614: a working key showed
+    "Default model retired" while Google's models page listed all four
+    defaults as current; Lyria 3.5 and Omni Flash are documented on the
+    Interactions API, and no Google doc says models.list lists every model a
+    key can call). So an unlisted default is unknown, never retired, as the
+    ElevenLabs check does for a restricted key:
+      - default_model_ok is True for a working key. The proof of a retired
+        model is a real call that comes back model-not-found, which raises
+        reason=MODEL_RETIRED with Google's own message on that call.
+      - default_model_verified is True only when the text, image, TTS and
+        music defaults are all listed; detail names any that are not.
       - image_model_ok / tts_model_ok / music_model_ok / video_model_ok are
-        kept as the individual per-capability flags (same membership check,
-        off the same models.list response — no extra call), for a caller that
-        wants to know which capability specifically is affected rather than
-        parse detail's text.
+        True when listed and None (unknown) when not, never False. The video
+        default is reported, never counted in default_model_verified (§550);
+        with Gemini video off it is None.
 
     A rejected key raises ConnectorError(reason="invalid_api_key") through the
     same detection every other Gemini call path uses (_wrap_sdk_error /
@@ -383,42 +376,28 @@ def check_key() -> dict:
     except Exception as e:
         raise _wrap_sdk_error(e, "Gemini key check failed") from e
 
-    # Checked in this order — text, image, TTS, music — so that when
-    # more than one default is missing, the one surfaced through
-    # `default_model` (a single-value field) is deterministic rather than
-    # set-iteration order.
-    capability_defaults = (
-        ("image_model_ok", DEFAULT_IMAGE_MODEL),
-        ("tts_model_ok", DEFAULT_TTS_MODEL),
-        ("music_model_ok", DEFAULT_MUSIC_MODEL),
-    )
-    text_ok = DEFAULT_MODEL in model_names
-    missing = [] if text_ok else [DEFAULT_MODEL]
-    availability = {}
-    for flag_name, model in capability_defaults:
-        ok = model in model_names
-        availability[flag_name] = ok
-        if not ok:
-            missing.append(model)
+    # Text, image, TTS, music: the order detail names unlisted ones in.
+    unlisted = [m for m in (DEFAULT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_TTS_MODEL, DEFAULT_MUSIC_MODEL)
+                if m not in model_names]
 
-    # Reported, never counted in default_model_ok (docstring). With Gemini
-    # video off there is no video default to check (None).
-    video_model_ok = (DEFAULT_VIDEO_MODEL in model_names) if VIDEO_ON else None
+    def listed(model):
+        return True if model in model_names else None
 
-    default_model_ok = not missing
     detail = f"{len(model_names)} models available to this key"
-    if missing:
-        detail += f"; missing default(s): {', '.join(missing)}"
-    if video_model_ok is False:
+    if unlisted:
+        detail += f"; not listed, so unconfirmed: {', '.join(unlisted)}"
+    video_model_ok = listed(DEFAULT_VIDEO_MODEL) if VIDEO_ON else None
+    if VIDEO_ON and video_model_ok is None:
         detail += f"; video default {DEFAULT_VIDEO_MODEL} not listed (not counted)"
 
     return {
         "ok": True,
-        "default_model": missing[0] if missing else DEFAULT_MODEL,
-        "default_model_ok": default_model_ok,
-        "image_model_ok": availability["image_model_ok"],
-        "tts_model_ok": availability["tts_model_ok"],
-        "music_model_ok": availability["music_model_ok"],
+        "default_model": DEFAULT_MODEL,
+        "default_model_ok": True,
+        "default_model_verified": not unlisted,
+        "image_model_ok": listed(DEFAULT_IMAGE_MODEL),
+        "tts_model_ok": listed(DEFAULT_TTS_MODEL),
+        "music_model_ok": listed(DEFAULT_MUSIC_MODEL),
         "video_model_ok": video_model_ok,
         "detail": detail,
     }
