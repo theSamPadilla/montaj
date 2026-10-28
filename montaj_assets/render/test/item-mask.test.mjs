@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, existsSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, existsSync, writeFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
@@ -234,7 +234,7 @@ async function maskedFrame(invert) {
   ] }
   const out = join(dir, 'seg-0000.mp4')
   await encodeSegment(seg, out)
-  assert.ok(existsSync(join(dir, 'seg-0000.mask-2.png')), 'the mask PNG sits next to the segment')
+  assert.deepEqual(readdirSync(dir).filter(f => f.includes('mask-')), [], 'the mask file is scratch and is gone')
   const r = spawnSync(FFMPEG, ['-v', 'error', '-i', out, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'])
   assert.equal(r.stdout.length, 64 * 64 * 3, String(r.stderr))
   const px = (x, y) => [...r.stdout.subarray((y * 64 + x) * 3, (y * 64 + x) * 3 + 3)]
@@ -249,4 +249,21 @@ test('ffmpeg: inverted, the hole is in the middle', { skip: !ffOk }, async () =>
   const { centre, corner } = await maskedFrame(true)
   assert.ok(centre[2] > 200 && centre[0] < 60, `centre ${centre}`)
   assert.ok(corner[0] > 200 && corner[2] < 60, `corner ${corner}`)
+})
+
+test('ffmpeg: mask files are removed after the encode, success or failure', { skip: !ffOk }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mask-clean-'))
+  const blue = solid(dir, 'blue.png', 'blue')
+  const red = solid(dir, 'red.png', 'red')
+  const keep = new Set(['blue.png', 'red.png'])
+  const item = (src, trackIdx, over = {}) => ({ type: 'image', src, start: 0, end: 0.5, trackIdx, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, ...over })
+  const seg = (top) => ({ start: 0, end: 0.5, vw: 64, vh: 64, fps: 30, overlays: [], items: [item(blue, 0), top] })
+  // a keyframed mask is a .mkv, a still one a .png: both must go
+  const moving = item(red, 1, { mask: MASK, keyframes: [{ prop: 'maskW', points: [{ t: 0, value: 0.2 }, { t: 0.5, value: 0.8 }] }] })
+  await encodeSegment(seg(moving), join(dir, 'seg-0000.mp4'))
+  await encodeSegment(seg(item(red, 1, { mask: MASK })), join(dir, 'seg-0001.mp4'))
+  assert.deepEqual(readdirSync(dir).filter(f => !keep.has(f)).sort(), ['seg-0000.mp4', 'seg-0001.mp4'])
+  // a forced failure after the mask is written (the source vanished): still no mask left behind
+  await assert.rejects(encodeSegment(seg(item(join(dir, 'gone.png'), 1, { mask: MASK })), join(dir, 'seg-0002.mp4')))
+  assert.deepEqual(readdirSync(dir).filter(f => f.includes('mask-')), [])
 })

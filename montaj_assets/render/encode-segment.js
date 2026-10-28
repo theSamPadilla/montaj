@@ -2586,27 +2586,34 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
 
   // The mask files the graph reads (§616), two at a time: each is one ffmpeg
   // fed rasterized planes, and the segment encodes beside it are the heavy part.
-  if (maskJobs.length) await pMap(maskJobs, (job) => writeItemMask(job), 2)
+  // They are scratch: removed once this segment has encoded, or failed, so a long
+  // export does not hold every ffv1 mask until compose and `glass-plate --parts-only`
+  // does not leave them in the caller's outDir.
+  try {
+    if (maskJobs.length) await pMap(maskJobs, (job) => writeItemMask(job), 2)
 
-  // Preflight ran long before this segment's turn; a file deleted since fails by name.
-  assertInputsExist(fileInputsOf(inputs))
+    // Preflight ran long before this segment's turn; a file deleted since fails by name.
+    assertInputsExist(fileInputsOf(inputs))
 
-  const result = await runFfmpeg(args, FFMPEG_STALL_MS, dirname(outputPath))
+    const result = await runFfmpeg(args, FFMPEG_STALL_MS, dirname(outputPath))
 
-  if (result.stderr) logFfmpegStderr(result.stderr)
+    if (result.stderr) logFfmpegStderr(result.stderr)
 
-  if (result.status !== 0) {
-    // spawn() can throw, or the script fail to write, before any stderr exists.
-    const message = `ffmpeg segment encode failed (${start.toFixed(2)}-${end.toFixed(2)}s):\n${describeFfmpegExit({ ...result, timeoutMs: FFMPEG_STALL_MS, outputDir: dirname(outputPath) })}`
-    if (result.signal && !result.timedOut) {
-      throw childKilledError({ child: 'ffmpeg', signal: result.signal, phase: 'segment-encode', message })
+    if (result.status !== 0) {
+      // spawn() can throw, or the script fail to write, before any stderr exists.
+      const message = `ffmpeg segment encode failed (${start.toFixed(2)}-${end.toFixed(2)}s):\n${describeFfmpegExit({ ...result, timeoutMs: FFMPEG_STALL_MS, outputDir: dirname(outputPath) })}`
+      if (result.signal && !result.timedOut) {
+        throw childKilledError({ child: 'ffmpeg', signal: result.signal, phase: 'segment-encode', message })
+      }
+      throw new Error(message)
     }
-    throw new Error(message)
-  }
 
-  // An exit code of 0 does not promise a picture: a graph can end without a
-  // frame, and the join then fails far from the cause. Name it here (5.20.5).
-  assertSegmentHasVideo(outputPath, { start, end })
+    // An exit code of 0 does not promise a picture: a graph can end without a
+    // frame, and the join then fails far from the cause. Name it here (5.20.5).
+    assertSegmentHasVideo(outputPath, { start, end })
+  } finally {
+    for (const job of maskJobs) rmSync(job.path, { force: true })
+  }
 
   return outputPath
 }
