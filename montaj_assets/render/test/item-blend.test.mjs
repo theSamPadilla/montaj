@@ -210,3 +210,30 @@ for (const bits of [8, 10]) {
     assert.ok(err <= 3, `${got} vs ${want}`)
   })
 }
+
+// An RGBA canvas (a carousel slide, a transparent export) blends in place:
+// the item at 50% alpha over a flat backdrop must match CSS mix-blend-mode
+// (the result is the blend, mixed with the backdrop by the item's alpha), and
+// pixels outside the item stay exactly the backdrop.
+const ffOk = spawnSync(FFMPEG, ['-version']).status === 0
+const hex = (c) => '0x' + c.map(v => v.toString(16).padStart(2, '0')).join('')
+const cssBlend = (mode, b, s) => b.map((bv, i) => {
+  const B = bv / 255, S = s[i] / 255
+  const full = mode === 'screen' ? 1 - (1 - B) * (1 - S) : B * S
+  return Math.round((B + (full - B) * 0.5) * 255)
+})
+for (const mode of ['screen', 'multiply']) {
+  test(`ffmpeg: ${mode} on an RGBA canvas matches CSS within 2 codes; outside pixels are exact`, { skip: !ffOk }, () => {
+    const bd = [100, 150, 200], it = [200, 40, 90]
+    const parts = blendCompositeParts({ backdrop: '[bd]', item: '[it]', x: '0', y: '0', vw: 16, vh: 16, mode, idx: 1,
+      tenBit: false, matrix: 'bt709', canvasPixFmt: 'rgba', fps: 10, duration: 0.1, overlayFormat: '', out: '[o]' })
+    const fc = `color=c=${hex(bd)}:s=16x16:r=10:d=0.1,format=rgba[bd];`
+      + `color=c=${hex(it)}:s=8x8:r=10:d=0.1,format=rgba,colorchannelmixer=aa=0.5[it];` + parts.join(';')
+    const r = spawnSync(FFMPEG, ['-v', 'error', '-filter_complex', fc, '-map', '[o]', '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'])
+    assert.equal(r.status, 0, String(r.stderr))
+    const at = (x, y) => [...r.stdout.subarray((y * 16 + x) * 3, (y * 16 + x) * 3 + 3)]
+    const want = cssBlend(mode, bd, it)
+    at(2, 2).forEach((v, i) => assert.ok(Math.abs(v - want[i]) <= 2, `${mode} inside ${at(2, 2)} want ${want}`))
+    assert.deepEqual(at(12, 12), bd)
+  })
+}

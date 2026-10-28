@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { maskAt, maskSvg } from '@bycrux/timeline-core'
 import { planItemMask, writeItemMask, prepareMaskWrite, maskFilterParts } from '../item-mask.js'
-import { encodeSegment } from '../encode-segment.js'
+import { encodeSegment, buildVideoItemFilterParts } from '../encode-segment.js'
 import { FFMPEG } from '../ffmpeg-bin.js'
 
 const still = { mask: { shape: 'ellipse', w: 0.5, h: 0.5, feather: 0.05 } }
@@ -310,4 +310,34 @@ test('write: a long keyframed feather keeps every ffmpeg argument under 32,767 c
     assert.ok(!w.args.includes('-vf'))
   } finally { w.cleanup() }
   assert.ok(!existsSync(w.path), 'cleanup removes the script')
+})
+
+// A sped-up clip with an opacity track and a mask, starting mid-item: the
+// opacity track and the mask are both sampled in ITEM time (the segment's
+// 0.5 s into the item), and the speed setpts comes before the sendcmd so the
+// commands' stream seconds are output seconds.
+test('graph: speed 2 with an opacity track and a mask, 0.5 s into the item', async () => {
+  const pip = videoItem({ speed: 2, mask: MASK,
+    keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 1, value: 1 }] }] })
+  const r = await dry(segOf([imageItem(), pip], { start: 0.5, end: 1.5 }))
+  const graph = r.filterParts.join(';')
+  const cmds = graph.match(/sendcmd=c='([^']*)'/)[1].split(';')
+  assert.match(cmds[0], /^0\.000000 colorchannelmixer@op\d+ aa 0\.500000$/)
+  assert.ok(graph.indexOf('setpts=(PTS-STARTPTS)/2') >= 0 && graph.indexOf('setpts=(PTS-STARTPTS)/2') < graph.indexOf('sendcmd='))
+  assert.equal(r.maskJobs.length, 1)
+  assert.equal(r.maskJobs[0].offset, 0.5)
+})
+
+// A graded HDR cutout with a mask: the grade's alphamerge, then pad, make the
+// box; the mask multiplies after that, then the item continues from [vidN].
+test('graph: a graded cutout is masked after its pad, then rejoins [vidN]', () => {
+  const item = { type: 'video', src: '/w/render/talk_nobg.mov', nobg_src: '/w/render/talk_nobg.mov', remove_bg: true,
+    start: 0, end: 3, inPoint: 0, colorTransfer: 'unknown', probedWidth: 1080, probedHeight: 1920, probedAlpha: true,
+    gradeFrom: 'hdr_hlg', alphaGrade: true, mask: MASK }
+  const { filterParts } = buildVideoItemFilterParts(item, 1080, 1920, 1, '[canvas]', {
+    segStart: 0, duration: 3, projectColorSpace: 'sdr_bt709', zscaleAvailable: true, lut3dAvailable: true,
+    maskBase: '/tmp/s616/seg-0000.mask-2', fps: 30 })
+  const graph = filterParts.join(';')
+  assert.match(graph, /\[cg1\]\[al1\]alphamerge,format=yuva420p,pad=1080:1920:\(ow-iw\)\/2:\(oh-ih\)\/2:color=black@0\.0\[vidb1\];\[vidb1\]split=2\[mc2\]\[ma2\];/)
+  assert.match(graph, /\[mc2\]\[mam2\]alphamerge\[vid1\]/)
 })
