@@ -176,6 +176,38 @@ def test_resolve_seeds_only_a_new_track(tmp_path, monkeypatch):
         "fontFamily": '"Inter", system-ui, sans-serif', "googleFonts": ["Inter:wght@400;700"]})
 
 
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("case", ["none", "uppercase", "lowercase", "capitalize"])
+def test_look_caption_case_seeds_text_transform(case):
+    assert caption_look("outline", {"captionCase": case})["textTransform"] == case
+    assert caption_look("subtitle", {"captionCase": case}) == {"textTransform": case}
+    assert caption_look("clean", {"captionCase": case}) == {"textTransform": case}
+    assert caption_look("pop", {"captionCase": case}, emphasis=False) == {"textTransform": case}
+
+
+@pytest.mark.parametrize("bad", ["UPPER", "", None, 3, ["uppercase"]])
+def test_look_caption_case_invalid_seeds_nothing(bad):
+    assert "textTransform" not in caption_look("outline", {"captionCase": bad})
+    assert caption_look("subtitle", {"captionCase": bad}) == {}
+    assert caption_look("subtitle", {}) == {}
+
+
+def test_resolve_seeds_caption_case_only_for_a_new_track(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _profile(tmp_path, "pc", {"captionCase": "uppercase"})
+    assert resolve_style_and_look(None, {"profile": "pc"}) == ("pop", {"textTransform": "uppercase"})
+    assert resolve_style_and_look(None, {"profile": "pc", "captions": {"style": "karaoke"}}) == ("karaoke", {})
+
+
+def test_route_seeds_the_profile_caption_case(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _profile(tmp_path, "p1", {"captionStyle": "outline", "captionCase": "lowercase"})
+    project = {"name": "T", "profile": "p1", "tracks": [{"clips": []}]}
+    assert _route_theme(tmp_path, monkeypatch, project, {})["textTransform"] == "lowercase"
+
+
 def _route_theme(tmp_path, monkeypatch, project, body):
     project_dir = tmp_path / "proj2"
     project_dir.mkdir()

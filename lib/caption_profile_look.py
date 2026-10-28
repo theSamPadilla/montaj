@@ -6,6 +6,8 @@ draws in the profile's font and emphasis colour exactly as one started from the 
 - fontFamily + googleFonts, both or neither: the profile's `fontFamily` matched by label (case aside) against the
   editor's font list (FONT_OPTIONS, a mirror of montaj_assets/editor/src/text/FontPicker.tsx without 'System'; a
   test checks the two agree). Every style but subtitle (the system face) and clean (its own face).
+- textTransform: the profile's `captionCase` when it is one of CASES (the editor's caption textTransform values), for
+  every style.
 - the style's emphasis colour (EMPHASIS): the profile's accent, else its primary colour, whichever is readable
   (relative luminance above 0.18), else the style's fallback.
 No base text colour: the style's own default stays.
@@ -44,6 +46,7 @@ EMPHASIS = {
     "accent": ("accentColor", "#F00000"),
 }
 NO_PROFILE_FONT = ("subtitle", "clean")
+CASES = ("none", "uppercase", "lowercase", "capitalize")
 
 
 def _luminance(color) -> float | None:
@@ -79,8 +82,12 @@ def font_option(stored):
 
 def caption_look(style: str, prefs: dict, emphasis: bool = True) -> dict:
     """The caption-track fields `prefs` (a profile's preferences) seeds for `style`; {} when it seeds none. With
-    `emphasis` False, the font only (the editor seeds the emphasis colour only for a profile that picked a style)."""
+    `emphasis` False, the font and case only (the editor seeds the emphasis colour only for a profile that picked a
+    style). The profile's `captionCase` seeds `textTransform` for every style."""
     look: dict = {}
+    case = prefs.get("captionCase")
+    if isinstance(case, str) and case in CASES:
+        look["textTransform"] = case
     if style not in NO_PROFILE_FONT:
         option = font_option(prefs.get("fontFamily"))
         if option:
