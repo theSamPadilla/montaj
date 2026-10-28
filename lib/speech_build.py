@@ -118,7 +118,7 @@ _EPS = 1e-6
 # Fields a rebuilt piece takes from its old item (the plan's list). id, src, timing, keyframes and
 # normalizedSrc are set by the build itself.
 CARRIED = ("type", "sourceCrop", "scale", "scaleX", "scaleY", "offsetX", "offsetY", "rotation", "opacity",
-           "volume", "muted", "speed", "proxySrc", "sourceDuration", "sourceWidth", "sourceHeight",
+           "mask", "blendMode", "volume", "muted", "speed", "proxySrc", "sourceDuration", "sourceWidth", "sourceHeight",
            "sourceCreatedAt")
 _SET_BY_BUILD = ("id", "src", "start", "end", "inPoint", "outPoint", "keyframes", "normalizedSrc",
                  "normalizedInPoint")

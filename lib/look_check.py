@@ -224,6 +224,14 @@ def overlay_path(item, project_dir):
     return src if os.path.isabs(src) else os.path.normpath(os.path.join(project_dir, src))
 
 
+def _composited(item):
+    """A clip with a mask, a blend mode other than normal or an opacity track (§616): it never fully covers what is below."""
+    if item.get("mask") or item.get("blendMode", "normal") != "normal":
+        return True
+    kfs = item.get("keyframes")
+    return isinstance(kfs, list) and any(isinstance(k, dict) and k.get("prop") == "opacity" for k in kfs)
+
+
 def _full_frame(item):
     """An item drawn over the whole frame: an opaque overlay, or a clip at scale 1 with no offset."""
     sx = _num(item.get("scaleX", item.get("scale", 1)), 1)
@@ -231,6 +239,8 @@ def _full_frame(item):
     if abs(_num(item.get("offsetX"))) > 0.5 or abs(_num(item.get("offsetY"))) > 0.5 or sx < 0.999 or sy < 0.999:
         return False
     if _num(item.get("opacity", 1), 1) < 0.999:
+        return False
+    if item.get("type") in VISUAL and _composited(item):
         return False
     if item.get("type") == "overlay":
         return item.get("opaque") is True

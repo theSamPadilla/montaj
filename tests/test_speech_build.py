@@ -519,6 +519,21 @@ def test_carried_fields_and_dropped_fields_flagged(fx):
     assert flags and all(f["fields"] == ["nobg_src", "remove_bg"] for f in flags)
 
 
+def test_a_rebuilt_piece_keeps_mask_blend_mode_and_opacity_track(fx):
+    project = copy.deepcopy(fx.project)
+    c2 = speech_items(project)[1]
+    mask = {"shape": "rect", "w": 0.4, "h": 0.4, "feather": 0.05}
+    track = {"prop": "opacity", "points": [{"t": 0, "value": 0.2}, {"t": 4.0, "value": 1}]}
+    c2.update(mask=mask, blendMode="multiply", keyframes=[track])
+    b = build(fx, edit(fx.text, "A4 {1.60} Hartford,", None), project=project)
+    pieces = [x for x in b.items if x["id"].startswith("clip-2")]
+    assert len(pieces) == 2
+    for it in pieces:
+        assert it["mask"] == mask and it["blendMode"] == "multiply"
+        assert it["keyframes"] and it["keyframes"][0]["prop"] == "opacity"
+    assert not [f for f in b.report.flagged if f["kind"] == "fields_dropped"]
+
+
 def test_speed_scales_durations_and_keyframe_offsets(fx):
     project = copy.deepcopy(fx.project)
     items = speech_items(project)

@@ -205,6 +205,16 @@ def test_segments_carry_the_human_set_fields(monkeypatch, tmp_path):
             assert s[k] == clip[k]
 
 
+def test_segments_carry_the_mask_and_blend_mode(monkeypatch, tmp_path):
+    clip = probed_clip("a", 0.0, dur=10.0)
+    clip.update({"mask": {"shape": "ellipse", "feather": 0.1}, "blendMode": "screen"})
+    argv = ["jump_cut.py", "--project-id", "p1", "--clip-id", "a", "--keeps", "[[1,2],[4,5]]"]
+    out = run_step(jump_cut, argv, project_with(clip), monkeypatch, tmp_path)
+    assert len(out["tracks"][0]["items"]) == 2
+    for s in out["tracks"][0]["items"]:
+        assert s["mask"] == clip["mask"] and s["blendMode"] == "screen"
+
+
 @pytest.mark.parametrize("field,value", [("speed", 2), ("keyframes", [{"t": 0}])])
 def test_a_clip_with_speed_or_keyframes_is_refused(monkeypatch, tmp_path, capsys, field, value):
     clip = probed_clip("a", 0.0)

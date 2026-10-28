@@ -62,7 +62,8 @@ import {
   hasLut3d,
   SEEK_PREROLL_S,
 } from './encode-segment.js'
-import { resolveAt, sourceWindow, opaqueReplacesPicture, isFullCanvasPlacement, opacityAt, trackLayerPositions, RESOLVER_VERSION } from '@bycrux/timeline-core'
+import { writeItemMask } from './item-mask.js'
+import { resolveAt, sourceWindow, opaqueReplacesPicture, isFullCanvasPlacement, opacityAt, maskAt, blendModeOf, trackLayerPositions, RESOLVER_VERSION } from '@bycrux/timeline-core'
 import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
 import { captionOverlayFields } from './caption-spec.js'
 import { materializeScene3d, Scene3dError, SCENE3D_SRC } from './scene3d.js'
@@ -192,6 +193,9 @@ const SHORT_EDGE_TARGET = 1080
  * 23: PL89j, each text also holds `opacity` (its own and its ancestors'),
  *    which look blends its fill by. 22's entries hold none, so a label drawn
  *    dim reads as full strength.
+ * 24: §616, a clip's opacity track, mask and blend mode show in the still (the
+ *    sampled opacity, the mask cut, the blend). 23's entries hold such a clip
+ *    at its static opacity, whole and normally composited.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -199,7 +203,10 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 23
+const SAMPLE_CACHE_VERSION = 24
+
+// The still's composite canvas (`format=rgba`), which a blend mode converts from and back to.
+const SAMPLE_CANVAS_PIX_FMT = 'rgba'
 
 // PL89: the most overlay pages a sampling session keeps open (createSampleSession).
 export const SESSION_MAX_PAGES = 4
@@ -1655,6 +1662,7 @@ export async function sampleFrame({
 
   const inputs = []
   const filterParts = []
+  const maskJobs = []   // the mask files the clips above need, written before ffmpeg runs
   let videoLabel
   let inputIdx = 0
 
@@ -1695,16 +1703,19 @@ export async function sampleFrame({
     // comment — and the image branch then quietly failed to apply the
     // transition half of the rule at all.
     //
-    // STATIC opacity, deliberately, and that half is a PARITY fix (SP9d T6).
-    // `ri.geometry` is `geometryAt(...)`, so `.opacity` is the SAMPLED curve
-    // value — but the export cannot fade a clip at all (ffmpeg's
-    // `colorchannelmixer aa` is a <double> and takes no expression), so
-    // honouring the curve here would make the Export dialog's still and
-    // version-compare show a fade the rendered file never has. The still
-    // frame's whole job is to show what the export will look like, so it
-    // reads the same static scalar the export does. Geometry — position,
-    // scale, rotation — stays SAMPLED in the descriptors below, because the
-    // export animates those now and the two agree.
+    // SAMPLED opacity (§616). `ri.geometry` is `geometryAt(...)`, so
+    // `.opacity` is the curve's value at this instant, and the export now
+    // fades a clip by that same curve (encode-segment.js's keyframed opacity
+    // mixer, sampled at the segment's fps), so the still shows what the
+    // export shows at this instant. It used to read the static scalar,
+    // because the export could not fade a clip at all (SP9d T6: ffmpeg's
+    // `colorchannelmixer aa` takes no expression) and honouring the curve
+    // would have made the Export dialog's still show a fade the file never
+    // had. `opacityAt` is the one reading of the curve for both. Geometry
+    // (position, scale, rotation) is SAMPLED in the descriptors below for the
+    // same reason. The mask and the blend mode are sampled too (`maskAt`):
+    // the descriptor carries the resolved mask and NO keyframes, so the
+    // builder takes its literal path and the still mask is one frame.
     //
     // A TRANSITION is not an exception to that rule but another application
     // of it (T12): the export genuinely blends a transitioning pair now
@@ -1748,7 +1759,9 @@ export async function sampleFrame({
     // (@bycrux/timeline-core/src/activation.js's `ItemCrossfade`), so the
     // factor is 1 — a no-op — everywhere this pin used to apply
     // unconditionally.
-    const opacity = (ri.item.opacity ?? 1) * (ri.crossfade?.role === 'to' ? ri.crossfade.p : 1)
+    // `localT` is the item-relative time `ri.geometry` was sampled at (resolveItem's `elapsed`).
+    const localT = Math.max(0, atSeconds - (ri.item.start ?? 0))
+    const opacity = opacityAt(ri.item, localT) * (ri.crossfade?.role === 'to' ? ri.crossfade.p : 1)
 
     let pseudoItem
     if (ri.kind === 'video') {
@@ -1810,12 +1823,29 @@ export async function sampleFrame({
         sourceCrop: ri.geometry.sourceCrop,
       }
     }
-    const { inputArgs, filterParts: fp, newVideoLabel } =
-      buildImageItemFilterParts(pseudoItem, actualWidth, actualHeight, inputIdx, videoLabel, duration)
+    // The mask, resolved at this instant (no keyframes: see the note above), and
+    // the blend mode; both ride the descriptor like the other sampled scalars.
+    const mask = maskAt(ri.item, localT)
+    if (mask) pseudoItem.mask = mask
+    const blend = blendModeOf(ri.item)
+    if (blend !== 'normal') pseudoItem.blendMode = blend
+    // `maskBase` goes in workDir, which the cleanup below removes whole. The
+    // builder draws no mask without one. The canvas is RGBA and the extracted
+    // frames are already BT.709 (see the note after the stack), so a blend
+    // converts with the BT.709 matrix.
+    const { inputArgs, filterParts: fp, newVideoLabel, maskInputArgs, maskJobs: jobs } =
+      buildImageItemFilterParts(pseudoItem, actualWidth, actualHeight, inputIdx, videoLabel, duration, undefined,
+        { fps, maskBase: join(workDir, `mask-${inputIdx}`), matrix: 'bt709', canvasPixFmt: SAMPLE_CANVAS_PIX_FMT })
     inputs.push(...inputArgs)
     filterParts.push(...fp)
     videoLabel = newVideoLabel
     inputIdx++
+    // The mask file is the next input, so the next layer starts one past it.
+    if (maskInputArgs) {
+      inputs.push(...maskInputArgs)
+      maskJobs.push(...jobs)
+      inputIdx++
+    }
   }
 
   // The stack, bottom to top (§308 P3, see `stack` above); a clip an opaque
@@ -1831,6 +1861,9 @@ export async function sampleFrame({
   // not here. Applying zscale to the composite output causes "no path between
   // colorspaces" because format=rgba in the overlay chain drops colorspace tags.
   // The extracted video frames are already in sRGB BT.709 for HDR projects.
+
+  // The masks are files the composite reads as inputs: write them first.
+  await Promise.all(maskJobs.map((job) => writeItemMask(job)))
 
   // Write output PNG
   mkdirSync(dirname(outPath), { recursive: true })

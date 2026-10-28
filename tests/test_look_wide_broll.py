@@ -35,3 +35,14 @@ def test_a_cropped_tracked_or_carded_shot_is_not():
     assert lc.wide_broll_issues(p) == []
     p["settings"]["resolution"] = [1920, 1080]           # a landscape edit shows wide footage whole
     assert lc.wide_broll_issues(project([item("d")]) | {"settings": {"resolution": [1920, 1080]}}) == []
+
+
+def test_a_composited_clip_is_not_a_full_frame_cover():
+    plain = {"type": "image", "src": "a.png"}
+    assert lc._full_frame(plain)
+    assert not lc._full_frame({**plain, "mask": {"shape": "ellipse"}})
+    assert not lc._full_frame({**plain, "blendMode": "screen"})
+    assert lc._full_frame({**plain, "blendMode": "normal"})
+    fade = {"prop": "opacity", "points": [{"t": 0, "value": 0}, {"t": 1, "value": 1}]}
+    assert not lc._full_frame({**plain, "keyframes": [fade]})
+    assert lc._full_frame({**plain, "keyframes": [{"prop": "scale", "points": []}]})

@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 import { visibleVideoItems, effectiveColorSpace } from '../visible-video.js'
-import { resolvePictureColorSpace, collectAllItems, stampSourceProbes } from '../render.js'
+import { resolvePictureColorSpace, collectAllItems, stampSourceProbes, fillsFrameOpaquely } from '../render.js'
 import { isHdr, detectFromTransfer } from '../color-space.js'
 import { FFMPEG } from '../ffmpeg-bin.js'
 
@@ -128,4 +128,35 @@ test('HDR is judged by the source file\'s origin: an SDR clip decoded from an HD
   const r = resolvePictureColorSpace(pj, st, videoItems)
   assert.equal(r.colorSpace, 'sdr_bt709')
   assert.equal(r.hdrVisible, false)
+})
+
+// ---- §616: a composited clip is never a cover ----
+
+test('a masked, blended or opacity-keyed full-frame clip leaves the footage below visible', () => {
+  const top = video('top', 0, 10)
+  const fade = { prop: 'opacity', points: [{ t: 0, value: 0.5 }, { t: 1, value: 1 }] }
+  const all = () => true
+  // the control: a plain full-frame clip above covers the one below
+  assert.deepEqual(ids(visibleVideoItems([[video('under', 0, 10)], [top]], { coversPicture: all })), ['top'])
+  const composited = [
+    { mask: { shape: 'ellipse', w: 0.5, h: 0.5 } },
+    { blendMode: 'screen' },
+    { keyframes: [fade] },
+  ]
+  for (const c of composited) {
+    assert.deepEqual(ids(visibleVideoItems([[video('under', 0, 10)], [{ ...top, ...c }]], { coversPicture: all })), ['under', 'top'], JSON.stringify(c))
+    const img = { id: 'img', type: 'image', src: '/x/i.png', start: 0, end: 10, ...c }
+    assert.deepEqual(ids(visibleVideoItems([[video('under', 0, 10)], [img]], { coversPicture: all })), ['under'], JSON.stringify(c))
+  }
+})
+
+test('fillsFrameOpaquely: a plain full-frame card is a cover, a masked, blended or fading one is not', () => {
+  const png = join(WORK, 'card-616.png')
+  ff(['-f', 'lavfi', '-i', 'color=black:size=108x192', '-frames:v', '1', '-pix_fmt', 'rgb24', png])
+  const item = { id: 'c', type: 'image', src: png, start: 0, end: 2 }
+  const res = [1080, 1920]
+  assert.equal(fillsFrameOpaquely(item, res), true)
+  assert.equal(fillsFrameOpaquely({ ...item, mask: { shape: 'rect' } }, res), false)
+  assert.equal(fillsFrameOpaquely({ ...item, blendMode: 'multiply' }, res), false)
+  assert.equal(fillsFrameOpaquely({ ...item, keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 1, value: 1 }] }] }, res), false)
 })

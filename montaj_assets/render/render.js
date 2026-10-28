@@ -57,7 +57,7 @@ import { visibleVideoItems, effectiveColorSpace } from './visible-video.js'
 import { fileHasAudio, probeVideoGeometry } from './encode-segment.js'
 import { probeColorTransfer }             from './derive-sdr.js'
 import { sdrLayerFor, gradeKeyFor, probeMedia, defaultDeps, originOf } from './sdr-layer.js'
-import { sourceWindow, transitionPairs, isOpaqueCover, opaqueReplacesPicture, trackLayerPositions } from '@bycrux/timeline-core'
+import { sourceWindow, transitionPairs, isOpaqueCover, opaqueReplacesPicture, trackLayerPositions, isPlainComposite } from '@bycrux/timeline-core'
 import { MASTER_LOOK, curveIds }          from './look.js'
 import { resolveMotionBlur, MOTION_BLUR_MAX } from './motion-blur.js'
 import { loudnessFilter }                 from './mix-audio.js'
@@ -930,8 +930,11 @@ function resolveProjectColorSpace(settings, videoItems) {
  * Whether an image or a video fills the whole frame with no transparency (a
  * black card, a full-frame still): it hides the video below it. Read from the
  * file, never the extension. Any probe failure is false (not a cover).
+ * A composited item (§616: a mask, a blend mode, an opacity below 1 at any
+ * moment) is never one: the picture below shows through or is blended.
  */
 function fillsFrameOpaquely(item, resolution) {
+  if (!isPlainComposite(item)) return false
   const src = item.src
   if (typeof src !== 'string' || !existsSync(src)) return false
   const geo = probeVideoGeometry(src)

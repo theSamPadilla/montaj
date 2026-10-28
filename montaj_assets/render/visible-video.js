@@ -16,7 +16,7 @@
  * uses), or whatever `coversPicture` says covers the whole canvas (a full-canvas
  * image with no alpha, an opaque full-canvas video).
  */
-import { isOpaqueCover, isFullCanvasPlacement, fullOpacitySpans } from '@bycrux/timeline-core'
+import { isOpaqueCover, isFullCanvasPlacement, fullOpacitySpans, isPlainComposite } from '@bycrux/timeline-core'
 
 const finite = (v, d) => (Number.isFinite(v) ? v : d)
 
@@ -76,7 +76,7 @@ export function visibleVideoItems(tracksItems, { end, coversPicture = () => fals
   for (const { item: it, trackIdx } of tagged) {
     if (it.type === 'overlay' && isOpaqueCover(it)) {
       for (const span of coverSpans(it)) covers.push({ span, trackIdx: Infinity })
-    } else if ((it.type === 'image' || it.type === 'video') && isFullCanvasPlacement(it) && (it.opacity ?? 1) === 1 && !it.remove_bg && coversPicture(it)) {
+    } else if ((it.type === 'image' || it.type === 'video') && isFullCanvasPlacement(it) && (it.opacity ?? 1) === 1 && isPlainComposite(it) && !it.remove_bg && coversPicture(it)) {
       covers.push({ span: [finite(it.start, 0), finite(it.end, last)], trackIdx: it.type === 'image' ? Infinity : trackIdx })
     }
   }
