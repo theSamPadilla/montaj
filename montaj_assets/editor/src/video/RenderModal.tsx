@@ -327,49 +327,78 @@ function LogLine({ text }: { text: string }) {
 
 // ── Progress ────────────────────────────────────────────────────────────────
 
+const BAKED_FRAMES = /\bbaked (\d+)\/(\d+) frames\b/
+const BAKED_JOBS = /\((\d+)\s*\/\s*(\d+)\s+done\)/i
+// "slicing: 3 slice(s) of ..." and "slice 2/3 (...): capturing ..." (render.js, slice-run.js).
+const SLICED = /\bslicing: \d+ slice|\bslice \d+\/\d+ \(/
+
 /**
  * Best-effort render progress (0..1) for the SSE/log transport, where the phase
  * is pinned to 'rendering' and only log lines arrive. It reads the two phases
  * that carry a real running counter, so the bar tracks TOTAL work rather than
  * leaping on a keyword:
  *
- *   • Frame-baking (renderer.js): `encoded <job> (jobsDone/jobs.length done)` —
- *     every overlay/caption element (chunked) is one job; jobsDone/total drives
- *     0.05 → 0.55. The "done" in "(N/M done)" is a per-JOB counter, NOT the
- *     render finishing — matching it as completion is what pinned the bar at
- *     ~98% for the entire render.
- *   • Composition (compose.js): `[montaj compose] segment i/N` — drives
- *     0.55 → 0.90.
+ *   • Frame-baking (renderer.js): `baked <n>/<total> frames`, one counter over
+ *     every overlay frame of the render, worth 0.50 of the bar. An older wheel
+ *     without it logs `encoded <job> (jobsDone/jobs.length done)` per job,
+ *     read the same way. The "done" in "(N/M done)" is a per-JOB counter, NOT
+ *     the render finishing — matching it as completion is what pinned the bar
+ *     at ~98% for the entire render.
+ *   • Composition (compose.js): `[montaj compose] segment i/N`, worth 0.35.
+ *
+ * The two add up (0.05 + 0.50 bake + 0.35 compose) rather than run as bands:
+ * a render cut in time slices captures and encodes slice by slice, so its
+ * segments land while most frames are still to bake. Unsliced, the bake is
+ * done before compose starts and the sum is the old 0.55-0.90 band; an
+ * unsliced render with no bake counter at all (no overlays) counts its bake
+ * as done once compose runs.
  *
  * Counter-less markers (composition start, concat, SDR derive, cleanup) nudge
- * the bar between those bands. Monotonic (`Math.max`), so a counter resetting
- * between phases never walks it backward. Returns null before any line lands.
+ * the bar. The SDR one is the phase marker `deriving SDR rendition` only: a
+ * sliced `--export both` prepares its SDR clips before any capture ("SDR
+ * pass: normalized ...") and a word match put that bar at 92% from the start.
+ * Monotonic (`Math.max`), so a counter resetting between phases never walks it
+ * backward. Returns null before any line lands.
  */
 export function parseLogProgress(logs: string[]): number | null {
   if (logs.length === 0) return null
   let p = 0.02  // a line exists, so the engine has started
+  let bake = 0
+  let compose = 0
+  // The frame counter outranks the per-job one, which restarts every slice.
+  const frames = logs.some((line) => BAKED_FRAMES.test(line))
+  const baking = frames || logs.some((line) => BAKED_JOBS.test(line))
+  const sliced = logs.some((line) => SLICED.test(line))
   for (const line of logs) {
-    // Frame-baking overall counter: "encoded <job> (jobsDone/total done)".
-    const baked = line.match(/\((\d+)\s*\/\s*(\d+)\s+done\)/i)
-    if (baked) {
-      const n = Number(baked[1]), d = Number(baked[2])
-      if (d > 0 && n <= d) p = Math.max(p, 0.05 + 0.50 * (n / d))
+    const f = line.match(BAKED_FRAMES)
+    if (f) {
+      const n = Number(f[1]), d = Number(f[2])
+      if (d > 0 && n <= d) bake = Math.max(bake, n / d)
+      continue
+    }
+    // Older wheels: "encoded <job> (jobsDone/total done)".
+    const job = line.match(BAKED_JOBS)
+    if (job) {
+      const n = Number(job[1]), d = Number(job[2])
+      if (!frames && d > 0 && n <= d) bake = Math.max(bake, n / d)
       continue
     }
     // Composition per-segment counter: "[montaj compose] segment i/N".
     const comp = line.match(/segment\s+(\d+)\s*\/\s*(\d+)/i)
     if (comp && /compos/i.test(line)) {
       const n = Number(comp[1]), d = Number(comp[2])
-      if (d > 0 && n <= d) p = Math.max(p, 0.55 + 0.35 * (n / d))
+      if (d > 0 && n <= d) compose = Math.max(compose, n / d)
       continue
     }
     // Counter-less phase markers.
     if (/composing final video/i.test(line)) p = Math.max(p, 0.55)
     else if (/concatenat/i.test(line)) p = Math.max(p, 0.90)
-    else if (/deriving|\bsdr\b/i.test(line)) p = Math.max(p, 0.92)
+    else if (/deriving SDR rendition/i.test(line)) p = Math.max(p, 0.92)
     else if (/intermediate files cleaned/i.test(line)) p = Math.max(p, 0.96)
     else if (/rendering .*\bframes\)/i.test(line)) p = Math.max(p, 0.05)  // baking started
   }
+  if (compose > 0 && !baking && !sliced) bake = 1
+  if (bake > 0 || compose > 0) p = Math.max(p, 0.05 + 0.50 * bake + 0.35 * compose)
   return p
 }
 
