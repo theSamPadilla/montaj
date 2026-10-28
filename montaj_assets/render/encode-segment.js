@@ -47,6 +47,7 @@ import { ffmpegFilterPath } from './ffmpeg-filter-path.js'
 import { graphicsToHdrChain } from './hdr-graphics.js'
 import { externalizeFilterGraph } from './filter-script.js'
 import { assertSegmentHasVideo } from './segment-check.js'
+import { opacityFilterStep } from './item-opacity.js'
 import {
   geometryFor, geometryAt, toRotatedPixelBox, toPixelBox, compileTrackExprInfo,
   transitionProgress, hasCropKeyframes, imageFitFor, isFullFrameCrop, CROP_KEYFRAME_PROPS,
@@ -676,10 +677,9 @@ function animatedGeometry(item, kind, vw, vh, timeOffset, duration, onCap) {
   const tracks = item?.keyframes
   if (!Array.isArray(tracks) || tracks.length === 0) return null
 
-  // Only the geometry props compile. `opacity` is deliberately absent: ffmpeg's
-  // `colorchannelmixer aa` is a <double> and accepts no expression at all, so a
-  // clip's opacity curve is IGNORED here and the static value is used instead.
-  // That gap is a property of the tool, not an oversight — see docs/RENDER.md.
+  // Only the geometry props compile here. `opacity` is absent on purpose:
+  // `colorchannelmixer aa` takes no expression, so a clip's opacity curve is
+  // sampled per frame and sent with sendcmd instead (item-opacity.js, §616).
   // The crop props (cropX/cropY/cropW/cropH, PV55) are absent too, and must stay
   // so: they move the picture inside the box (animatedImageCrop), never the box.
   const GEOMETRY_PROPS = ['offsetX', 'offsetY', 'scale', 'scaleX', 'scaleY', 'rotation']
@@ -1269,14 +1269,17 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
     `[${idx}:v]${fitChain}${toHdr}${anim?.needsAnimatedChain ? animStep : rotateFilterStep(box)},setpts=PTS-STARTPTS[img${idx}]`
   )
   let src = `[img${idx}]`
-  if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
-    filterParts.push(`${src}colorchannelmixer=aa=${finiteNumber(item.opacity, 'opacity')}[imgop${idx}]`)
+  // Static opacity keeps its plain mixer; a keyframed one is a sendcmd-driven
+  // mixer sampled at the segment's fps (a missing fps means 30: sample-frame
+  // renders one instant, and Task 6 gives it a sampled scalar instead).
+  const op = opacityFilterStep(item, 'op' + idx, imgOffset, duration, opts?.fps ?? 30)
+  if (op) {
+    filterParts.push(`${src}${op}[imgop${idx}]`)
     src = `[imgop${idx}]`
   }
   // box.x/box.y, not the unrotated x/y: a rotated frame arrives here at
   // outW×outH, so compositing it at the unrotated top-left would translate it
   // by half the growth instead of turning it in place.
-  // Opacity is NOT animated even when a curve exists — see the video path.
   const iPos = anim
     ? (anim.needsAnimatedChain ? { x: anim.xExpr, y: anim.yExpr } : staticBoxPosition(anim, box))
     : null
@@ -1625,14 +1628,14 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     filterParts.push(`${head}${conversionStep}${tail}[vid${idx}]`)
   }
   let src = `[vid${idx}]`
-  if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
-    filterParts.push(`${src}colorchannelmixer=aa=${finiteNumber(item.opacity, 'opacity')}[vidop${idx}]`)
+  // Static opacity keeps its plain mixer; a keyframed one is a sendcmd-driven
+  // mixer sampled once per frame at the segment's fps (item-opacity.js, §616).
+  const op = opacityFilterStep(item, 'op' + idx, seekOffset, duration, opts.fps ?? 30)
+  if (op) {
+    filterParts.push(`${src}${op}[vidop${idx}]`)
     src = `[vidop${idx}]`
   }
   // box.x/box.y, not the unrotated x/y — see the image path.
-  // Opacity is NOT animated even when a curve exists: `colorchannelmixer aa` is
-  // a <double> and accepts no expression, so the static value above stands and
-  // the curve is ignored. Documented in docs/RENDER.md; pinned by a test.
   const vPos = anim
     ? (anim.needsAnimatedChain ? { x: anim.xExpr, y: anim.yExpr } : staticBoxPosition(anim, box))
     : null
@@ -2189,7 +2192,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
       if (culled.has(item)) continue
       const { inputArgs, filterParts: fp, newVideoLabel } =
         buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration, start,
-          { toHdr: isHdr(projectColorSpace) ? projectColorSpace : null, dryRun: opts._dryRun })
+          { toHdr: isHdr(projectColorSpace) ? projectColorSpace : null, dryRun: opts._dryRun, fps })
       inputs.push(...inputArgs)
       filterParts.push(...fp)
       videoLabel = newVideoLabel
@@ -2221,6 +2224,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
           zscaleAvailable,
           lut3dAvailable,
           sdrCurve,
+          fps,
         })
       // The input (carrying its -ss/-t window) is ALWAYS added so the clip's
       // audio is available to Step 5. Its VIDEO is composited only when the

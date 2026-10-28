@@ -151,18 +151,20 @@ describe('SP9d — keyframed items compile to expressions', () => {
   })
 })
 
-describe('SP9d — opacity is excluded, and stays excluded', () => {
-  test('an opacity curve on a clip is IGNORED — static aa, never an expression', () => {
-    // ffmpeg's colorchannelmixer `aa` is a <double> and accepts no expression.
-    // Pinned so nobody "fixes" this into a filter graph that will not build.
+describe('SP9d — an opacity track is sampled, not compiled to an expression', () => {
+  test('an opacity track compiles to sendcmd on colorchannelmixer', () => {
+    // `aa` accepts no expression but is a runtime command, so the curve is
+    // sampled per frame (item-opacity.js, §616). The geometry chain is untouched.
+    const plain = buildVideo(videoItem({}))
     const r = buildVideo(videoItem({
       opacity: 0.5,
       keyframes: [track('opacity', [{ t: 0, value: 0 }, { t: 3, value: 1 }])],
-    }))
-    const mixer = r.filterParts.find((p) => p.includes('colorchannelmixer'))
-    assert.ok(mixer, 'a non-1 opacity still emits the mixer')
-    assert.match(mixer, /colorchannelmixer=aa=0\.5\b/)
-    assert.ok(!/\bt\b/.test(mixer), 'no time expression may reach colorchannelmixer')
+    }), { fps: 30 })
+    const step = r.filterParts.find((p) => p.includes("sendcmd=c='"))
+    assert.ok(step, 'an opacity track emits a sendcmd step')
+    assert.match(step, /colorchannelmixer@op1 aa /)
+    assert.match(step, /,colorchannelmixer@op1=aa=0\[vidop1\]$/)
+    assert.equal(chainOf(r), chainOf(plain), 'the geometry chain is unchanged')
   })
 
   test('an opacity curve alone does not push the item onto the animated path', () => {
