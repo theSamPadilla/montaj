@@ -157,7 +157,7 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
         // A press that never moved changes nothing and commits nothing.
         const to = p.last && l.toBox({ x: ev.clientX, y: ev.clientY })
         const changes = to ? maskGestureChanges(p.gesture, p.start, p.from, to, l.boxW, l.boxH) : p.last
-        const click = !p.last
+        const click = !p.last && p.gesture === 'move'
         end(changes, ev.altKey)
         if (click) l.onClick?.()
       }

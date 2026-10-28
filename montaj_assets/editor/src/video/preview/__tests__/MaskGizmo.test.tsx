@@ -146,11 +146,8 @@ describe('mask gizmo: when it shows', () => {
     expect(screen.queryByLabelText('Move mask')).toBeNull()
   })
 
-  // `enabled` lands in timeline-core's maskAt in a parallel task. Until then a
-  // mask without it reads as on, and this waits.
-  const maskAtKnowsEnabled = maskAt({ mask: { shape: 'ellipse', enabled: false } } as never, 0) === null
-  it.skipIf(!maskAtKnowsEnabled)('is absent when the mask is turned off (enabled: false)', () => {
-    render(<Host initial={clip({ mask: { ...MASK, enabled: false } as never })} />)
+  it('is absent when the mask is turned off (enabled: false)', () => {
+    render(<Host initial={clip({ mask: { ...MASK, enabled: false } })} />)
     expect(screen.queryByLabelText('Move mask')).toBeNull()
   })
 

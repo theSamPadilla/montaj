@@ -101,6 +101,33 @@ describe('base clip mask gizmo', () => {
     expect(screen.queryByLabelText('Move mask')).toBeNull()
   })
 
+  it('is absent when the mask is turned off (enabled: false)', () => {
+    render(<Host initial={clip({ mask: { shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.25, enabled: false } })} />)
+    expect(screen.queryByLabelText('Move mask')).toBeNull()
+  })
+
+  it('a click inside the outline, with no movement, toggles playback like a click on the clip', () => {
+    render(<Host initial={clip()} />)
+    const play = HTMLMediaElement.prototype.play as unknown as ReturnType<typeof vi.fn>
+    play.mockClear()
+    const move = screen.getByLabelText('Move mask')
+    fireEvent.pointerDown(move, { clientX: 54, clientY: 96, pointerId: 1, button: 0 })
+    fireEvent.pointerUp(move, { clientX: 54, clientY: 96, pointerId: 1 })
+    expect(commits).toHaveLength(0)
+    expect(play).toHaveBeenCalled()
+  })
+
+  it('a drag inside the outline does not toggle playback', () => {
+    render(<Host initial={clip()} />)
+    const play = HTMLMediaElement.prototype.play as unknown as ReturnType<typeof vi.fn>
+    play.mockClear()
+    const move = screen.getByLabelText('Move mask')
+    fireEvent.pointerDown(move, { clientX: 54, clientY: 96, pointerId: 1, button: 0 })
+    fireEvent.pointerMove(move, { clientX: 64, clientY: 96, pointerId: 1 })
+    fireEvent.pointerUp(move, { clientX: 64, clientY: 96, pointerId: 1 })
+    expect(play).not.toHaveBeenCalled()
+  })
+
   it('sits in the base clip box: its viewBox is the box at the zoom on screen', () => {
     const { container } = render(<Host initial={clip({ scale: 0.5 })} />)
     const svg = container.querySelector('[data-mask-gizmo] svg')!

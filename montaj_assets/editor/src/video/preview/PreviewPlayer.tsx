@@ -957,6 +957,8 @@ function PreviewSurface({
                   setLiveBaseMask(null)
                   onOverlayChange(selectedClip.id, changes, options)
                 }}
+                // A click that moved nothing plays or pauses, as on the clip.
+                onClick={guardedTogglePlay}
               />
             </div>
           )}
