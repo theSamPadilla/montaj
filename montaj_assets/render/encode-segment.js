@@ -49,10 +49,11 @@ import { externalizeFilterGraph } from './filter-script.js'
 import { assertSegmentHasVideo } from './segment-check.js'
 import { opacityFilterStep } from './item-opacity.js'
 import { planItemMask, writeItemMask, maskFilterParts } from './item-mask.js'
+import { blendCompositeParts } from './item-blend.js'
 import { pMap } from './p-map.js'
 import {
   geometryFor, geometryAt, toRotatedPixelBox, toPixelBox, compileTrackExprInfo,
-  transitionProgress, hasCropKeyframes, imageFitFor, isFullFrameCrop, CROP_KEYFRAME_PROPS,
+  transitionProgress, hasCropKeyframes, imageFitFor, isFullFrameCrop, CROP_KEYFRAME_PROPS, blendModeOf,
 } from '@bycrux/timeline-core'
 
 // Stall limit for an encode: silence (no stderr progress) this long kills it.
@@ -1182,12 +1183,33 @@ const BAKED_OVERLAY_GEOMETRY = geometryFor({}, 'overlay')
  *   segment; `whiteNits` is GRAPHICS_WHITE_NITS when absent. `dryRun` names
  *   the mapping's LUT without writing it. `fps` samples keyframed opacity and
  *   a keyframed mask (30 when absent). `maskBase`: where the item's mask file
- *   goes, without its extension; without it a `mask` is not drawn.
+ *   goes, without its extension; without it a `mask` is not drawn. `matrix`
+ *   ('bt709' | 'bt2020') and `canvasPixFmt` (the segment's outputPixFmt) are
+ *   the canvas a blend mode composites in (item-blend.js); SDR when absent.
  * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string,
  *   maskInputArgs?: string[], maskJobs?: import('./item-mask.js').ItemMaskPlan[] }}
  *   The mask keys are present only for a masked item: its mask file is ffmpeg
  *   input `idx + 1`, and the caller writes each job before the encode.
  */
+/**
+ * blendCompositeParts' options from a builder's `opts` (`matrix`,
+ * `canvasPixFmt`, `fps`, which encodeSegment passes) and the composite's own.
+ * Without them (a caller that is not encodeSegment) the canvas is the SDR one.
+ */
+function blendOpts(opts, o) {
+  const canvasPixFmt = opts?.canvasPixFmt ?? 'yuv420p'
+  return {
+    ...o,
+    x: String(o.x), y: String(o.y),
+    tenBit: canvasPixFmt.includes('10'),
+    matrix: opts?.matrix ?? 'bt709',
+    canvasPixFmt,
+    fps: opts?.fps ?? 30,
+    duration: ffSeconds(o.duration),
+    out: `[iv${o.idx}]`,
+  }
+}
+
 // NOTE: item.speed is intentionally ignored here — a still image has no
 // motion to time-scale, so speed is a no-op for image items (unlike video,
 // where it re-times decoded frames).
@@ -1313,11 +1335,22 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   const iPos = anim
     ? (anim.needsAnimatedChain ? { x: anim.xExpr, y: anim.yExpr } : staticBoxPosition(anim, box))
     : null
-  filterParts.push(
-    `${videoLabel}${src}overlay=` +
-    `x=${iPos ? `'${iPos.x}'` : box.x}:y=${iPos ? `'${iPos.y}'` : box.y}` +
-    `:shortest=0[iv${idx}]`
-  )
+  const blend = blendModeOf(item)
+  if (blend !== 'normal') {
+    // A blend mode (§616) replaces this overlay with item-blend.js's graph,
+    // which places the image with the same x/y (expressions included) and
+    // merges it with this overlay's own (default) format.
+    filterParts.push(...blendCompositeParts(blendOpts(opts, {
+      backdrop: videoLabel, item: src, mode: blend, idx, vw, vh, duration, overlayFormat: '',
+      x: iPos ? `'${iPos.x}'` : box.x, y: iPos ? `'${iPos.y}'` : box.y,
+    })))
+  } else {
+    filterParts.push(
+      `${videoLabel}${src}overlay=` +
+      `x=${iPos ? `'${iPos.x}'` : box.x}:y=${iPos ? `'${iPos.y}'` : box.y}` +
+      `:shortest=0[iv${idx}]`
+    )
+  }
   const newVideoLabel = `[iv${idx}]`
 
   // The mask's keys only when there is a mask: callers and tests that compare
@@ -1348,6 +1381,10 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
  * @param {number} [opts.fps]             — samples keyframed opacity and a keyframed mask (30 when absent)
  * @param {string} [opts.maskBase]        — where the item's mask file goes, without
  *   its extension; without it a `mask` is not drawn
+ * @param {string} [opts.matrix]          — the canvas's YUV matrix for a blend mode
+ *   ('bt709' | 'bt2020'); 'bt709' when absent
+ * @param {string} [opts.canvasPixFmt]    — the segment's outputPixFmt, for a blend
+ *   mode; 'yuv420p' when absent
  * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string,
  *   audioTrim: string, maskInputArgs?: string[], maskJobs?: object[] }} audioTrim
  *   is the head of this item's audio chain, which must cut the same source
@@ -1705,11 +1742,21 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   const vPos = anim
     ? (anim.needsAnimatedChain ? { x: anim.xExpr, y: anim.yExpr } : staticBoxPosition(anim, box))
     : null
-  filterParts.push(
-    `${videoLabel}${src}overlay=` +
-    `x=${vPos ? `'${vPos.x}'` : box.x}:y=${vPos ? `'${vPos.y}'` : box.y}` +
-    `${ovFmt}:shortest=0[iv${idx}]`
-  )
+  const blend = blendModeOf(item)
+  if (blend !== 'normal') {
+    // A blend mode (§616): item-blend.js's graph in place of this overlay,
+    // the same x/y, merged with this overlay's own format (ovFmt).
+    filterParts.push(...blendCompositeParts(blendOpts(opts, {
+      backdrop: videoLabel, item: src, mode: blend, idx, vw, vh, duration, overlayFormat: ovFmt,
+      x: vPos ? `'${vPos.x}'` : box.x, y: vPos ? `'${vPos.y}'` : box.y,
+    })))
+  } else {
+    filterParts.push(
+      `${videoLabel}${src}overlay=` +
+      `x=${vPos ? `'${vPos.x}'` : box.x}:y=${vPos ? `'${vPos.y}'` : box.y}` +
+      `${ovFmt}:shortest=0[iv${idx}]`
+    )
+  }
   const newVideoLabel = `[iv${idx}]`
 
   return mask
@@ -2149,6 +2196,9 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   // the directory with the segments.
   const maskJobs = []
   const maskBaseFor = (idx) => `${outputPath.replace(/\.[^./\\]+$/, '')}.mask-${idx}`
+  // A blended clip (§616) converts to RGB and back with the canvas's matrix,
+  // named: BT.2020 on the HDR canvas (tagged bt2020nc, Step 1), else BT.709.
+  const blendMatrix = isHdr(projectColorSpace) ? 'bt2020' : 'bt709'
 
   // --- Step 1: Black canvas base (always present — items layer on top) ---
   // Canvas format follows the project's working pix_fmt so item layers can
@@ -2274,7 +2324,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
       const { inputArgs, filterParts: fp, newVideoLabel, maskInputArgs, maskJobs: jobs } =
         buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration, start,
           { toHdr: isHdr(projectColorSpace) ? projectColorSpace : null, dryRun: opts._dryRun, fps,
-            maskBase: maskBaseFor(idx) })
+            maskBase: maskBaseFor(idx), matrix: blendMatrix, canvasPixFmt: spec.outputPixFmt })
       inputs.push(...inputArgs)
       if (maskInputArgs) {
         inputs.push(...maskInputArgs)
@@ -2313,6 +2363,8 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
           sdrCurve,
           fps,
           maskBase: maskBaseFor(idx),
+          matrix: blendMatrix,
+          canvasPixFmt: spec.outputPixFmt,
         })
       // The input (carrying its -ss/-t window) is ALWAYS added so the clip's
       // audio is available to Step 5. Its VIDEO is composited only when the
