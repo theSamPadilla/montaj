@@ -224,18 +224,19 @@ def _render(project_dir, monkeypatch):
 def test_an_old_lyric_project_never_opened_renders_converged_from_a_copy_beside_it(tmp_path, monkeypatch):
     """A project still in the retired shape on disk (never opened since the upgrade, or its open's write skipped
     for a Studio sync clash) must not draw its captions twice: render.js reads a converged copy in the project
-    folder (relative paths still resolve), the run removes it after, and project.json is left to the open."""
+    folder (relative paths still resolve), the run removes it after, and project.json is left to the open
+    (the export's own mark to final is its one write)."""
     project_dir = tmp_path / "le-croix"
     project_dir.mkdir()
     old = old_lyric_project()
     (project_dir / "project.json").write_text(json.dumps(old))
-    before = (project_dir / "project.json").read_text()
     seen = _render(project_dir, monkeypatch)
+    marked = {**old, "status": "final"}
     assert seen["render_input"] != seen["project_path"]
     assert seen["render_input"].parent == project_dir
     assert str(seen["render_input"]) in seen["cmd"] and str(project_dir / "project.json") not in seen["cmd"]
-    assert seen["body"] == converge(old)
-    assert (project_dir / "project.json").read_text() == before
+    assert seen["body"] == converge(marked)
+    assert json.loads((project_dir / "project.json").read_text()) == marked
 
 
 def test_a_current_project_renders_its_own_file(tmp_path, monkeypatch):
