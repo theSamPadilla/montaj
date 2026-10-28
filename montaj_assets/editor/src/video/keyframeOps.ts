@@ -1,5 +1,5 @@
-import type { CropKeyframeProp, EasingName, Keyframe, KeyframeProp, KeyframeTrack, TransformKeyframeProp, VisualItem } from '../schema'
-import { geometryAt, normalizeTrack } from '@bycrux/timeline-core'
+import type { CropKeyframeProp, EasingName, Keyframe, KeyframeProp, KeyframeTrack, MaskKeyframeProp, TransformKeyframeProp, VisualItem } from '../schema'
+import { MASK_FIELD_OF, MASK_KEYFRAME_PROPS, geometryAt, maskAt, normalizeTrack } from '@bycrux/timeline-core'
 
 /**
  * keyframeOps — the shared, DOM-free keyframe-mutation surface for SP9b.
@@ -39,8 +39,8 @@ import { geometryAt, normalizeTrack } from '@bycrux/timeline-core'
  * expression (`animatedGeometry`), so a clip's position, scale and rotation now
  * animate in the export exactly as they do in the preview.
  *
- * Keyframeability is now PER PROPERTY PER KIND, though — a clip can animate
- * position but not opacity — so an item-level yes/no is no longer the whole
+ * Keyframeability is PER PROPERTY PER KIND, though (the crop needs a source,
+ * the mask props need a mask), so an item-level yes/no is not the whole
  * answer. Use {@link canKeyframeProp} wherever a specific property is in hand;
  * this predicate answers only "can ANY property on this item be keyframed".
  *
@@ -60,25 +60,20 @@ export function canKeyframe(item: VisualItem | null | undefined): item is Visual
 /**
  * Whether ONE property on ONE item can be keyframed.
  *
- * Overlays: everything. Clips (video/image): everything EXCEPT `opacity`.
+ * Overlays: every transform prop. Clips (video/image): every transform prop,
+ * OPACITY INCLUDED, plus the crop (with a source) and the mask props (with a
+ * mask).
  *
- * The opacity exclusion is a hard limit of the render, not a scope decision.
- * A clip's transform reaches ffmpeg as a filter expression, and ffmpeg happily
- * evaluates expressions for `overlay`'s x/y, `scale`'s w/h and `rotate`'s
- * angle. Its alpha control does not play along: `colorchannelmixer` declares
- * `aa` as a `<double>`, which accepts a literal number and nothing else — no
- * expression, at any evaluation mode. (The `T` flag ffmpeg prints beside it is
- * `AV_OPT_FLAG_RUNTIME_PARAM`, i.e. settable via `sendcmd`/`zmq`; it is not
- * expression support, and it has been misread as such before.) There is
- * therefore no way to fade a clip through the ffmpeg path at all.
+ * Clip opacity was refused until §616, for a render reason that no longer
+ * holds: ffmpeg's `colorchannelmixer` takes its alpha gain as a `<double>` and
+ * no expression, so a clip could not be faded through the expression path.
+ * The export now samples the curve per frame (`opacityAt`) and sends each
+ * value to the filter through `sendcmd`, so a clip's fade in the preview is a
+ * fade in the export.
  *
- * Overlays are exempt because they never touch that filter: they are baked
- * frame-by-frame in a browser, where opacity is just another CSS value.
- *
- * Closing this gap needs the per-frame browser bake extended to video — decode
- * every frame of the animated span and composite it the way overlays already
- * are. That was measured at 14-33x the expression path's render time and is
- * explicitly out of scope; see docs/RENDER.md.
+ * The six MASK props (§616) override fields of the item's `mask`
+ * (timeline-core's `maskAt`), and do nothing without one, so they are offered
+ * only on a clip carrying a valid mask. Overlays take no mask.
  */
 export function canKeyframeProp(item: VisualItem | null | undefined, prop: KeyframeProp): boolean {
   if (!canKeyframe(item)) return false
@@ -88,8 +83,14 @@ export function canKeyframeProp(item: VisualItem | null | undefined, prop: Keyfr
   if (isCropProp(prop)) {
     return item.type === 'image' || (item.type === 'video' && !!item.sourceWidth && !!item.sourceHeight)
   }
-  if (item.type === 'overlay') return true
-  return prop !== 'opacity'
+  // §616: a mask track needs a mask to override, and a clip to carry it.
+  if (isMaskProp(prop)) return item.type !== 'overlay' && maskAt(item, 0) !== null
+  return true
+}
+
+/** Whether `prop` is one of the six mask props (§616). Never part of `transformProps`. */
+export function isMaskProp(prop: KeyframeProp): prop is MaskKeyframeProp {
+  return (MASK_KEYFRAME_PROPS as readonly string[]).includes(prop)
 }
 
 /** The keyframed crop's four props, x, y, w, h (PV55). Keyed as ONE set by the
@@ -173,13 +174,11 @@ const PER_AXIS_TRANSFORM_PROPS: readonly TransformKeyframeProp[] = ['offsetX', '
  * failure mode is a silent frozen animation is exactly the kind of thing that
  * drifts. Do NOT reintroduce a local copy.
  *
- * The result is ALSO filtered by {@link canKeyframeProp}, which is what keeps a
- * clip's un-animatable `opacity` out of every "do this to every transform prop"
- * action. That matters in both directions and both are easy to get wrong:
- * double-clicking a video would otherwise write an opacity track the renderer
- * silently ignores, and the inspector's header diamond — which lights only when
- * EVERY prop in this list is keyed at the playhead — could then never light on a
- * clip at all, because the one prop it waits for can never be keyed.
+ * The result is ALSO filtered by {@link canKeyframeProp}, so the one rule
+ * decides what an all-props action may write. Since §616 that admits opacity
+ * on clips as on overlays (the export animates both). The mask props are never
+ * in this list: they are not transform props, and keying a clip's whole
+ * transform must not seed tracks on its mask.
  */
 export function transformProps(item: VisualItem): readonly TransformKeyframeProp[] {
   const base = isUniformScale(item) ? UNIFORM_TRANSFORM_PROPS : PER_AXIS_TRANSFORM_PROPS
@@ -202,8 +201,14 @@ export function transformProps(item: VisualItem): readonly TransformKeyframeProp
 export function valueAt(item: VisualItem, prop: KeyframeProp, localT: number): number {
   const g = geometryAt(item, item.type, localT)
   if (isCropProp(prop)) return (g.sourceCrop ?? FULL_CROP)[CROP_FIELD[prop]]
+  // §616: the mask field as timeline-core's `maskAt` resolves it (track over
+  // stored value over default); the default when there is no mask to read.
+  if (isMaskProp(prop)) return maskAt(item, localT)?.[MASK_FIELD_OF[prop]] ?? MASK_DEFAULTS[MASK_FIELD_OF[prop]]
   return g[prop]
 }
+
+/** `maskAt`'s defaults for the keyframeable mask fields (timeline-core src/mask.js). */
+const MASK_DEFAULTS = { x: 0.5, y: 0.5, w: 0.5, h: 0.5, rotation: 0, feather: 0 } as const
 
 /**
  * Two keyframe times closer than this are the same instant.
@@ -294,6 +299,15 @@ function withStaticValue(item: VisualItem, prop: KeyframeProp, value: number): V
     case 'cropW':
     case 'cropH':
       return { ...item, sourceCrop: { ...(item.sourceCrop ?? FULL_CROP), [CROP_FIELD[prop]]: value } }
+    // §616: a mask field, on an item that has a mask (with none, a mask
+    // value has nothing to shape, as in `maskAt`).
+    case 'maskX':
+    case 'maskY':
+    case 'maskW':
+    case 'maskH':
+    case 'maskRotation':
+    case 'maskFeather':
+      return item.mask ? { ...item, mask: { ...item.mask, [MASK_FIELD_OF[prop]]: value } } : item
   }
 }
 

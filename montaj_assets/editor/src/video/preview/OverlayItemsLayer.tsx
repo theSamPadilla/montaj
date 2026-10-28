@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
-import { containsTime, geometryAt, geometryFor, hasCropKeyframes, resolveAt } from '@bycrux/timeline-core'
+import { containsTime, geometryAt, hasCropKeyframes, resolveAt } from '@bycrux/timeline-core'
 import { isProxyUsable, markProxyFailed } from './proxySupport'
 import { mediaBoxStyle, perAxisRatio } from './transformStyle'
 import { sourceCropVideoStyle } from './sourceCropStyle'
+import { compositeParts, type MaskStyle } from './itemComposite'
 import CroppedImage from './CroppedImage'
 import type { EditorProject as Project, VisualItem, VisualTrack } from '../../schema'
 import type { OverlayFactory } from '../../types'
@@ -130,9 +131,12 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlayi
 // An item's image/video, fitted into its box rather than the frame. The box
 // comes from `mediaBoxStyle`; see there for why the wrapper's own scale cannot
 // do this. Pointer-transparent, so the wrapper stays the drag target.
-function MediaBox({ scaleX, scaleY, children }: { scaleX: number; scaleY: number; children: React.ReactNode }) {
+//
+// It also carries a clip's MASK (§616, `itemComposite.ts`): its CSS box is the
+// clip's own box, the one the mask's fractions and feather are relative to.
+function MediaBox({ scaleX, scaleY, mask, children }: { scaleX: number; scaleY: number; mask?: MaskStyle; children: React.ReactNode }) {
   return (
-    <div className="pointer-events-none" style={mediaBoxStyle({ scaleX, scaleY })}>
+    <div className="pointer-events-none" style={mask ? { ...mediaBoxStyle({ scaleX, scaleY }), ...mask } : mediaBoxStyle({ scaleX, scaleY })}>
       {children}
     </div>
   )
@@ -616,17 +620,17 @@ export default function OverlayItemsLayer({
         // Persisted geometry from the resolver; live drag state layered on top.
         // The resolver only ever sees the SAVED project, so it cannot know about
         // an in-flight drag — `liveOffset`/`liveScale`/`liveRotation` must keep
-        // winning, with `geometryFor` supplying the base each falls back to.
+        // winning, with `geometryAt` supplying the base each falls back to.
         // Animated for the same reason as the items branch below: the renderer
         // composites tracks[0] images through the very same
         // buildImageItemFilterParts, which since SP9d compiles their curves into
         // ffmpeg expressions. Leaving this branch on the static resolve would
         // put back a preview/render divergence in the one place nobody would
-        // look for it. The opacity CURVE stays ignored here too — ffmpeg cannot
-        // vary clip alpha.
+        // look for it. The same holds for its opacity curve, mask and blend
+        // mode (§616): see the items branch below.
         //
-        // A TRANSITION is the one thing that does move this opacity, and these
-        // items need it as much as the interactive block below does:
+        // A TRANSITION multiplies this opacity too, and these items need it as
+        // much as the interactive block below does:
         // `crossfadesAt` stamps IMAGE clips exactly like video ones, and the
         // export blends a track[0] image pair through the same
         // `encode-segment.js` `blend` branch. The canvas engine skips them
@@ -634,8 +638,8 @@ export default function OverlayItemsLayer({
         // 'video'`), so this block is the ONLY thing drawing them in non-canvas
         // mode — leave it static and the preview hard-cuts a pair the export
         // dissolves. Same shared factor, same reasoning: see `crossfadeFactor`.
-        const gAnimated = geometryAt(item, 'image', currentTime - item.start)
-        const g        = { ...gAnimated, opacity: geometryFor(item, 'image').opacity * crossfadeFactor(item) }
+        const localT   = currentTime - item.start
+        const g        = geometryAt(item, 'image', localT)
         const fit      = g.fit ?? 'cover'
         const offsetX  = (liveOffset?.id   === item.id ? liveOffset.x       : null) ?? g.offsetX
         const offsetY  = (liveOffset?.id   === item.id ? liveOffset.y       : null) ?? g.offsetY
@@ -647,12 +651,14 @@ export default function OverlayItemsLayer({
         const scaleY   = (liveScale?.id    === item.id ? liveScale.scaleY   : null) ?? g.scaleY
         const rotation = (liveRotation?.id === item.id ? liveRotation.rotation : null) ?? g.rotation
         const hasPerAxis = item.scaleX != null || item.scaleY != null
+        const comp = compositeParts(item, localT, RENDER_W * renderScale * scaleX, RENDER_H * renderScale * scaleY)
         const wrapperStyle: React.CSSProperties = {
           transform: `translate(${offsetX}%, ${offsetY}%) rotate(${rotation}deg) scale(${scaleX}, ${scaleY})`,
           transformOrigin: 'center center',
           // Raise above play/pause div (z=10) when selected so pointer events land here
           zIndex: isSel ? 11 : 2,
-          opacity: g.opacity,
+          opacity: comp.opacity * crossfadeFactor(item),
+          ...comp.blend,
           // Selection box — the same 2px token outline a selected base clip
           // gets (PreviewPlayer.tsx ~:536), so the two read as one treatment.
           ...(isSel ? { outline: SELECTION_OUTLINE } : null),
@@ -689,7 +695,7 @@ export default function OverlayItemsLayer({
         )
         return (
           <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
-            <MediaBox scaleX={scaleX} scaleY={scaleY}>
+            <MediaBox scaleX={scaleX} scaleY={scaleY} mask={comp.mask}>
               <CroppedImage
                 src={fileUrl(item.src)}
                 crop={g.sourceCrop}
@@ -724,38 +730,14 @@ export default function OverlayItemsLayer({
           // Persisted geometry from the resolver; live drag state layered on top
           // (see the tracks[0] block above for why the override has to win).
           //
-          // EVERY item kind animates its position, scale and rotation: since
-          // SP9d the renderer compiles a clip's curves into time-varying ffmpeg
-          // expressions (encode-segment.js `animatedGeometry`), so a moving clip
-          // in this preview is a promise the export now keeps.
-          //
-          // OPACITY IS THE ONE EXCEPTION, and it is not a cost decision — it is
-          // a wall. ffmpeg's `colorchannelmixer` takes its alpha gain `aa` as a
-          // <double> and accepts no expression at all, so a clip's opacity curve
-          // cannot reach the render in any form. Animating it here would put
-          // back exactly the preview/render divergence this package exists to
-          // prevent: a fade the viewer sees and the export silently drops. So
-          // clips sample the curve for geometry and keep their STATIC opacity.
-          //
-          // Do not "finish the job" by dropping this override. Overlays are
-          // unaffected — they are baked per frame in a browser, where opacity is
-          // just another CSS value.
-          const animated = geometryAt(item, item.type, currentTime - item.start)
-          // SP9d's pin STANDS: a clip's opacity CURVE is still ignored here,
-          // because ffmpeg cannot animate clip alpha and preview must not
-          // promise a fade the export cannot produce.
-          //
-          // A TRANSITION is different, and is not an exception to that rule but
-          // an application of it: the export really does blend a transitioning
-          // pair (`encode-segment.js`'s `blend` branch), so showing the blend
-          // here is what keeps preview honest. The factor comes from the shared
-          // resolver via `crossfadeFactor` above — read its note for WHY only
-          // the incoming side ramps while the outgoing side stays at 1. That is
-          // the compositing model, not an oversight.
-          const factor = crossfadeFactor(item)
-          const g      = item.type === 'overlay'
-            ? animated
-            : { ...animated, opacity: geometryFor(item, item.type).opacity * factor }
+          // EVERY item kind animates its position, scale, rotation AND opacity:
+          // since SP9d the renderer compiles a clip's geometry curves into
+          // time-varying ffmpeg expressions (encode-segment.js
+          // `animatedGeometry`), and since §616 it samples a clip's opacity
+          // curve per frame too, so a moving or fading clip here is a promise
+          // the export keeps. Overlays are baked per frame in a browser.
+          const localT = currentTime - item.start
+          const g      = geometryAt(item, item.type, localT)
           const fit      = g.fit ?? 'cover'
           const offsetX  = (liveOffset?.id   === item.id ? liveOffset.x       : null) ?? g.offsetX
           const offsetY  = (liveOffset?.id   === item.id ? liveOffset.y       : null) ?? g.offsetY
@@ -771,6 +753,22 @@ export default function OverlayItemsLayer({
           // fields; see `onUp` in useDragOverlay.ts.
           const hasPerAxis = item.scaleX != null || item.scaleY != null
           const initGeom = { initOffsetX: offsetX, initOffsetY: offsetY, initScale: scale, initScaleX: scaleX, initScaleY: scaleY, initHasPerAxis: hasPerAxis, initRotation: rotation }
+
+          // A CLIP's compositing (§616, itemComposite.ts): its opacity at the
+          // instant, its blend mode and its mask, over its box in preview
+          // pixels. An overlay takes none of it: a stray `mask` or `blendMode`
+          // on one draws nothing, as in the export.
+          //
+          // A TRANSITION multiplies the clip's own opacity: the export blends a
+          // transitioning pair (`encode-segment.js`'s `blend` branch), and the
+          // factor comes from the shared resolver via `crossfadeFactor` above —
+          // read its note for WHY only the incoming side ramps while the
+          // outgoing side stays at 1. That is the compositing model, not an
+          // oversight.
+          const comp = item.type === 'overlay'
+            ? null
+            : compositeParts(item, localT, RENDER_W * renderScale * scaleX, RENDER_H * renderScale * scaleY)
+          const opacity = comp ? comp.opacity * crossfadeFactor(item) : g.opacity
 
           function startMove(e: React.MouseEvent) {
             if (!isSel) return
@@ -837,7 +835,13 @@ export default function OverlayItemsLayer({
             transform: `translate(${offsetX}%, ${offsetY}%) rotate(${rotation}deg) scale(${scaleX}, ${scaleY})`,
             transformOrigin: 'center center',
             zIndex,
-            opacity: g.opacity,
+            opacity,
+            // A clip's blend (§616). Here, on the wrapper, because the wrapper
+            // is a direct child of the preview frame: the frame is the isolated
+            // group the base clip and the lower tracks paint into, so they are
+            // the backdrop. Not part of the parity template (overlays carry no
+            // blend).
+            ...comp?.blend,
             // Selection box. NOT part of the parity template above — the render
             // bake has no selection state to reproduce — so it is appended
             // here, after the three transcribed properties, and only when the
@@ -864,7 +868,7 @@ export default function OverlayItemsLayer({
           if (item.type === 'image' && item.src) {
             return (
               <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
-                <MediaBox scaleX={scaleX} scaleY={scaleY}>
+                <MediaBox scaleX={scaleX} scaleY={scaleY} mask={comp?.mask}>
                   <CroppedImage
                     src={fileUrl(item.src)}
                     crop={g.sourceCrop}
@@ -901,7 +905,7 @@ export default function OverlayItemsLayer({
               : null
             return (
               <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
-                <MediaBox scaleX={scaleX} scaleY={scaleY}>
+                <MediaBox scaleX={scaleX} scaleY={scaleY} mask={comp?.mask}>
                   <OverlayVideo
                     // This is a THIRD src-precedence chain, deliberately not
                     // @bycrux/timeline-core's `playbackSrcFor` (see

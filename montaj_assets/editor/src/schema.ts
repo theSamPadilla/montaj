@@ -177,30 +177,34 @@ export type TransformKeyframeProp = 'offsetX' | 'offsetY' | 'scale' | 'scaleX' |
 /** The keyframed source crop (PV55): `sourceCrop`'s x/y/w/h, one track each. */
 export type CropKeyframeProp = 'cropX' | 'cropY' | 'cropW' | 'cropH'
 
-/** The transform properties that can be keyframed. Which item KINDS support
- *  which of them is decided by `canKeyframe` / `canKeyframeProp`
+/** The keyframed mask (§616): each overrides one field of `mask`
+ *  (maskX → x, maskY → y, maskW → w, maskH → h, maskRotation → rotation,
+ *  maskFeather → feather). They do nothing on an item with no `mask`. */
+export type MaskKeyframeProp = 'maskX' | 'maskY' | 'maskW' | 'maskH' | 'maskRotation' | 'maskFeather'
+
+/** The properties that can be keyframed. Which item KINDS support which of
+ *  them is decided by `canKeyframe` / `canKeyframeProp`
  *  (`montaj_assets/editor/src/video/keyframeOps.ts`) — the runtime source of
  *  truth, not this type.
  *
  *  `keyframes` is NO LONGER overlay-only (SP9d). Overlays, `image` and
  *  `video` items all animate their geometry, in the preview and in the
  *  export alike: the renderer compiles each curve into a time-varying ffmpeg
- *  filter expression (`render/encode-segment.js`, `animatedGeometry`), which
- *  is the per-frame hook the ffmpeg path used to lack.
+ *  filter expression (`render/encode-segment.js`, `animatedGeometry`).
  *
- *  OPACITY ANIMATION is what stayed overlay-only, and that one IS a hard
- *  render constraint: ffmpeg applies alpha through `colorchannelmixer`,
- *  whose `aa` option is a `<double>` and accepts no expression at all, so a
- *  clip cannot be faded through that path in any form. Overlays escape it by
- *  being captured frame-by-frame in a browser, where opacity is just CSS.
- *  See `canKeyframeProp` for the full reasoning and `docs/RENDER.md` for the
- *  measured cost of the alternative.
+ *  OPACITY animates on clips too since §616. The export samples a clip's
+ *  opacity curve per frame (`opacityAt`) and drives the alpha gain through
+ *  `sendcmd`; overlays are baked frame by frame in a browser, where opacity
+ *  is just CSS.
  *
  *  The four CROP props (PV55) are not geometry of the box: `geometryAt`
  *  (`@bycrux/timeline-core`) samples `cropX`/`cropY`/`cropW`/`cropH` and folds
  *  them back into ONE `sourceCrop`, so every reader keeps reading `sourceCrop`.
- *  They apply to images and to videos with a source size (`canKeyframeProp`). */
-export type KeyframeProp = TransformKeyframeProp | CropKeyframeProp
+ *  They apply to images and to videos with a source size (`canKeyframeProp`).
+ *
+ *  The six MASK props (§616) are read by timeline-core's `maskAt`, the same
+ *  function the export samples; they apply to clips that carry a `mask`. */
+export type KeyframeProp = TransformKeyframeProp | CropKeyframeProp | MaskKeyframeProp
 
 export interface Keyframe {
   t: number               // ITEM-relative seconds — 0 is the item's own `start`, not timeline zero
@@ -229,6 +233,35 @@ export interface KeyframeTrack {
   origin?: string
 }
 
+/** A clip's blend mode (§616). Absent is `normal`. The preview maps it to CSS
+ *  `mix-blend-mode` (`add` is `plus-lighter`); the export to its own blend. */
+export type BlendMode = 'normal' | 'screen' | 'multiply' | 'add' | 'lighten' | 'darken' | 'overlay'
+
+/** A clip's mask (§616), over the clip's own box before rotation (an image's
+ *  fitted box, a video's padded box). Every fraction and the feather are
+ *  relative to that box, so the mask follows the clip. Mirrors timeline-core's
+ *  `ItemMask` (`src/mask.js`), where the shape is drawn for BOTH the preview
+ *  and the export. */
+export interface ItemMask {
+  shape: 'ellipse' | 'rect' | 'wipe'
+  /** Centre (ellipse, rect) or a point on the edge (wipe), fraction of box width. Default 0.5. */
+  x?: number
+  /** The same, fraction of box height. Default 0.5. */
+  y?: number
+  /** Ellipse diameter / rect side, fraction of box width, > 0. Default 0.5. Wipe ignores. */
+  w?: number
+  /** The same, fraction of box height. Default 0.5. */
+  h?: number
+  /** Degrees clockwise about (x, y). A wipe's edge runs through (x, y) at this angle; at 0 the left side shows. Default 0. */
+  rotation?: number
+  /** Rect only: corner radius, fraction of half the rect's shorter side, 0-1. Default 0. */
+  radius?: number
+  /** Gaussian sigma, fraction of the box's shorter side, 0-0.5. Default 0. */
+  feather?: number
+  /** Show outside the shape instead of inside. Default false. */
+  invert?: boolean
+}
+
 export interface VisualItem {
   id: string
   type: 'overlay' | 'image' | 'video'
@@ -246,15 +279,16 @@ export interface VisualItem {
   scale?: number
   scaleX?: number          // absent = fall back to `scale` (the resolver does `scaleX ?? scale ?? 1`)
   scaleY?: number          // absent = fall back to `scale` (the resolver does `scaleY ?? scale ?? 1`)
-  opacity?: number        // 0.0–1.0
+  opacity?: number        // 0.0–1.0. Keyframable (prop "opacity") on overlays and, since §616, on clips too.
+  blendMode?: BlendMode   // video and image only (§616): how the clip composites over what is beneath. Absent = normal.
+  mask?: ItemMask         // video and image only (§616): the shape the clip shows through. Keyframed by maskX/maskY/maskW/maskH/maskRotation/maskFeather.
   fit?: 'cover' | 'contain' | 'fill'  // image type only — how the source fills its box. Default 'cover' (AR-preserving fill+crop). 'contain' letterboxes; 'fill' is legacy stretch (no AR).
   volume?: number         // video audio level 0.0–2.0, default 1.0 (ignored for images)
   rotation?: number       // degrees, clockwise
-  /** Which item kinds support this is decided by `canKeyframe`
-   *  (video/keyframeOps.ts), the runtime source of truth — see `KeyframeProp`
-   *  above for why it's overlay-only today (a render constraint, not a UI
-   *  preference). */
-  keyframes?: KeyframeTrack[]  // animates the transform props over the item's own lifetime. Overlays, images and video clips all honour it; `opacity` animates on overlays ONLY (see KeyframeProp). Absent = a static item, which renders on the unchanged ffmpeg-positioned path.
+  /** Which item kinds support which prop is decided by `canKeyframe` /
+   *  `canKeyframeProp` (video/keyframeOps.ts), the runtime source of truth —
+   *  see `KeyframeProp` above. */
+  keyframes?: KeyframeTrack[]  // animates props over the item's own lifetime. Overlays, images and video clips all honour it, opacity included (clips since §616); the mask props need a `mask`. Absent = a static item, which renders on the unchanged ffmpeg-positioned path.
   opaque?: boolean        // legacy boolean kept for old overlay items
   props?: Record<string, unknown>  // overlay type only
   googleFonts?: string[]  // overlay type only — Google Fonts family specs (e.g. ["Syne:wght@800"])

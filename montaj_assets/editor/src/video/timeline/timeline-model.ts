@@ -692,13 +692,14 @@ const DERIVED_FADE = 'crossfade' as const
  * render — no resolver change, no render change, and the curves show up in the
  * inspector where the operator can adjust them.
  *
- * A CLIP cannot do this at any price: `colorchannelmixer=aa=` takes a
- * `<double>` and no expression, so ffmpeg cannot vary a clip's alpha over time
- * (see `keyframeOps.ts`'s `canKeyframeProp`, which refuses to write such a
- * track at all). Clip crossfades are therefore structural and derived at draw
- * time from the overlap itself — `timeline-core`'s `crossfade` field — never
- * data. This function skips every non-overlay item for that reason; writing an
- * opacity curve onto a clip would promise a fade the export cannot produce.
+ * A CLIP's crossfade is not written as data, though a clip's opacity curve
+ * does animate in the export since §616 (sampled per frame, through
+ * `sendcmd`). Clip crossfades were structural before that and stay so: they
+ * are derived at draw time from the overlap itself (`timeline-core`'s
+ * `crossfade` field), and the export blends the pair through
+ * `encode-segment.js`'s `blend` branch. A derived opacity curve on a clip
+ * would fade it a SECOND time on top of that blend. This function skips every
+ * non-overlay item for that reason.
  *
  * ── What it will not touch ────────────────────────────────────────────────
  *

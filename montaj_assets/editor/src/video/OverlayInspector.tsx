@@ -720,9 +720,10 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
     const row = ROWS[prop]
     const nav = navFor([prop])
     const keyframed = keyedHere(prop)
-    // Per-property, per-kind: a clip animates position/scale/rotation but not
-    // opacity, because ffmpeg's `colorchannelmixer aa` takes a <double> and no
-    // expression. See canKeyframeProp for the full reason.
+    // Per-property, per-kind, through the one gate. Since §616 every row here
+    // is keyframeable on a clip too (its opacity animates in the export); the
+    // gate stays so a prop some kind cannot animate shows disabled with a
+    // reason rather than vanishing. See canKeyframeProp.
     const allowed = canKeyframeProp(target, prop)
     return (
       <KeyframeNav
@@ -737,7 +738,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
         onDiamond={() => handleToggle(prop)}
         diamondDisabled={!allowed}
         diamondReason={allowed ? undefined
-          : `${row.name} cannot be animated on a video or image clip. The export has no way to vary it over time. Overlays can.`}
+          : `${row.name} cannot be animated on this item.`}
       />
     )
   }

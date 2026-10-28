@@ -21,6 +21,7 @@ import { useMissingClips, missingClipAt, missingClipsAhead, missingDetail, MISSI
 import { usePlaybackTime, type PlaybackClock } from '../playback-clock'
 import { gateTimeSink, handOverToHover, useHoverScrubTime, type HoverScrub } from '../hover-scrub'
 import { sourceCropVideoStyle } from './sourceCropStyle'
+import { compositeParts } from './itemComposite'
 import { FIT_PARENT_STYLE, fitBoxStyle } from './fitBox'
 import CarouselPreview from './CarouselPreview'
 import SocialSafeZoneOverlay, { socialStageSize, type SocialPreviewPlatform } from './SocialSafeZoneOverlay'
@@ -699,8 +700,26 @@ function PreviewSurface({
     | null
   >(null)
   const xf = liveXf ?? baseXf
-  const transformContainerStyle = videoTransformContainerStyle(xf)
-  const mediaBox = mediaBoxStyle(xf)
+  // The base clip's compositing (§616, itemComposite.ts): its opacity at the
+  // playhead and its blend mode on the transform container, a direct child of
+  // the frame, so the blend's backdrop is the frame's own (isolated) group, as
+  // the export composites onto its canvas; its mask on the media box, whose
+  // CSS box is the clip's box. The box in preview pixels is the frame at the
+  // scale on screen (a live zoom included).
+  const baseComp = activeClip
+    ? compositeParts(
+        activeClip,
+        localTimeOf(activeClip, currentTime),
+        RENDER_W * renderScale * (xf.scaleX ?? xf.scale ?? 1),
+        RENDER_H * renderScale * (xf.scaleY ?? xf.scale ?? 1),
+      )
+    : null
+  const transformContainerStyle = {
+    ...videoTransformContainerStyle(xf),
+    ...(baseComp && baseComp.opacity !== 1 ? { opacity: baseComp.opacity } : null),
+    ...baseComp?.blend,
+  }
+  const mediaBox = { ...mediaBoxStyle(xf), ...baseComp?.mask }
   const xfBox = videoTransformBoxPct(xf)
   // A zoom commits the per-axis fields too when the clip carries them: `scale`
   // alone would lose to the stale scaleX/scaleY (see `zoomTo`).

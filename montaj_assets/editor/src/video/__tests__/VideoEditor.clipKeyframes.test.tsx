@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { geometryAt, geometryFor } from '@bycrux/timeline-core'
+import { geometryAt, geometryFor, opacityAt } from '@bycrux/timeline-core'
 
 /**
- * SP9d — clips animate their geometry in the preview, and their opacity does not.
+ * SP9d — clips animate their geometry in the preview. §616 — and their opacity.
  *
  * OverlayItemsLayer resolves an item's live transform through the same two
  * timeline-core calls asserted here; this pins the RULE those calls encode, which
@@ -20,10 +20,11 @@ describe('SP9d — preview geometry for clips', () => {
     ],
   }
 
-  // Exactly what OverlayItemsLayer computes for a non-overlay item.
+  // Exactly what OverlayItemsLayer computes for a non-overlay item outside a
+  // transition (itemComposite.ts reads the opacity through `opacityAt`).
   const previewGeometry = (t: number) => ({
     ...geometryAt(clip, 'video', t - clip.start),
-    opacity: geometryFor(clip, 'video').opacity,
+    opacity: opacityAt(clip, t - clip.start),
   })
 
   it('position, scale and rotation all advance with the playhead', () => {
@@ -36,13 +37,14 @@ describe('SP9d — preview geometry for clips', () => {
     expect(a.rotation).toBeLessThan(c.rotation)
   })
 
-  it('opacity does NOT animate — ffmpeg cannot express it, so neither may the preview', () => {
-    // The whole point: an opacity curve exists on this clip and is ignored.
-    expect(previewGeometry(0).opacity).toBe(0.4)
-    expect(previewGeometry(1.5).opacity).toBe(0.4)
-    expect(previewGeometry(3).opacity).toBe(0.4)
-    // ...while the curve itself would very much have moved.
-    expect(geometryAt(clip, 'video', 1.5).opacity).not.toBe(0.4)
+  it('opacity animates too (§616): the export samples the curve per frame', () => {
+    // The curve hides the static 0.4, as the export reads it.
+    expect(previewGeometry(0).opacity).toBe(0)
+    expect(previewGeometry(1.5).opacity).toBeCloseTo(0.5)
+    expect(previewGeometry(3).opacity).toBe(1)
+    // The same value geometryAt samples for every kind.
+    expect(previewGeometry(1.5).opacity).toBe(geometryAt(clip, 'video', 1.5).opacity)
+    expect(geometryFor(clip, 'video').opacity).toBe(0.4)
   })
 
   it('an overlay still animates opacity, because its render path can', () => {

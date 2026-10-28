@@ -7,6 +7,7 @@ import {
   hasKeyframes,
   isKeyframed,
   canKeyframe,
+  canKeyframeProp,
   valueAt,
   setKeyframe,
   removeKeyframe,
@@ -809,5 +810,63 @@ describe('offsetTrack — move the whole animation so it reads `value` at localT
   it('returns the SAME item for a prop with no animation', () => {
     const item = overlay({ offsetX: 3 })
     expect(offsetTrack(item, 'offsetX', 0, 10)).toBe(item)
+  })
+})
+
+// §616: a clip's opacity animates (the export samples it per frame), and the
+// six mask props animate on a clip that HAS a mask.
+describe('canKeyframeProp — opacity and the mask props (§616)', () => {
+  const mk = (type: VisualItem['type'], over: Partial<VisualItem> = {}) =>
+    ({ id: 'x', type, src: 'a', start: 0, end: 3, ...over } as VisualItem)
+  const MASK_PROPS = ['maskX', 'maskY', 'maskW', 'maskH', 'maskRotation', 'maskFeather'] as const
+
+  it('opacity is keyframeable on video and image clips', () => {
+    expect(canKeyframeProp(mk('video'), 'opacity')).toBe(true)
+    expect(canKeyframeProp(mk('image'), 'opacity')).toBe(true)
+    expect(canKeyframeProp(mk('overlay'), 'opacity')).toBe(true)
+  })
+
+  it('the mask props are keyframeable on a clip with a mask', () => {
+    for (const kind of ['video', 'image'] as const) {
+      const withMask = mk(kind, { mask: { shape: 'ellipse' } })
+      for (const prop of MASK_PROPS) expect(canKeyframeProp(withMask, prop)).toBe(true)
+    }
+  })
+
+  it('...and not on a clip without one, nor on an overlay', () => {
+    for (const prop of MASK_PROPS) {
+      expect(canKeyframeProp(mk('video'), prop)).toBe(false)
+      expect(canKeyframeProp(mk('image'), prop)).toBe(false)
+      expect(canKeyframeProp(mk('overlay'), prop)).toBe(false)
+      expect(canKeyframeProp(mk('overlay', { mask: { shape: 'ellipse' } }), prop)).toBe(false)
+    }
+    expect(canKeyframeProp(mk('video', { mask: { shape: 'blob' as never } }), 'maskW')).toBe(false)
+  })
+
+  it('valueAt reads a mask field as maskAt resolves it, and the default with no mask', () => {
+    const item = mk('video', {
+      mask: { shape: 'ellipse', w: 0.3 },
+      keyframes: [{ prop: 'maskX', points: [{ t: 0, value: 0.2 }, { t: 2, value: 0.6 }] }],
+    })
+    expect(valueAt(item, 'maskX', 1)).toBeCloseTo(0.4)
+    expect(valueAt(item, 'maskW', 1)).toBe(0.3)
+    expect(valueAt(mk('video'), 'maskW', 1)).toBe(0.5)
+  })
+
+  it('turning a mask prop\'s keyframing off writes its value into the mask', () => {
+    const item = mk('image', {
+      mask: { shape: 'rect', feather: 0.05 },
+      keyframes: [{ prop: 'maskFeather', points: [{ t: 0, value: 0 }, { t: 2, value: 0.2 }] }],
+    })
+    const next = disableKeyframing(item, 'maskFeather', 1)
+    expect(trackFor(next, 'maskFeather')).toBeUndefined()
+    expect(next.mask!.shape).toBe('rect')
+    expect(next.mask!.feather).toBeCloseTo(0.1)
+  })
+
+  it('transformProps includes opacity on a clip, and never a mask prop', () => {
+    const item = mk('video', { mask: { shape: 'rect' } })
+    expect(transformProps(item)).toEqual(['offsetX', 'offsetY', 'scale', 'rotation', 'opacity'])
+    expect(transformProps(mk('image', { scaleX: 1.2, scaleY: 0.8 }))).toEqual(['offsetX', 'offsetY', 'scaleX', 'scaleY', 'rotation', 'opacity'])
   })
 })

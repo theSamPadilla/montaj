@@ -124,16 +124,13 @@ describe('OverlayInspector — rendering', () => {
     expect(screen.queryByLabelText('Offset X')).not.toBeNull()
   })
 
-  it("disables a clip's OPACITY keyframe diamond, with a reason, rather than hiding it", () => {
-    // ffmpeg's colorchannelmixer takes its alpha gain as a <double> and accepts
-    // no expression, so clip opacity cannot animate. A missing control reads as
-    // a bug; a disabled one that says why reads as the limitation it is.
+  it("enables a clip's OPACITY keyframe diamond (§616)", () => {
+    // It was disabled while the export could not vary a clip's alpha; the
+    // export now samples a clip's opacity curve per frame.
     const item = { id: 'v1', type: 'video', src: 'v.mp4', start: 0, end: 10 } as VisualItem
     renderInspector(item, 5)
 
-    const diamond = screen.getByLabelText(/Opacity keyframe at playhead/)
-    expect(diamond).toBeDisabled()
-    expect(diamond.getAttribute('title')).toMatch(/cannot be animated/i)
+    expect(screen.getByLabelText(/Opacity keyframe at playhead/)).not.toBeDisabled()
   })
 
   it('leaves an overlay\'s opacity diamond fully enabled', () => {

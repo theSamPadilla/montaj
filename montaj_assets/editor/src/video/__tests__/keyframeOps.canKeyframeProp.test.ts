@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { canKeyframe, canKeyframeProp, transformProps } from '../keyframeOps'
 import type { VisualItem } from '../../schema'
 
-/** SP9d — keyframeability is per property per kind. */
+/** SP9d — keyframeability is per property per kind. §616 — clip opacity animates. */
 describe('canKeyframe / canKeyframeProp', () => {
   const mk = (type: string, over: Partial<VisualItem> = {}) =>
     ({ id: 'x', type, src: '/tmp/a', start: 0, end: 3, ...over } as unknown as VisualItem)
@@ -16,13 +16,10 @@ describe('canKeyframe / canKeyframeProp', () => {
   })
 
   for (const kind of ['video', 'image'] as const) {
-    it(`${kind} clips animate geometry but NOT opacity`, () => {
+    it(`${kind} clips animate geometry AND opacity (§616)`, () => {
       const clip = mk(kind)
       expect(canKeyframe(clip)).toBe(true)
-      for (const p of ['offsetX', 'offsetY', 'scale', 'rotation'] as const) {
-        expect(canKeyframeProp(clip, p)).toBe(true)
-      }
-      expect(canKeyframeProp(clip, 'opacity')).toBe(false)
+      for (const p of FIVE) expect(canKeyframeProp(clip, p)).toBe(true)
     })
   }
 
@@ -42,19 +39,19 @@ describe('canKeyframe / canKeyframeProp', () => {
     }
   })
 
-  it('transformProps drops opacity for a clip and keeps it for an overlay', () => {
+  it('transformProps carries opacity for clips and overlays alike (§616)', () => {
     expect(transformProps(mk('overlay'))).toContain('opacity')
-    expect(transformProps(mk('video'))).not.toContain('opacity')
-    expect(transformProps(mk('image'))).not.toContain('opacity')
+    expect(transformProps(mk('video'))).toContain('opacity')
+    expect(transformProps(mk('image'))).toContain('opacity')
     // ...and still carries the geometry props, so keying a clip does something.
     expect(transformProps(mk('video'))).toContain('scale')
     expect(transformProps(mk('video'))).toContain('rotation')
   })
 
-  it('a per-axis clip drops opacity too, and keeps scaleX/scaleY', () => {
+  it('a per-axis clip keeps opacity and scaleX/scaleY', () => {
     const clip = mk('video', { scaleX: 1.2, scaleY: 0.8 } as Partial<VisualItem>)
     const props = transformProps(clip)
-    expect(props).not.toContain('opacity')
+    expect(props).toContain('opacity')
     expect(props).toContain('scaleX')
     expect(props).toContain('scaleY')
   })

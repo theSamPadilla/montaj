@@ -1813,15 +1813,15 @@ describe('double-click to key (selected element only)', () => {
     expect(of(effects, 'projectChange')).toHaveLength(1)
   })
 
-  it('never writes an OPACITY track when keying a clip', () => {
-    // ffmpeg cannot vary a clip's alpha, so an opacity track written here would
-    // be silently ignored by the export — a keyframe that does nothing. The
-    // exclusion lives in transformProps via canKeyframeProp.
+  it('keys a clip\'s OPACITY with its geometry (§616)', () => {
+    // A clip's opacity animates in the export since §616 (sampled per frame),
+    // so keying a clip's whole transform keys it too, as it does an overlay's.
+    // transformProps decides the set via canKeyframeProp.
     const ctx = makeContext({ project: keyframedProject(), selectedIds: ['c0'] })
     const effects = new Driver(ctx).doubleClick(C0_BODY.x, C0_BODY.y)
     const next = visual(lastProjectChange(effects), 'c0')
-    expect(trackFor(next, 'opacity')).toBeUndefined()
-    // ...while the geometry props it CAN animate are all keyed.
+    expect(trackFor(next, 'opacity')).toBeDefined()
+    // ...with every geometry prop.
     expect(trackFor(next, 'scale')).toBeDefined()
     expect(trackFor(next, 'offsetX')).toBeDefined()
     expect(trackFor(next, 'rotation')).toBeDefined()

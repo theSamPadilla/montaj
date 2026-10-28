@@ -6,16 +6,14 @@ import type { OverlayFactory } from '../../../types'
 import type { OverlayChanges } from '../useDragOverlay'
 import OverlayItemsLayer from '../OverlayItemsLayer'
 
-// T1.2 (SP9b Phase 1) — the preview must sample curve-aware geometry through
-// @bycrux/timeline-core's `geometryAt` for keyframed OVERLAYS, and must NOT
-// animate image/video CLIPS even when they carry a `keyframes` field: the
-// renderer composites clips through `geometryFor` directly (encode-segment.js
-// :305 and :375) with no per-frame browser step to bake a moving transform
-// into, so animating a clip here would be a preview/render divergence — see
-// the comment at OverlayItemsLayer.tsx's interactive-tracks geometry call
-// site. No easing/interpolation math is duplicated in this file — every
-// expected value below is produced by calling geometryAt/geometryFor
-// directly, the same functions the component itself calls.
+// T1.2 (SP9b Phase 1) — the preview samples curve-aware geometry through
+// @bycrux/timeline-core's `geometryAt`, for overlays and, since SP9d, for
+// image/video CLIPS too (the renderer compiles a clip's curves into ffmpeg
+// expressions). Since §616 a clip's OPACITY curve animates as well: the export
+// samples it per frame. Clip compositing (opacity, mask, blend) has its own
+// suite, OverlayItemsLayer.composite.test.tsx. No easing/interpolation math is
+// duplicated in this file — every expected value below is produced by calling
+// geometryAt/geometryFor directly, the same functions the component calls.
 
 const emptySnap = { x: false, y: false, left: false, right: false, top: false, bottom: false }
 
@@ -216,11 +214,10 @@ describe('OverlayItemsLayer — keyframed geometry (T1.2)', () => {
     expect(at10.wrapper.style.transform).toContain('translate(50%,')
   })
 
-  it('does NOT animate a CLIP\'s opacity, even with a curve on it', () => {
-    // The one property that stays static on a clip: ffmpeg's colorchannelmixer
-    // takes its alpha gain as a <double> and accepts no expression, so a fade
-    // shown here could never be exported. Overlays are exempt — they bake in a
-    // browser. See keyframeOps.canKeyframeProp.
+  it('ANIMATES a CLIP\'s opacity curve (§616)', () => {
+    // It was pinned static while ffmpeg's colorchannelmixer could take no
+    // expression; the export now samples the curve per frame (sendcmd), so the
+    // preview shows the fade it will export. See keyframeOps.canKeyframeProp.
     const item = {
       id: 'kf-op', type: 'video', src: 'vid.mp4', start: 5, end: 15,
       offsetX: 0, opacity: 0.6, inPoint: 0,
@@ -231,8 +228,9 @@ describe('OverlayItemsLayer — keyframed geometry (T1.2)', () => {
     const o5 = at5.wrapper.style.opacity
     at5.unmount()
     const at10 = renderLayer(item, { currentTime: 10 })
-    expect(at10.wrapper.style.opacity).toBe(o5)
-    expect(Number(o5)).toBeCloseTo(0.6)
+    // localT 0 → 0, localT 5 → 0.5. The static 0.6 is hidden by the curve.
+    expect(Number(o5)).toBeCloseTo(0)
+    expect(Number(at10.wrapper.style.opacity)).toBeCloseTo(0.5)
   })
 
   it('a live drag overrides the sampled curve value', () => {
@@ -393,9 +391,9 @@ describe('OverlayItemsLayer — per-axis scale', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Layered-clip transition blend (Task 11). SP9d's pin — a clip's opacity
-// CURVE is ignored in this layer — still holds; it is not what this section
-// tests. What's new is the resolver's `crossfade` stamp: two clips on the
+// Layered-clip transition blend (Task 11). A clip's opacity CURVE animates
+// here since §616 (OverlayItemsLayer.composite.test.tsx); it is not what this
+// section tests. What it tests is the resolver's `crossfade` stamp: two clips on the
 // SAME overlay track that overlap now blend, because the export genuinely
 // blends that pair (encode-segment.js's `blend` branch, SP9d/T8). Showing the
 // same blend here is an application of the SP9d rule, not an exception to it.
@@ -468,17 +466,16 @@ describe('OverlayItemsLayer — layered clip transition blend (Task 11)', () => 
     expect(styleOf('b.png').opacity).toBe('0.5')
   })
 
-  it('a layered clip outside a transition still reads its STATIC opacity', () => {
+  it('a layered clip outside a transition reads its own opacity, unscaled', () => {
     // A lone clip on its track has no partner to pair with, so the resolver
-    // stamps `crossfade: null` — this is the SP9d regression guard: the
-    // opacity keyframe curve must stay ignored, and the wrapper must show the
-    // STATIC `opacity` field (0.4), not a sampled curve value.
+    // stamps `crossfade: null` and the factor is 1: the wrapper shows the
+    // clip's own opacity, its curve sampled at the playhead (§616).
     const item = {
       id: 'a', type: 'image', src: 'a.png', start: 0, end: 10, opacity: 0.4,
       keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 10, value: 1 }] }],
     } as VisualItem
     const { styleOf } = renderLayeredClips([item], 1)
 
-    expect(styleOf('a.png').opacity).toBe('0.4')
+    expect(Number(styleOf('a.png').opacity)).toBeCloseTo(0.1)
   })
 })
