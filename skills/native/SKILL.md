@@ -44,7 +44,7 @@ Both modes run on the same machine and share one filesystem, so file paths are a
 
 ## Project status
 
-`status` is a label: `pending`, `draft`, `final`. Any status renders. Moving it to `draft` or `final` is when Montaj commits the project to git, so set `final` once the edit is done.
+`status` is a label: `pending`, `draft`, `final`. Any status renders, and a render sets it to `final` itself: you never set it to export.
 
 ---
 

@@ -218,16 +218,12 @@ The renderer (`render-carousel.js`) launches Puppeteer, bundles each slide's JSX
 
 ---
 
-## 9 — Status lifecycle
-
-```
-pending  →  (build slides)  →  final  →  render
-```
+## 9 — Finish and render
 
 New carousel projects start at `status: "pending"` — same as video projects. The pending status signals that this carousel is waiting on you (the agent) to do the initial build. Build and populate all slides, then:
 
-1. `PUT /api/projects/{id}` with `status: "final"` (and the complete `slides` array).
-2. `montaj render <project_workspace>/project.json`
+1. `PUT /api/projects/{id}` with the complete `slides` array.
+2. `montaj render <project_workspace>/project.json`. The render marks the project `final` itself.
 
 The project is complete when `render/slide_01.png` … `slide_NN.png` exist.
 

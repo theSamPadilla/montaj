@@ -27,6 +27,17 @@ def _log_probe_failures(healed) -> None:
         pass
 
 
+def _mark_final(project_path) -> None:
+    """Best effort; never raises. Studio sync's clash rule applies as it does to serve's own writes."""
+    from lib.project_status import mark_final
+    try:
+        from serve import save_guard
+        allows = lambda raw, project: save_guard.maintenance_allows(raw, project)  # noqa: E731
+    except Exception:  # noqa: BLE001
+        allows = None
+    mark_final(project_path, allows)
+
+
 def main(project_path=None, out=None, workers=None, clean=False, scale=None, montaj_root=None,
          export=None, sdr_curve=None, pdf=False):
     # Determine project type so we can dispatch to the correct renderer.
@@ -37,6 +48,11 @@ def main(project_path=None, out=None, workers=None, clean=False, scale=None, mon
                 project_type = json.load(f).get("projectType")
         except Exception:
             pass  # Let the node script handle bad JSON
+
+    # An export marks the project final first (lib/project_status.py): status is a
+    # label, so the render runs whatever the write did.
+    if project_path and os.path.isfile(project_path):
+        _mark_final(project_path)
 
     render_dir = render_runtime_dir()
 

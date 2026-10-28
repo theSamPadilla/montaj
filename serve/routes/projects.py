@@ -37,6 +37,7 @@ from serve.caption_job import build_audio_mix_spec, caption_input_change, captio
 from serve.caption_theme import sanitize_theme, seed_prev
 from serve import provenance
 from serve import save_guard
+from lib.project_status import mark_final_locked
 from lib import caption_ink, project_revisions, sync_clash
 from serve.jobs import create_job, set_done, set_error, get_job
 from serve.routes.files import drawable_upload, save_upload, upload_name
@@ -5925,6 +5926,27 @@ async def render_estimate(project_id: str, request: Request, project_dir: Path =
     return out
 
 
+async def mark_final_for_render(project_id: str, project_dir: Path, broadcaster=None, who=None) -> bool:
+    """An export marks its project final, first, whoever asks for it (the editor's Export, an agent's render, a
+    review send, the CLI through serve). `status` is a label: any status renders, so this never stops a render and
+    never raises; it returns whether it wrote. The write is broadcast over SSE so an open editor adopts it."""
+    try:
+        async with project_lock_async(project_dir / "project.json"):
+            result = mark_final_locked(project_dir / "project.json",
+                                       lambda raw, project: save_guard.maintenance_allows(raw, project, who))
+    except Exception as exc:  # noqa: BLE001 - a label must never stop a render
+        print(f"[montaj serve] render: could not mark {project_id} final ({exc})", file=sys.stderr)
+        return False
+    if result is None:
+        return False
+    if broadcaster is not None:
+        try:
+            broadcaster.publish(project_id, _sse_data_frame(result[1]))
+        except Exception:  # noqa: BLE001
+            pass
+    return True
+
+
 @router.post("/projects/{project_id}/render")
 async def render_project(project_id: str, request: Request, project_dir: Path = Depends(get_project_dir)):
     """Render the project. Streams progress as SSE log/done/error events.
@@ -5965,6 +5987,17 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
 
     body = await _render_body(request)
     _validate_render_body(body)
+
+    # An export marks the project final first (once the request is valid): status
+    # is a label, so neither the editor nor an agent has to set it, and the render
+    # runs whatever the write did. A carousel snapshots the change into git here,
+    # as its save to final would; the video path commits just below.
+    render_broadcaster = getattr(getattr(getattr(request, "app", None), "state", None), "broadcaster", None)
+    if await mark_final_for_render(project_id, project_dir, render_broadcaster,
+                                   who=save_guard.sync_who(getattr(request, "headers", None))):
+        project["status"] = "final"
+        if project_type == "carousel":
+            await asyncio.to_thread(_git_commit_sync, project_dir, f"version: run {project.get('runCount', 1)} — final")
 
     # Optional poster-frame extraction: `cover` is a timeline timestamp
     # (seconds) to grab as a sidecar JPEG once the render succeeds. Video-only
