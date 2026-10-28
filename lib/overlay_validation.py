@@ -140,13 +140,14 @@ def _finite(value: Any) -> bool:
     return _is_number(value) and math.isfinite(value)
 
 
-def _visual_item_errors(item: dict) -> list[tuple[str, str]]:
+def _visual_item_errors(item: dict, strict: bool = True) -> list[tuple[str, str]]:
     """``(field, problem)`` pairs for the compositing fields of an image or
     video item: ``mask``, ``blendMode``, ``opacity`` and ``keyframes``.
 
     Fields may be dotted (``mask.shape``, ``keyframes[0].prop``); the
     changed-fields rule compares their root key. Lenient: unknown fields and
-    null values are fine.
+    null values are fine. ``strict=False`` also skips the unknown-prop and
+    "needs a mask" errors: states the render ignores.
     """
     errors: list[tuple[str, str]] = []
 
@@ -194,9 +195,10 @@ def _visual_item_errors(item: dict) -> list[tuple[str, str]]:
             prop = track.get("prop")
             where = f"keyframes[{i}]"
             if prop not in CLIP_KEYFRAME_PROPS:
-                err(f"{where}.prop", "must be one of " + ", ".join(CLIP_KEYFRAME_PROPS))
+                if strict:
+                    err(f"{where}.prop", "must be one of " + ", ".join(CLIP_KEYFRAME_PROPS))
                 continue
-            if prop in MASK_KEYFRAME_PROPS and not isinstance(mask, dict):
+            if strict and prop in MASK_KEYFRAME_PROPS and not isinstance(mask, dict):
                 err(where, f"{prop} needs a mask on the item (a mask track does nothing without one)")
             points = track.get("points")
             if points is None:
@@ -218,14 +220,17 @@ def _visual_item_errors(item: dict) -> list[tuple[str, str]]:
     return errors
 
 
-def item_problems(item: dict) -> list[tuple[str, str]]:
+def item_problems(item: dict, strict: bool = True) -> list[tuple[str, str]]:
     """Every ``(field, problem)`` on one item, by its type (overlay: shape check;
-    image/video: compositing check; anything else: none)."""
+    image/video: compositing check; anything else: none). The save route is
+    strict; ``engine/validate.py`` passes ``strict=False`` so a harmless
+    leftover (a mask track with no mask, a legacy keyframe prop) does not block
+    a cut."""
     kind = item.get("type")
     if kind == "overlay":
         return _item_errors(item)
     if kind in VISUAL_TYPES:
-        return _visual_item_errors(item)
+        return _visual_item_errors(item, strict)
     return []
 
 

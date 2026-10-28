@@ -310,6 +310,27 @@ def test_validate_project_passes_for_valid(tmp_path):
     assert result["valid"] is True
 
 
+def test_validate_project_accepts_harmless_compositing_leftovers(tmp_path):
+    """A mask track with no mask and a legacy keyframe prop do nothing at render;
+    the project check (run for every cut) must not fail on them (§616)."""
+    item = {"id": "v1", "type": "video", "src": "/a.mp4", "start": 0, "end": 3,
+            "keyframes": [{"prop": "maskW", "points": [{"t": 0, "value": 0.2}]},
+                          {"prop": "legacyThing", "points": [{"t": 0, "value": 1}]}]}
+    data = {**VALID_PROJECT, "tracks": [{"id": "t0", "items": [item]}]}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+    from lib.overlay_validation import overlay_item_errors
+    assert overlay_item_errors(data), "the save path still reports them"
+
+
+def test_validate_project_still_rejects_a_bad_blend_mode(tmp_path):
+    item = {"id": "v1", "type": "video", "src": "/a.mp4", "start": 0, "end": 3, "blendMode": "nope"}
+    data = {**VALID_PROJECT, "tracks": [{"id": "t0", "items": [item]}]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+
+
 def test_validate_project_ignores_a_saved_image_tone(tmp_path):
     """`settings.imageTone` was the per-image HDR tone, removed when HDR renders
     began mapping every graphics pixel one way. A project saved with it still

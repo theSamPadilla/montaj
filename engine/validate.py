@@ -224,7 +224,7 @@ def _validate_clip_extensions(data, project_dir=None):
             # §616: mask, blend mode, clip opacity and their keyframe tracks (the
             # same check save_project runs; the first problem is the failure).
             if item.get("type") in VISUAL_TYPES:
-                problems = item_problems(item)
+                problems = item_problems(item, strict=False)
                 if problems:
                     field, problem = problems[0]
                     fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': {field} {problem}")
