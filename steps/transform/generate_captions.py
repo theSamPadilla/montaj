@@ -123,7 +123,7 @@ def main():
     except ValueError as e:
         fail("no_audible_timeline", str(e))
 
-    # The profile's caption look (font, emphasis colour) for a new track, as the editor seeds it.
+    # The profile's caption look (font, emphasis colour, case) for a new track, as the editor seeds it.
     style, look = resolve_style_and_look(args.style, project)
 
     mix_timeline_py = os.path.join(MONTAJ_ROOT, "steps", "audio", "mix_timeline.py")

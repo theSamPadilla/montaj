@@ -6519,7 +6519,7 @@ async def generate_captions(
     # Style: the body's, else the track's, else the profile's, else 'pop'.
     style, look = resolve_style_and_look(body.get("style"), project)
     # A style profile's caption look (fontFamily/googleFonts + the style's
-    # emphasis colour), seeded into the saved track where it doesn't already
+    # emphasis colour + the case as textTransform), seeded into the saved track where it doesn't already
     # have a value — see serve/caption_theme.py. The editor sends it as
     # `theme`; a caller that sends none (MCP) gets the same look from the profile.
     theme = sanitize_theme(body["theme"]) if "theme" in body else sanitize_theme(look)
