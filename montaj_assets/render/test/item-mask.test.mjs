@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { planItemMask, writeItemMask } from '../item-mask.js'
+import { encodeSegment } from '../encode-segment.js'
 import { FFMPEG } from '../ffmpeg-bin.js'
 
 const still = { mask: { shape: 'ellipse', w: 0.5, h: 0.5, feather: 0.05 } }
@@ -75,4 +76,152 @@ test('write: a keyframed feather softens the edge frame by frame (sendcmd on gbl
     assert.ok(px(10, 46) < 250)
     assert.ok(px(10, 46) < px(5, 46) || px(5, 46) < 250)
   })
+})
+
+// ── Task 4: masks in the export graph ───────────────────────────────────────
+// encodeSegment wires each masked clip's pre-pass file in as its own input,
+// right after the clip's, and multiplies it into the clip's alpha before the
+// clip is animated, rotated or composited.
+
+const MASK = { shape: 'ellipse', w: 0.5, h: 0.5 }
+const SEG_OUT = '/tmp/s616/seg-0003.mp4'
+const maskPath = (idx, ext = 'png') => `/tmp/s616/seg-0003.mask-${idx}.${ext}`
+const imageItem = (over = {}) => ({ type: 'image', src: '/bg.png', start: 0, end: 2, trackIdx: 0,
+  scale: 1, offsetX: 0, offsetY: 0, opacity: 1, ...over })
+const videoItem = (over = {}) => ({ type: 'video', src: '/pip.mp4', start: 0, end: 2, inPoint: 0, trackIdx: 1,
+  scale: 0.5, offsetX: 0, offsetY: 0, opacity: 1, muted: false, ...over })
+const laterItem = { type: 'video', src: '/top.mp4', start: 0, end: 2, inPoint: 0, trackIdx: 2,
+  scale: 0.3, offsetX: 20, offsetY: 20, opacity: 1, muted: false }
+const segOf = (items, over = {}) => ({ start: 0, end: 2, items, overlays: [], vw: 1920, vh: 1080, fps: 30, ...over })
+const dry = (seg) => encodeSegment(seg, SEG_OUT, { _dryRun: true })
+/** The args right after `-i <src>`, as many as `n`. */
+const after = (args, src, n) => { const i = args.indexOf(src); return args.slice(i + 1, i + 1 + n) }
+
+test('graph: a masked image and a masked video each read their mask right after their own input', async () => {
+  const r = await dry(segOf([imageItem({ mask: MASK }), videoItem({ mask: MASK }), laterItem]))
+  // canvas 0, image 1, its mask 2, video 3, its mask 4, the later clip 5
+  assert.deepEqual(after(r.args, '/bg.png', 7), ['-loop', '1', '-framerate', '30', '-t', '2', '-i'])
+  assert.equal(after(r.args, '/bg.png', 8)[7], maskPath(1))
+  assert.deepEqual(after(r.args, '/pip.mp4', 8), ['-loop', '1', '-framerate', '30', '-t', '2', '-i', maskPath(3)])
+  const graph = r.filterParts.join(';')
+  assert.ok(graph.includes('alphamerge'))
+  assert.ok(graph.includes('blend=all_mode=multiply'))
+  assert.ok(graph.includes('[2:v]format=gray,setpts=PTS-STARTPTS[mk2]'))
+  assert.ok(graph.includes('[4:v]format=gray,setpts=PTS-STARTPTS[mk4]'))
+  // The later clip is shifted by the two mask inputs, video and audio alike.
+  assert.ok(r.filterParts.some(p => p.startsWith('[5:v]')))
+  assert.ok(r.filterParts.some(p => p.startsWith('[5:a:0]')))
+  assert.ok(!r.filterParts.some(p => p.startsWith('[3:v]') && p.includes('scale=576:324')))
+  assert.deepEqual(r.maskJobs.map(j => j.path), [maskPath(1), maskPath(3)])
+  assert.deepEqual(r.maskJobs.map(j => [j.boxW, j.boxH]), [[1920, 1080], [960, 540]])
+})
+
+test('graph: the image mask consumes the fitted image, before the overlay', async () => {
+  const r = await dry(segOf([imageItem({ mask: MASK })]))
+  const parts = r.filterParts
+  const head = parts.findIndex(p => p.startsWith('[1:v]'))
+  assert.ok(parts[head].endsWith('format=rgba[imgb1]'), parts[head])
+  assert.equal(parts[head + 1], '[imgb1]split=2[mc2][ma2]')
+  const tail = parts.findIndex(p => p.startsWith('[imgm1]'))
+  assert.equal(parts[tail], '[imgm1]setpts=PTS-STARTPTS[img1]')
+  const ov = parts.findIndex(p => p.includes('[img1]overlay='))
+  assert.ok(head < tail && tail < ov)
+})
+
+test('graph: a masked video is padded transparent, then masked, then rotated', async () => {
+  const r = await dry(segOf([videoItem({ mask: MASK, rotation: 30 })]))
+  const parts = r.filterParts
+  const head = parts.find(p => p.startsWith('[1:v]'))
+  assert.ok(head.endsWith('format=yuva420p,pad=960:540:(ow-iw)/2:(oh-ih)/2:color=black@0.0[vidb1]'), head)
+  assert.ok(parts.includes('[vidb1]split=2[mc2][ma2]'))
+  assert.ok(parts.includes('[mc2][mam2]alphamerge[vidm1]'))
+  assert.ok(parts.some(p => p.startsWith('[vidm1]format=yuva420p,rotate=') && p.endsWith('[vid1]')))
+})
+
+test('graph: a masked video with no rotation goes straight from the mask to [vid]', async () => {
+  const r = await dry(segOf([videoItem({ mask: MASK })]))
+  assert.ok(r.filterParts.includes('[mc2][mam2]alphamerge[vid1]'))
+  assert.ok(!r.filterParts.some(p => p.includes('[vidm1]')))
+})
+
+test('graph: keyframed geometry puts the mask after the pad, before the animated scale, on the PEAK box', async () => {
+  const kf = [{ prop: 'scale', points: [{ t: 0, value: 0.25 }, { t: 2, value: 0.5 }] }]
+  const r = await dry(segOf([videoItem({ mask: MASK, keyframes: kf })]))
+  const parts = r.filterParts
+  const head = parts.findIndex(p => p.startsWith('[1:v]'))
+  const pad = parts[head].match(/pad=(\d+):(\d+):/)
+  assert.ok(pad && parts[head].endsWith('[vidb1]'), parts[head])
+  const merge = parts.indexOf('[mc2][mam2]alphamerge[vidm1]')
+  const anim = parts.findIndex(p => p.startsWith('[vidm1]scale=w=\'') && p.includes(':eval=frame'))
+  assert.ok(head < merge && merge < anim, `${head} ${merge} ${anim}`)
+  assert.ok(!parts[head].includes('eval=frame'))
+  const [job] = r.maskJobs
+  assert.deepEqual([job.boxW, job.boxH], [Number(pad[1]), Number(pad[2])])
+  assert.deepEqual([job.boxW, job.boxH], [960, 540]) // the peak (scale 0.5), not t=0's 480x270
+})
+
+test('graph: a 10-bit pad masks in gray10le', async () => {
+  const r = await dry(segOf([videoItem({ mask: MASK })], { colorSpace: 'hdr_hlg' }))
+  assert.ok(r.filterParts.some(p => p.startsWith('[1:v]') && p.includes('format=yuva444p10le,pad=')))
+  assert.ok(r.filterParts.includes('[2:v]format=gray10le,setpts=PTS-STARTPTS[mk2]'))
+})
+
+test('graph: a keyframed mask reads its per-frame file', async () => {
+  const kf = [{ prop: 'maskX', points: [{ t: 0, value: 0.2 }, { t: 2, value: 0.8 }] }]
+  const r = await dry(segOf([imageItem({ mask: MASK, keyframes: kf })]))
+  assert.deepEqual(after(r.args, '/bg.png', 2), ['-i', maskPath(1, 'mkv')])
+  assert.equal(r.maskJobs[0].kind, 'frames')
+})
+
+test('graph: a culled clip gets no mask input and no job; the next clip keeps idx + 1', async () => {
+  const r = await dry(segOf([videoItem({ mask: MASK }), imageItem({ mask: MASK, trackIdx: 2 })], { opaqueVideo: true }))
+  assert.ok(!r.args.some(a => String(a).includes('.mask-')))
+  assert.equal(r.maskJobs ?? undefined, undefined)
+  // The culled video keeps its input (index 1) for its audio.
+  assert.ok(r.filterParts.some(p => p.startsWith('[1:a:0]')))
+})
+
+test('graph: without a mask nothing changes (no mask input, no job, no key)', async () => {
+  const r = await dry(segOf([imageItem(), videoItem(), laterItem]))
+  assert.ok(!r.args.some(a => String(a).includes('.mask-')))
+  assert.ok(!('maskJobs' in r))
+  assert.ok(!r.filterParts.join(';').includes('alphamerge'))
+  // canvas 0, image 1, video 2, later 3: the indices it always had
+  assert.ok(r.filterParts.some(p => p.startsWith('[3:v]')))
+})
+
+// ── Real ffmpeg: a red square masked to an ellipse over blue ────────────────
+const ffOk = spawnSync(FFMPEG, ['-version']).status === 0
+const solid = (dir, name, color) => {
+  const p = join(dir, name)
+  const r = spawnSync(FFMPEG, ['-y', '-v', 'error', '-f', 'lavfi', '-i', `color=${color}:s=64x64`, '-frames:v', '1', '-update', '1', p])
+  assert.equal(r.status, 0, String(r.stderr))
+  return p
+}
+async function maskedFrame(invert) {
+  const dir = mkdtempSync(join(tmpdir(), 'mask-graph-'))
+  const blue = solid(dir, 'blue.png', 'blue')
+  const red = solid(dir, 'red.png', 'red')
+  const seg = { start: 0, end: 0.5, vw: 64, vh: 64, fps: 30, overlays: [], items: [
+    { type: 'image', src: blue, start: 0, end: 0.5, trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1 },
+    { type: 'image', src: red, start: 0, end: 0.5, trackIdx: 1, scale: 1, offsetX: 0, offsetY: 0, opacity: 1,
+      mask: { ...MASK, invert } },
+  ] }
+  const out = join(dir, 'seg-0000.mp4')
+  await encodeSegment(seg, out)
+  assert.ok(existsSync(join(dir, 'seg-0000.mask-2.png')), 'the mask PNG sits next to the segment')
+  const r = spawnSync(FFMPEG, ['-v', 'error', '-i', out, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'])
+  assert.equal(r.stdout.length, 64 * 64 * 3, String(r.stderr))
+  const px = (x, y) => [...r.stdout.subarray((y * 64 + x) * 3, (y * 64 + x) * 3 + 3)]
+  return { centre: px(32, 32), corner: px(1, 1) }
+}
+test('ffmpeg: an ellipse mask shows the red item in the middle and the blue under it at the corner', { skip: !ffOk }, async () => {
+  const { centre, corner } = await maskedFrame(false)
+  assert.ok(centre[0] > 200 && centre[2] < 60, `centre ${centre}`)
+  assert.ok(corner[2] > 200 && corner[0] < 60, `corner ${corner}`)
+})
+test('ffmpeg: inverted, the hole is in the middle', { skip: !ffOk }, async () => {
+  const { centre, corner } = await maskedFrame(true)
+  assert.ok(centre[2] > 200 && centre[0] < 60, `centre ${centre}`)
+  assert.ok(corner[0] > 200 && corner[2] < 60, `corner ${corner}`)
 })

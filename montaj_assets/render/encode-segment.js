@@ -48,6 +48,8 @@ import { graphicsToHdrChain } from './hdr-graphics.js'
 import { externalizeFilterGraph } from './filter-script.js'
 import { assertSegmentHasVideo } from './segment-check.js'
 import { opacityFilterStep } from './item-opacity.js'
+import { planItemMask, writeItemMask, maskFilterParts } from './item-mask.js'
+import { pMap } from './p-map.js'
 import {
   geometryFor, geometryAt, toRotatedPixelBox, toPixelBox, compileTrackExprInfo,
   transitionProgress, hasCropKeyframes, imageFitFor, isFullFrameCrop, CROP_KEYFRAME_PROPS,
@@ -1171,14 +1173,20 @@ const BAKED_OVERLAY_GEOMETRY = geometryFor({}, 'overlay')
  * @param {string} videoLabel — current composite label, e.g. '[canvas]'
  * @param {number} duration   — segment duration in seconds (used for -t)
  * @param {number} [segStart] — segment start on the timeline (seconds)
- * @param {{ cropBudgetPx?: number, toHdr?: string|null, whiteNits?: number, dryRun?: boolean }} [opts]
+ * @param {{ cropBudgetPx?: number, toHdr?: string|null, whiteNits?: number, dryRun?: boolean,
+ *   fps?: number, maskBase?: string }} [opts]
  *   `cropBudgetPx` is a test seam: the animated crop's pixel budget,
  *   MAX_ANIMATED_CROP_PX when absent. No production caller passes it.
  *   `toHdr` ('hdr_hlg' or 'hdr_pq'): map the image into that space through the
  *   graphics mapping (hdr-graphics.js); encodeSegment sets it for an HDR
  *   segment; `whiteNits` is GRAPHICS_WHITE_NITS when absent. `dryRun` names
- *   the mapping's LUT without writing it.
- * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string }}
+ *   the mapping's LUT without writing it. `fps` samples keyframed opacity and
+ *   a keyframed mask (30 when absent). `maskBase`: where the item's mask file
+ *   goes, without its extension; without it a `mask` is not drawn.
+ * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string,
+ *   maskInputArgs?: string[], maskJobs?: import('./item-mask.js').ItemMaskPlan[] }}
+ *   The mask keys are present only for a masked item: its mask file is ffmpeg
+ *   input `idx + 1`, and the caller writes each job before the encode.
  */
 // NOTE: item.speed is intentionally ignored here — a still image has no
 // motion to time-scale, so speed is a no-op for image items (unlike video,
@@ -1265,9 +1273,31 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   const toHdr = opts?.toHdr
     ? `,${graphicsToHdrChain(opts.toHdr, { input: 'rgb', write: !opts.dryRun, whiteNits: opts.whiteNits })}`
     : ''
-  filterParts.push(
-    `[${idx}:v]${fitChain}${toHdr}${anim?.needsAnimatedChain ? animStep : rotateFilterStep(box)},setpts=PTS-STARTPTS[img${idx}]`
-  )
+  const geometryStep = anim?.needsAnimatedChain ? animStep : rotateFilterStep(box)
+  // The mask (§616) cuts the FITTED box, the frame its fractions are measured
+  // against: after the fit and the HDR mapping, before the animated resize and
+  // the rotate, so it scales and turns with the image exactly as the preview's
+  // SVG clip does. Its pre-pass file is the input right after the image's own
+  // (`idx + 1`, wired by encodeSegment). Every fit ends in `format=rgba` and
+  // the HDR mapping in `yuva444p10le`, so the alpha the mask multiplies is
+  // already there; the HDR one is 10-bit, and the mask matches it rather than
+  // leave ffmpeg to insert a gray -> gray10le scaler. No `maskBase` (the still
+  // sampler, sample-frame.js) means no mask: there is no file to read.
+  const mask = opts?.maskBase
+    ? planItemMask(item, fitW, fitH, imgOffset, duration, opts?.fps ?? 30, opts.maskBase)
+    : null
+  if (mask) {
+    filterParts.push(
+      `[${idx}:v]${fitChain}${toHdr}[imgb${idx}]`,
+      ...maskFilterParts(`[imgb${idx}]`, idx + 1, `[imgm${idx}]`, { tenBit: Boolean(opts?.toHdr) }),
+      // geometryStep carries its own leading comma, as it does after the fit.
+      `[imgm${idx}]${geometryStep.slice(1)}${geometryStep ? ',' : ''}setpts=PTS-STARTPTS[img${idx}]`,
+    )
+  } else {
+    filterParts.push(
+      `[${idx}:v]${fitChain}${toHdr}${geometryStep},setpts=PTS-STARTPTS[img${idx}]`
+    )
+  }
   let src = `[img${idx}]`
   // Static opacity keeps its plain mixer; a keyframed one is a sendcmd-driven
   // mixer sampled at the segment's fps (a missing fps means 30: sample-frame
@@ -1290,7 +1320,11 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   )
   const newVideoLabel = `[iv${idx}]`
 
-  return { inputArgs, filterParts, newVideoLabel }
+  // The mask's keys only when there is a mask: callers and tests that compare
+  // the whole result (JSON round trips included) see the shape they always did.
+  return mask
+    ? { inputArgs, filterParts, newVideoLabel, maskInputArgs: mask.inputArgs, maskJobs: [mask] }
+    : { inputArgs, filterParts, newVideoLabel }
 }
 
 /**
@@ -1311,9 +1345,14 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
  * @param {string|null} [opts.sdrCurve]   — look curve id for the HDR→SDR LUT
  * @param {number} [opts.cropBudgetPx]    — test seam: a keyframed crop's pixel
  *   budget, MAX_ANIMATED_CROP_PX when absent. No production caller passes it.
+ * @param {number} [opts.fps]             — samples keyframed opacity and a keyframed mask (30 when absent)
+ * @param {string} [opts.maskBase]        — where the item's mask file goes, without
+ *   its extension; without it a `mask` is not drawn
  * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string,
- *   audioTrim: string }} audioTrim is the head of this item's audio chain, which
- *   must cut the same source window as the video (the caller builds the audio)
+ *   audioTrim: string, maskInputArgs?: string[], maskJobs?: object[] }} audioTrim
+ *   is the head of this item's audio chain, which must cut the same source
+ *   window as the video (the caller builds the audio). The mask keys are present
+ *   only for a masked item, as on the image path.
  */
 export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   const { segStart, duration, projectColorSpace, zscaleAvailable,
@@ -1476,8 +1515,8 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     footageH = item.probedHeight
   }
 
-  // STEP ORDER IS LOAD-BEARING: crop → scale → convert → pad → rotate
-  // (SP6b T6; rotate added by SP9a-2).
+  // STEP ORDER IS LOAD-BEARING: crop → scale → convert → pad → [mask] → rotate
+  // (SP6b T6; rotate added by SP9a-2; the mask by §616, see `afterPad` below).
   //
   // A keyframed crop (PV55 phase 2) fills the crop slot with
   // crop(union) → scale(eval=frame) → crop(fixed): the only varying frame size
@@ -1582,7 +1621,18 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // A rotated item still passes through rotateFilterStep's `format=yuva420p`
   // pin after this, which narrows a converted item to 8 bits before `rotate`.
   // That predates this fill and is left alone here.
-  let transparentPad = item.probedAlpha === true
+  //
+  // A MASKED item (§616) always takes the transparent fill. The mask multiplies
+  // the item's alpha, so the item must carry an alpha plane by the time the
+  // mask meets it, and the pinned format here is that plane: yuva420p, or
+  // yuva444p10le, whose 10-bit alpha the mask then matches (gray10le). The box
+  // the mask is drawn in is padW x padH, the frame pad produces: the item's own
+  // box, or the PEAK box when the geometry animates, since pad runs at the peak
+  // and the varying resize comes after the mask.
+  const mask = opts.maskBase
+    ? planItemMask(item, padW, padH, seekOffset, duration, opts.fps ?? 30, opts.maskBase)
+    : null
+  let transparentPad = item.probedAlpha === true || mask !== null
   if (!transparentPad && footageW && footageH) {
     const fit = decreaseFitSize(footageW, footageH, padW, padH, (conversionStep || cutoutGrade) ? 2 : 1)
     transparentPad = padW - fit.width > 1 || padH - fit.height > 1
@@ -1603,11 +1653,26 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     (anim?.needsAnimatedChain
       ? `scale=${anim.peakW}:${anim.peakH}:force_original_aspect_ratio=decrease${divisibleBy},`
       : `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease${divisibleBy},`)
-  const tail = anim?.needsAnimatedChain
-    ? `${padStep},` +
-      `scale=w='${anim.boxWExpr}':h='${anim.boxHExpr}':eval=frame` +
+  // What follows the pad: the varying resize (and its rotate), or the static
+  // rotate. Each starts with its own comma, and the static one may be empty.
+  const afterPad = anim?.needsAnimatedChain
+    ? `,scale=w='${anim.boxWExpr}':h='${anim.boxHExpr}':eval=frame` +
       `${animatedRotateStep(anim, true)}`
-    : `${padStep}${rotateFilterStep(box, true)}`
+    : rotateFilterStep(box, true)
+  // A mask (§616) goes BETWEEN the two: after pad, which made the box the
+  // mask's fractions are measured in, and before the resize and rotate, so it
+  // moves with the item as the preview's clip does. The chain is cut at the
+  // pad (`[vidb]`), masked (maskFilterParts, mask file at input `idx + 1`), and
+  // resumed from `[vidm]`; with nothing after the pad the mask writes `[vid]`.
+  const tail = mask ? padStep : `${padStep}${afterPad}`
+  const chainOut = mask ? `[vidb${idx}]` : `[vid${idx}]`
+  const maskParts = mask
+    ? [
+        ...maskFilterParts(`[vidb${idx}]`, idx + 1, afterPad ? `[vidm${idx}]` : `[vid${idx}]`,
+          { tenBit: padAlphaFmt === 'yuva444p10le' }),
+        ...(afterPad ? [`[vidm${idx}]${afterPad.slice(1)}[vid${idx}]`] : []),
+      ]
+    : []
   if (cutoutGrade) {
     // The graded cutout: colour and alpha split after scale, the colour graded,
     // the alpha merged back, then the same pad (yuva420p: the SDR path's pin,
@@ -1622,11 +1687,12 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
       `${head}format=yuva444p12le,split=2[c${idx}][ca${idx}]`,
       `[ca${idx}]alphaextract[al${idx}]`,
       `[c${idx}]${cutoutGrade}[cg${idx}]`,
-      `[cg${idx}][al${idx}]alphamerge,${tail}[vid${idx}]`,
+      `[cg${idx}][al${idx}]alphamerge,${tail}${chainOut}`,
     )
   } else {
-    filterParts.push(`${head}${conversionStep}${tail}[vid${idx}]`)
+    filterParts.push(`${head}${conversionStep}${tail}${chainOut}`)
   }
+  filterParts.push(...maskParts)
   let src = `[vid${idx}]`
   // Static opacity keeps its plain mixer; a keyframed one is a sendcmd-driven
   // mixer sampled once per frame at the segment's fps (item-opacity.js, §616).
@@ -1646,7 +1712,9 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   )
   const newVideoLabel = `[iv${idx}]`
 
-  return { inputArgs, filterParts, newVideoLabel, audioTrim }
+  return mask
+    ? { inputArgs, filterParts, newVideoLabel, audioTrim, maskInputArgs: mask.inputArgs, maskJobs: [mask] }
+    : { inputArgs, filterParts, newVideoLabel, audioTrim }
 }
 
 /**
@@ -2027,7 +2095,8 @@ function intermediateVideoArgs(spec, duration) {
  *   (project working color space). Defaults to sdr_bt709 when missing.
  * @param {string} outputPath
  * @param {object} [opts]
- * @param {boolean} [opts._dryRun] — return { inputs, filterParts, args } without executing
+ * @param {boolean} [opts._dryRun] — return { inputs, filterParts, args } without executing,
+ *   plus `maskJobs` (the item mask files the encode would write) when there are any
  * @param {boolean} [opts.intermediate] — write a lossless FFV1/NUT part for
  *   encodeSegmentGroup instead of the final codec
  * @param {string|null} [opts.sdrCurve] — look curve id for any HDR→SDR item
@@ -2073,6 +2142,13 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   let videoLabel
   const audioLabels = []
   let inputIdx = 0
+  // Item mask pre-passes (§616), written before the encode spawns. Each mask
+  // file sits next to this segment's output and is named after it, since the
+  // segments of one render share a directory and encode concurrently: a bare
+  // `mask-<idx>` would be written by two segments at once. compose.js removes
+  // the directory with the segments.
+  const maskJobs = []
+  const maskBaseFor = (idx) => `${outputPath.replace(/\.[^./\\]+$/, '')}.mask-${idx}`
 
   // --- Step 1: Black canvas base (always present — items layer on top) ---
   // Canvas format follows the project's working pix_fmt so item layers can
@@ -2140,6 +2216,11 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
     // --- Visual items (lower = background) ---
     const item = layer
     const idx  = inputIdx
+    // A masked item's mask file is one more input, right after the item's own
+    // (`idx + 1`), so the next layer starts one further on. Only a composited
+    // item has one: a culled video still adds its input, for its audio, but no
+    // mask, and the next layer takes `idx + 1` as before.
+    let maskInputs = 0
 
     // ── Clip crossfade ──────────────────────────────────────────────────
     //
@@ -2190,10 +2271,16 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
       // audio, so an image item contributes nothing here — skip it entirely
       // (no input, no inputIdx bump).
       if (culled.has(item)) continue
-      const { inputArgs, filterParts: fp, newVideoLabel } =
+      const { inputArgs, filterParts: fp, newVideoLabel, maskInputArgs, maskJobs: jobs } =
         buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration, start,
-          { toHdr: isHdr(projectColorSpace) ? projectColorSpace : null, dryRun: opts._dryRun, fps })
+          { toHdr: isHdr(projectColorSpace) ? projectColorSpace : null, dryRun: opts._dryRun, fps,
+            maskBase: maskBaseFor(idx) })
       inputs.push(...inputArgs)
+      if (maskInputArgs) {
+        inputs.push(...maskInputArgs)
+        maskJobs.push(...jobs)
+        maskInputs = 1
+      }
       filterParts.push(...fp)
       videoLabel = newVideoLabel
     } else {
@@ -2216,7 +2303,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
       // The one split that does exist: in an HDR project's SDR export, a cutout
       // of HDR footage (item.alphaGrade) is graded through an alpha split
       // (PV42 T8, buildVideoItemFilterParts / buildCutoutGradeFilter).
-      const { inputArgs, filterParts: fp, newVideoLabel, audioTrim } =
+      const { inputArgs, filterParts: fp, newVideoLabel, audioTrim, maskInputArgs, maskJobs: jobs } =
         buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, {
           segStart: start,
           duration,
@@ -2225,13 +2312,20 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
           lut3dAvailable,
           sdrCurve,
           fps,
+          maskBase: maskBaseFor(idx),
         })
       // The input (carrying its -ss/-t window) is ALWAYS added so the clip's
       // audio is available to Step 5. Its VIDEO is composited only when the
       // frame is NOT covered by an opaque overlay — opaque replaces the picture,
-      // it must not silence the voiceover underneath.
+      // it must not silence the voiceover underneath. Its mask input goes with
+      // the picture, never with the sound.
       inputs.push(...inputArgs)
       if (!culled.has(item)) {
+        if (maskInputArgs) {
+          inputs.push(...maskInputArgs)
+          maskJobs.push(...jobs)
+          maskInputs = 1
+        }
         filterParts.push(...fp)
         videoLabel = newVideoLabel
       }
@@ -2352,7 +2446,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
       videoLabel = `[xf${xfIdx}]`
       pendingBlend = null
     }
-    inputIdx++
+    inputIdx += 1 + maskInputs
   }
 
   // --- Step 4: Per-frame color metadata stamping (per project color space) ---
@@ -2434,7 +2528,13 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
     outputPath,
   ]
 
-  if (opts._dryRun) return { inputs, filterParts, args }
+  // `maskJobs` only when there are some: the goldens compare the whole dry-run
+  // result, and an unmasked segment's must stay exactly what it was.
+  if (opts._dryRun) return maskJobs.length ? { inputs, filterParts, args, maskJobs } : { inputs, filterParts, args }
+
+  // The mask files the graph reads (§616), two at a time: each is one ffmpeg
+  // fed rasterized planes, and the segment encodes beside it are the heavy part.
+  if (maskJobs.length) await pMap(maskJobs, (job) => writeItemMask(job), 2)
 
   // Preflight ran long before this segment's turn; a file deleted since fails by name.
   assertInputsExist(fileInputsOf(inputs))
