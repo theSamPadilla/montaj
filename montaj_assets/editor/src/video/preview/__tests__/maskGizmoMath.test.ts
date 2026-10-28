@@ -3,7 +3,7 @@ import { maskAt, maskPolygon } from '@bycrux/timeline-core'
 import type { VisualItem } from '../../../schema'
 import {
   clientToBox,
-  edgeDistance,
+  insideDistance,
   featherRings,
   maskGestureChanges,
   maskHandles,
@@ -98,17 +98,20 @@ describe('maskGestureChanges', () => {
     expect(c.maskRotation).toBeCloseTo(100)
   })
 
-  it('feather: the distance from the edge is 2 sigma, so sigma = d / 2', () => {
-    const f = resolve({ shape: 'ellipse', x: 0.5, y: 0.5, w: 0.4, h: 0.6, feather: 0.1 })
-    // The right edge is at x = 140. Sigma 10 px puts the outer ring at 160.
-    const c = maskGestureChanges('feather', f, { x: 160, y: 50 }, { x: 170, y: 50 }, W, H)
+  it('feather: the distance inward from the edge is 2 sigma, so sigma = d / 2', () => {
+    const f = resolve({ shape: 'rect', x: 0.5, y: 0.5, w: 0.4, h: 0.8, feather: 0.1 })
+    // The right edge is at x = 140. Sigma 10 px puts the inner ring at 120.
+    const c = maskGestureChanges('feather', f, { x: 120, y: 50 }, { x: 110, y: 50 }, W, H)
     expect(c.maskFeather).toBeCloseTo(15 / 100)
   })
 
-  it('feather clamps to 0..0.5', () => {
-    const f = resolve({ shape: 'ellipse', x: 0.5, y: 0.5, w: 0.4, h: 0.6, feather: 0.1 })
-    expect(maskGestureChanges('feather', f, { x: 160, y: 50 }, { x: 140, y: 50 }, W, H).maskFeather).toBe(0)
-    expect(maskGestureChanges('feather', f, { x: 160, y: 50 }, { x: 900, y: 50 }, W, H).maskFeather).toBe(0.5)
+  it('feather clamps to 0..0.5: dragged out past the edge it is 0', () => {
+    const f = resolve({ shape: 'rect', x: 0.5, y: 0.5, w: 0.4, h: 0.8, feather: 0.1 })
+    expect(maskGestureChanges('feather', f, { x: 120, y: 50 }, { x: 140, y: 50 }, W, H).maskFeather).toBe(0)
+    expect(maskGestureChanges('feather', f, { x: 120, y: 50 }, { x: 170, y: 50 }, W, H).maskFeather).toBe(0)
+    // A mask much larger than the box: 150 px in from its edge is sigma 75.
+    const big = resolve({ shape: 'rect', x: 0.5, y: 0.5, w: 3, h: 3, feather: 0.1 })
+    expect(maskGestureChanges('feather', big, { x: 180, y: 50 }, { x: 50, y: 50 }, 100, 100).maskFeather).toBe(0.5)
   })
 
   it('a wipe moves along x and y like any shape', () => {
@@ -119,13 +122,18 @@ describe('maskGestureChanges', () => {
   })
 })
 
-describe('edgeDistance', () => {
-  it('is the distance to the outline for a shape, and to the edge line for a wipe', () => {
+describe('insideDistance', () => {
+  it('is the distance in from the outline, negative outside', () => {
     const rect = resolve({ shape: 'rect', x: 0.5, y: 0.5, w: 0.5, h: 0.5 })
-    expect(edgeDistance(rect, { x: 90, y: 50 }, 100, 100)).toBeCloseTo(15)
-    expect(edgeDistance(rect, { x: 50, y: 50 }, 100, 100)).toBeCloseTo(25)
+    expect(insideDistance(rect, { x: 90, y: 50 }, 100, 100)).toBeCloseTo(-15)
+    expect(insideDistance(rect, { x: 50, y: 50 }, 100, 100)).toBeCloseTo(25)
+    expect(insideDistance(rect, { x: 70, y: 40 }, 100, 100)).toBeCloseTo(5)
+  })
+
+  it('a wipe: the distance in from the edge line on the side that shows (the left at rotation 0)', () => {
     const wipe = resolve({ shape: 'wipe', x: 0.5, y: 0.5, rotation: 0 })
-    expect(edgeDistance(wipe, { x: 20, y: 90 }, 100, 100)).toBeCloseTo(30)
+    expect(insideDistance(wipe, { x: 20, y: 90 }, 100, 100)).toBeCloseTo(30)
+    expect(insideDistance(wipe, { x: 80, y: 0 }, 100, 100)).toBeCloseTo(-30)
   })
 })
 
@@ -170,24 +178,25 @@ describe('wipeLine', () => {
 })
 
 describe('maskHandles', () => {
-  it('puts the squares on the mask box corners and edge midpoints, rotate above the top edge, feather on the outer ring', () => {
-    const m = resolve({ shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5, feather: 0.2 })
+  it('puts the squares on the mask box corners and edge midpoints, rotate above the top edge, feather on the inner ring', () => {
+    const m = resolve({ shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5, feather: 0.1 })
     const h = maskHandles(m, 100, 100)
     expect(h.resize.find(r => r.handle === 'nw')!.at).toEqual([25, 25])
     expect(h.resize.find(r => r.handle === 'e')!.at).toEqual([75, 50])
     expect(h.resize).toHaveLength(8)
     expect(h.rotate.at[0]).toBeCloseTo(50)
     expect(h.rotate.at[1]).toBeLessThan(25)
-    // sigma 20 px: the outer ring is 40 px right of the right edge.
-    expect(h.feather.at[0]).toBeCloseTo(75 + 40)
+    // sigma 10 px: the inner ring is 20 px in from the right edge.
+    expect(h.feather.at[0]).toBeCloseTo(75 - 20)
     expect(h.feather.at[1]).toBeCloseTo(50)
   })
 
-  it('with feather 0 the feather handle sits just outside the right edge', () => {
+  it('with feather 0 the feather handle sits just inside the right edge, clear of the square there', () => {
     const m = resolve({ shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5 })
     const at = maskHandles(m, 100, 100).feather.at
-    expect(at[0]).toBeGreaterThan(75)
-    expect(at[0]).toBeLessThan(100)
+    // The 12 px square on the edge reaches 6 px in; the 12 px handle starts past it.
+    expect(at[0]).toBeLessThanOrEqual(75 - 12)
+    expect(at[0]).toBeGreaterThan(50)
     expect(at[1]).toBeCloseTo(50)
   })
 
@@ -196,6 +205,7 @@ describe('maskHandles', () => {
     const h = maskHandles(m, 100, 100)
     expect(h.resize).toEqual([])
     expect(h.rotate.at[0]).toBeCloseTo(50)
-    expect(h.feather.at[0]).toBeGreaterThan(50)
+    // The inner side of a wipe is the side that shows: the left at rotation 0.
+    expect(h.feather.at[0]).toBeLessThan(50)
   })
 })

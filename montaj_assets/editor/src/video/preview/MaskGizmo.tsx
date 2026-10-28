@@ -7,7 +7,7 @@
 //     lines parallel to its edge);
 //   - crop-style squares on the mask box's corners and edge midpoints (resize
 //     about the centre), a round handle above the top edge (rotate), and a
-//     round handle on the outer ring (feather);
+//     round handle on the inner ring (feather, as board B places it);
 //   - the area inside the outline moves the mask (a wipe: its edge line).
 //
 // It draws in BOX PIXELS: the SVG's viewBox is the clip's box in preview

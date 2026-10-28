@@ -42,7 +42,7 @@ export interface FrameRect { left: number; top: number; width: number; height: n
 export const ROTATE_OFFSET_PX = 24
 /** A wipe's rotate handle: how far along its edge line from (x, y). */
 export const WIPE_ROTATE_OFFSET_PX = 40
-/** The feather handle never sits closer than this to the edge, so it clears the square there. */
+/** The feather handle never sits closer than this inside the edge, so it clears the square there. */
 export const FEATHER_MIN_PX = 16
 /** The smallest mask side a resize leaves, as a fraction of the box. */
 const MIN_SIDE = 0.01
@@ -98,22 +98,32 @@ function distToSegment(p: Pt, a: [number, number], b: [number, number]): number 
 }
 
 /**
- * How far `p` is from the mask's edge, in box pixels, on either side: the
- * outline (`maskPolygon`) for an ellipse or rect, the edge line for a wipe.
+ * How far `p` is in from the mask's edge, in box pixels: positive inside the
+ * shape, negative outside. The edge is the outline (`maskPolygon`, convex) for
+ * an ellipse or rect, and the edge line for a wipe, whose inside is the side
+ * that shows (`(p - c)·n <= 0`). The hard shape, so `invert` does not turn it.
  */
-export function edgeDistance(m: ResolvedMask, p: Pt, boxW: number, boxH: number): number {
+export function insideDistance(m: ResolvedMask, p: Pt, boxW: number, boxH: number): number {
   if (m.shape === 'wipe') {
     const c = maskCentre(m, boxW, boxH)
     const t = m.rotation * RAD
-    return Math.abs((p.x - c.x) * Math.cos(t) + (p.y - c.y) * Math.sin(t))
+    return -((p.x - c.x) * Math.cos(t) + (p.y - c.y) * Math.sin(t))
   }
   const pts = maskPolygon(m, boxW, boxH)
   let best = Infinity
+  let pos = false
+  let neg = false
   for (let i = 0; i < pts.length; i++) {
-    const d = distToSegment(p, pts[i], pts[(i + 1) % pts.length])
+    const a = pts[i]
+    const b = pts[(i + 1) % pts.length]
+    const d = distToSegment(p, a, b)
     if (d < best) best = d
+    const cross = (b[0] - a[0]) * (p.y - a[1]) - (b[1] - a[1]) * (p.x - a[0])
+    if (cross > 0) pos = true
+    else if (cross < 0) neg = true
   }
-  return best
+  // Convex: inside is on the same side of every edge.
+  return pos && neg ? -best : best
 }
 
 /**
@@ -128,11 +138,12 @@ export function edgeDistance(m: ResolvedMask, p: Pt, boxW: number, boxH: number)
  *     and h, an edge one of them.
  *   - rotate: the pointer's turn about the mask centre since the press, added
  *     to the rotation.
- *   - feather: sigma = d / 2, d the pointer's distance from the edge, so the
- *     outer ring (2 sigma out) follows the pointer; feather = sigma over the
- *     box's shorter side, clamped to 0..0.5. Measured as a change from the
- *     press, so a press on a handle parked off the ring (feather 0, or a ring
- *     closer than FEATHER_MIN_PX) does not jump.
+ *   - feather: sigma = d / 2, d how far the pointer is in from the edge
+ *     (`insideDistance`), so the inner ring (2 sigma in, where the handle
+ *     sits, as on board B) follows the pointer; feather = sigma over the box's
+ *     shorter side, clamped to 0..0.5, so out past the edge it is 0. Measured
+ *     as a change from the press, so a press on a handle parked off the ring
+ *     (feather 0, or a ring closer than FEATHER_MIN_PX) does not jump.
  */
 export function maskGestureChanges(gesture: MaskGesture, m: ResolvedMask, from: Pt, to: Pt, boxW: number, boxH: number): MaskChanges {
   const dx = to.x - from.x
@@ -149,8 +160,8 @@ export function maskGestureChanges(gesture: MaskGesture, m: ResolvedMask, from: 
   if (gesture === 'feather') {
     const short = Math.min(boxW, boxH)
     const sigma0 = maskSigmaPx(m, boxW, boxH)
-    const d0 = edgeDistance(m, from, boxW, boxH)
-    const d1 = edgeDistance(m, to, boxW, boxH)
+    const d0 = insideDistance(m, from, boxW, boxH)
+    const d1 = insideDistance(m, to, boxW, boxH)
     const sigma = sigma0 + (d1 - d0) / 2
     return { maskFeather: short > 0 ? Math.min(0.5, Math.max(0, sigma / short)) : 0 }
   }
@@ -230,20 +241,24 @@ export interface MaskHandles {
   resize: Array<{ handle: MaskHandle; at: [number, number] }>
   /** The rotate handle, and where its stalk starts (the top edge's midpoint), or null for a wipe. */
   rotate: { at: [number, number]; stalkFrom: [number, number] | null }
-  /** The feather handle: on the outer ring at the mask's right, never closer than FEATHER_MIN_PX. */
+  /**
+   * The feather handle: on the inner ring at the mask's right (a wipe: on the
+   * side that shows), never closer than FEATHER_MIN_PX to the edge, and never
+   * past the centre.
+   */
   feather: { at: [number, number] }
 }
 
 /** Where every handle sits, in box pixels. All of them turn with the mask. */
 export function maskHandles(m: ResolvedMask, boxW: number, boxH: number): MaskHandles {
-  const out2 = Math.max(2 * maskSigmaPx(m, boxW, boxH), FEATHER_MIN_PX)
+  const in2 = Math.max(2 * maskSigmaPx(m, boxW, boxH), FEATHER_MIN_PX)
   if (m.shape === 'wipe') {
     return {
       resize: [],
       // Up the edge line (its direction is (-sin θ, cos θ), so up is minus that).
       rotate: { at: fromMaskFrame(m, boxW, boxH, 0, -WIPE_ROTATE_OFFSET_PX), stalkFrom: null },
-      // On the hidden side, along the normal.
-      feather: { at: fromMaskFrame(m, boxW, boxH, out2, 0) },
+      // On the side that shows, against the normal.
+      feather: { at: fromMaskFrame(m, boxW, boxH, -in2, 0) },
     }
   }
   const rx = (m.w * boxW) / 2
@@ -254,7 +269,7 @@ export function maskHandles(m: ResolvedMask, boxW: number, boxH: number): MaskHa
       at: fromMaskFrame(m, boxW, boxH, 0, -ry - ROTATE_OFFSET_PX),
       stalkFrom: fromMaskFrame(m, boxW, boxH, 0, -ry),
     },
-    feather: { at: fromMaskFrame(m, boxW, boxH, rx + out2, 0) },
+    feather: { at: fromMaskFrame(m, boxW, boxH, Math.max(0, rx - in2), 0) },
   }
 }
 

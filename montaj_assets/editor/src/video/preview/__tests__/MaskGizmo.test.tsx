@@ -278,13 +278,17 @@ describe('mask gizmo: gestures', () => {
     expect(latest.mask!.rotation).toBeCloseTo(90)
   })
 
-  it('the feather handle sets sigma = d / 2 from the edge', () => {
-    // sigma = 0.1 * 108 = 10.8 px; the outer ring, and the handle on it, is
-    // 21.6 px right of the right edge (x = 81).
-    render(<Host initial={clip({ mask: { ...MASK, feather: 0.1 } })} />)
+  it('the feather handle sits on the inner ring and sets sigma = d / 2 inward from the edge', () => {
+    // A rect 86.4 x 96 px about (54, 96): its right edge is x = 97.2, and the
+    // nearest edge to any point on the centre row right of the centre.
+    // sigma = 0.1 * 108 = 10.8 px, so the inner ring, and the handle on it,
+    // is 21.6 px in from the right edge.
+    const mask = { shape: 'rect' as const, x: 0.5, y: 0.5, w: 0.8, h: 0.5, feather: 0.1 }
+    render(<Host initial={clip({ mask })} />)
     const handle = screen.getByLabelText('Mask feather')
-    expect(parseFloat(handle.style.left)).toBeCloseTo(((81 + 21.6) / BOX_W) * 100, 6)
-    drag(handle, { x: 81 + 21.6, y: 96 }, { x: 81 + 30, y: 96 })
+    expect(parseFloat(handle.style.left)).toBeCloseTo(((97.2 - 21.6) / BOX_W) * 100, 6)
+    expect(parseFloat(handle.style.top)).toBeCloseTo(50, 6)
+    drag(handle, { x: 97.2 - 21.6, y: 96 }, { x: 97.2 - 30, y: 96 })
     expect(latest.mask!.feather).toBeCloseTo(15 / BOX_W)
   })
 
