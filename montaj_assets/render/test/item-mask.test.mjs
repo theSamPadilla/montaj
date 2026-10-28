@@ -61,3 +61,18 @@ test('write: feather blurs the edge (no hard step)', () => {
     assert.ok(row[2] > 245 && row[97] < 10)
   })
 })
+test('write: a keyframed feather softens the edge frame by frame (sendcmd on gblur)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mask-'))
+  const soften = { mask: { shape: 'wipe', x: 0.5, feather: 0.02 },
+    keyframes: [{ prop: 'maskFeather', points: [{ t: 0, value: 0.02 }, { t: 1, value: 0.2 }] }] }
+  const p = planItemMask(soften, 100, 10, 0, 1, 10, join(dir, 'm'))
+  assert.equal(p.kind, 'frames')
+  return writeItemMask(p).then(() => {
+    const r = spawnSync(FFMPEG, ['-v', 'error', '-i', p.path, '-f', 'rawvideo', '-pix_fmt', 'gray', '-'], { maxBuffer: 1 << 24 })
+    // sigma 0.2 px at frame 0, 2 px at frame 10: 4 px inside the edge the mask is still full at first, then dips
+    const px = (f, x) => r.stdout[f * 1000 + 500 + x]
+    assert.ok(px(0, 46) > 250)
+    assert.ok(px(10, 46) < 250)
+    assert.ok(px(10, 46) < px(5, 46) || px(5, 46) < 250)
+  })
+})

@@ -6,8 +6,9 @@
 // multiplies that plane into the clip's alpha ({@link maskFilterParts}).
 //
 // Why a pre-pass and not an in-graph `geq`: `geq` evaluates a per-pixel
-// expression in interpreted code, which costs seconds per second of 1080p
-// output, and it has no Gaussian feather. Here the polygon is the SAME vertex
+// expression in interpreted code. An animated ellipse measured 0.22 s a frame
+// at 1080x1920 and 0.42 s at 3840x2160 (ffmpeg 9.0.1, 2026-10-28), against
+// 11 ms a frame for `gblur` at 4K, and it has no Gaussian feather. Here the polygon is the SAME vertex
 // list the editor preview paints as SVG (timeline-core's `maskPolygon`),
 // scan-converted by `rasterizeMask`; the feather is one `gblur` over a plane
 // that extends a margin past the box, so the blur has real black (or, inverted,
