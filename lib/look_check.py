@@ -226,7 +226,8 @@ def overlay_path(item, project_dir):
 
 def _composited(item):
     """A clip with a mask, a blend mode other than normal or an opacity track (§616): it never fully covers what is below."""
-    if item.get("mask") or item.get("blendMode", "normal") != "normal":
+    m = item.get("mask")
+    if (isinstance(m, dict) and m.get("enabled") is not False) or (m and not isinstance(m, dict)) or item.get("blendMode", "normal") != "normal":
         return True
     kfs = item.get("keyframes")
     return isinstance(kfs, list) and any(isinstance(k, dict) and k.get("prop") == "opacity" for k in kfs)
