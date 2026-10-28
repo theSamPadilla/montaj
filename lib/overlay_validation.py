@@ -20,8 +20,12 @@ The shape here is derived from the consumers, not invented:
   ``googleFonts?: string[]``, ``keyframes?: KeyframeTrack[]``.
 
 Lenient by design: unknown fields are allowed, and every optional field may be
-``null`` because every consumer reads it through ``??``. Only items whose
-``type`` is exactly ``"overlay"`` are checked; image and video items are not.
+``null`` because every consumer reads it through ``??``. Overlay items get the
+shape check above; image and video items get the compositing check (§616:
+``mask``, ``blendMode``, ``opacity`` and their keyframe tracks,
+``_visual_item_errors``). Other item types are not checked. An overlay that
+carries a ``mask`` or ``blendMode`` is refused, since overlays do not support
+them.
 
 Only NEW or CHANGED items are checked (FQ1.1 final review). A save that
 carries `tracks` used to re-validate every overlay item on every PUT, so an
@@ -40,7 +44,21 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+import math
 from typing import Any
+
+# Mirrors montaj_assets/timeline-core/src/mask.js (MASK_SHAPES, BLEND_MODES,
+# MASK_KEYFRAME_PROPS and the clamps documented on ItemMask). Change both together.
+MASK_SHAPES = ("ellipse", "rect", "wipe")
+BLEND_MODES = ("normal", "screen", "multiply", "add", "lighten", "darken", "overlay")
+MASK_KEYFRAME_PROPS = ("maskX", "maskY", "maskW", "maskH", "maskRotation", "maskFeather")
+# The other props a clip keyframe track may name (geometry.js / curves.js KeyframeProp).
+GEOMETRY_KEYFRAME_PROPS = ("offsetX", "offsetY", "scale", "scaleX", "scaleY", "rotation")
+CROP_KEYFRAME_PROPS = ("cropX", "cropY", "cropW", "cropH")
+CLIP_KEYFRAME_PROPS = GEOMETRY_KEYFRAME_PROPS + CROP_KEYFRAME_PROPS + ("opacity",) + MASK_KEYFRAME_PROPS
+VISUAL_TYPES = ("image", "video")
+ITEM_TYPES = ("overlay",) + VISUAL_TYPES
+MASK_FEATHER_MAX = 0.5
 
 REQUIRED_STRING = ("src",)
 REQUIRED_NUMBER = ("start", "end")
@@ -111,7 +129,109 @@ def _item_errors(item: dict) -> list[tuple[str, str]]:
     ):
         err("keyframes", "must be an array of objects")
 
+    for field in ("mask", "blendMode"):
+        if item.get(field) is not None:
+            err(field, "is not supported on overlay items (only image and video items take a mask or blend mode)")
+
     return errors
+
+
+def _finite(value: Any) -> bool:
+    return _is_number(value) and math.isfinite(value)
+
+
+def _visual_item_errors(item: dict) -> list[tuple[str, str]]:
+    """``(field, problem)`` pairs for the compositing fields of an image or
+    video item: ``mask``, ``blendMode``, ``opacity`` and ``keyframes``.
+
+    Fields may be dotted (``mask.shape``, ``keyframes[0].prop``); the
+    changed-fields rule compares their root key. Lenient: unknown fields and
+    null values are fine.
+    """
+    errors: list[tuple[str, str]] = []
+
+    def err(field: str, problem: str) -> None:
+        errors.append((field, problem))
+
+    opacity = item.get("opacity")
+    if opacity is not None and not (_finite(opacity) and 0 <= opacity <= 1):
+        err("opacity", "must be a number from 0 to 1")
+
+    blend = item.get("blendMode")
+    if blend is not None and blend not in BLEND_MODES:
+        err("blendMode", "must be one of " + ", ".join(BLEND_MODES))
+
+    mask = item.get("mask")
+    if mask is not None:
+        if not isinstance(mask, dict):
+            err("mask", "must be an object with a shape")
+        else:
+            if mask.get("shape") not in MASK_SHAPES:
+                err("mask.shape", "must be one of " + ", ".join(MASK_SHAPES))
+            for k in ("x", "y", "rotation"):
+                v = mask.get(k)
+                if v is not None and not _finite(v):
+                    err(f"mask.{k}", "must be a finite number")
+            for k in ("w", "h"):
+                v = mask.get(k)
+                if v is not None and not (_finite(v) and v > 0):
+                    err(f"mask.{k}", "must be a number greater than 0")
+            v = mask.get("radius")
+            if v is not None and not (_finite(v) and 0 <= v <= 1):
+                err("mask.radius", "must be a number from 0 to 1")
+            v = mask.get("feather")
+            if v is not None and not (_finite(v) and 0 <= v <= MASK_FEATHER_MAX):
+                err("mask.feather", f"must be a number from 0 to {MASK_FEATHER_MAX}")
+            v = mask.get("invert")
+            if v is not None and not isinstance(v, bool):
+                err("mask.invert", "must be a boolean")
+
+    keyframes = item.get("keyframes")
+    if isinstance(keyframes, list):
+        for i, track in enumerate(keyframes):
+            if not isinstance(track, dict):
+                continue  # the array-of-objects check is _item_errors's business
+            prop = track.get("prop")
+            where = f"keyframes[{i}]"
+            if prop not in CLIP_KEYFRAME_PROPS:
+                err(f"{where}.prop", "must be one of " + ", ".join(CLIP_KEYFRAME_PROPS))
+                continue
+            if prop in MASK_KEYFRAME_PROPS and not isinstance(mask, dict):
+                err(where, f"{prop} needs a mask on the item (a mask track does nothing without one)")
+            points = track.get("points")
+            if points is None:
+                continue
+            if not isinstance(points, list):
+                err(f"{where}.points", "must be an array")
+                continue
+            for j, point in enumerate(points):
+                value = point.get("value") if isinstance(point, dict) else None
+                at = f"{where}.points[{j}].value"
+                if not _finite(value):
+                    err(at, "must be a finite number")
+                elif prop == "opacity" and not 0 <= value <= 1:
+                    err(at, "must be a number from 0 to 1")
+                elif prop == "maskFeather" and not 0 <= value <= MASK_FEATHER_MAX:
+                    err(at, f"must be a number from 0 to {MASK_FEATHER_MAX}")
+                elif prop in ("maskW", "maskH") and not value > 0:
+                    err(at, "must be a number greater than 0")
+    return errors
+
+
+def item_problems(item: dict) -> list[tuple[str, str]]:
+    """Every ``(field, problem)`` on one item, by its type (overlay: shape check;
+    image/video: compositing check; anything else: none)."""
+    kind = item.get("type")
+    if kind == "overlay":
+        return _item_errors(item)
+    if kind in VISUAL_TYPES:
+        return _visual_item_errors(item)
+    return []
+
+
+def _root(field: str) -> str:
+    """``mask.shape`` -> ``mask``; ``keyframes[0].prop`` -> ``keyframes``."""
+    return field.split(".", 1)[0].split("[", 1)[0]
 
 
 def _canonical_json(item: dict) -> str:
@@ -132,22 +252,25 @@ def _id_key(item: dict) -> Any:
     return None
 
 
-def _overlay_items(tracks: list) -> list[dict]:
-    """Every ``type: "overlay"`` dict item across ``tracks`` (object-form)."""
+def _checked_items(tracks: list) -> list[dict]:
+    """Every dict item of a checked type (overlay, image, video) across
+    ``tracks`` (object-form). The prior index is built from these, so a prior
+    image and a prior overlay sharing an id keep separate entries (the index
+    is keyed by ``(type, id)``)."""
     found: list[dict] = []
     for track in tracks:
         items = track.get("items") if isinstance(track, dict) else None
         if not isinstance(items, list):
             continue
         for item in items:
-            if isinstance(item, dict) and item.get("type") == "overlay":
+            if isinstance(item, dict) and item.get("type") in ITEM_TYPES:
                 found.append(item)
     return found
 
 
 def overlay_item_errors(project: dict, previous: dict | None = None) -> list[str]:
-    """Return field-level errors for every NEW or CHANGED overlay item in
-    ``project["tracks"]``.
+    """Return field-level errors for every NEW or CHANGED overlay, image or
+    video item in ``project["tracks"]``.
 
     Expects object-form tracks (run ``normalize_tracks`` first) — ``project``
     and, if given, ``previous`` (the prior on-disk project, also
@@ -185,11 +308,11 @@ def overlay_item_errors(project: dict, previous: dict | None = None) -> list[str
     prior_counts: Counter[str] = Counter()
     prior_by_id: dict[Any, dict] = {}
     if isinstance(prior_tracks, list):
-        for prior_item in _overlay_items(prior_tracks):
+        for prior_item in _checked_items(prior_tracks):
             prior_counts[_canonical_json(prior_item)] += 1
             key = _id_key(prior_item)
             if key is not None:
-                prior_by_id[key] = prior_item
+                prior_by_id[(prior_item.get("type"), key)] = prior_item
 
     errors: list[str] = []
     for t_idx, track in enumerate(tracks):
@@ -197,7 +320,7 @@ def overlay_item_errors(project: dict, previous: dict | None = None) -> list[str
         if not isinstance(items, list):
             continue
         for i_idx, item in enumerate(items):
-            if not (isinstance(item, dict) and item.get("type") == "overlay"):
+            if not (isinstance(item, dict) and item.get("type") in ITEM_TYPES):
                 continue
 
             canonical = _canonical_json(item)
@@ -205,12 +328,13 @@ def overlay_item_errors(project: dict, previous: dict | None = None) -> list[str
                 prior_counts[canonical] -= 1
                 continue  # unchanged, moved, or an id-less duplicate
 
-            item_errors = _item_errors(item)
-            prior_item = prior_by_id.get(_id_key(item))
+            item_errors = item_problems(item)
+            prior_item = prior_by_id.get((item.get("type"), _id_key(item)))
             if prior_item is not None:
                 item_errors = [
                     (field, problem) for field, problem in item_errors
-                    if field not in prior_item or prior_item.get(field) != item.get(field)
+                    if _root(field) not in prior_item
+                    or prior_item.get(_root(field)) != item.get(_root(field))
                 ]
 
             item_id = item.get("id")

@@ -8,6 +8,7 @@ from common import fail
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from lib.types.carousel import CAROUSEL_ASPECTS, CAROUSEL_RESOLUTIONS
 from lib.project_tracks import track_items
+from lib.overlay_validation import VISUAL_TYPES, item_problems
 from lib.css_color import is_css_color
 
 # Re-export existing step validation so tests can import from validate
@@ -186,7 +187,10 @@ def _validate_clip_extensions(data, project_dir=None):
 
     Also checks keyframed crop props (cropX/cropY/cropW/cropH): image and video
     items only, values in range, plus the video pairing and one-aspect rules
-    (PV55, `_validate_video_crop_keyframes`)."""
+    (PV55, `_validate_video_crop_keyframes`).
+
+    Also checks an image or video item's `mask`, `blendMode`, `opacity` and
+    keyframe props (§616) through `lib.overlay_validation.item_problems`."""
     df = data.get("derivedFrom")
     if df is not None and not isinstance(df, str):
         fail("invalid_field", "derivedFrom must be a string")
@@ -216,6 +220,14 @@ def _validate_clip_extensions(data, project_dir=None):
                 # bool is a subclass of int — reject it, as the speed check above does.
                 if isinstance(rotation, bool) or not isinstance(rotation, (int, float)) or not math.isfinite(rotation):
                     fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': rotation must be a finite number")
+
+            # §616: mask, blend mode, clip opacity and their keyframe tracks (the
+            # same check save_project runs; the first problem is the failure).
+            if item.get("type") in VISUAL_TYPES:
+                problems = item_problems(item)
+                if problems:
+                    field, problem = problems[0]
+                    fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': {field} {problem}")
 
             # PV55: keyframed source crop, on images and videos (an overlay has no
             # source). x/y in [0, 1]; w/h in (0, 1] because the renderer divides

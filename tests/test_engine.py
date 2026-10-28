@@ -1143,3 +1143,18 @@ def test_validate_workflow_input_is_optional(tmp_path):
     ]}
     path = _write_workflow(tmp_path, "my_workflow", data)
     assert v.validate_workflow(path)["valid"] is True
+
+
+def test_validate_project_refuses_a_bad_mask_naming_the_field(tmp_path, capsys):
+    clip = {**VALID_PRIMARY_CLIP, "mask": {"shape": "star"}}
+    data = {**VALID_PROJECT, "tracks": [{"id": "trk-0", "items": [clip]}]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+    assert "mask.shape must be one of ellipse, rect, wipe" in capsys.readouterr().err
+
+
+def test_validate_project_accepts_a_good_mask(tmp_path):
+    clip = {**VALID_PRIMARY_CLIP, "mask": {"shape": "ellipse"}, "blendMode": "screen", "opacity": 0.5}
+    data = {**VALID_PROJECT, "tracks": [{"id": "trk-0", "items": [clip]}]}
+    assert v.validate_project(_write_project(tmp_path, "project.json", data))["valid"] is True
