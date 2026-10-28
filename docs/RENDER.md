@@ -124,7 +124,7 @@ static box the composite normally emits. There is no browser step involved:
 `x`/`y`, `scale`'s `w`/`h` (with `eval=frame`), and `rotate`'s angle.
 
 **What compiles.** `offsetX`, `offsetY`, `scale`/`scaleX`/`scaleY` and
-`rotation`. **`opacity` does not, and cannot** — see below.
+`rotation`. `opacity` takes another route, a per-frame `sendcmd` (see below).
 
 **How a curve becomes an expression.** Not by translating the easing. The
 `ease*` easings are cubic Béziers inverted by Newton-Raphson, and porting that

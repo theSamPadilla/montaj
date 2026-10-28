@@ -660,13 +660,12 @@ position, scale and rotation animate in the preview and in the export alike: the
 renderer compiles each curve into a time-varying ffmpeg filter expression. This
 was overlay-only until SP9d, when the ffmpeg path gained that per-frame hook.
 
-**Opacity is the one property a clip cannot animate.** ffmpeg applies alpha
-through a filter that accepts a fixed number and no expression, so there is no
-way to fade a clip in the export. Rather than silently ignoring the setting, the
-opacity keyframe diamond is shown **disabled** on a video or image clip, with a
-tooltip explaining why; double-clicking a clip to key everything skips opacity
-for the same reason. Overlays are unaffected and still animate opacity normally
-— they are captured frame-by-frame in a browser, where opacity is just CSS.
+**Opacity animates on clips too (§616).** The export samples a clip's opacity
+curve once per frame and sends it to the alpha filter as a runtime command, so
+the opacity keyframe diamond is live on a video or image clip, and
+double-clicking a clip to key everything keys its opacity with its geometry, as
+it does an overlay's. A clip's mask and blend mode have no controls yet; the AI
+sets them (see `docs/schemas/project.md`).
 
 - **Setting a key.** Each property gets its own keyframe diamond toggle in
   the right-hand **Transform** panel (`OverlayInspector.tsx`, see "Properties
