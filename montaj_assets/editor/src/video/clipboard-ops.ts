@@ -285,6 +285,7 @@ function visualAttributesPatch(source: VisualItem, targetType: VisualItem['type'
     ...(source.scale !== undefined ? { scale: source.scale } : {}),
     ...(source.opacity !== undefined ? { opacity: source.opacity } : {}),
     ...(source.rotation !== undefined ? { rotation: source.rotation } : {}),
+    ...(targetType !== 'overlay' && source.blendMode !== undefined ? { blendMode: source.blendMode } : {}),
     ...(targetType === 'image' && source.fit !== undefined ? { fit: source.fit } : {}),
     ...(targetType === 'video' && source.volume !== undefined ? { volume: source.volume } : {}),
     ...(targetType === 'video' && source.muted !== undefined ? { muted: source.muted } : {}),
