@@ -43,9 +43,20 @@ def mark_final_locked(project_path, allows=None) -> "tuple[dict, str] | None":
 
 
 def mark_final(project_path, allows=None) -> bool:
-    """`mark_final_locked` under the project lock. Never raises: a label never stops a render."""
+    """`mark_final_locked` under the project lock, then, when it wrote, the version commit serve makes on a move to
+    `final` (a folder's own project.json only). Never raises: a label never stops a render."""
     try:
         with project_lock(Path(project_path)):
-            return mark_final_locked(project_path, allows) is not None
+            result = mark_final_locked(project_path, allows)
     except Exception:  # noqa: BLE001
         return False
+    if result is None:
+        return False
+    path = Path(project_path)
+    if path.name == "project.json":
+        try:
+            from lib.project_versions import commit_version
+            commit_version(path.parent, f"version: run {result[0].get('runCount', 1)} — final")
+        except Exception:  # noqa: BLE001
+            pass
+    return True

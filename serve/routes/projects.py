@@ -6065,6 +6065,15 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
             render_input = converged_input
             script_args = [str(converged_input), *script_args[1:]]
 
+    # The slot was free at the top, but this request has awaited since (the
+    # final mark's project lock, git commits): a second POST or a carousel's
+    # save to final may have started a render meanwhile. Checked with no await
+    # before the add, so two requests can never both start one.
+    if project_id in _active_renders:
+        raise HTTPException(409, detail={
+            "error": "concurrent_render",
+            "message": f"A render for project {project_id} is already in progress.",
+        })
     _active_renders.add(project_id)
     cmd = [node_bin, str(render_script), *script_args]
     job = _RenderJob()

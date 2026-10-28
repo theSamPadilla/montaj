@@ -161,3 +161,34 @@ def test_mark_final_never_raises_and_leaves_an_unreadable_file_alone(tmp_path):
     assert project_status.mark_final(path) is False
     assert path.read_text() == "{not json"
     assert project_status.mark_final(tmp_path / "missing.json") is False
+
+
+def test_a_render_started_while_the_route_awaited_is_a_409_not_a_second_render(tmp_path, monkeypatch):
+    project_dir, kicked = _project(tmp_path, monkeypatch, status="draft")
+    real = projects_mod.mark_final_for_render
+
+    async def _mark_then_someone_starts(*a, **k):
+        out = await real(*a, **k)
+        projects_mod._active_renders.add(PID)  # a carousel's save to final, or a second POST, took the slot
+        return out
+
+    monkeypatch.setattr(projects_mod, "mark_final_for_render", _mark_then_someone_starts)
+    with pytest.raises(projects_mod.HTTPException) as err:
+        asyncio.run(render_project(PID, _Request(), project_dir=project_dir))
+    assert err.value.status_code == 409
+    assert "status_at_render" not in kicked
+
+
+def test_the_headless_mark_commits_a_version_like_serve(tmp_path):
+    import subprocess
+    path = tmp_path / "project.json"
+    path.write_text(json.dumps({"id": "p", "status": "draft", "runCount": 2}))
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+           "PATH": __import__("os").environ["PATH"], "HOME": str(tmp_path)}
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, env=env)
+    subprocess.run(["git", "add", "project.json"], cwd=tmp_path, check=True, env=env)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp_path, check=True, env=env)
+    assert project_status.mark_final(path) is True
+    log = subprocess.run(["git", "log", "--format=%s"], cwd=tmp_path, capture_output=True, text=True, env=env).stdout
+    assert "version: run 2 — final" in log.splitlines()[0]
+    assert project_status.mark_final(path) is False, "already final: nothing written, nothing committed"
