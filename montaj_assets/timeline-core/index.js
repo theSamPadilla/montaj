@@ -78,6 +78,12 @@ export * from './src/layering.js'
 // encoder's `blend` expression — see the src/transitions.js header.
 export * from './src/transitions.js'
 
+// §616 — compositing: an item's mask (maskAt, the shared maskPolygon, the
+// render's rasterizeMask and the preview's maskSvg, all off one polygon) and
+// its blend mode (blendModeOf, cssBlendMode, isPlainComposite). See the
+// src/mask.js header.
+export * from './src/mask.js'
+
 /**
  * Version salt for resolver-derived caches. sample-frame.js mixes this into its
  * cache key so a change in resolver semantics invalidates stale cached frames
@@ -97,4 +103,7 @@ export * from './src/transitions.js'
 // sourceCrop and resolves such an image's fit as 'cover' (PV55).
 // '6': geometryAt also samples a VIDEO's crop keyframes into sourceCrop (PV55 phase 2);
 // its fit stays 'contain'.
-export const RESOLVER_VERSION = '6'
+// '7': video and image items take a mask (ellipse, rect, wipe; feathered,
+// inverted, keyframed), a blend mode and keyframed opacity (§616). A frame
+// sample_frame cached before draws such an item unmasked and unblended.
+export const RESOLVER_VERSION = '7'

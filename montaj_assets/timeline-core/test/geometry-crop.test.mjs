@@ -78,6 +78,6 @@ describe('PV55: crop keyframes in geometryAt', () => {
   })
 
   test('RESOLVER_VERSION was bumped: geometry output changed for the same input', () => {
-    assert.equal(RESOLVER_VERSION, '6')
+    assert.equal(RESOLVER_VERSION, '7')
   })
 })

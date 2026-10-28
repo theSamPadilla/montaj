@@ -541,8 +541,8 @@ export declare function geometryFor(item: GeometryItem, kind: ItemKind): Geometr
  * An item with no `keyframes` is handed to {@link geometryFor} ITSELF — the
  * same function, not a copy of its body — so the static path is identical BY
  * CONSTRUCTION and a keyframe-free project keeps producing a byte-identical
- * ffmpeg filter graph. Only the eleven {@link KeyframeProp} values can be
- * animated. The four crop props are folded into ONE `sourceCrop` for images
+ * ffmpeg filter graph. Only the eleven transform and crop {@link KeyframeProp}
+ * values move geometry (the mask props are {@link maskAt}'s). The four crop props are folded into ONE `sourceCrop` for images
  * and video (PV55); such an image resolves `fit: 'cover'` (a video keeps
  * 'contain'); otherwise
  * `fit`/`sourceCrop`/`sourceWidth`/`sourceHeight` are forwarded exactly as the
@@ -914,9 +914,10 @@ export type EasingName = 'linear' | 'ease' | 'ease-in' | 'ease-out' | 'ease-in-o
 
 /**
  * The item properties that can be keyframed: the seven transform props
- * {@link geometryFor} already understands, plus the four crop props that
- * {@link geometryAt} folds into `sourceCrop` (PV55). A track naming anything
- * else is simply never consulted.
+ * {@link geometryFor} already understands, the four crop props that
+ * {@link geometryAt} folds into `sourceCrop` (PV55), and the six mask props
+ * that {@link maskAt} folds into the item's `mask` (§616). A track naming
+ * anything else is simply never consulted.
  *
  * `scale` is the legacy UNIFORM knob and `scaleX`/`scaleY` are its per-axis
  * siblings; an item with no per-axis track follows the `scale` track on both
@@ -934,6 +935,12 @@ export type KeyframeProp =
   | 'cropY'
   | 'cropW'
   | 'cropH'
+  | 'maskX'
+  | 'maskY'
+  | 'maskW'
+  | 'maskH'
+  | 'maskRotation'
+  | 'maskFeather'
 
 /** One keyframe. */
 export interface Keyframe {
@@ -1187,3 +1194,115 @@ export declare function fadeShape(
   pair: TransitionPair | null | undefined,
   p: number,
 ): { from: number; to: number }
+
+// ---------------------------------------------------------------------------
+// §616 — compositing: masks and blend modes (src/mask.js)
+//
+// Conventions: the BOX is the clip's own box before rotation, in pixels (an
+// image's fitted box, a video's padded box); mask fractions and the feather are
+// relative to it. Y is down; rotation is degrees clockwise about the mask's
+// (x, y). A wipe shows the side where `(px - x)·cos θ + (py - y)·sin θ <= 0`,
+// the left side at rotation 0.
+// ---------------------------------------------------------------------------
+
+/** A mask's shape. */
+export type MaskShape = 'ellipse' | 'rect' | 'wipe'
+
+/** A clip's blend mode. Absent (or unknown) is `'normal'`. */
+export type BlendMode = 'normal' | 'screen' | 'multiply' | 'add' | 'lighten' | 'darken' | 'overlay'
+
+/** A mask as stored on a `video` or `image` item. Every field but `shape` is optional. */
+export interface ItemMask {
+  shape: MaskShape
+  /** Centre (ellipse, rect) or a point on the edge (wipe), fraction of box width. Default 0.5. */
+  x?: number
+  /** The same, fraction of box height. Default 0.5. */
+  y?: number
+  /** Ellipse diameter / rect side, fraction of box width, > 0. Default 0.5. A wipe ignores it. */
+  w?: number
+  /** The same, fraction of box height. Default 0.5. */
+  h?: number
+  /** Degrees clockwise about (x, y). Default 0. */
+  rotation?: number
+  /** Rect only: corner radius, fraction of half the rect's shorter side, 0-1. Default 0. */
+  radius?: number
+  /** Gaussian sigma, fraction of the box's shorter side, 0-0.5. Default 0. */
+  feather?: number
+  /** Default false. */
+  invert?: boolean
+}
+
+/** The fields of an item the compositing functions read. */
+export interface CompositeItem {
+  mask?: ItemMask | null
+  blendMode?: string | null
+  opacity?: number | null
+  keyframes?: KeyframeTrack[] | null
+}
+
+/** The mask shapes, in picker order. */
+export declare const MASK_SHAPES: ReadonlyArray<MaskShape>
+/** The blend modes, in picker order. */
+export declare const BLEND_MODES: ReadonlyArray<BlendMode>
+/** The keyframeable mask props. Each overrides one field of `mask`. */
+export declare const MASK_KEYFRAME_PROPS: ReadonlyArray<'maskX' | 'maskY' | 'maskW' | 'maskH' | 'maskRotation' | 'maskFeather'>
+/** The `mask` field each mask keyframe prop drives. */
+export declare const MASK_FIELD_OF: Readonly<{
+  maskX: 'x'; maskY: 'y'; maskW: 'w'; maskH: 'h'; maskRotation: 'rotation'; maskFeather: 'feather'
+}>
+
+/**
+ * The item's mask at item-relative `localT`, every field resolved, or null when
+ * the item has no `mask` object or its `shape` is unknown. Defaults, then the
+ * stored finite fields, then each mask track that samples to a finite number.
+ * Clamped: `w`, `h` >= 1e-4; `radius` to [0, 1]; `feather` to [0, 0.5].
+ */
+export declare function maskAt(item: CompositeItem | null | undefined, localT: number): Required<ItemMask> | null
+
+/** True when the item has a valid mask and a mask keyframe track with at least one point. */
+export declare function hasMaskKeyframes(item: CompositeItem | null | undefined): boolean
+
+/** The feather's Gaussian sigma in box pixels: `feather` x the box's shorter side. */
+export declare function maskSigmaPx(mask: Required<ItemMask>, boxW: number, boxH: number): number
+
+/**
+ * The hard mask outline as a convex polygon in box pixels, y down, clockwise:
+ * 256 points for an ellipse; 4 corners for a rect (16 arc points per corner
+ * when rounded); for a wipe, the visible half-plane clipped to a square of half
+ * side `4·max(boxW, boxH)` around the box centre. The ONE outline both
+ * {@link rasterizeMask} and {@link maskSvg} draw.
+ */
+export declare function maskPolygon(mask: Required<ItemMask>, boxW: number, boxH: number): Array<[number, number]>
+
+/**
+ * The hard mask as an 8-bit alpha plane, `(w + 2·margin) x (h + 2·margin)`,
+ * row-major, the box at (margin, margin). `margin` defaults to
+ * `ceil(3·`{@link maskSigmaPx}`)`. Coverage x 255, anti-aliased (4 sub-rows,
+ * exact horizontal coverage); inverted, `255 - v`. The feather is the caller's
+ * blur.
+ */
+export declare function rasterizeMask(
+  mask: Required<ItemMask>,
+  w: number,
+  h: number,
+  options?: { margin?: number },
+): { data: Uint8Array; width: number; height: number; margin: number }
+
+/**
+ * The mask as a one-line SVG over the box (white shows, black hides), filling
+ * {@link maskPolygon}'s outline, blurred by `feGaussianBlur` at
+ * {@link maskSigmaPx} when feathered. Numbers print to at most 2 decimals.
+ */
+export declare function maskSvg(mask: Required<ItemMask>, boxW: number, boxH: number): string
+
+/** The item's `blendMode` when it is one of {@link BLEND_MODES}, else `'normal'`. */
+export declare function blendModeOf(item: CompositeItem | null | undefined): BlendMode
+
+/** The CSS `mix-blend-mode` for a blend mode: `add` is `'plus-lighter'`, every other mode its own name. */
+export declare function cssBlendMode(mode: BlendMode): string
+
+/**
+ * True when the item composites as a plain layer: no valid mask, blend mode
+ * `normal`, and full opacity for its whole life ({@link fullOpacitySpans}).
+ */
+export declare function isPlainComposite(item: CompositeItem | null | undefined): boolean
