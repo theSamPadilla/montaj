@@ -132,10 +132,18 @@ const KEYFRAME_LABELS = {
   cropY: 'moving crop',
   cropW: 'moving crop',
   cropH: 'moving crop',
+  maskX: 'moving mask',
+  maskY: 'moving mask',
+  maskW: 'moving mask',
+  maskH: 'moving mask',
+  maskRotation: 'moving mask',
+  maskFeather: 'moving mask',
 }
 
 const LABELS = {
   loop: 'Stays in Montaj: loop',
+  mask: 'Stays in Montaj: mask',
+  blendMode: 'Stays in Montaj: blend mode',
   remove_bg: 'Stays in Montaj: background removal',
   'remove_bg:nobg_src': 'Cutout linked, background removed',
   motionBlur: 'Stays in Montaj: motion blur',

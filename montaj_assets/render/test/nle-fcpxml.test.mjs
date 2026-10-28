@@ -18,8 +18,7 @@ const VIDEO = { exists: true, hasVideo: true, hasAudio: true, width: 1920, heigh
 const IMAGE = { ...VIDEO, hasAudio: false, width: 1000, height: 800, durationSeconds: null }
 const AUDIO = { ...VIDEO, hasVideo: false, width: null, height: null, durationSeconds: 120 }
 
-function make(name) {
-  const project = JSON.parse(readFileSync(join(FIXTURES, `${name}.json`), 'utf8'))
+function make(name, project = JSON.parse(readFileSync(join(FIXTURES, `${name}.json`), 'utf8'))) {
   const tl = buildNleTimeline(project, { projectDir: PROJECT_DIR })
   const probes = {}
   for (const [p, s] of Object.entries(tl.sources)) probes[p] = s.kind === 'image' ? IMAGE : s.kind === 'audio' ? AUDIO : VIDEO
@@ -76,6 +75,23 @@ describe('fcpxml', () => {
   test('captions movie rides the top lane', () => {
     const { out } = make('captions')
     assert.match(out.xml, /name="Captions"/)
+  })
+})
+
+describe('fcpxml: composite settings left out', () => {
+  test('a mask, a blend mode and an opacity curve warn once for the clip', () => {
+    const { out } = make('cm', {
+  id: 'cm', status: 'final', settings: { resolution: [1920, 1080], fps: 30 },
+  tracks: [{ id: 'trk-0', items: [
+    { id: 'm', type: 'video', src: '/abs/m.mp4', start: 0, end: 2, inPoint: 0, outPoint: 2,
+      mask: { shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5 }, blendMode: 'screen',
+      keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 1, value: 1 }] }] },
+  ] }],
+})
+    const w = out.warnings.filter((x) => /its mask, blend mode or opacity animation is not in the timeline/.test(x))
+    assert.equal(w.length, 1, out.warnings.join(' | '))
+    assert.match(w[0], /^m:/)
+    assert.ok(out.leftOut.some((l) => l.clip === 'm' && l.label === 'Stays in Montaj: mask'))
   })
 })
 

@@ -678,11 +678,28 @@ describe('markers', () => {
     const marks = (c) => kids(c, 'marker').map((m) => [txt(m, 'name'), txt(m, 'comment'), int(m, 'in'), int(m, 'out')])
     assert.deepEqual(marks(footage[0]), [
       ['Stays in Montaj: moving position', 'keyframes:offsetX', 0, -1],
+      ['Stays in Montaj: fade', 'keyframes:opacity', 0, -1],
       ['Stays in Montaj: moving crop', 'keyframes:cropX', 0, -1],
       ['Stays in Montaj: loop', 'loop', 0, -1],
     ])
     assert.deepEqual(marks(footage[1]), [['Cutout linked, background removed', 'remove_bg:nobg_src', 0, -1]])
     assert.deepEqual(marks(footage[2]), [['Stays in Montaj: background removal', 'remove_bg', 0, -1]])
+  })
+
+  test('a mask and a blend mode are markers on their clip', () => {
+    const { xml } = write('cm', {
+  id: 'cm', status: 'final', settings: { resolution: [1920, 1080], fps: 30 },
+  tracks: [{ id: 'trk-0', items: [
+    { id: 'm', type: 'video', src: '/abs/m.mp4', start: 0, end: 2, inPoint: 0, outPoint: 2,
+      mask: { shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5 }, blendMode: 'screen',
+      keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 1, value: 1 }] }] },
+  ] }],
+})
+    const c = clipitems(videoTracks(xml)[0])[0]
+    const names = kids(c, 'marker').map((m) => txt(m, 'name'))
+    assert.ok(names.includes('Stays in Montaj: mask'), names.join(' | '))
+    assert.ok(names.includes('Stays in Montaj: blend mode'), names.join(' | '))
+    assert.ok(names.includes('Stays in Montaj: fade'), names.join(' | '))
   })
 
   test('labels: plain words, no em dashes, one per family', () => {
@@ -691,6 +708,10 @@ describe('markers', () => {
       'ducking', 'nonUniformScale', 'fadeInCurve:exp', 'fadeOutCurve:log', 'something']
     for (const k of keys) assert.doesNotMatch(markerLabel(k), /\u2014|\u2013/)
     assert.equal(markerLabel('keyframes:scale'), 'Stays in Montaj: moving zoom')
+    assert.equal(markerLabel('keyframes:maskW'), 'Stays in Montaj: moving mask')
+    assert.equal(markerLabel('keyframes:maskFeather'), 'Stays in Montaj: moving mask')
+    assert.equal(markerLabel('mask'), 'Stays in Montaj: mask')
+    assert.equal(markerLabel('blendMode:screen'), 'Stays in Montaj: blend mode')
     assert.equal(markerLabel('keyframes:offsetY'), markerLabel('keyframes:offsetX'))
     assert.equal(markerLabel('keyframes:blur'), 'Stays in Montaj: blur animation')
     assert.equal(markerLabel('fadeOutCurve:log'), 'Stays in Montaj: fade out shape')

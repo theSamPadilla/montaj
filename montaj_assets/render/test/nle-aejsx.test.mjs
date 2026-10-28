@@ -337,6 +337,21 @@ describe('aejsx: the script', () => {
     assert.ok(checked >= 3, 'the fixtures leave something out')
   })
 
+  test('a mask, a blend mode and an opacity curve warn once for the clip', () => {
+    const { out } = make('cm', {
+  id: 'cm', status: 'final', settings: { resolution: [1920, 1080], fps: 30 },
+  tracks: [{ id: 'trk-0', items: [
+    { id: 'm', type: 'video', src: '/abs/m.mp4', start: 0, end: 2, inPoint: 0, outPoint: 2,
+      mask: { shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5 }, blendMode: 'screen',
+      keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 1, value: 1 }] }] },
+  ] }],
+})
+    const w = out.warnings.filter((x) => /its mask, blend mode or opacity animation is not in the timeline/.test(x))
+    assert.equal(w.length, 1, out.warnings.join(' | '))
+    assert.match(w[0], /^m:/)
+    assert.ok(out.leftOut.some((l) => l.clip === 'm' && l.label === 'Stays in Montaj: blend mode'))
+  })
+
   test('two left-out features on one clip share one marker', () => {
     const { out } = make('two-marks', oneTrack([clip('a', { loop: true, remove_bg: true })]))
     const log = runMock(out.jsx)

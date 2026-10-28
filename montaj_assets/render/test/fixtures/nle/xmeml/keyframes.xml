@@ -124,6 +124,12 @@
               <out>-1</out>
             </marker>
             <marker>
+              <comment>keyframes:opacity</comment>
+              <name>Stays in Montaj: fade</name>
+              <in>0</in>
+              <out>-1</out>
+            </marker>
+            <marker>
               <comment>keyframes:cropX</comment>
               <name>Stays in Montaj: moving crop</name>
               <in>0</in>

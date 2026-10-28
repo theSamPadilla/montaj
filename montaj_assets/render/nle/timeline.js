@@ -96,11 +96,13 @@
  *
  * What a clip loses in the editor is listed in its `unsupported`, so the writer
  * can put a marker on it naming each one; what the whole edit loses is in
- * `warnings`. Only what the RENDER honours is listed: a clip's `opacity` curve
- * is ignored by the render itself (the static value ships), so it is not.
+ * `warnings`. Only what the RENDER honours is listed.
  *
  *   'keyframes:<prop>'   a keyframed property; the clip carries its static value.
- *                        Graphics list every animated prop, opacity included.
+ *                        Opacity and the mask props (maskX..maskFeather) are
+ *                        listed on every clip.
+ *   'mask'               a clip's mask (non-graphic clips).
+ *   'blendMode:<mode>'   a blend mode other than normal (non-graphic clips).
  *   'loop'               a looping video (the editor preview loops it).
  *   'remove_bg'          background removal with no cutout file yet: the
  *                        original, background and all, is linked.
@@ -124,6 +126,8 @@ import {
   imageFitFor,
   isFullFrameCrop,
   opaqueReplacesPicture,
+  maskAt,
+  blendModeOf,
 } from '@bycrux/timeline-core'
 import { enabledTracks, withEnabledItemTracks, effectiveItemAudio } from '../project-tracks.js'
 import { resolveProjectSrc } from '../project-paths.js'
@@ -664,11 +668,13 @@ function unsupportedOf(entry, motionBlur) {
   const out = []
   for (const track of Array.isArray(item.keyframes) ? item.keyframes : []) {
     if (!track || !Array.isArray(track.points) || track.points.length === 0) continue
-    // A clip's opacity curve is ignored by the render (docs/schemas/project.md,
-    // "opacity is the exception"): the static value ships, and the editor gets it.
-    if (kind !== 'graphic' && track.prop === 'opacity') continue
     const mark = `keyframes:${track.prop}`
     if (!out.includes(mark)) out.push(mark)
+  }
+  if (kind !== 'graphic') {
+    if (maskAt(item, 0)) out.push('mask')
+    const blend = blendModeOf(item)
+    if (blend !== 'normal') out.push(`blendMode:${blend}`)
   }
   if (kind === 'video' && item.loop) out.push('loop')
   if (kind === 'video' && item.remove_bg) {

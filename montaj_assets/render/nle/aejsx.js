@@ -95,6 +95,8 @@ export function writeAeScript(timeline, probes, options) {
         if (key.startsWith('keyframes:') || key === 'motionBlur') continue
         marks.push(noteLeft(clip.id, key))
       }
+        const composite = clip.kind !== 'graphic' && clip.unsupported.some((k) => k === 'mask' || k === 'keyframes:opacity' || k.startsWith('keyframes:mask') || k.startsWith('blendMode:'))
+        if (composite) warnings.push(`${clip.id}: its mask, blend mode or opacity animation is not in the timeline`)
       const base = { id: clip.id, start: toS(clip.startFrame), end: toS(clip.endFrame), marks }
       if (clip.kind === 'graphic') {
         const movie = graphics[clip.id]
