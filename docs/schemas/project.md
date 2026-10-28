@@ -290,10 +290,12 @@ All timed graphical elements live in `tracks[1+]`'s `items` arrays. Each track i
 | `offsetY` | number | all | Vertical offset as % of frame height |
 | `scale` | number | all | Size multiplier from center |
 | `rotation` | number | all | Clockwise rotation in degrees. Optional; default 0. Any finite number — values outside [0,360) are normalized at render. |
-| `opacity` | number | all | Opacity 0.0–1.0 (default 1.0). Applied at compose time. An overlapping OVERLAY pair may carry editor-derived `opacity` *keyframes* that dissolve between the two — see [Transitions](#transitions) below. |
+| `opacity` | number | all | Opacity 0.0–1.0 (default 1.0). Applied at compose time. On an `image` or `video` item it can be keyframed (prop `opacity`) and is sampled per frame at render — see "Clip opacity" below. An overlapping OVERLAY pair may carry editor-derived `opacity` *keyframes* that dissolve between the two — see [Transitions](#transitions) below. |
 | `fit` | string | image | `cover` (default), `contain` or `fill`: how the image, or its `sourceCrop`, fills its box. An image whose crop is keyframed always covers. |
 | `sourceCrop` | object | image, video | `{x, y, w, h}`, fractions in `[0, 1]` of the source as DISPLAYED (EXIF or rotation applied). An image is cropped before its `fit` and needs no stored size; a video needs `sourceWidth`/`sourceHeight` (see the tracks[0] table). Both can be keyframed (`cropX`/`cropY`/`cropW`/`cropH`): see "Crop keyframes". |
-| `keyframes` | array | all | Animate `offsetX`/`offsetY`/`scale`/`scaleX`/`scaleY`/`rotation` over the item's own lifetime (overlays also `opacity`). An image or a video also takes `cropX`/`cropY`/`cropW`/`cropH`, its source crop: see "Crop keyframes". |
+| `keyframes` | array | all | Animate `offsetX`/`offsetY`/`scale`/`scaleX`/`scaleY`/`rotation`/`opacity` over the item's own lifetime. An image or a video also takes the mask props `maskX`/`maskY`/`maskW`/`maskH`/`maskRotation`/`maskFeather` (each overrides the matching `mask` field; they do nothing without a `mask`). An image or a video also takes `cropX`/`cropY`/`cropW`/`cropH`, its source crop: see "Crop keyframes". |
+| `mask` | object | image, video | Optional shape that hides part of the clip: `{shape, x, y, w, h, rotation, radius, feather, invert}`. `shape` is required: `ellipse`, `rect` or `wipe`. `x`,`y` (default 0.5) are the centre, or for a wipe a point on the edge; `w`,`h` (default 0.5, > 0) are the diameters or sides; `rotation` is degrees clockwise (default 0); `radius` rounds a rect, 0-1 of half its shorter side; `feather` is a Gaussian sigma, 0-0.5 of the box's shorter side; `invert` swaps inside and outside. All fractions of the clip's own box before rotation (the image's fitted box, the video's padded box). A wipe shows the side where `(px-x)*cos(r)+(py-y)*sin(r) <= 0`, so the left at rotation 0. Overlays refuse it. |
+| `blendMode` | string | image, video | Optional: `normal`, `screen`, `multiply`, `add`, `lighten`, `darken`, `overlay`; absent is `normal`. Blends the clip with what is beneath it; pixels outside the clip are untouched. Overlays refuse it. |
 | `props` | object | overlay | Arbitrary props passed to the JSX component |
 | `opaque` | boolean | overlay | When `true`, render engine skips alpha — JSX controls full frame. Only over the whole canvas (scale 1, no offset or rotation, no keyframes other than `opacity`); a scaled or moved opaque overlay leaves the footage drawn |
 | `googleFonts` | array | overlay | Google Font names to load before rendering |
@@ -336,50 +338,33 @@ reading its static field exactly as before; a track is only consulted for the
 props it names. Before an animated property's first keyframe or after its
 last, the value clamps to that endpoint rather than extrapolating.
 
-**Which kinds animate, and which property does not.** `overlay`, `image` and
+**Which kinds animate.** `overlay`, `image` and
 `video` items all animate `offsetX`, `offsetY`, `scale`/`scaleX`/`scaleY` and
-`rotation`, in the editor preview and in the rendered export alike. Overlays get
+`rotation`, in the editor preview and in the rendered export alike (clips also animate `opacity`, below). Overlays get
 that from the per-frame Puppeteer capture they already went through; clips get it
 from the renderer compiling each curve into a time-varying ffmpeg filter
 expression (`render/encode-segment.js`, `animatedGeometry`).
 
-**`opacity` is the exception: it animates on overlays and NOWHERE on a clip.**
-That is a hard limit of ffmpeg, not a scope decision. Alpha is applied through
-`colorchannelmixer`, whose `aa` option is declared `<double>` — it takes a
-literal number and accepts no expression at any evaluation mode. (The `T` flag
-ffmpeg prints beside it is `AV_OPT_FLAG_RUNTIME_PARAM`, i.e. settable via
-`sendcmd`/`zmq`; it is not expression support, and it has been misread as such.)
-So there is no way to fade a clip through the ffmpeg path at all. An `opacity`
-track on an `image` or `video` item is therefore IGNORED everywhere:
+**Clip opacity.** An `opacity` track on an `image` or `video` item animates in the
+render and in the editor preview. ffmpeg's `colorchannelmixer` takes no expression
+for `aa`, so the renderer samples the curve per frame (`render/item-opacity.js`) and
+feeds the values to the filter with `sendcmd`. The editor writes the track like any
+other, and the Export dialog's still frame samples it too.
 
-- the render composites the static `opacity` scalar;
-- the editor preview shows that same static value, deliberately, so it never
-  promises a fade the export cannot produce;
-- the editor will not write such a track in the first place — `canKeyframeProp`
-  excludes it, the inspector's opacity keyframe control is visibly disabled with
-  a reason, and double-click-to-key skips it;
-- the Export dialog's still-frame preview reads the static scalar too.
+**[Transitions](#transitions) below are separate.** A crossfade between two
+overlapping clips is not an `opacity` keyframe track: it is a structural blend,
+computed from the pair's overlap span and never written as data.
 
-**[Transitions](#transitions) below do not reopen this.** A crossfade between
-two overlapping clips is not an `opacity` keyframe track at all — it is a
-structural blend, computed from the pair's overlap span and applied directly
-by the renderer and the editor's preview engine, never written as data and
-never sampled by `geometryAt`. A clip's own `opacity` field and any `opacity`
-curve remain exactly as ignored as everything above describes; a transition is
-not a curve.
+### Masks and blend modes
 
-That last point closes a divergence this document used to describe. `resolveItem`
-(`timeline-core/src/activation.js`) calls `geometryAt` for every item kind, so a
-clip's sampled geometry has always been available to `render/sample-frame.js` —
-which is now correct for position/scale/rotation, because the export animates
-those. For `opacity` it would have been wrong, so the sampler explicitly reads
-`item.opacity` rather than the sampled value. The still frame's job is to show
-what the export will look like, so it agrees with the export on every property.
+`mask` and `blendMode` (field table above) apply to `image` and `video` items. The
+mask geometry is shared (`timeline-core/src/mask.js`): the renderer rasterizes the
+same polygon the editor preview draws. A mask track (`maskX` and the rest) overrides
+the matching `mask` field per frame. Save names the bad field when a value is out of
+range, and refuses `mask` and `blendMode` on an overlay.
 
-Closing the opacity gap for real would need the per-frame browser bake extended
-to video: decode every frame of the animated span and composite it the way
-overlays already are. That was measured at 14–33× the expression path's render
-time and is out of scope; see `docs/RENDER.md`.
+**NLE exports carry less.** The FCPXML, XMEML and After Effects exports read the
+static `opacity` only: opacity keyframes, masks and blend modes are dropped.
 
 ### Crop keyframes
 
@@ -466,11 +451,8 @@ between any two.
   derives the blend purely from each pair's overlap span, and both the render
   and the editor's own preview engine read that same factor to composite the
   two frames. No `opacity` field, static or keyframed, is involved at any
-  point. This is a hard requirement, not a design choice: ffmpeg applies a
-  clip's alpha through `colorchannelmixer=aa=`, whose `aa` option is a literal
-  `<double>` with no expression support at any evaluation mode, so a clip's
-  alpha cannot vary over time through the render's filter graph — see
-  "`opacity` is the exception" above.
+  point. (A clip's own `opacity` track is separate and does animate: see
+  "Clip opacity" above.)
 - **An overlay pair (`tracks[1+]`, `type: "overlay"` items) gets real,
   editable `opacity` keyframes.** The editor writes complementary keyframe
   tracks across the overlap — the outgoing item fading `1 → 0`, the incoming
