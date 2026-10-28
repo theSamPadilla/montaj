@@ -277,3 +277,15 @@ export function maskHandles(m: ResolvedMask, boxW: number, boxH: number): MaskHa
 export function pointsAttr(pts: ReadonlyArray<readonly [number, number]>): string {
   return pts.map(([x, y]) => `${x},${y}`).join(' ')
 }
+
+/**
+ * Whether a rect or ellipse mask takes in the whole box, give or take `slackPx`
+ * at the corners (a rounded rect's corners sit a little inside the box's). Then
+ * its fill is no move area: the centre belongs to the clip.
+ */
+export function coversBox(m: ResolvedMask, boxW: number, boxH: number, slackPx = 16): boolean {
+  if (m.shape === 'wipe') return false
+  return ([[0, 0], [boxW, 0], [boxW, boxH], [0, boxH]] as const).every(
+    ([x, y]) => insideDistance(m, { x, y }, boxW, boxH) >= -slackPx,
+  )
+}

@@ -31,6 +31,7 @@ import { useEffect, useRef, type CSSProperties } from 'react'
 import { maskPolygon } from '@bycrux/timeline-core'
 import type { OverlayCommitOptions } from './useDragOverlay'
 import {
+  coversBox,
   featherRings,
   maskCentre,
   maskGestureChanges,
@@ -50,6 +51,11 @@ import {
 // only in the cascade.
 const SELECTION = 'var(--editor-selection)'
 const HANDLE_PX = 12
+/** The clip's own handles sit at z 50; a mask handle on one of them goes under it. */
+const Z_HANDLE = 60
+const Z_UNDER_CLIP_HANDLE = 45
+/** The grab band along an outline whose fill is not a move area, px. */
+const OUTLINE_GRAB_PX = 16
 
 /** The crop handle's face: a white square with a selection-coloured border. */
 const SQUARE_FACE: CSSProperties = {
@@ -183,6 +189,19 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
     : null
   const rings = featherRings(mask, boxW, boxH)
   const handles = maskHandles(mask, boxW, boxH)
+  // A mask over the whole box would take the clip's move with its fill: only
+  // its outline moves it then.
+  const covers = coversBox(mask, boxW, boxH)
+  // The clip's own handles, in box pixels (OverlayItemsLayer's ResizeHandle
+  // anchors, and the rotate handle's face above the top edge).
+  const clipHandles: Array<[number, number]> = [
+    [0, 0], [boxW / 2, 0], [boxW, 0], [0, boxH / 2], [boxW, boxH / 2], [0, boxH], [boxW / 2, boxH], [boxW, boxH],
+    [boxW / 2, -(HANDLE_PX * 1.5) / scaleY],
+  ]
+  const zFor = (at: [number, number]) =>
+    clipHandles.some(([x, y]) => Math.hypot((at[0] - x) * scaleX, (at[1] - y) * scaleY) < HANDLE_PX)
+      ? Z_UNDER_CLIP_HANDLE
+      : Z_HANDLE
 
   // A handle centred on box point `at`. `left`/`top` are % of the box; the
   // origin is pinned there, and `scale` is outside `translate` so the parent's
@@ -198,6 +217,7 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
     transformOrigin: '0 0',
     transform: `scale(${1 / scaleX}, ${1 / scaleY}) rotate(${mask.rotation}deg) translate(-50%, -50%)`,
     cursor,
+    zIndex: zFor(at),
     pointerEvents: 'auto',
     touchAction: 'none',
   })
@@ -234,8 +254,11 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
               points={pointsAttr(outline!)}
               role="button"
               aria-label="Move mask"
-              fill="transparent"
-              style={{ pointerEvents: 'fill', cursor: 'move', touchAction: 'none' }}
+              fill={covers ? 'none' : 'transparent'}
+              stroke={covers ? 'transparent' : undefined}
+              strokeWidth={covers ? OUTLINE_GRAB_PX : undefined}
+              vectorEffect={covers ? 'non-scaling-stroke' : undefined}
+              style={{ pointerEvents: covers ? 'stroke' : 'fill', cursor: 'move', touchAction: 'none' }}
               {...press('move')}
             />
           ))}
@@ -254,8 +277,10 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
           )}
         </svg>
       </div>
-      {/* The handles: above the clip's own, so the mask's win where they meet. */}
-      <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 60 }}>
+      {/* The handles: above the clip's own, so the mask's win where they meet,
+          except a handle sitting on one of the clip's (see `zFor`). No z-index
+          here, so each handle's own takes part in the clip's stacking. */}
+      <div className="absolute inset-0 pointer-events-none">
         {handles.resize.map(({ handle, at }) => (
           <button
             key={handle}

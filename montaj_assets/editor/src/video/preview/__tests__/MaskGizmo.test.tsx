@@ -345,3 +345,40 @@ describe('mask gizmo: a wipe', () => {
     expect(commits[0][1].maskX).toBeCloseTo(0.6)
   })
 })
+
+describe('mask gizmo: a mask covering the whole box', () => {
+  const full = clip({ mask: { shape: 'rect', x: 0.5, y: 0.5, w: 1, h: 1, radius: 0.1 } })
+
+  it('moves the mask by a stroke band only, so the centre still moves the clip', () => {
+    render(<Host initial={full} />)
+    const move = screen.getByLabelText('Move mask')
+    expect(move.getAttribute('fill')).toBe('none')
+    expect(move.style.pointerEvents).toBe('stroke')
+    expect(move.getAttribute('stroke-width')).toBe('16')
+  })
+
+  it('a mask that stays inside the box keeps its filled move area', () => {
+    render(<Host initial={clip()} />)
+    expect(screen.getByLabelText('Move mask').style.pointerEvents).toBe('fill')
+  })
+
+  it('the mask squares on the clip\'s own handles sit under them (z 45), the others above (z 60)', () => {
+    const first = render(<Host initial={full} />)
+    const z = (h: string) => (screen.getAllByLabelText('Resize mask').find(b => b.getAttribute('data-mask-handle') === h) as HTMLElement).style.zIndex
+    expect(z('se')).toBe('45')
+    expect(z('n')).toBe('45')
+    expect(z('nw')).toBe('45')
+    first.unmount()
+    // A mask inside the box clears the clip's handles.
+    render(<Host initial={clip()} />)
+    const inner = screen.getAllByLabelText('Resize mask').filter(b => (b as HTMLElement).style.zIndex === '60')
+    expect(inner).toHaveLength(8)
+  })
+
+  it('the clip\'s se handle is reachable: it sits at z 50 over the mask square', () => {
+    const { container } = render(<Host initial={full} />)
+    const se = container.querySelector('[data-handle="se"]') as HTMLElement
+    expect(se.className).toContain('z-50')
+  })
+})
+
