@@ -178,6 +178,19 @@ export function maskGestureChanges(gesture: MaskGesture, m: ResolvedMask, from: 
 }
 
 /**
+ * The rotate gesture, one step: the pointer's turn about the mask centre from
+ * `prev` to `to`, wrapped to -180..180 and added to `rotation` (the rotation so
+ * far). Called per move with the previous move's point, so a drag past 180
+ * degrees in one gesture keeps turning instead of jumping by 360.
+ */
+export function rotateStep(m: ResolvedMask, rotation: number, prev: Pt, to: Pt, boxW: number, boxH: number): number {
+  const c = maskCentre(m, boxW, boxH)
+  const a0 = Math.atan2(prev.y - c.y, prev.x - c.x)
+  const a1 = Math.atan2(to.y - c.y, to.x - c.x)
+  return rotation + wrapDeg((a1 - a0) / RAD)
+}
+
+/**
  * A wipe's edge line clipped to the box, as its two end points, or null when
  * the line misses the box. The line runs through (x, y) along
  * (-sin θ, cos θ).

@@ -37,6 +37,7 @@ import {
   maskGestureChanges,
   maskHandles,
   pointsAttr,
+  rotateStep,
   wipeLine,
   type MaskChanges,
   type MaskGesture,
@@ -105,7 +106,7 @@ export interface MaskGizmoProps {
 export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onPreview, onCommit, onClick }: MaskGizmoProps) {
   // The press in flight: what is held, the mask when it began, where it began
   // (box pixels), and the last changes it reported.
-  const pressRef = useRef<{ gesture: MaskGesture; start: ResolvedMask; from: Pt; last: MaskChanges | null } | null>(null)
+  const pressRef = useRef<{ gesture: MaskGesture; start: ResolvedMask; from: Pt; last: MaskChanges | null; prev: Pt; rotation: number } | null>(null)
 
   // The latest props, for the window listeners a press attaches (they outlive
   // the render that made them).
@@ -128,6 +129,17 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  /** The changes at pointer point `to`, moving the press on. A turn is summed step by step. */
+  const advance = (p: NonNullable<typeof pressRef.current>, to: Pt): MaskChanges => {
+    const l = live.current
+    if (p.gesture === 'rotate') {
+      p.rotation = rotateStep(p.start, p.rotation, p.prev, to, l.boxW, l.boxH)
+      p.prev = to
+      return { maskRotation: p.rotation }
+    }
+    return maskGestureChanges(p.gesture, p.start, p.from, to, l.boxW, l.boxH)
+  }
+
   /** The pointer handlers for a press on `gesture`'s part. */
   const press = (gesture: MaskGesture) => ({
     onPointerDown: (e: React.PointerEvent<Element>) => {
@@ -137,7 +149,7 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
       if (!from) return
       ;(e.currentTarget as Element).setPointerCapture?.(e.pointerId)
       detachRef.current?.()
-      pressRef.current = { gesture, start: mask, from, last: null }
+      pressRef.current = { gesture, start: mask, from, last: null, prev: from, rotation: mask.rotation }
       // The move, the release and a lost pointer are heard on the window, not
       // the pressed part: a wipe dragged off the box unmounts its line, and
       // the capture with it.
@@ -147,7 +159,7 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
         const l = live.current
         const to = l.toBox({ x: ev.clientX, y: ev.clientY })
         if (!to) return
-        p.last = maskGestureChanges(p.gesture, p.start, p.from, to, l.boxW, l.boxH)
+        p.last = advance(p, to)
         l.onPreview(p.last)
       }
       const up = (ev: PointerEvent) => {
@@ -156,7 +168,7 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
         const l = live.current
         // A press that never moved changes nothing and commits nothing.
         const to = p.last && l.toBox({ x: ev.clientX, y: ev.clientY })
-        const changes = to ? maskGestureChanges(p.gesture, p.start, p.from, to, l.boxW, l.boxH) : p.last
+        const changes = to ? advance(p, to) : p.last
         const click = !p.last && p.gesture === 'move'
         end(changes, ev.altKey)
         if (click) l.onClick?.()
@@ -174,6 +186,8 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
     // The clip's own move listens for mousedown on its wrapper.
     onMouseDown: (e: React.MouseEvent) => e.stopPropagation(),
   })
+  // The canvas handles are out of the tab order: the inspector is the keyboard path.
+  const noTab = { tabIndex: -1 }
 
   const wipe = mask.shape === 'wipe'
   const outline = wipe ? wipeLine(mask, boxW, boxH) : maskPolygon(mask, boxW, boxH)
@@ -287,12 +301,13 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
             type="button"
             aria-label="Resize mask"
             data-mask-handle={handle}
+            {...noTab}
             style={placed(at, SQUARE_FACE, RESIZE_CURSOR[handle])}
             {...press(`resize-${handle}`)}
           />
         ))}
-        <button type="button" aria-label="Rotate mask" data-mask-handle="rotate" style={placed(handles.rotate.at, ROTATE_FACE, 'grab')} {...press('rotate')} />
-        <button type="button" aria-label="Mask feather" data-mask-handle="feather" style={placed(handles.feather.at, FEATHER_FACE, 'ew-resize')} {...press('feather')} />
+        <button type="button" aria-label="Rotate mask" data-mask-handle="rotate" {...noTab} style={placed(handles.rotate.at, ROTATE_FACE, 'grab')} {...press('rotate')} />
+        <button type="button" aria-label="Mask feather" data-mask-handle="feather" {...noTab} style={placed(handles.feather.at, FEATHER_FACE, 'ew-resize')} {...press('feather')} />
       </div>
     </div>
   )

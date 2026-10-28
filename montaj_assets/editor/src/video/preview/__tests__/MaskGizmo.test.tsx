@@ -151,6 +151,13 @@ describe('mask gizmo: when it shows', () => {
     expect(screen.queryByLabelText('Move mask')).toBeNull()
   })
 
+  it('keeps its canvas handles out of the tab order (the inspector is the keyboard path)', () => {
+    const { container } = render(<Host initial={clip()} />)
+    const handles = Array.from(container.querySelectorAll('[data-mask-handle]'))
+    expect(handles).toHaveLength(10)
+    for (const h of handles) expect(h.getAttribute('tabindex')).toBe('-1')
+  })
+
   it('draws no text on the canvas', () => {
     const { container } = render(<Host initial={clip({ mask: { ...MASK, feather: 0.1 } })} />)
     const gizmo = container.querySelector('[data-mask-gizmo]') as HTMLElement
@@ -273,6 +280,19 @@ describe('mask gizmo: gestures', () => {
     // From straight above the centre to straight right of it: +90°.
     drag(screen.getByLabelText('Rotate mask'), { x: 54, y: 40 }, { x: 110, y: 96 })
     expect(latest.mask!.rotation).toBeCloseTo(90)
+  })
+
+  it('a 270 degree drag in three moves turns the mask 270, not -90', () => {
+    render(<Host initial={clip()} />)
+    const rot = screen.getByLabelText('Rotate mask')
+    // Clockwise about the centre (54, 96): up, right, down, left.
+    fireEvent.pointerDown(rot, { clientX: 54, clientY: 40, pointerId: 1, button: 0 })
+    fireEvent.pointerMove(rot, { clientX: 110, clientY: 96, pointerId: 1 })
+    fireEvent.pointerMove(rot, { clientX: 54, clientY: 152, pointerId: 1 })
+    fireEvent.pointerMove(rot, { clientX: -2, clientY: 96, pointerId: 1 })
+    fireEvent.pointerUp(rot, { clientX: -2, clientY: 96, pointerId: 1 })
+    expect(commits).toHaveLength(1)
+    expect(commits[0][1].maskRotation).toBeCloseTo(270)
   })
 
   it('the feather handle sits on the inner ring and sets sigma = d / 2 inward from the edge', () => {
