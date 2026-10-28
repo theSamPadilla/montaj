@@ -1,11 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, existsSync, writeFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, existsSync, writeFileSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { maskAt, maskSvg } from '@bycrux/timeline-core'
-import { planItemMask, writeItemMask } from '../item-mask.js'
+import { planItemMask, writeItemMask, prepareMaskWrite, maskFilterParts } from '../item-mask.js'
 import { encodeSegment } from '../encode-segment.js'
 import { FFMPEG } from '../ffmpeg-bin.js'
 
@@ -266,4 +266,48 @@ test('ffmpeg: mask files are removed after the encode, success or failure', { sk
   // a forced failure after the mask is written (the source vanished): still no mask left behind
   await assert.rejects(encodeSegment(seg(item(join(dir, 'gone.png'), 1, { mask: MASK })), join(dir, 'seg-0002.mp4')))
   assert.deepEqual(readdirSync(dir).filter(f => f.includes('mask-')), [])
+})
+
+// A 10-bit item keeps its 10 bits through the mask multiply: no auto-scaler may
+// drop it to 8-bit before the alpha is put back. Y/U/V are not divisible by 4,
+// so an 8-bit round trip shows.
+test('ffmpeg: a masked 10-bit item keeps its colour planes and gets the mask as alpha, exactly', { skip: !ffOk }, async () => {
+  const W = 64, H = 2
+  const u16 = (vals) => { const b = Buffer.alloc(vals.length * 2); vals.forEach((v, i) => b.writeUInt16LE(v, i * 2)); return b }
+  const plane = (v) => new Array(W * H).fill(v)
+  const itemRaw = u16([...plane(601), ...plane(403), ...plane(702), ...plane(1023)])
+  const ramp = Array.from({ length: W * H }, (_, i) => (i % W) * 16 + 3)
+  const dir = mkdtempSync(join(tmpdir(), 'mask-10bit-'))
+  writeFileSync(join(dir, 'item.raw'), itemRaw)
+  writeFileSync(join(dir, 'mask.raw'), u16(ramp))
+  const graph = [...maskFilterParts('[0:v]', 1, '[o]', { tenBit: true })].join(';')
+  const r = spawnSync(FFMPEG, ['-v', 'error',
+    '-f', 'rawvideo', '-pix_fmt', 'yuva444p10le', '-s', `${W}x${H}`, '-i', join(dir, 'item.raw'),
+    '-f', 'rawvideo', '-pix_fmt', 'gray10le', '-s', `${W}x${H}`, '-i', join(dir, 'mask.raw'),
+    '-filter_complex', graph, '-map', '[o]', '-f', 'rawvideo', '-pix_fmt', 'yuva444p10le', '-frames:v', '1', '-'], { maxBuffer: 1 << 22 })
+  assert.equal(r.status, 0, String(r.stderr))
+  const out = new Uint16Array(r.stdout.buffer.slice(r.stdout.byteOffset, r.stdout.byteOffset + r.stdout.length))
+  assert.equal(out.length, W * H * 4)
+  const n = W * H
+  assert.ok(out.subarray(0, n).every(v => v === 601), 'Y unchanged')
+  assert.ok(out.subarray(n, 2 * n).every(v => v === 403), 'U unchanged')
+  assert.ok(out.subarray(2 * n, 3 * n).every(v => v === 702), 'V unchanged')
+  assert.deepEqual([...out.subarray(3 * n)], ramp, 'alpha equals the mask exactly')
+})
+
+test('write: a long keyframed feather keeps every ffmpeg argument under 32,767 characters', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mask-long-'))
+  const ramp = { mask: { shape: 'wipe', x: 0.5, feather: 0.02 },
+    keyframes: [{ prop: 'maskFeather', points: [{ t: 0, value: 0.02 }, { t: 20, value: 0.3 }] }] }
+  const p = planItemMask(ramp, 400, 300, 0, 20, 60, join(dir, 'm'))
+  assert.equal(p.frames, 1201)
+  const w = prepareMaskWrite(p)
+  try {
+    assert.ok(w.path && existsSync(w.path), 'the graph is written to a script file')
+    assert.ok(readFileSync(w.path, 'utf8').length > 32767, 'the graph itself would not fit on a command line')
+    assert.ok(w.args.every(a => a.length <= 32767), 'no argument is over the Windows limit')
+    assert.ok(w.args.includes('-/filter_complex'))
+    assert.ok(!w.args.includes('-vf'))
+  } finally { w.cleanup() }
+  assert.ok(!existsSync(w.path), 'cleanup removes the script')
 })

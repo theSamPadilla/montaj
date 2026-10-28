@@ -18,10 +18,12 @@
 // the preview's SVG blur is close to exact. A still mask is one PNG, looped; a moving mask is one
 // frame per output frame in a lossless ffv1 file.
 import { spawn } from 'child_process'
+import { dirname } from 'path'
 import { maskAt, hasMaskKeyframes, maskSigmaPx, rasterizeMask } from '@bycrux/timeline-core'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { ffSeconds } from './ff-seconds.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
+import { externalizeFilterGraph } from './filter-script.js'
 
 /**
  * @typedef {Object} ItemMaskPlan
@@ -70,14 +72,17 @@ export function planItemMask(item, boxW, boxH, offset, duration, fps, base) {
 }
 
 /**
- * Write the planned mask file. One ffmpeg is spawned; rasterized planes (box
- * plus a fixed margin) go in on stdin, `gblur` feathers them, the crop returns
- * the box.
+ * The ffmpeg command that writes the planned mask file, and the planes to feed
+ * it. The graph travels as `-filter_complex` and is moved into a script file
+ * ({@link externalizeFilterGraph}): a keyframed feather writes ~31 characters of
+ * `sendcmd` per changing frame, ~111 KB for a minute at 60 fps, over Windows'
+ * 32,767-character command line if it stayed on a `-vf` argument.
  *
  * @param {ItemMaskPlan} plan
- * @returns {Promise<void>}
+ * @returns {{ args: string[], cleanup: () => void, path: string | null,
+ *   margin: number, count: number, W: number, H: number }}
  */
-export function writeItemMask(plan) {
+export function prepareMaskWrite(plan) {
   const { item, boxW, boxH, offset, fps } = plan
   const count = plan.kind === 'still' ? 1 : /** @type {number} */ (plan.frames)
   const sigmas = []
@@ -111,15 +116,31 @@ export function writeItemMask(plan) {
   const args = [
     '-y', '-v', 'error',
     '-f', 'rawvideo', '-pix_fmt', 'gray', '-s', `${W}x${H}`, '-r', String(fps), '-i', '-',
-    '-vf', filter.replace(/^\[0:v\]/, ''), ...out,
+    '-filter_complex', filter + '[o]', '-map', '[o]', ...out,
   ]
+  const script = externalizeFilterGraph(args, dirname(plan.path))
+  return { args: script.args, cleanup: script.cleanup, path: script.path, margin, count, W, H }
+}
+
+/**
+ * Write the planned mask file. One ffmpeg is spawned; rasterized planes (box
+ * plus a fixed margin) go in on stdin, `gblur` feathers them, the crop returns
+ * the box.
+ *
+ * @param {ItemMaskPlan} plan
+ * @returns {Promise<void>}
+ */
+export function writeItemMask(plan) {
+  const { item, boxW, boxH, offset, fps } = plan
+  const { args, cleanup, margin, count } = prepareMaskWrite(plan)
 
   return new Promise((resolve, reject) => {
     const proc = spawn(FFMPEG, args, { stdio: ['pipe', 'ignore', 'pipe'] })
     let stderr = ''
     proc.stderr.on('data', d => { stderr += d; if (stderr.length > 65536) stderr = stderr.slice(-32768) })
-    proc.on('error', reject)
+    proc.on('error', e => { cleanup(); reject(e) })
     proc.on('close', code => {
+      cleanup()
       if (code === 0) resolve()
       else reject(new Error(`item mask write failed (exit ${code})\n${ffmpegErrorTail(stderr)}`))
     })
@@ -151,11 +172,27 @@ export function writeItemMask(plan) {
  */
 export function maskFilterParts(itemLabel, maskInputIdx, outLabel, { tenBit = false } = {}) {
   const n = maskInputIdx
-  return [
+  const head = [
     `${itemLabel}split=2[mc${n}][ma${n}]`,
     `[ma${n}]alphaextract[mal${n}]`,
     `[${n}:v]format=${tenBit ? 'gray10le' : 'gray'},setpts=PTS-STARTPTS[mk${n}]`,
-    `[mal${n}][mk${n}]blend=all_mode=multiply[mam${n}]`,
-    `[mc${n}][mam${n}]alphamerge${outLabel}`,
+  ]
+  if (!tenBit) {
+    return [
+      ...head,
+      `[mal${n}][mk${n}]blend=all_mode=multiply[mam${n}]`,
+      `[mc${n}][mam${n}]alphamerge${outLabel}`,
+    ]
+  }
+  // 10-bit: `alphamerge` puts a gray10le plane on a yuva444p10le stream through
+  // an auto-scaler that drops the whole stream to 8 bits (measured on ffmpeg
+  // 8.1.2). `mergeplanes` takes the colour planes of the item and the alpha
+  // from the product untouched. The product is tagged full range first and the
+  // merged alpha re-tagged tv: converting a gray plane to YUV range would turn
+  // alpha 512 into 502, and this way it reads exact.
+  return [
+    ...head,
+    `[mal${n}][mk${n}]blend=all_mode=multiply,scale=in_range=pc:out_range=pc,format=yuva444p10le,setparams=range=tv[mam${n}]`,
+    `[mc${n}][mam${n}]mergeplanes=map0s=0:map0p=0:map1s=0:map1p=1:map2s=0:map2p=2:map3s=1:map3p=0:format=yuva444p10le${outLabel}`,
   ]
 }
