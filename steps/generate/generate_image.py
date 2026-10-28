@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate an image via Gemini, OpenAI or Kinovi."""
+"""Generate an image via Gemini or Kinovi."""
 import sys, os, argparse
 
 # Make lib/ importable (for common) and project root importable (for connectors/).
@@ -13,10 +13,10 @@ from _fail_reasons import fail_for
 
 
 def main():
-    p = argparse.ArgumentParser(description="Generate an image via Gemini, OpenAI or Kinovi")
+    p = argparse.ArgumentParser(description="Generate an image via Gemini or Kinovi")
     p.add_argument("--prompt", required=True)
     p.add_argument("--out", required=True)
-    p.add_argument("--provider", default="gemini", choices=["gemini", "kinovi", "openai"])
+    p.add_argument("--provider", default="gemini", choices=["gemini", "kinovi"])
     p.add_argument("--ref-image", dest="ref_image", action="append", default=[])
     p.add_argument("--size", default="1024x1024")
     p.add_argument("--aspect-ratio", dest="aspect_ratio")
@@ -43,16 +43,6 @@ def main():
             if args.aspect_ratio:
                 kwargs["aspect_ratio"] = args.aspect_ratio
             out_path = gemini.generate_image(**kwargs)
-        elif args.provider == "openai":
-            from connectors import openai as openai_connector
-            if args.aspect_ratio:
-                # OpenAI doesn't use aspect_ratio — warn via stderr,
-                # but don't fail. User might be switching providers quickly.
-                print(
-                    '{"warn": "aspect_ratio ignored by openai provider"}',
-                    file=sys.stderr,
-                )
-            out_path = openai_connector.generate_image(**kwargs)
         elif args.provider == "kinovi":
             from connectors import kinovi
             if args.size != "1024x1024":
@@ -67,7 +57,7 @@ def main():
     except ConnectorError as e:
         if args.provider == "gemini" and e.reason == "invalid_api_key":
             fail("invalid_api_key", invalid_api_key_message(e))
-        fail_for(e, {"openai": "OpenAI", "kinovi": "Kinovi"}.get(args.provider, "Gemini"))
+        fail_for(e, {"kinovi": "Kinovi"}.get(args.provider, "Gemini"))
 
     print(out_path)
 

@@ -159,12 +159,11 @@ def test_list_providers_never_returns_raw_values(creds_path):
 def test_known_providers_contains_expected_entries():
     assert "kling" in KNOWN_PROVIDERS
     assert "gemini" in KNOWN_PROVIDERS
-    assert "openai" in KNOWN_PROVIDERS
+    assert "openai" not in KNOWN_PROVIDERS
     # Kling takes either the current API key or the legacy pair; the allowlist
     # holds all three and REQUIRED_KEY_SETS decides what counts as configured.
     assert set(KNOWN_PROVIDERS["kling"]) == {"api_key", "access_key", "secret_key"}
     assert set(KNOWN_PROVIDERS["gemini"]) == {"api_key"}
-    assert set(KNOWN_PROVIDERS["openai"]) == {"api_key"}
 
 
 def test_known_providers_include_fal_and_elevenlabs():
@@ -203,7 +202,7 @@ def test_kling_required_key_sets_accept_either_shape():
 def test_single_key_providers_are_unchanged_by_the_kling_override():
     """Every other provider still requires its one key, via the default path."""
     from lib.credentials import required_key_sets, provider_is_configured
-    for p in ("gemini", "openai", "fal", "elevenlabs", "serpapi"):
+    for p in ("gemini", "fal", "elevenlabs", "serpapi"):
         assert required_key_sets(p) == [["api_key"]]
         assert provider_is_configured(p, lambda _p, k: k == "api_key")
         assert not provider_is_configured(p, lambda _p, k: False)
@@ -216,3 +215,10 @@ def test_build_env_overlay_accepts_a_kling_api_key():
     # and the legacy pair still maps
     assert build_env_overlay({"kling": {"access_key": "a", "secret_key": "b"}}) == {
         "KLING_ACCESS_KEY": "a", "KLING_SECRET_KEY": "b"}
+
+
+def test_openai_is_no_longer_a_provider():
+    from lib.credentials import build_env_overlay, CredentialError, list_providers
+    with pytest.raises(CredentialError):
+        build_env_overlay({"openai": {"api_key": "x"}})
+    assert "openai" not in list_providers()

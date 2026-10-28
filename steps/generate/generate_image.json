@@ -1,7 +1,7 @@
 {
   "name": "generate_image",
   "provenance": {"providerParam": "provider"},
-  "description": "Generate an image via Gemini, OpenAI or Kinovi. Text-to-image or reference-conditioned.",
+  "description": "Generate an image via Gemini or Kinovi. Text-to-image or reference-conditioned.",
   "output": {
     "type": "image",
     "description": "Path to the generated image file"
@@ -10,14 +10,14 @@
     {"name": "prompt", "type": "string", "required": true, "description": "Text description of the image"},
     {"name": "out", "type": "path", "required": true, "description": "Output image path (.png). Optional with _project: saved in the project's assets folder."},
     {"name": "provider", "type": "enum", "required": false, "default": "gemini",
-     "options": ["gemini", "kinovi", "openai"],
+     "options": ["gemini", "kinovi"],
      "description": "Which vendor to use"},
     {"name": "ref-image", "type": "path", "required": false, "repeatable": true,
      "description": "Reference image(s) for conditioned generation"},
     {"name": "size", "type": "string", "required": false, "default": "1024x1024",
      "description": "Image dimensions (vendor-dependent)"},
     {"name": "aspect-ratio", "type": "string", "required": false,
-     "description": "Gemini and Kinovi. E.g. '9:16', '1:1' (Kinovi: per model, e.g. gpt-image-2 and seedream-5.0-pro also auto). Ignored by OpenAI."},
+     "description": "Gemini and Kinovi. E.g. '9:16', '1:1' (Kinovi: per model, e.g. gpt-image-2 and seedream-5.0-pro also auto)."},
     {"name": "model", "type": "string", "required": false,
      "description": "Override the connector's default model for the chosen provider. Kinovi: nanobanana-pro (default), nanobanana2, gpt-image-2, seedream-5.0-pro."},
     {"name": "resolution", "type": "string", "required": false,

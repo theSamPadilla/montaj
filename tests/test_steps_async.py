@@ -54,7 +54,7 @@ LEAKY_SRC = textwrap.dedent("""\
     #!/usr/bin/env python3
     import json, os, sys
     # Simulate an upstream provider echoing the caller's own key in its error.
-    key = os.environ.get("OPENAI_API_KEY") or "<none>"
+    key = os.environ.get("ELEVENLABS_API_KEY") or "<none>"
     print(json.dumps({"error": "api_error",
                       "message": "Incorrect API key provided: " + key}),
           file=sys.stderr)
@@ -81,7 +81,7 @@ def leaky_step(tmp_path, monkeypatch):
     py_path.write_text(LEAKY_SRC)
     schema = {"name": "leaky", "params": [], "output": {"type": "file"}}
     monkeypatch.setattr(steps_mod, "scan_steps", lambda: {"leaky": (schema, py_path)})
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     return py_path
 
 
@@ -149,7 +149,7 @@ def test_async_done_job_carries_wrap_output_result(client, ok_step):
 def test_async_failed_job_carries_scrubbed_error(client, leaky_step):
     resp = client.post("/api/steps/leaky", json={
         "_async": True,
-        "credentials": {"openai": {"api_key": "sk-SUPER-SECRET-XYZ"}},
+        "credentials": {"elevenlabs": {"api_key": "sk-SUPER-SECRET-XYZ"}},
     })
     assert resp.status_code == 202, resp.text
     job_id = resp.json()["job_id"]

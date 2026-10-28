@@ -156,13 +156,13 @@ def test_overlay_happy_path():
     overlay = build_env_overlay({
         "gemini": {"api_key": "g-key"},
         "kling": {"access_key": "ak", "secret_key": "sk"},
-        "openai": {"api_key": "o-key"},
+        "elevenlabs": {"api_key": "o-key"},
     })
     assert overlay == {
         "GEMINI_API_KEY": "g-key",
         "KLING_ACCESS_KEY": "ak",
         "KLING_SECRET_KEY": "sk",
-        "OPENAI_API_KEY": "o-key",
+        "ELEVENLABS_API_KEY": "o-key",
     }
 
 
@@ -211,8 +211,8 @@ LEAKY_SRC = textwrap.dedent("""\
     #!/usr/bin/env python3
     import json, os, sys
     # Simulate an upstream provider echoing the caller's own key in its error
-    # body (OpenAI does this: "Incorrect API key provided: <key>").
-    key = os.environ.get("OPENAI_API_KEY") or "<none>"
+    # body (a provider can do this: "Incorrect API key provided: <key>").
+    key = os.environ.get("ELEVENLABS_API_KEY") or "<none>"
     print(json.dumps({"error": "api_error",
                       "message": "Incorrect API key provided: " + key}),
           file=sys.stderr)
@@ -226,13 +226,13 @@ def leaky_step(tmp_path, monkeypatch):
     py_path.write_text(LEAKY_SRC)
     schema = {"name": "leaky", "params": [], "output": {"type": "file"}}
     monkeypatch.setattr(steps_mod, "scan_steps", lambda: {"leaky": (schema, py_path)})
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     return py_path
 
 
 def test_provider_echoed_secret_is_redacted_from_error(leaky_step):
     resp = client.post("/api/steps/leaky", json={
-        "credentials": {"openai": {"api_key": "sk-SUPER-SECRET-XYZ"}},
+        "credentials": {"elevenlabs": {"api_key": "sk-SUPER-SECRET-XYZ"}},
     })
     assert resp.status_code == 500
     assert "sk-SUPER-SECRET-XYZ" not in resp.text
@@ -242,7 +242,7 @@ def test_provider_echoed_secret_is_redacted_from_error(leaky_step):
 def test_error_without_credentials_is_not_scrubbed(leaky_step, monkeypatch):
     # Ambient (non-passthrough) keys are the operator's own local setup; the
     # scrubber only acts on injected passthrough values.
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-AMBIENT-LOCAL")
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "sk-AMBIENT-LOCAL")
     resp = client.post("/api/steps/leaky", json={})
     assert resp.status_code == 500
     assert "[redacted]" not in resp.text

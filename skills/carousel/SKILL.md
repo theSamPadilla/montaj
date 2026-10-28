@@ -113,7 +113,7 @@ CLI signature summary:
 |-------|----------|-------|
 | `--prompt` | yes | Describe the image |
 | `--out` | yes | Absolute path, `.png` |
-| `--provider` | no | `gemini` (default) or `openai` |
+| `--provider` | no | `gemini` (default) or `kinovi` |
 | `--ref-image` | no, repeatable | Reference images from `project.assets` for style consistency |
 | `--aspect-ratio` | no | Gemini only. `1:1`, `4:5`, `9:16` — match the carousel aspect |
 | `--model` | no | Override the connector's default model |

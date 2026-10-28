@@ -17,7 +17,7 @@ montaj install ui                          # build UI bundles into ~/.cache/mont
 montaj install whisper                     # whisper-cpp binary + large-v3-turbo-q5_0 model weights
 montaj install ffmpeg                      # pinned static ffmpeg/ffprobe with zscale (libzimg) for HDR
 montaj install rvm                         # onnxruntime/av (pip) + RVM ONNX model (~15 MB)
-montaj install connectors                  # pyjwt, requests, google-genai, openai (for API steps)
+montaj install connectors                  # pyjwt, requests, google-genai (for API steps)
 montaj credentials                         # interactive setup for API keys (~/.montaj/credentials.json)
 montaj install all                         # everything above, including ffmpeg
 ```
@@ -35,7 +35,7 @@ First-run flow is identical for brew and pip: `montaj doctor` first to see what'
 | `ffmpeg` | pinned static ffmpeg + ffprobe (8.1.2, with libzimg/zscale) into the managed models dir | HDR normalization (`zscale`), all ffmpeg-backed steps, render engine |
 | `rvm` | onnxruntime, av, numpy (pip) + rvm_mobilenetv3_fp32.onnx (~15 MB, SHA-256 verified); runs on the CPU | `remove_bg`, `track_pose` |
 | `vision` | pycolmap (`pip install 'montaj[vision]'`; macOS arm64, Windows x64 and Linux x86_64 only) | `track_camera` |
-| `connectors` | pyjwt, requests, google-genai, openai | `kling_generate`, `analyze_media`, `generate_image` |
+| `connectors` | pyjwt, requests, google-genai | `kling_generate`, `analyze_media`, `generate_image` |
 
 Credentials are stored in `~/.montaj/credentials.json` (0600 permissions). Three modes:
 
@@ -459,7 +459,7 @@ montaj analyze-media clip.mp4  --prompt "..." --max-output-tokens 2000 --thinkin
 
 montaj generate-image --prompt "portrait, studio lighting" --out /tmp/portrait.png
 montaj generate-image --prompt "same character, profile view" --ref-image /tmp/portrait.png --out /tmp/profile.png
-montaj generate-image --prompt "red apple on white table" --provider openai --out /tmp/apple.png
+montaj generate-image --prompt "red apple on white table" --provider kinovi --out /tmp/apple.png
 montaj generate-image --prompt "..." --provider gemini --aspect-ratio 9:16 --out /tmp/tall.png
 ```
 

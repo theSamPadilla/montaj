@@ -1,9 +1,7 @@
 """Step-level tests for steps/generate/generate_image.py — FQ1.1 T10.
 
 Covers the same invalid_api_key mapping as test_analyze_media.py for a
-second Gemini-calling step, and confirms the openai provider path (whose
-ConnectorError never carries reason="invalid_api_key") still falls through
-to the generic api_error code unaffected.
+second Gemini-calling step, and confirms openai is no longer an accepted provider.
 """
 import importlib.util
 import json
@@ -17,7 +15,6 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from connectors import ConnectorError
 import connectors.gemini as gemini_mod
-import connectors.openai as openai_mod
 import connectors.kinovi as kinovi_mod
 
 _STEP_PATH = REPO_ROOT / "steps" / "generate" / "generate_image.py"
@@ -81,69 +78,18 @@ class TestGenerateImageConnectorErrorMapping:
         assert err["error"] == "invalid_api_key"
         assert "Google said: API key expired. Please renew the API key." in err["message"]
 
-    def test_openai_provider_error_keeps_api_error_code(
-        self, step_module, monkeypatch, capsys, tmp_path
+    def test_openai_provider_refused_by_argparse(
+        self, step_module, monkeypatch, tmp_path
     ):
-        """openai's ConnectorError has no reason at all — must not be
-        mistaken for a Gemini key rejection."""
-        def boom(**kwargs):
-            raise ConnectorError("OpenAI image generation failed: bad request")
-
-        monkeypatch.setattr(openai_mod, "generate_image", boom)
         monkeypatch.setattr(sys, "argv", [
             "generate_image.py",
             "--prompt", "a cat",
             "--out", str(tmp_path / "out.png"),
             "--provider", "openai",
         ])
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit) as ei:
             step_module.main()
-        err = json.loads(capsys.readouterr().err)
-        assert err["error"] == "api_error"
-        assert "bad request" in err["message"]
-
-    def test_openai_insufficient_credit_no_longer_swallowed_into_api_error(
-        self, step_module, monkeypatch, capsys, tmp_path
-    ):
-        """PV29 T7 fix: the old code mapped every OpenAI reason but
-        invalid_api_key straight to api_error, discarding insufficient_credit
-        and model_retired. fail_for restores the real code."""
-        def boom(**kwargs):
-            raise ConnectorError("OpenAI image generation failed: exceeded quota",
-                                  reason="insufficient_credit")
-
-        monkeypatch.setattr(openai_mod, "generate_image", boom)
-        monkeypatch.setattr(sys, "argv", [
-            "generate_image.py",
-            "--prompt", "a cat",
-            "--out", str(tmp_path / "out.png"),
-            "--provider", "openai",
-        ])
-        with pytest.raises(SystemExit):
-            step_module.main()
-        err = json.loads(capsys.readouterr().err)
-        assert err["error"] == "insufficient_credit"
-        assert err["message"] == "OpenAI image generation failed: exceeded quota"
-
-    def test_openai_model_retired_maps_through(
-        self, step_module, monkeypatch, capsys, tmp_path
-    ):
-        def boom(**kwargs):
-            raise ConnectorError("model retired", reason="model_retired")
-
-        monkeypatch.setattr(openai_mod, "generate_image", boom)
-        monkeypatch.setattr(sys, "argv", [
-            "generate_image.py",
-            "--prompt", "a cat",
-            "--out", str(tmp_path / "out.png"),
-            "--provider", "openai",
-        ])
-        with pytest.raises(SystemExit):
-            step_module.main()
-        err = json.loads(capsys.readouterr().err)
-        assert err["error"] == "model_retired"
-        # "model retired" doesn't name OpenAI — fail_for prefixes it.
-        assert err["message"] == "OpenAI: model retired"
+        assert ei.value.code == 2
 
     def test_gemini_insufficient_credit_no_longer_forced_to_api_error(
         self, step_module, monkeypatch, capsys, tmp_path

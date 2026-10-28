@@ -110,8 +110,8 @@ def test_a_generated_image_in_a_project_is_recorded_by_its_path_in_the_project(e
 def test_the_provider_param_and_the_model_the_step_reports(env):
     pid, pdir, replies = env
     replies["next"] = {"model": "gpt-image-1"}
-    client.post("/api/steps/generate_image", json={"prompt": "p", "provider": "openai", "_project": pid, "out": "hero"})
-    assert _record(pdir)["assets/hero.png"]["provider"] == "openai"
+    client.post("/api/steps/generate_image", json={"prompt": "p", "provider": "kinovi", "_project": pid, "out": "hero"})
+    assert _record(pdir)["assets/hero.png"]["provider"] == "kinovi"
     assert _record(pdir)["assets/hero.png"]["model"] == "gpt-image-1"
     replies["next"] = {"vendor": "elevenlabs", "duration_seconds": 30}
     client.post("/api/steps/generate_music", json={"prompt": "calm", "vendor": "elevenlabs", "_project": pid, "out": "bed"})

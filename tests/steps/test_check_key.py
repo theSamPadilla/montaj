@@ -3,7 +3,7 @@
 The step is a thin dispatcher: pick the connector module for --provider, call
 its check_key(), and map ConnectorError.reason to a fail() code. Every test
 here monkeypatches the connector's check_key() directly — the connectors'
-own SDK/HTTP-mocked tests (test_connectors_gemini.py, test_connectors_openai.py,
+own SDK/HTTP-mocked tests (test_connectors_gemini.py,
 etc.) cover what check_key() itself does. Nothing here makes a real network call.
 
 T7 registers kling, fal and elevenlabs (PROVIDERS now lists five providers —
@@ -22,7 +22,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from connectors import ConnectorError
 import connectors.gemini as gemini_mod
-import connectors.openai as openai_mod
+import connectors.kling as kling_mod
 
 _STEP_PATH = REPO_ROOT / "steps" / "credentials" / "check_key.py"
 
@@ -37,7 +37,7 @@ def step_module():
 
 
 class TestProvidersRegistered:
-    """T7: kling, fal and elevenlabs join gemini/openai. serpapi has no
+    """T7: kling, fal and elevenlabs join gemini. serpapi has no
     check_key() and is not registered here."""
 
     def test_providers_map_is_the_seven_generation_vendors(self, step_module):
@@ -45,7 +45,6 @@ class TestProvidersRegistered:
         # §246: tripo joins (its check is GET /account/balance).
         assert step_module.PROVIDERS == {
             "gemini": "connectors.gemini",
-            "openai": "connectors.openai",
             "kling": "connectors.kling",
             "fal": "connectors.fal",
             "elevenlabs": "connectors.elevenlabs",
@@ -65,7 +64,7 @@ class TestSchemaOptionsMatchProviders:
     """PV29 review item 1: check_key.json's `provider` enum drifted from
     PROVIDERS after T7 registered kling/fal/elevenlabs (74338ac updated the
     step but not the JSON), so serve's validate_params rejected every
-    provider but gemini/openai with a 422 before the step ever ran."""
+    provider but gemini with a 422 before the step ever ran."""
 
     def test_options_match_providers(self, step_module):
         schema = json.loads((_STEP_PATH.parent / "check_key.json").read_text())
@@ -94,11 +93,11 @@ class TestOkPath:
     def test_default_model_missing_is_still_ok(self, step_module, monkeypatch, capsys):
         """A retired default model is reported, not hidden — ok stays True,
         default_model_ok goes False, exit code stays 0."""
-        monkeypatch.setattr(openai_mod, "check_key", lambda: {
-            "ok": True, "default_model": "gpt-image-1",
+        monkeypatch.setattr(kling_mod, "check_key", lambda: {
+            "ok": True, "default_model": "kling-v3-omni",
             "default_model_ok": False, "detail": "model not in list",
         })
-        monkeypatch.setattr(sys, "argv", ["check_key.py", "--provider", "openai"])
+        monkeypatch.setattr(sys, "argv", ["check_key.py", "--provider", "kling"])
         step_module.main()
         out = json.loads(capsys.readouterr().out)
         assert out["ok"] is True
@@ -122,8 +121,8 @@ class TestErrorMapping:
     def test_unreachable_reason_maps_to_provider_unreachable(self, step_module, monkeypatch, capsys):
         def boom():
             raise ConnectorError("could not reach the API: timed out", reason="unreachable")
-        monkeypatch.setattr(openai_mod, "check_key", boom)
-        monkeypatch.setattr(sys, "argv", ["check_key.py", "--provider", "openai"])
+        monkeypatch.setattr(kling_mod, "check_key", boom)
+        monkeypatch.setattr(sys, "argv", ["check_key.py", "--provider", "kling"])
 
         with pytest.raises(SystemExit) as ei:
             step_module.main()
@@ -148,8 +147,8 @@ class TestErrorMapping:
     def test_insufficient_credit_reason_maps_through(self, step_module, monkeypatch, capsys):
         def boom():
             raise ConnectorError("out of credit", reason="insufficient_credit")
-        monkeypatch.setattr(openai_mod, "check_key", boom)
-        monkeypatch.setattr(sys, "argv", ["check_key.py", "--provider", "openai"])
+        monkeypatch.setattr(kling_mod, "check_key", boom)
+        monkeypatch.setattr(sys, "argv", ["check_key.py", "--provider", "kling"])
 
         with pytest.raises(SystemExit):
             step_module.main()

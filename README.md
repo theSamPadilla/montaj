@@ -45,7 +45,7 @@ montaj install ui
 
 Optional extras:
 ```bash
-pip install "montaj[connectors]"  # Kling, Gemini, OpenAI API connectors
+pip install "montaj[connectors]"  # Kling, Gemini API connectors
 pip install "montaj[rvm]"         # background removal (RVM on onnxruntime, CPU)
 montaj install all                # whisper + ui + rvm
 ```
@@ -69,7 +69,7 @@ montaj serve   # then create an ai_video project in the UI
 steps/              Step executables + JSON schemas (probe, trim, transcribe, generate, etc.)
 workflows/          Editing plans (overlays, ai_video, carousel, blank)
 skills/             Agent skill contracts (onboarding, edit-session, ai-video-plan, ai-video-generate, etc.)
-connectors/         API connectors (Kling, Gemini, OpenAI)
+connectors/         API connectors (Kling, Gemini)
 
 render/             React + Puppeteer + ffmpeg render engine
 serve/              Local HTTP + SSE server (montaj serve)
@@ -141,7 +141,6 @@ API connectors for external services. Installed via `pip install "montaj[connect
 |-----------|----------|
 | **Kling** | AI video generation (v3-omni, video-o1) |
 | **Gemini** | Media analysis, scene evaluation, image generation |
-| **OpenAI** | Image generation, analysis |
 
 ## Render Engine
 
@@ -190,7 +189,7 @@ Full documentation at **[docs.montaj.ag](https://docs.montaj.ag)**:
 - [Core Concepts](https://docs.montaj.ag/concepts) — architecture, project.json, trim specs, workflows
 - [Render Engine](https://docs.montaj.ag/render) — the compositing pipeline
 - [Agent Integration](https://docs.montaj.ag/agents) — MCP, HTTP API, skills
-- [Connectors](https://docs.montaj.ag/connectors) — Kling, Gemini, OpenAI setup
+- [Connectors](https://docs.montaj.ag/connectors) — Kling, Gemini setup
 - [Extending](https://docs.montaj.ag/extending) — custom steps, workflows, connectors
 
 Internal references (for contributors):

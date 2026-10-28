@@ -207,14 +207,6 @@ _PROVIDER_INFO = {
             "api_key": "API key from Google AI Studio",
         },
     },
-    "openai": {
-        "display": "OpenAI",
-        "desc": "Image generation",
-        "url": "https://platform.openai.com/api-keys",
-        "keys": {
-            "api_key": "API key from OpenAI dashboard",
-        },
-    },
     "fal": {
         "display": "fal.ai",
         "desc": "Video generation (Seedance)",
