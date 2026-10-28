@@ -219,3 +219,53 @@ def test_a_failed_measure_keeps_the_inbox_file(tmp_path, fake_whisper_env):
     assert proc.returncode == 0, proc.stderr          # good.mp4 measured, so the run succeeds
     assert not good.exists()                           # measured, in inbox: deleted
     assert bad.exists()                                # measure failed: the user's file is kept
+
+
+def test_profile_url_asks_a_youtube_channel_for_shorts():
+    assert cd.profile_url("https://www.youtube.com/@mkbhd") == "https://www.youtube.com/@mkbhd/shorts"
+    assert cd.profile_url("https://www.youtube.com/@mkbhd/") == "https://www.youtube.com/@mkbhd/shorts"
+    assert cd.profile_url("https://www.youtube.com/@mkbhd/videos") == "https://www.youtube.com/@mkbhd/videos"
+    assert cd.profile_url("https://www.tiktok.com/@techbyjaz") == "https://www.tiktok.com/@techbyjaz"
+
+
+def test_entries_to_items_maps_flat_entries_and_flattens_tabs():
+    info = {"entries": [
+        {"entries": [{"url": "https://www.tiktok.com/@a/video/1", "view_count": 900, "like_count": 40,
+                      "timestamp": 1761500000, "description": "x" * 400, "title": "t"},
+                     {"url": "https://www.tiktok.com/@a/video/2", "view_count": -1, "title": "only title"}]},
+        {"title": "no url"}]}
+    got = cd.entries_to_items(cd._flat_entries(info))
+    assert [g["url"][-1] for g in got] == ["1", "2"]
+    assert got[0]["views"] == 900 and got[0]["likes"] == 40 and got[0]["posted_at"] == "2025-10-26"
+    assert len(got[0]["caption"]) == 300 and got[1]["caption"] == "only title"
+    assert got[1]["views"] is None and got[1]["posted_at"] is None
+    assert all(g["path"] is None for g in got)
+
+
+def test_entries_to_items_caps_at_thirty():
+    info = {"entries": [{"url": f"https://example.com/{i}"} for i in range(45)]}
+    assert len(cd.entries_to_items(cd._flat_entries(info))) == cd.MAX_ITEMS
+
+
+def test_list_profile_refuses_instagram_without_running_anything(monkeypatch):
+    monkeypatch.setattr(cd.subprocess, "run", lambda *a, **k: pytest.fail("must not run yt-dlp"))
+    with pytest.raises(SystemExit):
+        cd.list_profile("https://www.instagram.com/someone/")
+
+
+def test_list_profile_failure_exits_once_without_retrying(monkeypatch):
+    calls = []
+
+    def run(cmd, **k):
+        calls.append(cmd)
+        return cd.subprocess.CompletedProcess(cmd, 1, "", "ERROR: HTTP Error 404: Not Found")
+    monkeypatch.setattr(cd.subprocess, "run", run)
+    with pytest.raises(SystemExit):
+        cd.list_profile("https://www.youtube.com/@nobody")
+    assert len(calls) == 1 and "--retries" in calls[0]
+
+
+def test_list_profile_returns_items(monkeypatch):
+    out = json.dumps({"entries": [{"url": "https://www.tiktok.com/@a/video/1", "view_count": 5}]})
+    monkeypatch.setattr(cd.subprocess, "run", lambda cmd, **k: cd.subprocess.CompletedProcess(cmd, 0, out, ""))
+    assert cd.list_profile("https://www.tiktok.com/@a")[0]["views"] == 5

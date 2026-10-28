@@ -7,6 +7,7 @@ an opening frame per video. Videos it downloaded, and videos in --inbox, are
 deleted once measured; nothing else is touched.
 """
 import json
+import re
 import statistics
 import sys
 from collections import Counter
@@ -62,6 +63,71 @@ def parse_items(raw):
                     "likes": _count(it.get("likes")), "posted_at": it.get("posted_at") or None,
                     "caption": caption[:300] if isinstance(caption, str) and caption else None})
     return out
+
+
+def _is_host(url, *hosts):
+    from urllib.parse import urlparse
+    h = (urlparse(url).hostname or "").lower()
+    return any(h == d or h.endswith("." + d) for d in hosts)
+
+
+def profile_url(url):
+    """A YouTube channel root lists tabs, not posts: ask for its Shorts."""
+    from urllib.parse import urlparse
+    u = urlparse(url)
+    if _is_host(url, "youtube.com") and re.fullmatch(r"/(@[^/]+|channel/[^/]+|c/[^/]+|user/[^/]+)/?", u.path):
+        return url.rstrip("/") + "/shorts"
+    return url
+
+
+def _flat_entries(info):
+    for e in info.get("entries") or []:
+        if not isinstance(e, dict):
+            continue
+        if e.get("entries"):
+            yield from _flat_entries(e)
+        elif e.get("url") or e.get("webpage_url"):
+            yield e
+
+
+def entries_to_items(entries):
+    """yt-dlp flat entries (newest first) to the item shape; a missing field stays None."""
+    out = []
+    for e in entries:
+        ts = e.get("timestamp")
+        day = datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d") if isinstance(ts, (int, float)) else None
+        text = e.get("description") or e.get("title")
+        out.append({"url": e.get("webpage_url") or e["url"], "path": None, "views": _count(e.get("view_count")),
+                    "likes": _count(e.get("like_count")), "posted_at": day,
+                    "caption": text[:300] if isinstance(text, str) and text else None})
+    return out[:MAX_ITEMS]
+
+
+def list_profile(url):
+    """The creator's latest posts, newest first, listed once by the bundled yt-dlp (no retries)."""
+    if _is_host(url, "instagram.com"):
+        fail("profile_unsupported", "Montaj cannot list an Instagram profile. Open it in your own browser, "
+             "collect the latest 30 posts, and pass them as items.")
+    from youtube import classify_error
+    cmd = [sys.executable, "-m", "yt_dlp", "--flat-playlist", "--playlist-end", str(MAX_ITEMS), "-J",
+           "--retries", "0", "--extractor-retries", "0", "--socket-timeout", "20", "--js-runtimes", "node",
+           profile_url(url)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        fail("profile_failed", "listing the profile took over 3 minutes. Collect the posts in your own browser and pass them as items.")
+    if proc.returncode != 0:
+        code = classify_error(proc.returncode, proc.stdout, proc.stderr)
+        why = {"blocked": "the site refused the request", "offline": "no network reached the site",
+               "unavailable": "the profile is private or gone"}.get(code, "the profile could not be listed")
+        fail("profile_failed", f"{why}. Collect the latest 30 posts in your own browser and pass them as items; do not retry.")
+    try:
+        items = entries_to_items(_flat_entries(json.loads(proc.stdout)))
+    except (json.JSONDecodeError, TypeError):
+        items = []
+    if not items:
+        fail("profile_failed", "no posts found on that profile. Collect them in your own browser and pass them as items.")
+    return items
 
 
 def select_items(items, top):
@@ -287,19 +353,24 @@ def measure_video(path, stills, n, model, language):
 
 def main():
     ap = argparse.ArgumentParser(description="Measure a creator's editing style from their posts")
-    ap.add_argument("--items", required=True)
+    ap.add_argument("--items")
+    ap.add_argument("--profile")
     ap.add_argument("--out")
     ap.add_argument("--inbox")
     ap.add_argument("--top", type=int, default=10)
     ap.add_argument("--whisper-model", default=DEFAULT_WHISPER_MODEL)
     ap.add_argument("--language", default="auto")
     a = ap.parse_args()
-    items = parse_items(a.items)
+    if bool(a.items) == bool(a.profile):
+        fail("invalid_items", "give exactly one of --items or --profile")
+    items = parse_items(a.items) if a.items else None
     if not 1 <= a.top <= MAX_ITEMS:
         fail("invalid_argument", f"--top must be 1 to {MAX_ITEMS}")
     if a.inbox:
         check_inbox(a.inbox)
     require_whisper_model(a.whisper_model, a.language)  # exits whisper_model_missing before any download
+    if items is None:
+        items = list_profile(a.profile)
     chosen, by = select_items(items, a.top)
     out = Path(a.out) if a.out else Path(tempfile.mkdtemp(prefix="montaj-creator-"))
     stills, media_dir = out / "stills", out / "_media"
