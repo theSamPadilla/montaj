@@ -94,7 +94,7 @@ export const WHOLE_PACKAGE_GLOBALS = Object.freeze({
 // Every key of overlay-runtime's makeOverlayGlobals('preview'). A drift test
 // pins this list to the real function.
 const OVERLAY_GLOBAL_NAMES = [
-  'interpolate', 'spring', 'springStep', 'springSum',
+  'interpolate', 'spring', 'springStep', 'springSum', 'Motion',
   'captionOuterStyle', 'captionInnerStyle',
   'useThreeFrame', 'Canvas', 'useCanvas2DFrame',
   'THREE', 'Ph', 'FaIcon', 'FaSolid', 'FaBrands',
