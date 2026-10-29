@@ -1,0 +1,57 @@
+{
+  "slides": [
+    {
+      "id": "slide-0",
+      "base_color": "#0b1f4d",
+      "elements": [
+        {
+          "id": "title", "type": "overlay", "frame": 0, "x": 80, "y": 220, "w": 920, "h": 420, "rotation": 0,
+          "overlay": {
+            "template": "/rt/render/templates/overlays/static-text/static-text.jsx",
+            "props": {
+              "text": "4 tech + AI hacks for beginners",
+              "fontSize": "120",
+              "fontFamily": "Georgia, \"Times New Roman\", serif",
+              "fontWeight": "400",
+              "color": "#ffffff",
+              "textAlign": "left",
+              "runs": "[{\"t\":\"4 tech + AI hacks for \"},{\"t\":\"beginners\",\"c\":\"#f6e3a1\",\"i\":1}]"
+            }
+          }
+        },
+        {
+          "id": "pill-pink", "type": "overlay", "frame": 0, "x": 80, "y": 700, "w": 700, "h": 100, "rotation": 0,
+          "overlay": {
+            "template": "/rt/render/templates/overlays/static-text/static-text.jsx",
+            "props": {
+              "text": "+ BONUS AT THE END", "fontSize": "36", "fontWeight": "700", "color": "#1a1a2e",
+              "textAlign": "left", "textTransform": "uppercase", "hug": "true", "bgColor": "#ffc2e2",
+              "radius": "999", "padX": "28", "padY": "14", "letterSpacing": "0.08"
+            }
+          }
+        },
+        {
+          "id": "pill-yellow", "type": "overlay", "frame": 0, "x": 80, "y": 830, "w": 800, "h": 100, "rotation": 0,
+          "overlay": {
+            "template": "/rt/render/templates/overlays/static-text/static-text.jsx",
+            "props": {
+              "text": "NO TECH BACKGROUND NEEDED", "fontSize": "36", "fontWeight": "700", "color": "#1a1a2e",
+              "textAlign": "left", "textTransform": "uppercase", "hug": "true", "bgColor": "#fdeaa8",
+              "radius": "999", "padX": "28", "padY": "14", "letterSpacing": "0.08"
+            }
+          }
+        },
+        {
+          "id": "pill-arrow", "type": "overlay", "frame": 0, "x": 80, "y": 1100, "w": 300, "h": 120, "rotation": 0,
+          "overlay": {
+            "template": "/rt/render/templates/overlays/static-text/static-text.jsx",
+            "props": {
+              "text": "→", "fontSize": "48", "color": "#ffffff", "textAlign": "left", "hug": "true",
+              "bgColor": "transparent", "borderColor": "#ffffff", "borderWidth": "3", "radius": "999", "padX": "60"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
