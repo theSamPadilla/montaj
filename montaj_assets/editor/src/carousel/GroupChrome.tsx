@@ -59,6 +59,8 @@ export default function GroupChrome({ box, scale, boxRef, locked, handles, onRes
         transformOrigin: 'center center',
         outline: `${OUTLINE} solid var(--editor-selection)`,
         pointerEvents: 'none',
+        userSelect: 'none',
+        WebkitUserSelect: 'none',
       }}
     >
       {locked && onUnlock && (

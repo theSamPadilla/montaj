@@ -1853,7 +1853,7 @@ export default function SlideCanvas({
         <div
           ref={chromeLayerRef}
           data-slide-chrome=""
-          style={{ ...marginBox, overflow: 'hidden', pointerEvents: 'none', ...(unclipped ? { zIndex: 1 } : null) }}
+          style={{ ...marginBox, overflow: 'hidden', pointerEvents: 'none', userSelect: 'none', WebkitUserSelect: 'none', ...(unclipped ? { zIndex: 1 } : null) }}
           onClick={(e) => { e.stopPropagation(); swallowClickRef.current = false }}
         >
           <div ref={chromeInnerRef} style={{ position: 'absolute', left: margin, top: margin, width: displayW, height: displayH }}>
@@ -2145,21 +2145,6 @@ export default function SlideCanvas({
                           touchAction: 'none',
                         }}
                       />
-                      {element.type === 'overlay' && typeof element.overlay.props.text === 'string' && (
-                        <div
-                          style={{
-                            position: 'absolute',
-                            bottom: -20,
-                            left: 0,
-                            fontSize: 10,
-                            color: 'var(--editor-selection)',
-                            pointerEvents: 'none',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          double-click to edit text
-                        </div>
-                      )}
                       {/* Guard hint: crop disabled while rotated (enforced in panel). */}
                       {element.type === 'image' && isRotated && (
                         <div

@@ -349,3 +349,27 @@ describe('selection chrome is readable on a busy photo', () => {
     expect(c.rotateHandle.style.border).toBe('2px solid rgb(255, 255, 255)')
   })
 })
+
+describe('selection chrome is not text', () => {
+  it('shows no edit hint under a selected text element, and the chrome cannot be text-selected', () => {
+    const el = {
+      id: 'txt', type: 'overlay', frame: 0, x: 100, y: 100, w: 200, h: 100, rotation: 0,
+      overlay: { template: '/t/t.jsx', props: { text: 'Hello' } },
+    } as never
+    const r = render(
+      <SlideCanvas
+        slide={{ id: 's', base_color: '#ffffff', elements: [el] }}
+        width={1080} height={1080} interactive selectedElementId="txt" scale={0.5}
+        compileOverlay={(async () => () => null) as never} onSelect={vi.fn()}
+      />,
+    )
+    expect(r.container.textContent).not.toMatch(/double-click to edit/i)
+    const chrome = r.container.querySelector('[data-slide-chrome]') as HTMLElement
+    // jsdom's CSS model keeps only the unprefixed property (the prefixed one is set too, for Safari).
+    const css = chrome.getAttribute('style') ?? ''
+    expect(css).toMatch(/(^|;)\s*user-select:\s*none/)
+    // The handles and knob sit inside it.
+    expect(chrome.contains(r.container.querySelector('[data-testid="resize-handle-se"]'))).toBe(true)
+    expect(chrome.contains(r.container.querySelector('[data-testid="rotate-handle"]'))).toBe(true)
+  })
+})
