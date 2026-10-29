@@ -855,11 +855,6 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
     }
   }
 
-  /** A discrete write to the stored mask (shape, invert): no keyframe props. */
-  function writeMask(fields: Partial<ItemMask>) {
-    if (target.mask) onChange({ ...target, mask: { ...target.mask, ...fields } })
-  }
-
   /**
    * A shape button. Leaving a path drops its `maskPoints` track in the same
    * write: a save refuses that track on any other shape. The path's own
