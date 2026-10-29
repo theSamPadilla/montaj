@@ -246,7 +246,7 @@ def _visual_item_errors(item: dict, strict: bool = True) -> list[tuple[str, str]
                 value = point.get("value") if isinstance(point, dict) else None
                 at = f"{where}.points[{j}].value"
                 if not _finite(value):
-                    err(at, "must be a finite number")
+                    err(at, f"must be a finite number ({prop})")
                 elif prop == "opacity" and not 0 <= value <= 1:
                     err(at, "must be a number from 0 to 1")
                 elif prop == "maskFeather" and not 0 <= value <= MASK_FEATHER_MAX:
