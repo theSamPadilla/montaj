@@ -103,3 +103,28 @@ describe('compositeParts — the same style, split by the element that carries i
     expect({ opacity: String(parts.opacity), ...parts.blend, ...parts.mask }).toEqual(itemCompositeStyle(item, 2, 300, 200))
   })
 })
+
+describe('a path mask', () => {
+  const POINTS: Array<[number, number]> = [[0, 0], [1, 0], [1, 1], [0.7, 1], [0.7, 0.4], [0.3, 0.4], [0.3, 1], [0, 1]]
+
+  it('is drawn as the shared evenodd polygon over the box', () => {
+    const item = clip({ mask: { shape: 'path', points: POINTS, x: 0.5, y: 0.5, w: 1, h: 1 } })
+    const style = itemCompositeStyle(item, 1, 200, 100)
+    expect(style.maskImage).toBe(maskImageFor(item, 1, 200, 100))
+    const svg = decodeURIComponent(String(style.maskImage).replace(/^url\("data:image\/svg\+xml,/, '').replace(/"\)$/, ''))
+    expect(svg).toContain('evenodd')
+    // The notch's corner (0.3, 0.4) of a 200 x 100 box.
+    expect(svg).toContain('60,40')
+  })
+
+  it('follows a maskPoints track at the instant', () => {
+    const to = POINTS.map(([x, y]) => [x, y * 0.5] as [number, number])
+    const item = clip({
+      mask: { shape: 'path', points: POINTS },
+      keyframes: [{ prop: 'maskPoints', points: [{ t: 0, value: POINTS }, { t: 2, value: to }] }] as unknown as VisualItem['keyframes'],
+    })
+    const half = itemCompositeStyle(item, 1, 100, 100).maskImage
+    expect(half).toBe(maskImageFor(item, 1, 100, 100))
+    expect(half).not.toBe(itemCompositeStyle(item, 0, 100, 100).maskImage)
+  })
+})

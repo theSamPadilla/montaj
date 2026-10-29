@@ -223,6 +223,9 @@ export interface Keyframe {
  *  deliberately self-contained (see the header). Keep the two in sync — the
  *  shapes are structurally compatible by design. */
 export interface KeyframeTrack {
+  /** A path mask's `maskPoints` track (AI-authored) also appears in `item.keyframes`, keyed by point LISTS
+   *  instead of numbers; it is not a `KeyframeProp`. See `video/keyframeTrack.ts`, which every code path that
+   *  normalizes or samples a track goes through. */
   prop: KeyframeProp
   points: Keyframe[]
   /** Marks a track as DERIVED (`'crossfade'`) rather than hand-authored. Only
@@ -243,7 +246,7 @@ export type BlendMode = 'normal' | 'screen' | 'multiply' | 'add' | 'lighten' | '
  *  `ItemMask` (`src/mask.js`), where the shape is drawn for BOTH the preview
  *  and the export. */
 export interface ItemMask {
-  shape: 'ellipse' | 'rect' | 'wipe'
+  shape: 'ellipse' | 'rect' | 'wipe' | 'path'
   /** Centre (ellipse, rect) or a point on the edge (wipe), fraction of box width. Default 0.5. */
   x?: number
   /** The same, fraction of box height. Default 0.5. */
@@ -258,6 +261,10 @@ export interface ItemMask {
   radius?: number
   /** Width of the soft band centred on the edge, fraction of the box's shorter side, 0-1. Default 0. */
   feather?: number
+  /** Path only (AI-authored, not editable here): 3 to 64 [x, y] points, 0-1 of the mask's own box (x, y, w, h, rotation place, scale and turn it). A `maskPoints` keyframe track morphs them. */
+  points?: Array<[number, number]>
+  /** Path only: close the points as a smooth Catmull-Rom curve instead of straight edges. Default false. */
+  smooth?: boolean
   /** Show outside the shape instead of inside. Default false. */
   invert?: boolean
   /** Default true. False turns the mask off and keeps its settings (timeline-core's `maskAt` reads it as no mask). */

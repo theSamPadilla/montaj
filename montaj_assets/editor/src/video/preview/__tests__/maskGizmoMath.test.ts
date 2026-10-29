@@ -3,6 +3,7 @@ import { MASK_FEATHER_MAX, maskAt, maskPolygon } from '@bycrux/timeline-core'
 import type { VisualItem } from '../../../schema'
 import {
   clientToBox,
+  coversBox,
   insideDistance,
   featherRings,
   OUTER_RING_MIN_PX,
@@ -253,5 +254,57 @@ describe('pinHandles', () => {
         expect(Math.hypot(all[i][0] - all[j][0], all[i][1] - all[j][1])).toBeGreaterThan(12)
       }
     }
+  })
+})
+
+// §616: a path mask. Its polygon can be concave, so `insideDistance` decides
+// the sign by even-odd, not by the convex same-side test.
+describe('a path mask', () => {
+  // A "U": arms x 0-0.3 and 0.7-1 down to the bottom, joined across the top;
+  // the notch (x 0.3-0.7, y 0.4-1) is outside the shape.
+  const U = [[0, 0], [1, 0], [1, 1], [0.7, 1], [0.7, 0.4], [0.3, 0.4], [0.3, 1], [0, 1]]
+  const path = resolve({ shape: 'path', points: U, x: 0.5, y: 0.5, w: 1, h: 1 })
+
+  it('insideDistance is negative in the notch and positive inside an arm', () => {
+    // 100 x 100 box, mask box = the whole box.
+    expect(insideDistance(path, { x: 50, y: 80 }, 100, 100)).toBeCloseTo(-20) // 20 px from either arm
+    expect(insideDistance(path, { x: 50, y: 60 }, 100, 100)).toBeCloseTo(-20) // 20 px under the bar
+    expect(insideDistance(path, { x: 15, y: 60 }, 100, 100)).toBeCloseTo(15) // mid left arm, to its edge at x 0
+    expect(insideDistance(path, { x: 50, y: 20 }, 100, 100)).toBeCloseTo(20) // in the bar, 20 above the notch
+    expect(insideDistance(path, { x: 150, y: 50 }, 100, 100)).toBeCloseTo(-50) // outside
+  })
+
+  it('a convex polygon read the old way would call the notch inside; the path does not', () => {
+    // Same-side test on the notch point: edges of the U disagree on sides, so only even-odd is right.
+    expect(insideDistance(path, { x: 50, y: 90 }, 100, 100)).toBeLessThan(0)
+  })
+
+  it('coversBox: a notch between the corners keeps the fill a move area; a convex path past the box covers it', () => {
+    expect(coversBox(path, 100, 100)).toBe(false) // all four corners are in, the bottom middle is not
+    const square = [[0, 0], [1, 0], [1, 1], [0, 1]]
+    expect(coversBox(resolve({ shape: 'path', points: square, x: 0.5, y: 0.5, w: 1.2, h: 1.2 }), 100, 100)).toBe(true)
+    expect(coversBox(resolve({ shape: 'path', points: square, x: 0.5, y: 0.5, w: 0.5, h: 0.5 }), 100, 100)).toBe(false)
+  })
+
+  it('the gestures read like an ellipse: move, resize about the centre, rotate', () => {
+    expect(maskGestureChanges('move', path, { x: 50, y: 50 }, { x: 60, y: 40 }, 100, 100)).toEqual({ maskX: 0.6, maskY: 0.4 })
+    const r = maskGestureChanges('resize-se', path, { x: 100, y: 100 }, { x: 110, y: 110 }, 100, 100)
+    expect(r.maskW).toBeCloseTo(1.2)
+    expect(r.maskH).toBeCloseTo(1.2)
+    expect(maskGestureChanges('rotate', path, { x: 100, y: 50 }, { x: 50, y: 100 }, 100, 100).maskRotation).toBeCloseTo(90)
+  })
+
+  it('feather rings grow and shrink the polygon with the box, like the other shapes', () => {
+    const m = resolve({ shape: 'path', points: U, x: 0.5, y: 0.5, w: 0.5, h: 0.5, feather: 0.2 })
+    const r = featherRings(m, 100, 100)
+    expect(r.outer).toEqual(maskPolygon({ ...m, w: m.w + (2 * Math.max(2 * (0.2 * 100) / 4, OUTER_RING_MIN_PX)) / 100, h: m.h + (2 * Math.max(2 * (0.2 * 100) / 4, OUTER_RING_MIN_PX)) / 100 }, 100, 100))
+    expect(r.inner).not.toBeNull()
+  })
+
+  it('a feather drag outward from the notch edge widens the band like an ellipse', () => {
+    const m = resolve({ shape: 'path', points: U, x: 0.5, y: 0.5, w: 1, h: 1 })
+    // From 5 px into the notch (d = 5 out of the shape) to 15 px: +10 out, band +20 of the 100 px short side.
+    const c = maskGestureChanges('feather', m, { x: 35, y: 80 }, { x: 45, y: 80 }, 100, 100)
+    expect(c.maskFeather).toBeCloseTo(0.2)
   })
 })

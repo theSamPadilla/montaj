@@ -1697,3 +1697,48 @@ describe('OverlayInspector — blend and mask (clips, §616)', () => {
     expect(trackFor(onChange.mock.calls[0][0] as VisualItem, 'maskFeather')!.points).toEqual([{ t: 6, value: 0.2 }])
   })
 })
+
+// §616: a path mask is AI-authored. The Mask section shows for it with no shape
+// pressed (there is no path button) and its other rows work as for an ellipse.
+describe('OverlayInspector — path mask (§616)', () => {
+  const POINTS: Array<[number, number]> = [[0, 0], [1, 0], [1, 1], [0.5, 0.4], [0, 1]]
+  function pathClip(over: Partial<VisualItem['mask'] & object> = {}): VisualItem {
+    return { id: 'v1', type: 'video', src: 'v.mp4', start: 0, end: 10, mask: { shape: 'path', points: POINTS, x: 0.4, w: 0.6, rotation: 15, feather: 0.1, ...over } } as VisualItem
+  }
+
+  it('shows the rows with no shape button pressed and no path button', () => {
+    renderInspector(pathClip(), 5)
+    expect(screen.getByLabelText('Mask X')).toHaveValue(40)
+    expect(screen.getByLabelText('Mask width')).toHaveValue(60)
+    expect(screen.getByLabelText('Mask rotation')).toHaveValue(15)
+    expect(screen.getByLabelText('Mask feather')).toHaveValue(10)
+    expect(screen.getByRole('checkbox', { name: 'Invert mask' })).toBeInTheDocument()
+    for (const name of ['Ellipse mask', 'Rectangle mask', 'Wipe mask']) {
+      expect(screen.getByRole('button', { name })).toHaveAttribute('aria-pressed', 'false')
+    }
+    expect(screen.queryByRole('button', { name: /path/i })).toBeNull()
+  })
+
+  it('a shape button switches the shape and leaves the points on the mask', () => {
+    const { onChange } = renderInspector(pathClip({ smooth: true }), 5)
+    fireEvent.click(screen.getByRole('button', { name: 'Rectangle mask' }))
+    const mask = (onChange.mock.calls[0][0] as VisualItem).mask!
+    expect(mask.shape).toBe('rect')
+    expect(mask.points).toEqual(POINTS)
+    expect(mask.smooth).toBe(true)
+  })
+
+  it('invert writes invert and keeps the points', () => {
+    const { onChange } = renderInspector(pathClip(), 5)
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Invert mask' }))
+    const mask = (onChange.mock.calls[0][0] as VisualItem).mask!
+    expect(mask).toMatchObject({ shape: 'path', invert: true, points: POINTS })
+  })
+
+  it('a maskPoints track beside the mask does not break the section or the header diamonds', () => {
+    const item = pathClip()
+    item.keyframes = [{ prop: 'maskPoints', points: [{ t: 0, value: POINTS }, { t: 4, value: POINTS }] }] as unknown as VisualItem['keyframes']
+    renderInspector(item, 5)
+    expect(screen.getByLabelText('Mask X')).toHaveValue(40)
+  })
+})

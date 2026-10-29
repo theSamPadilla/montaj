@@ -99,9 +99,9 @@ function distToSegment(p: Pt, a: [number, number], b: [number, number]): number 
 
 /**
  * How far `p` is in from the mask's edge, in box pixels: positive inside the
- * shape, negative outside. The edge is the outline (`maskPolygon`, convex) for
- * an ellipse or rect, and the edge line for a wipe, whose inside is the side
- * that shows (`(p - c)·n <= 0`). The hard shape, so `invert` does not turn it.
+ * shape, negative outside. The edge is the outline (`maskPolygon`) for an
+ * ellipse or rect (convex) or a path (even-odd, possibly concave), and the
+ * edge line for a wipe, whose inside is the side that shows (`(p - c)·n <= 0`). The hard shape, so `invert` does not turn it.
  */
 export function insideDistance(m: ResolvedMask, p: Pt, boxW: number, boxH: number): number {
   if (m.shape === 'wipe') {
@@ -113,16 +113,22 @@ export function insideDistance(m: ResolvedMask, p: Pt, boxW: number, boxH: numbe
   let best = Infinity
   let pos = false
   let neg = false
+  let crossings = 0
   for (let i = 0; i < pts.length; i++) {
     const a = pts[i]
     const b = pts[(i + 1) % pts.length]
     const d = distToSegment(p, a, b)
     if (d < best) best = d
+    // Even-odd: a ray from p along +x crosses this edge.
+    if ((a[1] > p.y) !== (b[1] > p.y) && p.x < a[0] + ((p.y - a[1]) * (b[0] - a[0])) / (b[1] - a[1])) crossings++
     const cross = (b[0] - a[0]) * (p.y - a[1]) - (b[1] - a[1]) * (p.x - a[0])
     if (cross > 0) pos = true
     else if (cross < 0) neg = true
   }
-  // Convex: inside is on the same side of every edge.
+  // A path can be concave (and self-crossing), so its inside is even-odd, the
+  // fill rule `maskSvg` draws it with. Ellipse and rect are convex: inside is
+  // the same side of every edge.
+  if (m.shape === 'path') return crossings % 2 === 1 ? best : -best
   return pos && neg ? -best : best
 }
 
@@ -225,7 +231,7 @@ export function wipeLine(m: ResolvedMask, boxW: number, boxH: number, offsetPx =
  * The feather band's two dashed rings: `outer` (band / 2 outside the edge,
  * never closer than OUTER_RING_MIN_PX, so there is always something to grab,
  * even at feather 0) and `inner` (band / 2 inside), null when not feathered
- * or when it would collapse. For an ellipse or rect, `maskPolygon` with w and
+ * or when it would collapse. For an ellipse, rect or path, `maskPolygon` with w and
  * h grown / shrunk by 4 sigma over the box on each axis (2 sigma off the edge
  * each way). For a wipe, the edge line moved to each side; outer is the HIDDEN
  * side (+normal), and either is null when it misses the box.
@@ -245,6 +251,9 @@ export function featherRings(m: ResolvedMask, boxW: number, boxH: number): Feath
       inner: feathered ? wipeLine(m, boxW, boxH, -2 * sigma) : null,
     }
   }
+  // A path grows and shrinks its box like the others: `maskPolygon` scales the
+  // points with w and h, an approximation of the true offset curve of a
+  // concave outline, close enough for a grab ring.
   // Grow by `out` px each side: the polygon's w/h are fractions of the box.
   const outer = maskPolygon({ ...m, w: m.w + (2 * out) / boxW, h: m.h + (2 * out) / boxH }, boxW, boxH)
   const gw = (4 * sigma) / boxW
@@ -348,7 +357,12 @@ export function pointsAttr(pts: ReadonlyArray<readonly [number, number]>): strin
  */
 export function coversBox(m: ResolvedMask, boxW: number, boxH: number, slackPx = 16): boolean {
   if (m.shape === 'wipe') return false
-  return ([[0, 0], [boxW, 0], [boxW, boxH], [0, boxH]] as const).every(
+  // A path can be concave, so its corners alone say little (a notch can sit
+  // between them): its edge midpoints and the centre must be in too.
+  const probes: Array<readonly [number, number]> = m.shape === 'path'
+    ? [[0, 0], [boxW, 0], [boxW, boxH], [0, boxH], [boxW / 2, 0], [boxW, boxH / 2], [boxW / 2, boxH], [0, boxH / 2], [boxW / 2, boxH / 2]]
+    : [[0, 0], [boxW, 0], [boxW, boxH], [0, boxH]]
+  return probes.every(
     ([x, y]) => insideDistance(m, { x, y }, boxW, boxH) >= -slackPx,
   )
 }

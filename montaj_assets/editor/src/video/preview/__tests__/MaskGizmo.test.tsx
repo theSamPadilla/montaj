@@ -476,3 +476,77 @@ describe('mask gizmo: a mask covering the whole box', () => {
   })
 })
 
+
+// §616: a path mask uses the whole-shape gizmo exactly like an ellipse or rect.
+describe('mask gizmo: a path', () => {
+  // A U: arms down both sides, the notch open at the bottom.
+  const U: Array<[number, number]> = [[0, 0], [1, 0], [1, 1], [0.7, 1], [0.7, 0.4], [0.3, 0.4], [0.3, 1], [0, 1]]
+  const PATH = { shape: 'path' as const, points: U, x: 0.5, y: 0.5, w: 0.5, h: 0.25 }
+  // Box px: centre (54, 96), 54 x 48, so x 27..81, y 72..120.
+
+  it('shows on a selected path-masked clip with the eight squares, rotate handle and feather ring', () => {
+    render(<Host initial={clip({ mask: PATH })} />)
+    expect(screen.getByLabelText('Move mask')).toBeTruthy()
+    expect(screen.getAllByLabelText('Resize mask')).toHaveLength(8)
+    expect(screen.getByLabelText('Rotate mask')).toBeTruthy()
+    expect(screen.getByLabelText('Mask feather').tagName.toLowerCase()).toBe('polygon')
+  })
+
+  it('the outline is maskPolygon for the path, and the move area fills evenodd', () => {
+    const item = clip({ mask: { ...PATH, rotation: 20 } })
+    const { container } = render(<Host initial={item} />)
+    const expected = maskPolygon(maskAt(item, LOCAL_T)!, BOX_W, BOX_H)
+    const got = pointsOf(container.querySelector('[data-testid="mask-outline"]')!)
+    expect(got).toHaveLength(U.length)
+    got.forEach(([x, y], i) => {
+      expect(x).toBeCloseTo(expected[i][0], 2)
+      expect(y).toBeCloseTo(expected[i][1], 2)
+    })
+    expect(screen.getByLabelText('Move mask').getAttribute('fill-rule')).toBe('evenodd')
+  })
+
+  it('moving by +10% of the box commits mask.x + 0.1 and keeps the points', () => {
+    render(<Host initial={clip({ mask: PATH })} />)
+    drag(screen.getByLabelText('Move mask'), { x: 30, y: 80 }, { x: 30 + 0.1 * BOX_W, y: 80 })
+    expect(commits).toHaveLength(1)
+    expect(latest.mask!.x).toBeCloseTo(0.6)
+    expect(latest.mask!.points).toEqual(U)
+    expect(latest.mask!.shape).toBe('path')
+  })
+
+  it('a corner drag changes w and h about the centre', () => {
+    render(<Host initial={clip({ mask: PATH })} />)
+    const se = screen.getAllByLabelText('Resize mask').find(b => b.getAttribute('data-mask-handle') === 'se')!
+    drag(se, { x: 81, y: 120 }, { x: 91, y: 130 })
+    expect(latest.mask!.w).toBeCloseTo(0.5 + 20 / BOX_W)
+    expect(latest.mask!.h).toBeCloseTo(0.25 + 20 / BOX_H)
+  })
+
+  it('the rotate handle turns the mask about its centre', () => {
+    render(<Host initial={clip({ mask: PATH })} />)
+    const rot = screen.getByLabelText('Rotate mask')
+    drag(rot, { x: 54, y: 72 - 24 }, { x: 54 + 24, y: 96 })
+    expect(latest.mask!.rotation).toBeCloseTo(90)
+  })
+
+  it('dragging the feather ring outward by 10 px widens the band by 20 px', () => {
+    render(<Host initial={clip({ mask: PATH })} />)
+    // Feather 0: the ring sits 8 px outside the right arm's edge (x 81).
+    drag(screen.getByLabelText('Mask feather'), { x: 81 + 8, y: 96 }, { x: 81 + 18, y: 96 })
+    expect(latest.mask!.feather).toBeCloseTo(20 / BOX_W)
+  })
+
+  it('a feather drag across the notch measures from the path, not from a convex hull', () => {
+    render(<Host initial={clip({ mask: PATH })} />)
+    // Notch (outside the shape): x 43.2..64.8, open below the bar's lower edge at y = 72 + 48 * 0.4 = 91.2.
+    // From 2 px under the bar (out by 2) to 8 px under it (out by 8, still nearer the bar than the notch walls
+    // 10.8 px away): +6 out, so the band widens by 12 px.
+    drag(screen.getByLabelText('Mask feather'), { x: 54, y: 91.2 + 2 }, { x: 54, y: 91.2 + 8 })
+    expect(latest.mask!.feather).toBeCloseTo(12 / BOX_W)
+  })
+
+  it('draws no text on the canvas', () => {
+    const { container } = render(<Host initial={clip({ mask: PATH })} />)
+    expect(container.querySelector('[data-mask-gizmo] text')).toBeNull()
+  })
+})

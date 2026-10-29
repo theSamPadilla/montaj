@@ -277,6 +277,7 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
               role="button"
               aria-label="Move mask"
               fill={covers ? 'none' : 'transparent'}
+              fillRule="evenodd"
               stroke={covers ? 'transparent' : undefined}
               strokeWidth={covers ? OUTLINE_GRAB_PX : undefined}
               vectorEffect={covers ? 'non-scaling-stroke' : undefined}

@@ -2,7 +2,7 @@ import type { Project } from '../types'
 import type { VisualItem, AudioTrack, CaptionSegment, Word, VisualTrack, KeyframeTrack, Marker, Note } from '../schema'
 import { mapTrackItems, trackItems, normalizeTracks } from './timeline/timeline-model'
 import { isNote } from './timeline/notes'
-import { normalizeTrack, sampleTrack } from '@bycrux/timeline-core'
+import { normalizeTrack, sampleTrackValue } from './keyframeTrack'
 import { canKeyframe } from './keyframeOps'
 import { isScene3dItem, scene3dInPoint, shiftScene3dInPoint } from './scene3d'
 
@@ -79,7 +79,7 @@ function edgeKey(track: KeyframeTrack, t: number): KeyframeTrack['points'] {
   if (pts.length < 2) return []
   if (!(t > pts[0].t && t < pts[pts.length - 1].t)) return []
   if (pts.some(p => p.t === t)) return []
-  const value = sampleTrack(track, t)
+  const value = sampleTrackValue(track, t)
   if (value === undefined) return []
   let prev = pts[0]
   for (const p of pts) { if (p.t < t) prev = p }

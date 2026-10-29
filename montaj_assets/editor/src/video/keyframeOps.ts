@@ -1,5 +1,6 @@
 import type { CropKeyframeProp, EasingName, Keyframe, KeyframeProp, KeyframeTrack, MaskKeyframeProp, TransformKeyframeProp, VisualItem } from '../schema'
-import { MASK_FIELD_OF, MASK_KEYFRAME_PROPS, geometryAt, maskAt, normalizeTrack } from '@bycrux/timeline-core'
+import { MASK_FIELD_OF, MASK_KEYFRAME_PROPS, geometryAt, maskAt } from '@bycrux/timeline-core'
+import { isPointsProp, normalizeTrack } from './keyframeTrack'
 
 /**
  * keyframeOps — the shared, DOM-free keyframe-mutation surface for SP9b.
@@ -77,6 +78,8 @@ export function canKeyframe(item: VisualItem | null | undefined): item is Visual
  */
 export function canKeyframeProp(item: VisualItem | null | undefined, prop: KeyframeProp): boolean {
   if (!canKeyframe(item)) return false
+  // A path mask's `maskPoints` track is array-valued and AI-authored: never offered as a number prop.
+  if (isPointsProp(prop)) return false
   // PV55: the crop animates on images, and on videos that carry their source
   // size (a video's crop is a no-op without sourceWidth/sourceHeight, and
   // validate rejects keys without them). An overlay has no source.
@@ -326,6 +329,7 @@ export function setKeyframe(
   easing?: EasingName,
 ): VisualItem {
   if (!Number.isFinite(t) || !Number.isFinite(value)) return item
+  if (isPointsProp(prop)) return item // array-valued track: not a number edit
 
   const existing = trackFor(item, prop)
   const existingPoint = existing?.points.find(p => p.t === t)
@@ -432,6 +436,7 @@ export function setKeyframeEasing(item: VisualItem, prop: KeyframeProp, t: numbe
  */
 export function enableKeyframing(item: VisualItem, prop: KeyframeProp, atT: number): VisualItem {
   if (!Number.isFinite(atT)) return item
+  if (isPointsProp(prop)) return item
   if (hasKeyframes(item, prop)) return item
 
   const value = valueAt(item, prop, atT)
@@ -447,6 +452,8 @@ export function enableKeyframing(item: VisualItem, prop: KeyframeProp, atT: numb
  */
 export function disableKeyframing(item: VisualItem, prop: KeyframeProp, atT: number): VisualItem {
   if (!Number.isFinite(atT)) return item
+  // An array-valued track has no scalar to write back: drop the track, the mask's own `points` stay.
+  if (isPointsProp(prop)) return withTrack(item, prop, undefined)
 
   const value = valueAt(item, prop, atT)
   return withStaticValue(withTrack(item, prop, undefined), prop, value)
@@ -471,6 +478,7 @@ export function disableKeyframing(item: VisualItem, prop: KeyframeProp, atT: num
  * export, so the edit would be silently discarded.
  */
 export function writeProp(item: VisualItem, prop: KeyframeProp, localT: number, value: number): VisualItem {
+  if (isPointsProp(prop)) return item
   if (!hasKeyframes(item, prop)) return withStaticValue(item, prop, value)
   return setKeyframe(item, prop, keyframeTimeAt(item, prop, localT) ?? localT, value)
 }
@@ -481,7 +489,7 @@ export function writeProp(item: VisualItem, prop: KeyframeProp, localT: number, 
  * item) when a keyframe already sits at `t`.
  */
 export function addKeyframeAt(item: VisualItem, prop: KeyframeProp, t: number): VisualItem {
-  if (keyframeTimeAt(item, prop, t) !== undefined) return item
+  if (keyframeTimeAt(item, prop, t) !== undefined || isPointsProp(prop)) return item
   return setKeyframe(item, prop, t, valueAt(item, prop, t))
 }
 
@@ -582,6 +590,7 @@ const MULTIPLICATIVE_PROPS: ReadonlySet<KeyframeProp> = new Set(['scale', 'scale
  */
 export function offsetTrack(item: VisualItem, prop: KeyframeProp, localT: number, value: number): VisualItem {
   const track = trackFor(item, prop)
+  if (isPointsProp(prop)) return item
   if (!track || track.points.length === 0 || !Number.isFinite(localT) || !Number.isFinite(value)) return item
 
   const current = valueAt(item, prop, localT)
