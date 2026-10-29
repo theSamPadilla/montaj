@@ -664,8 +664,14 @@ was overlay-only until SP9d, when the ffmpeg path gained that per-frame hook.
 curve once per frame and sends it to the alpha filter as a runtime command, so
 the opacity keyframe diamond is live on a video or image clip, and
 double-clicking a clip to key everything keys its opacity with its geometry, as
-it does an overlay's. A clip's mask and blend mode have no controls yet; the AI
-sets them (see `docs/schemas/project.md`).
+it does an overlay's. A clip's blend mode is the **Blend** row under Opacity in
+the Transform panel, and its mask is the **Mask** section below Align: a switch
+(off keeps the settings), the shape, position, size, rotation, feather (the soft
+band's width) and invert, each keyframable but the shape and invert. On the
+preview a selected masked clip shows the mask's outline, resize squares, a
+rotate handle and dashed rings marking the feather band; dragging the outer ring
+sets the feather (`preview/MaskGizmo.tsx`). The data is in
+`docs/schemas/project.md`.
 
 - **Setting a key.** Each property gets its own keyframe diamond toggle in
   the right-hand **Transform** panel (`OverlayInspector.tsx`, see "Properties
