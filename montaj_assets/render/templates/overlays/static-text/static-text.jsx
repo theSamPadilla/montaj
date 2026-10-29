@@ -25,10 +25,7 @@
  *                   run's text, `c` a hex colour, `b`/`i`/`u` 1 (bold, italic,
  *                   underline on) or 0 (off); absent = the element's own. Used
  *                   only when the runs spell `text` exactly and no boundary
- *                   splits an emoji's two halves; otherwise ignored (empty or
- *                   malformed too). A run may also use the long keys `text`,
- *                   `color` (any CSS colour), `fontStyle`, `fontWeight` and
- *                   `fontFamily`; each draws only the keys it sets.
+ *                   splits an emoji's two halves; otherwise ignored.
  *   padX, padY    — px; the box's inner padding. Absent = '6%' / '8%' (with hug:
  *                   the pill's, default 0.35em / 0.9em)
  *   radius        — px corner radius of the box (with hug: of the pill)
@@ -66,15 +63,13 @@ function decodeRuns(raw, text) {
   if (typeof raw !== 'string' || raw === '') return null
   let list
   try { list = JSON.parse(raw) } catch { return null }
-  if (!Array.isArray(list) || !list.every(r => r && typeof r === 'object' && typeof (r.t ?? r.text) === 'string')) return null
-  list = list.map(r => (typeof r.t === 'string' ? r : { ...r, t: r.text }))
+  if (!Array.isArray(list) || !list.every(r => r && typeof r === 'object' && typeof r.t === 'string')) return null
   if (list.map(r => r.t).join('') !== String(text)) return null
   // A boundary between an emoji's two UTF-16 halves would draw each half alone.
   for (let i = 0; i < list.length - 1; i++) {
     if (/[\uD800-\uDBFF]$/.test(list[i].t) && /^[\uDC00-\uDFFF]/.test(list.slice(i + 1).map(r => r.t).join(''))) return null
   }
-  list = list.filter(r => r.t !== '')
-  return list.length ? list : null
+  return list.filter(r => r.t !== '')
 }
 
 // A run's own style. Underline is drawn per run: a child cannot take back its parent's.
@@ -83,10 +78,6 @@ function runStyle(r) {
   if (typeof r.c === 'string' && HEX.test(r.c)) s.color = r.c
   if (r.b === 1 || r.b === 0) s.fontWeight = r.b === 1 ? '700' : '400'
   if (r.i === 1 || r.i === 0) s.fontStyle = r.i === 1 ? 'italic' : 'normal'
-  if (typeof r.color === 'string' && r.color.trim()) s.color = r.color
-  for (const k of ['fontStyle', 'fontWeight', 'fontFamily']) {
-    if ((typeof r[k] === 'string' && r[k].trim()) || (k === 'fontWeight' && typeof r[k] === 'number')) s[k] = r[k]
-  }
   return s
 }
 

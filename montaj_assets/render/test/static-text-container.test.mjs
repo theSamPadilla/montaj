@@ -1,6 +1,6 @@
 // render/test/static-text-container.test.mjs
 //
-// §621: static-text's `runs` (long keys) and container props (padX, padY,
+// §621: static-text's `runs` inside a pill and container props (padX, padY,
 // radius, borderColor, borderWidth, letterSpacing, hug), proven by server-side
 // rendering of the template: no browser. The default-output snapshot was
 // captured from the template as it stood before the container props.
@@ -41,7 +41,6 @@ if (!skip) {
 test.after(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
 
 const opts = { skip }
-const RUNS = JSON.stringify([{ text: 'for ' }, { text: 'beginners', color: '#f6e3a1', fontStyle: 'italic' }])
 
 test('defaults: output is unchanged', opts, () => {
   assert.equal(
@@ -55,16 +54,15 @@ test('legacy short-key runs still draw', opts, () => {
   assert.match(html, /<span style="text-decoration-line:none">a<\/span><span style="text-decoration-line:none;color:#ff0000;font-weight:700">b<\/span>/)
 })
 
-test('runs: one span each, only the keys set', opts, () => {
-  const html = render({ text: 'for beginners', runs: RUNS })
-  assert.match(html, /<span style="text-decoration-line:none">for <\/span>/)
-  assert.match(html, /<span style="text-decoration-line:none;color:#f6e3a1;font-style:italic">beginners<\/span>/)
-  assert.equal((html.match(/<span/g) || []).length, 2)
+test('runs draw inside a hugging pill', opts, () => {
+  const runs = JSON.stringify([{ t: 'for ' }, { t: 'you', c: '#f6e3a1', i: 1 }])
+  const html = render({ text: 'for you', runs, hug: 'true', bgColor: '#222' })
+  assert.match(html, /fit-content[^>]*><p data-montaj-text="" [^>]*><span style="text-decoration-line:none">for <\/span><span style="text-decoration-line:none;color:#f6e3a1;font-style:italic">you<\/span><\/p><\/div><\/div>$/)
 })
 
-test('runs: malformed, empty or not spelling text fall back to text', opts, () => {
+test('runs: malformed or not spelling text fall back to text', opts, () => {
   const plain = render({ text: 'for beginners' })
-  for (const runs of ['{not json', '[]', '{}', '[{"text":5}]', JSON.stringify([{ text: 'other' }])]) {
+  for (const runs of ['{not json', '{}', '[{"t":5}]', JSON.stringify([{ t: 'other' }])]) {
     assert.equal(render({ text: 'for beginners', runs }), plain, runs)
   }
 })
