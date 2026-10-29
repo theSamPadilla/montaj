@@ -16,12 +16,13 @@ const compile = vi.fn(async () => (_f: number, _fps: number, _d: number, props: 
 const box = (left: number, top: number, width: number, height: number) =>
   ({ left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON() {} }) as DOMRect
 
-// The pill is 120 x 40, flush left in its layer and centred vertically.
+// The pill is `pillW` x 40, flush left in its layer and centred vertically.
+let pillW = 120
 function mockRects() {
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
     const layer = this.closest('[data-overlay-layer]') as HTMLElement | null
     if (this.hasAttribute('data-overlay-layer')) return box(0, 0, parseFloat(this.style.width), parseFloat(this.style.height))
-    if (this.hasAttribute('data-montaj-pill') && layer) return box(0, (parseFloat(layer.style.height) - 40) / 2, 120, 40)
+    if (this.hasAttribute('data-montaj-pill') && layer) return box(0, (parseFloat(layer.style.height) - 40) / 2, pillW, 40)
     return box(0, 0, 0, 0)
   })
 }
@@ -34,7 +35,7 @@ function pillEl(over: Partial<OverlayElement> = {}): OverlayElement {
   } as OverlayElement
 }
 
-async function mount(el: OverlayElement) {
+async function mount(el: OverlayElement, opts: { interactive?: boolean } = {}) {
   const spies = {
     editElements: vi.fn(async () => {}),
     moveElement: vi.fn(async () => {}),
@@ -44,13 +45,15 @@ async function mount(el: OverlayElement) {
     updateOverlayProps: vi.fn(async () => {}),
     commit: vi.fn(async () => {}),
   }
-  const r = render(
+  const canvas = (e: OverlayElement) => (
     <SlideCanvas
-      slide={{ id: 's', base_color: '#ffffff', elements: [el] }}
-      width={1080} height={1080} interactive selectedElementId={el.id} scale={0.5}
+      slide={{ id: 's', base_color: '#ffffff', elements: [e] }}
+      width={1080} height={1080} interactive={opts.interactive ?? true} selectedElementId={e.id} scale={0.5}
       compileOverlay={compile as never} onSelect={vi.fn()} {...spies}
-    />,
+    />
   )
+  const r = render(canvas(el))
+  const again = async (e: OverlayElement) => { await act(async () => { r.rerender(canvas(e)); await new Promise((res) => setTimeout(res, 20)) }) }
   await waitFor(() => expect(r.container.querySelector('[data-montaj-pill]')).not.toBeNull())
   const q = (sel: string) => r.container.querySelector(sel) as HTMLElement
   // A box as drawn, in slide px.
@@ -58,7 +61,7 @@ async function mount(el: OverlayElement) {
     const [tx, ty] = (/translate\(\s*(-?[\d.]+)px,\s*(-?[\d.]+)px/.exec(e.style.transform) ?? ['', '0', '0']).slice(1).map(Number)
     return [tx * 2, ty * 2, parseFloat(e.style.width) * 2, parseFloat(e.style.height) * 2]
   }
-  return { r, q, at, ...spies, wrapper: () => q('[data-element-id="pill"]'), chrome: () => q('[data-chrome-for="pill"]') }
+  return { r, q, at, again, ...spies, wrapper: () => q('[data-element-id="pill"]'), chrome: () => q('[data-chrome-for="pill"]') }
 }
 
 type PointerInit = MouseEventInit
@@ -66,22 +69,80 @@ const pointer = (target: EventTarget, type: string, init: PointerInit = {}) =>
   target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, ...init }))
 
 beforeEach(() => {
+  pillW = 120
   ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class { observe() {} unobserve() {} disconnect() {} }
   Element.prototype.setPointerCapture = () => {}
 })
 afterEach(() => { vi.restoreAllMocks() })
 
 describe('a hugging pill is its own element box', () => {
-  it('a saved wide box shows fitted to the pill, outline and handles included, and nothing is written', async () => {
+  it('a saved wide box shows fitted to the pill, outline and handles included', async () => {
     mockRects()
     const t = await mount(pillEl())
     // Flush left, centred vertically: x stays, y moves down by (120 - 40) / 2.
     await waitFor(() => expect(t.at(t.wrapper())).toEqual([100, 140, 120, 40]))
     expect(t.at(t.chrome())).toEqual([100, 140, 120, 40])
     expect(t.q('[data-testid="resize-handle-se"]')).not.toBeNull()
-    for (const spy of [t.editElements, t.moveElement, t.resizeElement, t.rotateElement, t.updateOverlayProp, t.updateOverlayProps, t.commit]) {
-      expect(spy).not.toHaveBeenCalled()
-    }
+  })
+
+  async function settled(t: Awaited<ReturnType<typeof mount>>) {
+    await waitFor(() => expect(t.editElements).toHaveBeenCalledTimes(1))
+    t.editElements.mockClear()
+  }
+  const boxOf = (call: unknown[], from: OverlayElement) => {
+    const out = (call[1] as (e: unknown[]) => Array<Record<string, number>>)([from])[0]
+    return [out.x, out.y, out.w, out.h]
+  }
+
+  it('an old wide box is corrected once on mount, without moving the pill, and stays after a re-render', async () => {
+    mockRects()
+    const t = await mount(pillEl())
+    await waitFor(() => expect(t.editElements).toHaveBeenCalledTimes(1))
+    expect(boxOf(t.editElements.mock.calls[0], pillEl())).toEqual([100, 140, 120, 40])
+    for (const spy of [t.moveElement, t.resizeElement, t.rotateElement, t.updateOverlayProp, t.updateOverlayProps]) expect(spy).not.toHaveBeenCalled()
+    await t.again(pillEl())
+    await t.again(pillEl())
+    expect(t.editElements).toHaveBeenCalledTimes(1)
+  })
+
+  it('a box that is already the pill is not written', async () => {
+    mockRects()
+    const t = await mount(pillEl({ x: 100, y: 140, w: 120, h: 40 }))
+    await t.again(pillEl({ x: 100, y: 140, w: 120, h: 40 }))
+    expect(t.editElements).not.toHaveBeenCalled()
+  })
+
+  it('a prop that resizes the pill stores the new box once, then no more', async () => {
+    mockRects()
+    const t = await mount(pillEl({ x: 100, y: 140, w: 120, h: 40 }))
+    pillW = 200
+    const bigger = pillEl({ x: 100, y: 140, w: 120, h: 40, overlay: { template: '/t/h.jsx', props: { text: 'Pill', textAlign: 'left', hug: 'true', fontSize: '60' } } } as Partial<OverlayElement>)
+    await t.again(bigger)
+    await waitFor(() => expect(t.editElements).toHaveBeenCalledTimes(1))
+    expect(boxOf(t.editElements.mock.calls[0], bigger)).toEqual([100, 140, 200, 40])
+    await t.again(bigger)
+    expect(t.editElements).toHaveBeenCalledTimes(1)
+  })
+
+  it('an undo that brings the old box back is not fought', async () => {
+    mockRects()
+    const wide = pillEl()
+    const t = await mount(wide)
+    await settled(t)
+    await t.again(pillEl({ x: 100, y: 140, w: 120, h: 40 }))  // the write landed
+    await t.again(pillEl())                                    // undo: the wide box again
+    expect(t.editElements).not.toHaveBeenCalled()
+  })
+
+  it('writes nothing on a canvas that is not interactive, or for a locked element', async () => {
+    mockRects()
+    const ro = await mount(pillEl(), { interactive: false })
+    await ro.again(pillEl())
+    expect(ro.editElements).not.toHaveBeenCalled()
+    ro.r.unmount()
+    const locked = await mount(pillEl({ locked: true } as Partial<OverlayElement>))
+    await locked.again(pillEl({ locked: true } as Partial<OverlayElement>))
+    expect(locked.editElements).not.toHaveBeenCalled()
   })
 
   it('a box that already is the pill is left alone', async () => {
@@ -93,7 +154,7 @@ describe('a hugging pill is its own element box', () => {
   it('a drag writes the shown box with the move, in one step', async () => {
     mockRects()
     const t = await mount(pillEl())
-    await waitFor(() => expect(t.at(t.wrapper())[2]).toBe(120))
+    await settled(t)
     await act(async () => {
       pointer(t.wrapper(), 'pointerdown', { clientX: 10, clientY: 10 })
       pointer(window, 'pointermove', { clientX: 30, clientY: 20 })
@@ -110,7 +171,7 @@ describe('a hugging pill is its own element box', () => {
   it('a turn writes the shown box with the rotation, in one step', async () => {
     mockRects()
     const t = await mount(pillEl())
-    await waitFor(() => expect(t.at(t.wrapper())[2]).toBe(120))
+    await settled(t)
     const knob = t.q('[data-testid="rotate-handle"]')
     await act(async () => {
       pointer(knob, 'pointerdown', { clientX: 0, clientY: -10 })

@@ -1056,6 +1056,35 @@ export default function SlideCanvas({
     return () => { gone = true; mo.disconnect() }
   }, [interactive, hugCount])
 
+  // The measured box of a hugging pill is stored once it has settled (a prop
+  // that resizes the pill, an old wide box): one editElements for all, a step
+  // of its own. Not while a text, a gesture or a crop is open, nor for a
+  // locked or hidden element. An element's props+box seen here (before or
+  // after the write) are never written for twice, so an undo that brings the
+  // old box back is not fought and nothing loops.
+  const corrected = useRef<Map<string, Set<string>>>(new Map())
+  function storeFittedBoxes() {
+    if (!editElements || editingId || activeGesture.current || cropSession) return
+    const writes = new Map<string, Box>()
+    for (const live of liveSlide.elements) {
+      if (live.type !== 'overlay' || hiddenSet?.has(live.id) || isLocked(live) || heldByLock(liveSlide.elements, live)) continue
+      const fit = fitOf(live.id)
+      if (!fit || sameBox(fit, live) || (['x', 'y', 'w', 'h'] as const).every((f) => Math.abs(fit[f] - live[f]) <= 1)) continue
+      const keyOf = (b: Box) => `${boxSig({ ...b, rotation: live.rotation })}|${JSON.stringify(live.overlay.props)}`
+      const seen = corrected.current.get(live.id) ?? new Set<string>()
+      if (seen.has(keyOf(live))) continue
+      seen.add(keyOf(live))
+      seen.add(keyOf(fit))
+      corrected.current.set(live.id, seen)
+      writes.set(live.id, fit)
+    }
+    if (!writes.size) return
+    void editElements(sid, (els) => els.map((e) => {
+      const box = writes.get(e.id)
+      return box && !isLocked(e) ? { ...e, x: box.x, y: box.y, w: box.w, h: box.h } : e
+    }))
+  }
+
   // Keeps each hugging pill's shown box on its measured pill, and (while a
   // text is typed) the box a custom overlay grows to; then the editor over the
   // text node. Measured with the box drawn last, so it settles in a pass or two.
@@ -1100,6 +1129,7 @@ export default function SlideCanvas({
       return
     }
     fitStreak.current = 0
+    storeFittedBoxes()
     const shown = editingId ? slide.elements.find((e) => e.id === editingId) : null
     const wrapper = editingId ? wrapperRefs.current.get(editingId) : undefined
     if (!draft || shown?.type !== 'overlay' || !wrapper) return
