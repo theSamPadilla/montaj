@@ -223,9 +223,8 @@ describe('the container follows the typed text', () => {
     )
     await waitFor(() => expect(r.container.querySelector('[data-montaj-pill]')).not.toBeNull())
     const q = (sel: string) => r.container.querySelector(sel) as HTMLElement
-    // The old wide box is stored fitted on mount; the edit starts after it.
-    await waitFor(() => expect(editElements).toHaveBeenCalledTimes(1))
-    editElements.mockClear()
+    // The old wide box shows fitted (display only) before the edit starts.
+    await waitFor(() => expect((q(`[data-element-id="${element.id}"]`)).style.width).toBe('10px'))
     await act(async () => { fireEvent.doubleClick(q(`[data-element-id="${element.id}"]`)) })
     const type = async (text: string) => {
       const box = q('[role="textbox"]')

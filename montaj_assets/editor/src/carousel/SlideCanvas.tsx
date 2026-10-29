@@ -2,6 +2,7 @@ import { Check, Image as ImageIcon, Type as TypeIcon, Shapes } from 'lucide-reac
 import { useEffect, useMemo, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react'
 import type { Slide, CarouselElement, OverlayElement, ImageElement, OverlayFactory } from '../types'
 import OverlayErrorBoundary from './OverlayErrorBoundary'
+import { onFitRequest } from './fitRequests'
 import { HANDLE_LOOK, HANDLE_SIZE, HitPad, KNOB_LOOK, OUTLINE, ROTATE_KNOB, ROTATE_OFFSET } from './chromeStyle'
 import {
   useOverlayDrag,
@@ -858,10 +859,12 @@ export default function SlideCanvas({
         // Both in this tick, so the box and the size draw together. The prop
         // write folds the transient resize into its undo step and its save.
         await Promise.all([resizeElement?.(sid, id, next), updateOverlayProp(sid, id, 'fontSize', fontSize)])
+        if (el.type === 'overlay' && String(el.overlay.props.hug) === 'true') void armFit(id)
         return
       }
       await resizeElement?.(sid, id, next)
       await commit?.()
+      if (el.type === 'overlay' && String(el.overlay.props.hug) === 'true') void armFit(id)
     },
   })
 
@@ -1056,33 +1059,36 @@ export default function SlideCanvas({
     return () => { gone = true; mo.disconnect() }
   }, [interactive, hugCount])
 
-  // The measured box of a hugging pill is stored once it has settled (a prop
-  // that resizes the pill, an old wide box): one editElements for all, a step
-  // of its own. Not while a text, a gesture or a crop is open, nor for a
-  // locked or hidden element. An element's props+box seen here (before or
-  // after the write) are never written for twice, so an undo that brings the
-  // old box back is not fought and nothing loops.
-  const corrected = useRef<Map<string, Set<string>>>(new Map())
+  // A write the person just made to a hugging pill (a toolbar prop, a resize)
+  // stores the box its pill measures once that has settled, so a render sees
+  // it: asked for by `requestFit` (carousel/fitRequests), or after a resize
+  // here. Never on load or select, and not while a text, gesture or crop is
+  // open or for a locked or hidden element. Each resolves when it has been
+  // looked at, written or not.
+  const pendingFits = useRef<Map<string, Array<() => void>>>(new Map())
+  const armFit = (id: string): Promise<void> => new Promise((resolve) => {
+    pendingFits.current.set(id, [...(pendingFits.current.get(id) ?? []), resolve])
+    setMeasureTick((t) => t + 1)
+  })
+  useEffect(() => onFitRequest((slideId, elementId) => (slideId === sid ? armFit(elementId) : undefined)), [sid])
   function storeFittedBoxes() {
-    if (!editElements || editingId || activeGesture.current || cropSession) return
+    if (!pendingFits.current.size) return
+    const ready = new Map(pendingFits.current)
+    pendingFits.current.clear()
     const writes = new Map<string, Box>()
-    for (const live of liveSlide.elements) {
-      if (live.type !== 'overlay' || hiddenSet?.has(live.id) || isLocked(live) || heldByLock(liveSlide.elements, live)) continue
-      const fit = fitOf(live.id)
-      if (!fit || sameBox(fit, live) || (['x', 'y', 'w', 'h'] as const).every((f) => Math.abs(fit[f] - live[f]) <= 1)) continue
-      const keyOf = (b: Box) => `${boxSig({ ...b, rotation: live.rotation })}|${JSON.stringify(live.overlay.props)}`
-      const seen = corrected.current.get(live.id) ?? new Set<string>()
-      if (seen.has(keyOf(live))) continue
-      seen.add(keyOf(live))
-      seen.add(keyOf(fit))
-      corrected.current.set(live.id, seen)
-      writes.set(live.id, fit)
+    for (const id of ready.keys()) {
+      const live = liveSlide.elements.find((e) => e.id === id)
+      const fit = fitOf(id)
+      if (!editElements || editingId || activeGesture.current || cropSession) continue
+      if (live?.type !== 'overlay' || hiddenSet?.has(id) || isLocked(live) || heldByLock(liveSlide.elements, live) || !fit || sameBox(fit, live)) continue
+      writes.set(id, fit)
     }
-    if (!writes.size) return
+    const done = () => ready.forEach((list) => list.forEach((r) => r()))
+    if (!writes.size || !editElements) return done()
     void editElements(sid, (els) => els.map((e) => {
       const box = writes.get(e.id)
       return box && !isLocked(e) ? { ...e, x: box.x, y: box.y, w: box.w, h: box.h } : e
-    }))
+    })).finally(done)
   }
 
   // Keeps each hugging pill's shown box on its measured pill, and (while a

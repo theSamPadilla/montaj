@@ -9,6 +9,7 @@ import type { Asset, SlideNote } from '../schema'
 import { applyTheme, defaultMontajTheme, isLightTheme } from '../theme'
 import { useProjectState } from '../state/use-project-state'
 import SlideCanvas, { type CropExit, type InlineTextSession, type SlideCanvasCropControl, type TextRangeInfo } from './SlideCanvas'
+import { requestFit } from './fitRequests'
 import { setOverlayPropsIn, styleWholeText, type RunPatch } from '../text/runs'
 import { KEEP_TEXT_EDIT } from '../text/InlineTextEditor'
 import SlidePropertyPanel from './SlidePropertyPanel'
@@ -1807,11 +1808,30 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     const el = els?.find(e => e.id === elementId)
     return !!els && !!el && heldByLock(els, el)
   }
-  const updateOverlayProp: typeof state.updateOverlayProp = (slideId, elementId, key, value) =>
-    lockedNow(slideId, elementId) ? Promise.resolve() : state.updateOverlayProp(slideId, elementId, key, value)
+  // A hugging pill: its box is its pill's, so a prop write that may resize the
+  // pill is applied as a preview, the canvas stores the re-measured box with it
+  // (fitRequests), and the commit closes both as one undo step.
+  const hugsAfter = (slideId: string, elementId: string, patch: Record<string, unknown>) => {
+    const el = slidesRef.current.find(s => s.id === slideId)?.elements.find(e => e.id === elementId)
+    if (el?.type !== 'overlay' || typeof el.overlay.props.text !== 'string') return false
+    return String('hug' in patch ? patch.hug : el.overlay.props.hug) === 'true'
+  }
+  const writeWithFit = async (slideId: string, elementId: string, patch: Record<string, string | undefined>) => {
+    state.previewSlides(all => setOverlayPropsIn(all, slideId, elementId, patch))
+    await requestFit(slideId, elementId)
+    await state.commit()
+  }
+  const updateOverlayProp: typeof state.updateOverlayProp = (slideId, elementId, key, value) => {
+    if (lockedNow(slideId, elementId)) return Promise.resolve()
+    if (hugsAfter(slideId, elementId, { [key]: value })) return writeWithFit(slideId, elementId, { [key]: String(value) })
+    return state.updateOverlayProp(slideId, elementId, key, value)
+  }
   /** Several props in one write, one undo step (`undefined` removes one). */
-  const updateOverlayProps = (slideId: string, elementId: string, patch: Record<string, string | undefined>) =>
-    lockedNow(slideId, elementId) ? Promise.resolve() : state.editSlides(all => setOverlayPropsIn(all, slideId, elementId, patch))
+  const updateOverlayProps = (slideId: string, elementId: string, patch: Record<string, string | undefined>) => {
+    if (lockedNow(slideId, elementId)) return Promise.resolve()
+    if (hugsAfter(slideId, elementId, patch)) return writeWithFit(slideId, elementId, patch)
+    return state.editSlides(all => setOverlayPropsIn(all, slideId, elementId, patch))
+  }
   const updateImageCrop: typeof state.updateImageCrop = (slideId, elementId, crop) =>
     lockedNow(slideId, elementId) ? Promise.resolve() : state.updateImageCrop(slideId, elementId, crop)
   // The gesture writes too: an external save can lock the element while the
@@ -1825,15 +1845,21 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // A live overlay prop (the toolbar's stroke weight drag): transient until the
   // release commits it as one undo step. Nothing previewed, nothing committed.
   const propPreviewOpen = useRef(false)
+  const propPreviewOf = useRef<{ slideId: string; elementId: string } | null>(null)
   const previewOverlayProp = (slideId: string, elementId: string, key: string, value: string) => {
     if (lockedNow(slideId, elementId)) return
     propPreviewOpen.current = true
+    propPreviewOf.current = hugsAfter(slideId, elementId, { [key]: value }) ? { slideId, elementId } : null
     state.previewSlides(all => setOverlayPropIn(all, slideId, elementId, key, value))
   }
   const commitPropPreview = () => {
     if (!propPreviewOpen.current) return
     propPreviewOpen.current = false
-    void state.commit()
+    // A hugging pill's box is stored with the release, in the same step.
+    const pill = propPreviewOf.current
+    propPreviewOf.current = null
+    if (pill) void requestFit(pill.slideId, pill.elementId).then(() => state.commit())
+    else void state.commit()
   }
   // Escape in the weight field: the preview is given up, nothing is saved.
   const cancelPropPreview = () => {

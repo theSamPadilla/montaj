@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, act, waitFor } from '@testing-library/react'
 import type { OverlayElement } from '../../types'
 import SlideCanvas from '../SlideCanvas'
+import { requestFit } from '../fitRequests'
 
 // A hugging pill's element box IS the pill: outline, handles and knob wrap it,
 // a saved wide box shows fitted without being written, and a gesture writes
@@ -85,76 +86,77 @@ describe('a hugging pill is its own element box', () => {
     expect(t.q('[data-testid="resize-handle-se"]')).not.toBeNull()
   })
 
-  async function settled(t: Awaited<ReturnType<typeof mount>>) {
-    await waitFor(() => expect(t.editElements).toHaveBeenCalledTimes(1))
-    t.editElements.mockClear()
+  async function shown(t: Awaited<ReturnType<typeof mount>>) {
+    await waitFor(() => expect(t.at(t.wrapper())[2]).toBe(pillW))
   }
   const boxOf = (call: unknown[], from: OverlayElement) => {
     const out = (call[1] as (e: unknown[]) => Array<Record<string, number>>)([from])[0]
     return [out.x, out.y, out.w, out.h]
   }
+  const nothingWritten = (t: Awaited<ReturnType<typeof mount>>) => {
+    for (const spy of [t.editElements, t.moveElement, t.resizeElement, t.rotateElement, t.updateOverlayProp, t.updateOverlayProps, t.commit]) {
+      expect(spy).not.toHaveBeenCalled()
+    }
+  }
 
-  it('an old wide box is corrected once on mount, without moving the pill, and stays after a re-render', async () => {
+  it('opening, selecting and re-rendering an old wide box write nothing', async () => {
     mockRects()
     const t = await mount(pillEl())
-    await waitFor(() => expect(t.editElements).toHaveBeenCalledTimes(1))
-    expect(boxOf(t.editElements.mock.calls[0], pillEl())).toEqual([100, 140, 120, 40])
-    for (const spy of [t.moveElement, t.resizeElement, t.rotateElement, t.updateOverlayProp, t.updateOverlayProps]) expect(spy).not.toHaveBeenCalled()
+    await shown(t)
     await t.again(pillEl())
-    await t.again(pillEl())
-    expect(t.editElements).toHaveBeenCalledTimes(1)
+    await t.again(pillEl({ x: 100, y: 100, w: 400, h: 121 }))
+    nothingWritten(t)
   })
 
-  it('a box that is already the pill is not written', async () => {
+  it('a box that is already the pill is not written either', async () => {
     mockRects()
     const t = await mount(pillEl({ x: 100, y: 140, w: 120, h: 40 }))
     await t.again(pillEl({ x: 100, y: 140, w: 120, h: 40 }))
-    expect(t.editElements).not.toHaveBeenCalled()
+    nothingWritten(t)
   })
 
-  it('a prop that resizes the pill stores the new box once, then no more', async () => {
+  it('a fit request stores the re-measured box once, and only when asked', async () => {
     mockRects()
     const t = await mount(pillEl({ x: 100, y: 140, w: 120, h: 40 }))
     pillW = 200
     const bigger = pillEl({ x: 100, y: 140, w: 120, h: 40, overlay: { template: '/t/h.jsx', props: { text: 'Pill', textAlign: 'left', hug: 'true', fontSize: '60' } } } as Partial<OverlayElement>)
     await t.again(bigger)
-    await waitFor(() => expect(t.editElements).toHaveBeenCalledTimes(1))
-    expect(boxOf(t.editElements.mock.calls[0], bigger)).toEqual([100, 140, 200, 40])
-    await t.again(bigger)
+    expect(t.editElements).not.toHaveBeenCalled()  // shown fitted, not written
+    await act(async () => { await requestFit('s', 'pill') })
     expect(t.editElements).toHaveBeenCalledTimes(1)
+    expect(boxOf(t.editElements.mock.calls[0], bigger)).toEqual([100, 140, 200, 40])
   })
 
-  it('an undo that brings the old box back is not fought', async () => {
-    mockRects()
-    const wide = pillEl()
-    const t = await mount(wide)
-    await settled(t)
-    await t.again(pillEl({ x: 100, y: 140, w: 120, h: 40 }))  // the write landed
-    await t.again(pillEl())                                    // undo: the wide box again
-    expect(t.editElements).not.toHaveBeenCalled()
-  })
-
-  it('writes nothing on a canvas that is not interactive, or for a locked element', async () => {
+  it('a fit request for a canvas that is not editing-ready, locked or read-only writes nothing and still resolves', async () => {
     mockRects()
     const ro = await mount(pillEl(), { interactive: false })
-    await ro.again(pillEl())
+    await act(async () => { await requestFit('s', 'pill') })
     expect(ro.editElements).not.toHaveBeenCalled()
     ro.r.unmount()
     const locked = await mount(pillEl({ locked: true } as Partial<OverlayElement>))
-    await locked.again(pillEl({ locked: true } as Partial<OverlayElement>))
+    await shown(locked)
+    await act(async () => { await requestFit('s', 'pill') })
     expect(locked.editElements).not.toHaveBeenCalled()
   })
 
-  it('a box that already is the pill is left alone', async () => {
+  it('a resize stores the pill-fitted box after the dragged one', async () => {
     mockRects()
-    const t = await mount(pillEl({ x: 100, y: 140, w: 120, h: 40 }))
-    expect(t.at(t.wrapper())).toEqual([100, 140, 120, 40])
+    const t = await mount(pillEl())
+    await shown(t)
+    await act(async () => {
+      pointer(t.q('[data-testid="resize-handle-e"]'), 'pointerdown', { clientX: 0, clientY: 0 })
+      pointer(window, 'pointermove', { clientX: 20, clientY: 0 })
+      pointer(window, 'pointerup', { clientX: 20, clientY: 0 })
+    })
+    expect(t.resizeElement).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(t.editElements).toHaveBeenCalledTimes(1))
+    expect(boxOf(t.editElements.mock.calls[0], pillEl())[2]).toBe(120)
   })
 
   it('a drag writes the shown box with the move, in one step', async () => {
     mockRects()
     const t = await mount(pillEl())
-    await settled(t)
+    await shown(t)
     await act(async () => {
       pointer(t.wrapper(), 'pointerdown', { clientX: 10, clientY: 10 })
       pointer(window, 'pointermove', { clientX: 30, clientY: 20 })
@@ -171,7 +173,7 @@ describe('a hugging pill is its own element box', () => {
   it('a turn writes the shown box with the rotation, in one step', async () => {
     mockRects()
     const t = await mount(pillEl())
-    await settled(t)
+    await shown(t)
     const knob = t.q('[data-testid="rotate-handle"]')
     await act(async () => {
       pointer(knob, 'pointerdown', { clientX: 0, clientY: -10 })
