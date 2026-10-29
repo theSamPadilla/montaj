@@ -49,13 +49,15 @@ from typing import Any
 
 # Mirrors montaj_assets/timeline-core/src/mask.js (MASK_SHAPES, BLEND_MODES,
 # MASK_KEYFRAME_PROPS and the clamps documented on ItemMask). Change both together.
-MASK_SHAPES = ("ellipse", "rect", "wipe")
+MASK_SHAPES = ("ellipse", "rect", "wipe", "path")
+MASK_POINTS_MAX = 64
+MASK_POINTS_PROP = "maskPoints"
 BLEND_MODES = ("normal", "screen", "multiply", "add", "lighten", "darken", "overlay")
 MASK_KEYFRAME_PROPS = ("maskX", "maskY", "maskW", "maskH", "maskRotation", "maskFeather")
 # The other props a clip keyframe track may name (geometry.js / curves.js KeyframeProp).
 GEOMETRY_KEYFRAME_PROPS = ("offsetX", "offsetY", "scale", "scaleX", "scaleY", "rotation")
 CROP_KEYFRAME_PROPS = ("cropX", "cropY", "cropW", "cropH")
-CLIP_KEYFRAME_PROPS = GEOMETRY_KEYFRAME_PROPS + CROP_KEYFRAME_PROPS + ("opacity",) + MASK_KEYFRAME_PROPS
+CLIP_KEYFRAME_PROPS = GEOMETRY_KEYFRAME_PROPS + CROP_KEYFRAME_PROPS + ("opacity",) + MASK_KEYFRAME_PROPS + (MASK_POINTS_PROP,)
 VISUAL_TYPES = ("image", "video")
 ITEM_TYPES = ("overlay",) + VISUAL_TYPES
 # A mask's feather is the soft band's width over the box's shorter side.
@@ -141,6 +143,16 @@ def _finite(value: Any) -> bool:
     return _is_number(value) and math.isfinite(value)
 
 
+def _point_list_ok(value: Any, lo: int = 3, hi: int = MASK_POINTS_MAX) -> bool:
+    """A list of ``lo``..``hi`` ``[x, y]`` pairs of finite numbers from 0 to 1."""
+    if not isinstance(value, list) or not lo <= len(value) <= hi:
+        return False
+    return all(
+        isinstance(p, (list, tuple)) and len(p) == 2 and all(_finite(c) and 0 <= c <= 1 for c in p)
+        for p in value
+    )
+
+
 def _visual_item_errors(item: dict, strict: bool = True) -> list[tuple[str, str]]:
     """``(field, problem)`` pairs for the compositing fields of an image or
     video item: ``mask``, ``blendMode``, ``opacity`` and ``keyframes``.
@@ -188,6 +200,12 @@ def _visual_item_errors(item: dict, strict: bool = True) -> list[tuple[str, str]
                 v = mask.get(k)
                 if v is not None and not isinstance(v, bool):
                     err(f"mask.{k}", "must be a boolean")
+            if mask.get("shape") == "path":
+                if not _point_list_ok(mask.get("points")):
+                    err("mask.points", f"must be 3 to {MASK_POINTS_MAX} [x, y] pairs from 0 to 1")
+                v = mask.get("smooth")
+                if v is not None and not isinstance(v, bool):
+                    err("mask.smooth", "must be a boolean")
 
     keyframes = item.get("keyframes")
     if isinstance(keyframes, list):
@@ -202,11 +220,27 @@ def _visual_item_errors(item: dict, strict: bool = True) -> list[tuple[str, str]
                 continue
             if strict and prop in MASK_KEYFRAME_PROPS and not isinstance(mask, dict):
                 err(where, f"{prop} needs a mask on the item (a mask track does nothing without one)")
+            is_path = isinstance(mask, dict) and mask.get("shape") == "path"
+            if prop == MASK_POINTS_PROP and not is_path:
+                if strict:
+                    err(where, "maskPoints needs a path mask on the item (a morph track does nothing without one)")
+                continue
             points = track.get("points")
             if points is None:
                 continue
             if not isinstance(points, list):
                 err(f"{where}.points", "must be an array")
+                continue
+            if prop == MASK_POINTS_PROP:
+                base = mask.get("points")
+                n = len(base) if isinstance(base, list) else None
+                for j, point in enumerate(points):
+                    value = point.get("value") if isinstance(point, dict) else None
+                    at = f"{where}.points[{j}].value"
+                    if not _point_list_ok(value, 0, MASK_POINTS_MAX):
+                        err(at, "must be a list of [x, y] pairs from 0 to 1")
+                    elif n is not None and len(value) != n:
+                        err(at, f"must have {n} points, like mask.points (it has {len(value)})")
                 continue
             for j, point in enumerate(points):
                 value = point.get("value") if isinstance(point, dict) else None

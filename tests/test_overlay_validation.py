@@ -43,7 +43,7 @@ def test_valid_compositing_passes(make):
 
 @pytest.mark.parametrize("make", [_img, _vid])
 @pytest.mark.parametrize("over,needle", [
-    ({"mask": {"shape": "star"}}, "mask.shape must be one of ellipse, rect, wipe"),
+    ({"mask": {"shape": "star"}}, "mask.shape must be one of ellipse, rect, wipe, path"),
     ({"mask": {}}, "mask.shape must be one of"),
     ({"mask": "ellipse"}, "mask must be an object"),
     ({"mask": {"shape": "ellipse", "x": float("nan")}}, "mask.x must be a finite number"),
@@ -108,3 +108,48 @@ def test_prior_index_is_keyed_by_type():
     cur = _proj(_vid(id="same", blendMode="dodge"))
     errors = overlay_item_errors(cur, previous=prior)
     assert any("blendMode" in e for e in errors)
+
+
+TRI = [[0.5, 0], [1, 1], [0, 1]]
+QUAD = [[0, 0], [1, 0], [1, 1], [0, 1]]
+
+
+@pytest.mark.parametrize("make", [_img, _vid])
+def test_path_mask_and_morph_track_pass(make):
+    item = make(
+        mask={"shape": "path", "points": QUAD, "smooth": True},
+        keyframes=[{"prop": "maskPoints", "points": [{"t": 0, "value": QUAD}, {"t": 1, "value": [[0, 0], [1, 0], [1, 0.5], [0, 1]]}]}])
+    assert _errs(item) == []
+
+
+@pytest.mark.parametrize("points", [None, "x", [[0, 0], [1, 1]], [[0, 0], [1, 1], [0.5]], [[0, 0], [1, 1], [2, 0]],
+                                     [[0, 0], [1, 1], [float("nan"), 0]], [[0.1, 0.1]] * 65])
+def test_path_mask_points_are_checked(points):
+    errors = _errs(_img(mask={"shape": "path", "points": points}))
+    assert any("mask.points must be 3 to 64 [x, y] pairs from 0 to 1" in e for e in errors), errors
+
+
+def test_path_smooth_must_be_bool_and_other_shapes_ignore_points():
+    assert any("mask.smooth must be a boolean" in e for e in _errs(_img(mask={"shape": "path", "points": TRI, "smooth": 1})))
+    assert _errs(_img(mask={"shape": "rect", "points": "junk", "smooth": 5})) == []
+
+
+def test_morph_track_length_must_match_mask_points():
+    item = _img(mask={"shape": "path", "points": [[0, 0], [1, 0], [1, 1], [0, 1], [0.5, 0.5]]},
+                keyframes=[{"prop": "maskPoints", "points": [{"t": 0, "value": [[0, 0]] * 5}, {"t": 1, "value": QUAD}]}])
+    errors = _errs(item)
+    assert any("keyframes[0].points[1].value must have 5 points, like mask.points (it has 4)" in e for e in errors), errors
+
+
+def test_morph_track_values_must_be_point_lists():
+    item = _img(mask={"shape": "path", "points": TRI},
+                keyframes=[{"prop": "maskPoints", "points": [{"t": 0, "value": 0.5}, {"t": 1, "value": [[0, 0], [1, 1], [3, 3]]}]}])
+    errors = _errs(item)
+    assert sum("must be a list of [x, y] pairs from 0 to 1" in e for e in errors) == 2, errors
+
+
+def test_morph_track_without_path_mask_is_strict_only():
+    from lib.overlay_validation import item_problems
+    item = _img(mask={"shape": "rect"}, keyframes=[{"prop": "maskPoints", "points": [{"t": 0, "value": TRI}]}])
+    assert any("maskPoints needs a path mask" in p for _, p in item_problems(item))
+    assert item_problems(item, strict=False) == []

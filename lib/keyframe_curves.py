@@ -144,11 +144,69 @@ def sample_track(track, local_t):
     return prev["value"]
 
 
+# mask.js MASK_POINTS_PROP: a morph track whose point values are lists of [x, y] pairs.
+MASK_POINTS_PROP = "maskPoints"
+
+
+def _valid_pairs(value, n=None):
+    """mask.js validPoints: a list of [x, y] pairs of finite numbers (n of them when given)."""
+    if not isinstance(value, list) or (n is not None and len(value) != n) or len(value) < (1 if n is None else 0):
+        return False
+    return all(isinstance(q, (list, tuple)) and len(q) == 2 and _finite(q[0]) and _finite(q[1]) for q in value)
+
+
+def _pairs_len(points):
+    """The pair count of a maskPoints track: that of its first usable-looking point."""
+    for p in points or []:
+        if isinstance(p, dict) and _finite(p.get("t")) and _valid_pairs(p.get("value")):
+            return len(p["value"])
+    return None
+
+
+def sample_points_track(track, local_t, n=None):
+    """Point-array value of a maskPoints track at item-relative time `local_t`, or None
+    when there is nothing to sample. Port of mask.js samplePointsTrack: each point is
+    interpolated with the segment's easing; `n` (default: the first point's length) is
+    the pair count a usable key must have."""
+    points = track if isinstance(track, list) else (track.get("points") if isinstance(track, dict) else None)
+    if not isinstance(points, list):
+        return None
+    if n is None:
+        n = _pairs_len(points)
+    pts = [k for k in points if isinstance(k, dict) and _finite(k.get("t")) and _valid_pairs(k.get("value"), n)]
+    if not pts:
+        return None
+
+    def copy(v):
+        return [[q[0], q[1]] for q in v]
+
+    prev = pts[0]
+    t = local_t if _finite(local_t) else prev["t"]
+    if t < prev["t"]:
+        return copy(prev["value"])
+    for cur in pts[1:]:
+        if t < cur["t"]:
+            span = cur["t"] - prev["t"]
+            if not (span > 0):
+                return copy(cur["value"])
+            e = ease_progress(prev.get("easing"), (t - prev["t"]) / span)
+            return [[a[0] + (b[0] - a[0]) * e, a[1] + (b[1] - a[1]) * e]
+                    for a, b in zip(prev["value"], cur["value"])]
+        prev = cur
+    return copy(prev["value"])
+
+
 def _normalized_points(track):
     """Usable points, ascending by t (stable), last wins on duplicate t. Same rule as
-    curves.js normalizeTrack, lines 377-394, on copies of the points."""
+    curves.js normalizeTrack, lines 377-394, on copies of the points. A maskPoints
+    track keeps points whose value is a list of pairs, all of the first one's length."""
     raw = track.get("points") if isinstance(track, dict) else None
-    pts = sorted((dict(p) for p in (raw or []) if _is_usable(p)), key=lambda p: p["t"])
+    if isinstance(track, dict) and track.get("prop") == MASK_POINTS_PROP:
+        n = _pairs_len(raw)
+        usable = [dict(p) for p in (raw or []) if isinstance(p, dict) and _finite(p.get("t")) and _valid_pairs(p.get("value"), n)]
+    else:
+        usable = [dict(p) for p in (raw or []) if _is_usable(p)]
+    pts = sorted(usable, key=lambda p: p["t"])
     out = []
     for i, p in enumerate(pts):
         if i + 1 < len(pts) and pts[i + 1]["t"] == p["t"]:
@@ -179,8 +237,9 @@ def rebase(tracks, offset, duration):
         pts = _normalized_points(track)
         if not pts:
             continue
-        start_value = sample_track(pts, offset)
-        end_value = sample_track(pts, end)
+        sampler = sample_points_track if track.get("prop") == MASK_POINTS_PROP else sample_track
+        start_value = sampler(pts, offset)
+        end_value = sampler(pts, end)
 
         at_start = next((p for p in pts if p["t"] == offset), None)
         if at_start is not None:

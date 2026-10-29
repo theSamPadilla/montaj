@@ -138,6 +138,7 @@ const KEYFRAME_LABELS = {
   maskH: 'moving mask',
   maskRotation: 'moving mask',
   maskFeather: 'moving mask',
+  maskPoints: 'moving mask',
 }
 
 const LABELS = {

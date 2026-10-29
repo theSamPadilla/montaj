@@ -8,7 +8,7 @@ import random
 import shutil
 import subprocess
 
-from lib.keyframe_curves import EASING_NAMES, rebase, sample_track
+from lib.keyframe_curves import EASING_NAMES, rebase, sample_points_track, sample_track
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CURVES_JS = os.path.join(ROOT, "montaj_assets", "timeline-core", "src", "curves.js")
@@ -207,3 +207,43 @@ def test_rebase_normalisation():
         ts = [p["t"] for p in out[0]["points"]]
         assert ts == sorted(ts) and len(set(ts)) == len(ts)
         assert all(0.0 <= t <= d for t in ts) and ts[0] == 0.0 and ts[-1] == d
+
+
+# ── maskPoints (§616): point-array values ─────────────────────────────────────────
+
+_MORPH = {"prop": "maskPoints", "points": [
+    {"t": 0, "value": [[0, 0], [1, 0], [1, 1]]},
+    {"t": 2, "value": [[0, 0.5], [1, 0.5], [1, 0]]},
+    {"t": 4, "value": [[1, 1], [0, 1], [0, 0]]},
+]}
+
+
+def test_sample_points_track_interpolates_each_point():
+    assert sample_points_track(_MORPH, 1) == [[0, 0.25], [1, 0.25], [1, 0.5]]
+    assert sample_points_track(_MORPH, -5) == [[0, 0], [1, 0], [1, 1]]
+    assert sample_points_track(_MORPH, 9) == [[1, 1], [0, 1], [0, 0]]
+    assert sample_points_track({"points": []}, 0) is None
+
+
+def test_sample_points_track_skips_keys_of_the_wrong_length():
+    track = {"prop": "maskPoints", "points": [
+        {"t": 0, "value": [[0, 0], [1, 0], [1, 1]]}, {"t": 1, "value": [[0, 0]]}, {"t": 2, "value": [[1, 1], [1, 1], [1, 1]]}]}
+    assert sample_points_track(track, 1) == [[0.5, 0.5], [1, 0.5], [1, 1]]
+
+
+def test_rebase_keeps_a_maskpoints_track_with_exact_ends():
+    out = rebase([_MORPH], 1, 2)
+    assert len(out) == 1 and out[0]["prop"] == "maskPoints"
+    pts = out[0]["points"]
+    assert [p["t"] for p in pts] == [0, 1, 2]
+    assert pts[0]["value"] == [[0, 0.25], [1, 0.25], [1, 0.5]]
+    assert pts[1]["value"] == _MORPH["points"][1]["value"]
+    assert pts[2]["value"] == [[0.5, 0.75], [0.5, 0.75], [0.5, 0]]
+
+
+def test_rebase_maskpoints_inside_one_segment_and_mixed_with_numbers():
+    num = {"prop": "maskX", "points": [{"t": 0, "value": 0}, {"t": 4, "value": 4}]}
+    out = rebase([num, _MORPH], 0.5, 1)
+    assert [t["prop"] for t in out] == ["maskX", "maskPoints"]
+    assert out[1]["points"][0]["value"] == [[0, 0.125], [1, 0.125], [1, 0.75]]
+    assert out[0]["points"][-1]["value"] == 1.5

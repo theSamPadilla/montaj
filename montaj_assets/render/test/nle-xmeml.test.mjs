@@ -702,6 +702,21 @@ describe('markers', () => {
     assert.ok(names.includes('Stays in Montaj: fade'), names.join(' | '))
   })
 
+  test('a path mask with a morph track writes the mask marker and the moving mask marker', () => {
+    const tri = [[0.5, 0], [1, 1], [0, 1]]
+    const { xml } = write('cpm', {
+  id: 'cpm', status: 'final', settings: { resolution: [1920, 1080], fps: 30 },
+  tracks: [{ id: 'trk-0', items: [
+    { id: 'p', type: 'video', src: '/abs/m.mp4', start: 0, end: 2, inPoint: 0, outPoint: 2,
+      mask: { shape: 'path', points: tri },
+      keyframes: [{ prop: 'maskPoints', points: [{ t: 0, value: tri }, { t: 1, value: [[0.5, 0.2], [0.9, 0.9], [0.1, 0.9]] }] }] },
+  ] }],
+})
+    const names = kids(clipitems(videoTracks(xml)[0])[0], 'marker').map((m) => txt(m, 'name'))
+    assert.ok(names.includes('Stays in Montaj: mask'), names.join(' | '))
+    assert.ok(names.includes('Stays in Montaj: moving mask'), names.join(' | '))
+  })
+
   test('labels: plain words, no em dashes, one per family', () => {
     const keys = ['keyframes:offsetX', 'keyframes:offsetY', 'keyframes:scale', 'keyframes:scaleX', 'keyframes:rotation',
       'keyframes:opacity', 'keyframes:cropW', 'keyframes:blur', 'loop', 'remove_bg', 'remove_bg:nobg_src', 'motionBlur',
@@ -710,6 +725,7 @@ describe('markers', () => {
     assert.equal(markerLabel('keyframes:scale'), 'Stays in Montaj: moving zoom')
     assert.equal(markerLabel('keyframes:maskW'), 'Stays in Montaj: moving mask')
     assert.equal(markerLabel('keyframes:maskFeather'), 'Stays in Montaj: moving mask')
+    assert.equal(markerLabel('keyframes:maskPoints'), 'Stays in Montaj: moving mask')
     assert.equal(markerLabel('mask'), 'Stays in Montaj: mask')
     assert.equal(markerLabel('blendMode:screen'), 'Stays in Montaj: blend mode')
     assert.equal(markerLabel('keyframes:offsetY'), markerLabel('keyframes:offsetX'))

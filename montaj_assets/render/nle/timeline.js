@@ -128,6 +128,7 @@ import {
   opaqueReplacesPicture,
   maskAt,
   MASK_KEYFRAME_PROPS,
+  MASK_POINTS_PROP,
   blendModeOf,
 } from '@bycrux/timeline-core'
 import { enabledTracks, withEnabledItemTracks, effectiveItemAudio } from '../project-tracks.js'
@@ -671,7 +672,7 @@ function unsupportedOf(entry, motionBlur) {
   const maskOff = kind !== 'graphic' && !maskAt(item, 0)
   for (const track of Array.isArray(item.keyframes) ? item.keyframes : []) {
     if (!track || !Array.isArray(track.points) || track.points.length === 0) continue
-    if (maskOff && MASK_KEYFRAME_PROPS.includes(track.prop)) continue
+    if (maskOff && (MASK_KEYFRAME_PROPS.includes(track.prop) || track.prop === MASK_POINTS_PROP)) continue
     const mark = `keyframes:${track.prop}`
     if (!out.includes(mark)) out.push(mark)
   }

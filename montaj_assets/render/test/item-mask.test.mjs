@@ -341,3 +341,60 @@ test('graph: a graded cutout is masked after its pad, then rejoins [vidN]', () =
   assert.match(graph, /\[cg1\]\[al1\]alphamerge,format=yuva420p,pad=1080:1920:\(ow-iw\)\/2:\(oh-ih\)\/2:color=black@0\.0\[vidb1\];\[vidb1\]split=2\[mc2\]\[ma2\];/)
   assert.match(graph, /\[mc2\]\[mam2\]alphamerge\[vid1\]/)
 })
+
+// §616: the path shape.
+const TRI_UP = [[0.5, 0], [1, 1], [0, 1]]
+const TRI_DOWN = [[0, 0], [1, 0], [0.5, 1]]
+const rawGray = (path) => spawnSync(FFMPEG, ['-v', 'error', '-i', path, '-f', 'rawvideo', '-pix_fmt', 'gray', '-'], { maxBuffer: 1 << 24 }).stdout
+
+test('a path mask is a still PNG; a maskPoints track makes it a moving ffv1 mask', () => {
+  const tri = { mask: { shape: 'path', w: 1, h: 1, points: TRI_UP } }
+  const morph = { ...tri, keyframes: [{ prop: 'maskPoints', points: [{ t: 0, value: TRI_UP }, { t: 1, value: TRI_DOWN }] }] }
+  assert.equal(planItemMask(tri, 64, 64, 0, 1, 10, '/d/m').kind, 'still')
+  const p = planItemMask(morph, 64, 64, 0, 1, 10, '/d/m')
+  assert.equal(p.kind, 'frames')
+  assert.equal(p.path, '/d/m.mkv')
+  assert.equal(p.frames, 11)
+})
+test('write: a still triangle is opaque inside, clear outside, hard edge without feather', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mask-'))
+  const p = planItemMask({ mask: { shape: 'path', w: 1, h: 1, points: TRI_UP } }, 64, 64, 0, 1, 30, join(dir, 'm'))
+  await writeItemMask(p)
+  const g = rawGray(p.path)
+  assert.equal(g.length, 64 * 64)
+  const px = (x, y) => g[y * 64 + x]
+  assert.ok(px(32, 48) > 250 && px(32, 60) > 250, 'inside')
+  assert.ok(px(4, 4) < 5 && px(60, 10) < 5 && px(26, 2) < 5, 'outside the corners and above the apex')
+  assert.ok(px(10, 32) < 5 && px(22, 32) > 250, 'row 32 runs from x=16 to x=48')
+})
+test('write: an inverted triangle swaps inside and out', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mask-'))
+  const p = planItemMask({ mask: { shape: 'path', w: 1, h: 1, points: TRI_UP, invert: true } }, 64, 64, 0, 1, 30, join(dir, 'm'))
+  await writeItemMask(p)
+  const g = rawGray(p.path)
+  assert.ok(g[48 * 64 + 32] < 5 && g[4 * 64 + 4] > 250)
+})
+test('write: a feathered triangle softens its edge', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mask-'))
+  const p = planItemMask({ mask: { shape: 'path', w: 1, h: 1, points: TRI_UP, feather: 0.2 } }, 64, 64, 0, 1, 30, join(dir, 'm'))
+  await writeItemMask(p)
+  const g = rawGray(p.path)
+  const row = [...g.subarray(32 * 64, 33 * 64)]
+  assert.ok(row[16] > 40 && row[16] < 215, `edge pixel is mid-gray, got ${row[16]}`)
+  assert.ok(row[8] < row[16] && row[16] < row[28], 'ramps up across the left edge')
+  assert.ok(row[32] > 245, 'the middle stays opaque')
+})
+test('write: a morphing path differs between its first and last frames as the keys say', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mask-'))
+  const morph = { mask: { shape: 'path', w: 1, h: 1, points: TRI_UP },
+    keyframes: [{ prop: 'maskPoints', points: [{ t: 0, value: TRI_UP }, { t: 1, value: TRI_DOWN }] }] }
+  const p = planItemMask(morph, 64, 64, 0, 1, 10, join(dir, 'm'))
+  await writeItemMask(p)
+  const g = rawGray(p.path)
+  assert.equal(g.length, 11 * 4096)
+  const px = (f, x, y) => g[f * 4096 + y * 64 + x]
+  assert.ok(px(0, 10, 56) > 250 && px(0, 10, 6) < 5, 'first frame: pointing up')
+  assert.ok(px(10, 10, 56) < 5 && px(10, 10, 6) > 250, 'last frame: pointing down')
+  const sum = (f) => g.subarray(f * 4096, (f + 1) * 4096).reduce((a, b) => a + b, 0)
+  assert.ok(Math.abs(sum(0) - sum(10)) < 0.02 * sum(0), 'same area, mirrored')
+})
