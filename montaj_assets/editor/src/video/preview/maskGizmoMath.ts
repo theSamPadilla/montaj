@@ -10,7 +10,7 @@
 // (where the press began, where the pointer is) and returns the mask props it
 // sets, which the host commits through `applyOverlayChanges` -> writeProp.
 
-import { maskPolygon, maskSigmaPx } from '@bycrux/timeline-core'
+import { MASK_FEATHER_MAX, maskPolygon, maskSigmaPx } from '@bycrux/timeline-core'
 import type { MaskKeyframeProp } from '../../schema'
 
 /** A mask with every field resolved, as timeline-core's `maskAt` returns it. */
@@ -42,8 +42,8 @@ export interface FrameRect { left: number; top: number; width: number; height: n
 export const ROTATE_OFFSET_PX = 24
 /** A wipe's rotate handle: how far along its edge line from (x, y). */
 export const WIPE_ROTATE_OFFSET_PX = 40
-/** The feather handle never sits closer than this inside the edge, so it clears the square there. */
-export const FEATHER_MIN_PX = 16
+/** The feather ring (the grab) never sits closer than this outside the edge, box px. */
+export const OUTER_RING_MIN_PX = 8
 /** The smallest mask side a resize leaves, as a fraction of the box. */
 const MIN_SIDE = 0.01
 
@@ -138,12 +138,12 @@ export function insideDistance(m: ResolvedMask, p: Pt, boxW: number, boxH: numbe
  *     and h, an edge one of them.
  *   - rotate: the pointer's turn about the mask centre since the press, added
  *     to the rotation.
- *   - feather: sigma = d / 2, d how far the pointer is in from the edge
- *     (`insideDistance`), so the inner ring (2 sigma in, where the handle
- *     sits, as on board B) follows the pointer; feather = sigma over the box's
- *     shorter side, clamped to 0..0.5, so out past the edge it is 0. Measured
- *     as a change from the press, so a press on a handle parked off the ring
- *     (feather 0, or a ring closer than FEATHER_MIN_PX) does not jump.
+ *   - feather: the band's width (feather x the box's shorter side) follows the
+ *     outer ring, which is band / 2 outside the edge: dragging it out by d
+ *     widens the band by 2 d, in by d narrows it. Measured as a change from
+ *     the press (outward distance, `-insideDistance`), so a press on the ring
+ *     parked at its 8 px minimum (feather 0) does not jump. Clamped to
+ *     0..MASK_FEATHER_MAX.
  */
 export function maskGestureChanges(gesture: MaskGesture, m: ResolvedMask, from: Pt, to: Pt, boxW: number, boxH: number): MaskChanges {
   const dx = to.x - from.x
@@ -159,11 +159,11 @@ export function maskGestureChanges(gesture: MaskGesture, m: ResolvedMask, from: 
   }
   if (gesture === 'feather') {
     const short = Math.min(boxW, boxH)
-    const sigma0 = maskSigmaPx(m, boxW, boxH)
-    const d0 = insideDistance(m, from, boxW, boxH)
-    const d1 = insideDistance(m, to, boxW, boxH)
-    const sigma = sigma0 + (d1 - d0) / 2
-    return { maskFeather: short > 0 ? Math.min(0.5, Math.max(0, sigma / short)) : 0 }
+    if (!(short > 0)) return { maskFeather: 0 }
+    const d0 = -insideDistance(m, from, boxW, boxH)
+    const d1 = -insideDistance(m, to, boxW, boxH)
+    const band = Math.max(0, m.feather * short + 2 * (d1 - d0))
+    return { maskFeather: Math.min(MASK_FEATHER_MAX, Math.max(0, band / short)) }
   }
   const handle = gesture.slice(7) as MaskHandle
   const t = m.rotation * RAD
@@ -222,24 +222,35 @@ export function wipeLine(m: ResolvedMask, boxW: number, boxH: number, offsetPx =
 }
 
 /**
- * The feather's dashed rings, only when feathered: the outer one first. For
- * an ellipse or rect, `maskPolygon` with w and h grown (outer) and shrunk
- * (inner) by 4 sigma over the box on each axis, so each ring sits about
- * 2 sigma off the edge; the inner one is dropped once it would collapse. For a
- * wipe, the edge line moved 2 sigma to each side (outer: the hidden side).
+ * The feather band's two dashed rings: `outer` (band / 2 outside the edge,
+ * never closer than OUTER_RING_MIN_PX, so there is always something to grab,
+ * even at feather 0) and `inner` (band / 2 inside), null when not feathered
+ * or when it would collapse. For an ellipse or rect, `maskPolygon` with w and
+ * h grown / shrunk by 4 sigma over the box on each axis (2 sigma off the edge
+ * each way). For a wipe, the edge line moved to each side; outer is the HIDDEN
+ * side (+normal), and either is null when it misses the box.
  */
-export function featherRings(m: ResolvedMask, boxW: number, boxH: number): Array<Array<[number, number]>> {
+export interface FeatherRings {
+  outer: Array<[number, number]> | null
+  inner: Array<[number, number]> | null
+}
+
+export function featherRings(m: ResolvedMask, boxW: number, boxH: number): FeatherRings {
   const sigma = maskSigmaPx(m, boxW, boxH)
-  if (!(sigma > 0)) return []
+  const feathered = sigma > 0
+  const out = Math.max(2 * sigma, OUTER_RING_MIN_PX)
   if (m.shape === 'wipe') {
-    return [wipeLine(m, boxW, boxH, 2 * sigma), wipeLine(m, boxW, boxH, -2 * sigma)]
-      .filter((seg): seg is Array<[number, number]> => seg !== null)
+    return {
+      outer: wipeLine(m, boxW, boxH, out),
+      inner: feathered ? wipeLine(m, boxW, boxH, -2 * sigma) : null,
+    }
   }
+  // Grow by `out` px each side: the polygon's w/h are fractions of the box.
+  const outer = maskPolygon({ ...m, w: m.w + (2 * out) / boxW, h: m.h + (2 * out) / boxH }, boxW, boxH)
   const gw = (4 * sigma) / boxW
   const gh = (4 * sigma) / boxH
-  const rings = [maskPolygon({ ...m, w: m.w + gw, h: m.h + gh }, boxW, boxH)]
-  if (m.w - gw > 0 && m.h - gh > 0) rings.push(maskPolygon({ ...m, w: m.w - gw, h: m.h - gh }, boxW, boxH))
-  return rings
+  const inner = feathered && m.w - gw > 0 && m.h - gh > 0 ? maskPolygon({ ...m, w: m.w - gw, h: m.h - gh }, boxW, boxH) : null
+  return { outer, inner }
 }
 
 /** The eight squares around the mask's box, in its own frame: [x, y] in half-sizes. */
@@ -254,24 +265,15 @@ export interface MaskHandles {
   resize: Array<{ handle: MaskHandle; at: [number, number] }>
   /** The rotate handle, and where its stalk starts (the top edge's midpoint), or null for a wipe. */
   rotate: { at: [number, number]; stalkFrom: [number, number] | null }
-  /**
-   * The feather handle: on the inner ring at the mask's right (a wipe: on the
-   * side that shows), never closer than FEATHER_MIN_PX to the edge, and never
-   * past the centre.
-   */
-  feather: { at: [number, number] }
 }
 
 /** Where every handle sits, in box pixels. All of them turn with the mask. */
 export function maskHandles(m: ResolvedMask, boxW: number, boxH: number): MaskHandles {
-  const in2 = Math.max(2 * maskSigmaPx(m, boxW, boxH), FEATHER_MIN_PX)
   if (m.shape === 'wipe') {
     return {
       resize: [],
       // Up the edge line (its direction is (-sin θ, cos θ), so up is minus that).
       rotate: { at: fromMaskFrame(m, boxW, boxH, 0, -WIPE_ROTATE_OFFSET_PX), stalkFrom: null },
-      // On the side that shows, against the normal.
-      feather: { at: fromMaskFrame(m, boxW, boxH, -in2, 0) },
     }
   }
   const rx = (m.w * boxW) / 2
@@ -282,7 +284,6 @@ export function maskHandles(m: ResolvedMask, boxW: number, boxH: number): MaskHa
       at: fromMaskFrame(m, boxW, boxH, 0, -ry - ROTATE_OFFSET_PX),
       stalkFrom: fromMaskFrame(m, boxW, boxH, 0, -ry),
     },
-    feather: { at: fromMaskFrame(m, boxW, boxH, Math.max(0, rx - in2), 0) },
   }
 }
 
@@ -294,7 +295,6 @@ const PIN_STEP_PX = 22
 export interface PinnedHandles {
   resize: Array<{ handle: MaskHandle; at: [number, number]; pinned: boolean }>
   rotate: { at: [number, number]; stalkFrom: [number, number] | null; pinned: boolean }
-  feather: { at: [number, number]; pinned: boolean }
 }
 
 /**
@@ -330,11 +330,9 @@ export function pinHandles(h: MaskHandles, boxW: number, boxH: number): PinnedHa
   }
   const resize = h.resize.map(({ handle, at }) => ({ handle, ...pin(at) }))
   const rotate = pin(h.rotate.at)
-  const feather = pin(h.feather.at)
   return {
     resize,
     rotate: { ...rotate, stalkFrom: rotate.pinned ? null : h.rotate.stalkFrom },
-    feather,
   }
 }
 

@@ -113,12 +113,13 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('mask gizmo: when it shows', () => {
-  it('shows on a selected masked image clip, with its eight squares, rotate and feather handles', () => {
+  it('shows on a selected masked image clip, with its eight squares, rotate handle and feather ring', () => {
     render(<Host initial={clip()} />)
     expect(screen.getByLabelText('Move mask')).toBeTruthy()
     expect(screen.getAllByLabelText('Resize mask')).toHaveLength(8)
     expect(screen.getByLabelText('Rotate mask')).toBeTruthy()
-    expect(screen.getByLabelText('Mask feather')).toBeTruthy()
+    expect(screen.getByLabelText('Mask feather').tagName.toLowerCase()).toBe('polygon')
+    expect(screen.queryByRole('button', { name: 'Mask feather', hidden: true })?.tagName.toLowerCase()).not.toBe('button')
   })
 
   it('shows on a selected masked video clip', () => {
@@ -154,7 +155,7 @@ describe('mask gizmo: when it shows', () => {
   it('keeps its canvas handles out of the tab order (the inspector is the keyboard path)', () => {
     const { container } = render(<Host initial={clip()} />)
     const handles = Array.from(container.querySelectorAll('[data-mask-handle]'))
-    expect(handles).toHaveLength(10)
+    expect(handles).toHaveLength(9)
     for (const h of handles) expect(h.getAttribute('tabindex')).toBe('-1')
   })
 
@@ -187,14 +188,37 @@ describe('mask gizmo: outline and feather rings', () => {
     expect(svg.getAttribute('viewBox')).toBe(`0 0 ${BOX_W * 0.5} ${BOX_H * 0.8}`)
   })
 
-  it('no rings at feather 0, two dashed rings when feathered', () => {
+  it('feather 0: one faint dashed outer ring 8 px out; feathered: two, at band / 2', () => {
     const plain = render(<Host initial={clip()} />)
-    expect(plain.container.querySelectorAll('[data-testid="mask-feather-ring"]')).toHaveLength(0)
+    const one = plain.container.querySelectorAll('[data-testid="mask-feather-ring"]')
+    expect(one).toHaveLength(1)
+    expect(one[0].getAttribute('opacity')).toBe('0.4')
+    expect(one[0].getAttribute('stroke-dasharray')).toBeTruthy()
+    const base = maskAt(clip(), LOCAL_T)!
+    const want = maskPolygon({ ...base, w: base.w + 16 / BOX_W, h: base.h + 16 / BOX_H }, BOX_W, BOX_H)
+    const got = pointsOf(one[0])
+    got.forEach(([x, y], i) => {
+      expect(x).toBeCloseTo(want[i][0], 2)
+      expect(y).toBeCloseTo(want[i][1], 2)
+    })
     plain.unmount()
-    const { container } = render(<Host initial={clip({ mask: { ...MASK, feather: 0.05 } })} />)
+    const { container } = render(<Host initial={clip({ mask: { ...MASK, feather: 0.2 } })} />)
     const rings = container.querySelectorAll('[data-testid="mask-feather-ring"]')
     expect(rings).toHaveLength(2)
-    for (const r of Array.from(rings)) expect(r.getAttribute('stroke-dasharray')).toBeTruthy()
+    for (const r of Array.from(rings)) {
+      expect(r.getAttribute('stroke-dasharray')).toBeTruthy()
+      expect(r.getAttribute('opacity')).toBe('0.8')
+    }
+  })
+
+  it('the feather ring is a wide transparent stroke after the move polygon', () => {
+    const { container } = render(<Host initial={clip()} />)
+    const ring = screen.getByLabelText('Mask feather')
+    expect(ring.getAttribute('stroke')).toBe('transparent')
+    expect(ring.getAttribute('vector-effect')).toBe('non-scaling-stroke')
+    expect(ring.getAttribute('role')).toBe('button')
+    const all = Array.from(container.querySelectorAll('svg [aria-label]'))
+    expect(all.indexOf(ring)).toBeGreaterThan(all.indexOf(screen.getByLabelText('Move mask')))
   })
 })
 
@@ -295,18 +319,43 @@ describe('mask gizmo: gestures', () => {
     expect(commits[0][1].maskRotation).toBeCloseTo(270)
   })
 
-  it('the feather handle sits on the inner ring and sets sigma = d / 2 inward from the edge', () => {
-    // A rect 86.4 x 96 px about (54, 96): its right edge is x = 97.2, and the
-    // nearest edge to any point on the centre row right of the centre.
-    // sigma = 0.1 * 108 = 10.8 px, so the inner ring, and the handle on it,
-    // is 21.6 px in from the right edge.
-    const mask = { shape: 'rect' as const, x: 0.5, y: 0.5, w: 0.8, h: 0.5, feather: 0.1 }
+  it('dragging the feather ring outward by 10 px widens the band by 20 px', () => {
+    // Ellipse rx 27 about (54, 96); the outer ring at feather 0.1 (band 10.8)
+    // is 5.4 px out, on the right at x = 54 + 27 + 5.4.
+    const mask = { ...MASK, feather: 0.1 }
     render(<Host initial={clip({ mask })} />)
-    const handle = screen.getByLabelText('Mask feather')
-    expect(parseFloat(handle.style.left)).toBeCloseTo(((97.2 - 21.6) / BOX_W) * 100, 6)
-    expect(parseFloat(handle.style.top)).toBeCloseTo(50, 6)
-    drag(handle, { x: 97.2 - 21.6, y: 96 }, { x: 97.2 - 30, y: 96 })
-    expect(latest.mask!.feather).toBeCloseTo(15 / BOX_W)
+    const x = 54 + 27 + 5.4
+    drag(screen.getByLabelText('Mask feather'), { x, y: 96 }, { x: x + 10, y: 96 })
+    expect(latest.mask!.feather).toBeCloseTo(0.1 + 20 / BOX_W)
+  })
+
+  it('dragging it inward past zero clamps to 0', () => {
+    render(<Host initial={clip({ mask: { ...MASK, feather: 0.1 } })} />)
+    const x = 54 + 27 + 5.4
+    drag(screen.getByLabelText('Mask feather'), { x, y: 96 }, { x: x - 30, y: 96 })
+    expect(latest.mask!.feather).toBe(0)
+  })
+
+  it('at feather 0 the ring is grabbable 8 px out', () => {
+    render(<Host initial={clip()} />)
+    drag(screen.getByLabelText('Mask feather'), { x: 54 + 27 + 8, y: 96 }, { x: 54 + 27 + 18, y: 96 })
+    expect(latest.mask!.feather).toBeCloseTo(20 / BOX_W)
+  })
+
+  it('there is no feather button any more', () => {
+    const { container } = render(<Host initial={clip({ mask: { ...MASK, feather: 0.1 } })} />)
+    expect(container.querySelector('button[aria-label="Mask feather"]')).toBeNull()
+    expect(container.querySelector('[data-mask-handle="feather"]')).toBeNull()
+  })
+
+  it('a wipe: dragging its outer line away from the visible side widens the feather', () => {
+    // Wipe edge at x = 54, visible side to the left; feather 0.1 -> band 10.8,
+    // outer line 5.4 px to the right.
+    render(<Host initial={clip({ mask: { shape: 'wipe', x: 0.5, y: 0.5, rotation: 0, feather: 0.1 } })} />)
+    const ring = screen.getByLabelText('Mask feather')
+    expect(ring.tagName.toLowerCase()).toBe('line')
+    drag(ring, { x: 54 + 5.4, y: 96 }, { x: 54 + 5.4 + 10, y: 96 })
+    expect(latest.mask!.feather).toBeCloseTo(0.1 + 20 / BOX_W)
   })
 
   it('a drag on a rotated, scaled clip maps the pointer into the box', () => {
@@ -334,7 +383,7 @@ describe('mask gizmo: a mask grown past the clip', () => {
 
   it('keeps every handle inside the box', () => {
     render(<Host initial={clip({ mask: BIG })} />)
-    const buttons = [...screen.getAllByLabelText('Resize mask'), screen.getByLabelText('Rotate mask'), screen.getByLabelText('Mask feather')]
+    const buttons = [...screen.getAllByLabelText('Resize mask'), screen.getByLabelText('Rotate mask')]
     for (const b of buttons) {
       expect(b.getAttribute('data-pinned')).toBe('true')
       const left = parseFloat((b as HTMLElement).style.left)

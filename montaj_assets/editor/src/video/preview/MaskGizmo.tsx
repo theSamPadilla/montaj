@@ -3,11 +3,14 @@
 //
 //   - the outline: timeline-core's `maskPolygon`, the export's own polygon
 //     (a wipe: its edge line, clipped to the box);
-//   - dashed rings 2 sigma outside and inside it when feathered (a wipe: two
-//     lines parallel to its edge);
+//   - dashed rings half the feather band outside and inside it (a wipe: two
+//     lines parallel to its edge). At feather 0 the outer ring still shows,
+//     faint, 8 px out, so there is something to grab;
 //   - crop-style squares on the mask box's corners and edge midpoints (resize
-//     about the centre), a round handle above the top edge (rotate), and a
-//     round handle on the inner ring (feather, as board B places it);
+//     about the centre) and a round handle above the top edge (rotate);
+//   - the OUTER ring is the feather control: a wide invisible stroke over it
+//     (a polygon, a line for a wipe) drags the band wider or narrower. It sits
+//     after the move polygon, so it wins where they meet;
 //   - the area inside the outline moves the mask (a wipe: its edge line);
 //   - a handle whose place is outside the clip's box is pinned just inside
 //     it (`pinHandles`), since the preview frame clips to the canvas.
@@ -71,8 +74,6 @@ const SQUARE_FACE: CSSProperties = {
 }
 /** The rotate handle: the same, round. */
 const ROTATE_FACE: CSSProperties = { ...SQUARE_FACE, borderRadius: '50%' }
-/** The feather handle: round, filled with the selection colour, a white rim. */
-const FEATHER_FACE: CSSProperties = { ...SQUARE_FACE, backgroundColor: SELECTION, border: '1.5px solid #fff', borderRadius: '50%' }
 
 const RESIZE_CURSOR: Record<MaskHandle, string> = {
   nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize',
@@ -81,6 +82,8 @@ const RESIZE_CURSOR: Record<MaskHandle, string> = {
 
 /** The invisible grab width along a wipe's edge line, px. */
 const WIPE_GRAB_PX = 16
+/** The invisible grab width of the feather ring, px. */
+const FEATHER_GRAB_PX = 12
 
 export interface MaskGizmoProps {
   /** The mask at the playhead, every field resolved (`maskAt`), live changes included. */
@@ -205,6 +208,7 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
       })()
     : null
   const rings = featherRings(mask, boxW, boxH)
+  const feathered = mask.feather > 0
   // Pinned inside the box when the mask outgrows it (`pinHandles`).
   const handles = pinHandles(maskHandles(mask, boxW, boxH), boxW, boxH)
   // A mask over the whole box would take the clip's move with its fill: only
@@ -280,11 +284,16 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
               {...press('move')}
             />
           ))}
-          {rings.map((ring, i) => (wipe ? (
-            <line key={i} data-testid="mask-feather-ring" {...line(ring)} fill="none" strokeWidth={1} strokeDasharray="4 3" opacity={0.8} vectorEffect="non-scaling-stroke" style={stroke} />
+          {rings.inner && (wipe ? (
+            <line data-testid="mask-feather-ring" {...line(rings.inner)} fill="none" strokeWidth={1} strokeDasharray="4 3" opacity={0.8} vectorEffect="non-scaling-stroke" style={stroke} />
           ) : (
-            <polygon key={i} data-testid="mask-feather-ring" points={pointsAttr(ring)} fill="none" strokeWidth={1} strokeDasharray="4 3" opacity={0.8} vectorEffect="non-scaling-stroke" style={stroke} />
-          )))}
+            <polygon data-testid="mask-feather-ring" points={pointsAttr(rings.inner)} fill="none" strokeWidth={1} strokeDasharray="4 3" opacity={0.8} vectorEffect="non-scaling-stroke" style={stroke} />
+          ))}
+          {rings.outer && (wipe ? (
+            <line data-testid="mask-feather-ring" {...line(rings.outer)} fill="none" strokeWidth={1} strokeDasharray="4 3" opacity={feathered ? 0.8 : 0.4} vectorEffect="non-scaling-stroke" style={stroke} />
+          ) : (
+            <polygon data-testid="mask-feather-ring" points={pointsAttr(rings.outer)} fill="none" strokeWidth={1} strokeDasharray="4 3" opacity={feathered ? 0.8 : 0.4} vectorEffect="non-scaling-stroke" style={stroke} />
+          ))}
           {outline && (wipe ? (
             <line data-testid="mask-outline" {...line(outline)} fill="none" strokeWidth={1.5} vectorEffect="non-scaling-stroke" style={stroke} />
           ) : (
@@ -293,6 +302,30 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
           {handles.rotate.stalkFrom && (
             <line {...line([handles.rotate.stalkFrom, handles.rotate.at])} strokeWidth={1} vectorEffect="non-scaling-stroke" style={stroke} />
           )}
+          {rings.outer && (wipe ? (
+            <line
+              {...line(rings.outer)}
+              role="button"
+              aria-label="Mask feather"
+              stroke="transparent"
+              strokeWidth={FEATHER_GRAB_PX}
+              vectorEffect="non-scaling-stroke"
+              style={{ pointerEvents: 'stroke', cursor: 'ew-resize', touchAction: 'none' }}
+              {...press('feather')}
+            />
+          ) : (
+            <polygon
+              points={pointsAttr(rings.outer)}
+              role="button"
+              aria-label="Mask feather"
+              fill="none"
+              stroke="transparent"
+              strokeWidth={FEATHER_GRAB_PX}
+              vectorEffect="non-scaling-stroke"
+              style={{ pointerEvents: 'stroke', cursor: 'nwse-resize', touchAction: 'none' }}
+              {...press('feather')}
+            />
+          ))}
         </svg>
       </div>
       {/* The handles: above the clip's own, so the mask's win where they meet,
@@ -312,7 +345,6 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
           />
         ))}
         <button type="button" aria-label="Rotate mask" data-mask-handle="rotate" data-pinned={handles.rotate.pinned || undefined} {...noTab} style={placed(handles.rotate.at, ROTATE_FACE, 'grab')} {...press('rotate')} />
-        <button type="button" aria-label="Mask feather" data-mask-handle="feather" data-pinned={handles.feather.pinned || undefined} {...noTab} style={placed(handles.feather.at, FEATHER_FACE, 'ew-resize')} {...press('feather')} />
       </div>
     </div>
   )

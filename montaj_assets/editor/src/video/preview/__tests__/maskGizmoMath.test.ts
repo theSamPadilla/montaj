@@ -1,10 +1,11 @@
 /// <reference types="vitest/globals" />
-import { maskAt, maskPolygon } from '@bycrux/timeline-core'
+import { MASK_FEATHER_MAX, maskAt, maskPolygon } from '@bycrux/timeline-core'
 import type { VisualItem } from '../../../schema'
 import {
   clientToBox,
   insideDistance,
   featherRings,
+  OUTER_RING_MIN_PX,
   maskGestureChanges,
   maskHandles,
   pinHandles,
@@ -100,20 +101,28 @@ describe('maskGestureChanges', () => {
     expect(c.maskRotation).toBeCloseTo(100)
   })
 
-  it('feather: the distance inward from the edge is 2 sigma, so sigma = d / 2', () => {
+  it('feather: the band follows the outer ring, widening by twice the outward drag', () => {
     const f = resolve({ shape: 'rect', x: 0.5, y: 0.5, w: 0.4, h: 0.8, feather: 0.1 })
-    // The right edge is at x = 140. Sigma 10 px puts the inner ring at 120.
-    const c = maskGestureChanges('feather', f, { x: 120, y: 50 }, { x: 110, y: 50 }, W, H)
-    expect(c.maskFeather).toBeCloseTo(15 / 100)
+    // Short side 100: band 10, the right edge at x = 140, the outer ring at 145.
+    const out = maskGestureChanges('feather', f, { x: 145, y: 50 }, { x: 155, y: 50 }, W, H)
+    expect(out.maskFeather).toBeCloseTo(0.3)
+    const inward = maskGestureChanges('feather', f, { x: 145, y: 50 }, { x: 142, y: 50 }, W, H)
+    expect(inward.maskFeather).toBeCloseTo(0.04)
+    // A press that does not move changes nothing, wherever it lands.
+    expect(maskGestureChanges('feather', f, { x: 170, y: 50 }, { x: 170, y: 50 }, W, H).maskFeather).toBeCloseTo(0.1)
   })
 
-  it('feather clamps to 0..0.5: dragged out past the edge it is 0', () => {
+  it('feather clamps to 0..MASK_FEATHER_MAX', () => {
     const f = resolve({ shape: 'rect', x: 0.5, y: 0.5, w: 0.4, h: 0.8, feather: 0.1 })
-    expect(maskGestureChanges('feather', f, { x: 120, y: 50 }, { x: 140, y: 50 }, W, H).maskFeather).toBe(0)
-    expect(maskGestureChanges('feather', f, { x: 120, y: 50 }, { x: 170, y: 50 }, W, H).maskFeather).toBe(0)
-    // A mask much larger than the box: 150 px in from its edge is sigma 75.
-    const big = resolve({ shape: 'rect', x: 0.5, y: 0.5, w: 3, h: 3, feather: 0.1 })
-    expect(maskGestureChanges('feather', big, { x: 180, y: 50 }, { x: 50, y: 50 }, 100, 100).maskFeather).toBe(0.5)
+    expect(maskGestureChanges('feather', f, { x: 145, y: 50 }, { x: 100, y: 50 }, W, H).maskFeather).toBe(0)
+    expect(maskGestureChanges('feather', f, { x: 145, y: 50 }, { x: 400, y: 50 }, W, H).maskFeather).toBe(MASK_FEATHER_MAX)
+  })
+
+  it('feather on a wipe: dragging away from the visible side widens the band', () => {
+    const w = resolve({ shape: 'wipe', x: 0.5, y: 0.5, rotation: 0, feather: 0.1 })
+    // Visible side is x <= 100; the outer line is at 100 + 5 = 105.
+    expect(maskGestureChanges('feather', w, { x: 105, y: 50 }, { x: 115, y: 50 }, W, H).maskFeather).toBeCloseTo(0.3)
+    expect(maskGestureChanges('feather', w, { x: 105, y: 50 }, { x: 95, y: 50 }, W, H).maskFeather).toBe(0)
   })
 
   it('a wipe moves along x and y like any shape', () => {
@@ -140,30 +149,41 @@ describe('insideDistance', () => {
 })
 
 describe('featherRings', () => {
-  it('none at feather 0', () => {
-    expect(featherRings(resolve({ shape: 'ellipse' }), 100, 100)).toEqual([])
+  it('at feather 0 there is an outer ring 8 px out and no inner ring', () => {
+    const m = resolve({ shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5 })
+    const r = featherRings(m, 100, 100)
+    expect(r.inner).toBeNull()
+    expect(r.outer).toEqual(maskPolygon({ ...m, w: 0.5 + 16 / 100, h: 0.5 + 16 / 100 }, 100, 100))
+    expect(OUTER_RING_MIN_PX).toBe(8)
   })
 
-  it('grows and shrinks w and h by 4 sigma over the box, so each ring is 2 sigma off the edge', () => {
-    const m = resolve({ shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5, feather: 0.05 })
-    // sigma = 0.05 * 200 = 10 px.
-    const rings = featherRings(m, 200, 400)
-    expect(rings).toHaveLength(2)
-    expect(rings[0]).toEqual(maskPolygon({ ...m, w: 0.5 + 40 / 200, h: 0.5 + 40 / 400 }, 200, 400))
-    expect(rings[1]).toEqual(maskPolygon({ ...m, w: 0.5 - 40 / 200, h: 0.5 - 40 / 400 }, 200, 400))
+  it('the rings sit half the band outside and inside the edge', () => {
+    const m = resolve({ shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5, feather: 0.2 })
+    // Short side 200: band 40 px, so the rings are 20 px off the edge (4 sigma, sigma 10).
+    const r = featherRings(m, 200, 400)
+    expect(r.outer).toEqual(maskPolygon({ ...m, w: 0.5 + 40 / 200, h: 0.5 + 40 / 400 }, 200, 400))
+    expect(r.inner).toEqual(maskPolygon({ ...m, w: 0.5 - 40 / 200, h: 0.5 - 40 / 400 }, 200, 400))
   })
 
   it('drops the inner ring once it would collapse', () => {
-    const m = resolve({ shape: 'ellipse', x: 0.5, y: 0.5, w: 0.1, h: 0.1, feather: 0.1 })
-    expect(featherRings(m, 100, 100)).toHaveLength(1)
+    const m = resolve({ shape: 'ellipse', x: 0.5, y: 0.5, w: 0.1, h: 0.1, feather: 0.4 })
+    const r = featherRings(m, 100, 100)
+    expect(r.inner).toBeNull()
+    expect(r.outer).not.toBeNull()
   })
 
-  it('a wipe gets two lines parallel to its edge at +/- 2 sigma', () => {
-    const m = resolve({ shape: 'wipe', x: 0.5, y: 0.5, feather: 0.1 })
-    const rings = featherRings(m, 100, 100)
-    expect(rings).toHaveLength(2)
-    expect(rings[0].every(([x]) => Math.abs(x - 70) < 1e-9)).toBe(true)
-    expect(rings[1].every(([x]) => Math.abs(x - 30) < 1e-9)).toBe(true)
+  it('a wipe gets two lines parallel to its edge, outer on the hidden side', () => {
+    const m = resolve({ shape: 'wipe', x: 0.5, y: 0.5, feather: 0.2 })
+    const r = featherRings(m, 100, 100)
+    // Band 20: outer at 50 + 10, inner at 50 - 10.
+    expect(r.outer!.every(([x]) => Math.abs(x - 60) < 1e-9)).toBe(true)
+    expect(r.inner!.every(([x]) => Math.abs(x - 40) < 1e-9)).toBe(true)
+  })
+
+  it('a wipe at feather 0 still has its outer line, 8 px out', () => {
+    const r = featherRings(resolve({ shape: 'wipe', x: 0.5, y: 0.5 }), 100, 100)
+    expect(r.inner).toBeNull()
+    expect(r.outer!.every(([x]) => Math.abs(x - 58) < 1e-9)).toBe(true)
   })
 })
 
@@ -180,7 +200,7 @@ describe('wipeLine', () => {
 })
 
 describe('maskHandles', () => {
-  it('puts the squares on the mask box corners and edge midpoints, rotate above the top edge, feather on the inner ring', () => {
+  it('puts the squares on the mask box corners and edge midpoints, rotate above the top edge', () => {
     const m = resolve({ shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5, feather: 0.1 })
     const h = maskHandles(m, 100, 100)
     expect(h.resize.find(r => r.handle === 'nw')!.at).toEqual([25, 25])
@@ -188,18 +208,7 @@ describe('maskHandles', () => {
     expect(h.resize).toHaveLength(8)
     expect(h.rotate.at[0]).toBeCloseTo(50)
     expect(h.rotate.at[1]).toBeLessThan(25)
-    // sigma 10 px: the inner ring is 20 px in from the right edge.
-    expect(h.feather.at[0]).toBeCloseTo(75 - 20)
-    expect(h.feather.at[1]).toBeCloseTo(50)
-  })
-
-  it('with feather 0 the feather handle sits just inside the right edge, clear of the square there', () => {
-    const m = resolve({ shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5 })
-    const at = maskHandles(m, 100, 100).feather.at
-    // The 12 px square on the edge reaches 6 px in; the 12 px handle starts past it.
-    expect(at[0]).toBeLessThanOrEqual(75 - 12)
-    expect(at[0]).toBeGreaterThan(50)
-    expect(at[1]).toBeCloseTo(50)
+    expect('feather' in h).toBe(false)
   })
 
   it('a wipe has no resize squares and its rotate handle on the edge line', () => {
@@ -207,8 +216,6 @@ describe('maskHandles', () => {
     const h = maskHandles(m, 100, 100)
     expect(h.resize).toEqual([])
     expect(h.rotate.at[0]).toBeCloseTo(50)
-    // The inner side of a wipe is the side that shows: the left at rotation 0.
-    expect(h.feather.at[0]).toBeLessThan(50)
   })
 })
 
@@ -220,14 +227,13 @@ describe('pinHandles', () => {
     expect(p.resize.map(r => r.at)).toEqual(h.resize.map(r => r.at))
     expect(p.resize.every(r => !r.pinned)).toBe(true)
     expect(p.rotate).toEqual({ ...h.rotate, pinned: false })
-    expect(p.feather).toEqual({ ...h.feather, pinned: false })
   })
 
   it('pins every handle of a mask grown past the box just inside it, apart from each other', () => {
     // A reveal's end: 160% of a 9:16 box, feathered.
     const m = resolve({ shape: 'ellipse', x: 0.5, y: 0.5, w: 1.6, h: 1.6, feather: 0.03 })
     const p = pinHandles(maskHandles(m, 108, 192), 108, 192)
-    const all = [...p.resize.map(r => r.at), p.rotate.at, p.feather.at]
+    const all = [...p.resize.map(r => r.at), p.rotate.at]
     for (const [x, y] of all) {
       expect(x).toBeGreaterThanOrEqual(PIN_INSET_PX)
       expect(x).toBeLessThanOrEqual(108 - PIN_INSET_PX)
@@ -242,10 +248,6 @@ describe('pinHandles', () => {
     expect(p.rotate.stalkFrom).toBeNull()
     expect(p.rotate.at[1]).toBe(PIN_INSET_PX)
     expect(p.rotate.at[0]).not.toBe(54)
-    // The feather handle pins to the right edge with e, and slides down it.
-    expect(p.feather.pinned).toBe(true)
-    expect(p.feather.at[0]).toBe(108 - PIN_INSET_PX)
-    expect(p.feather.at[1]).toBeGreaterThan(96)
     for (let i = 0; i < all.length; i++) {
       for (let j = i + 1; j < all.length; j++) {
         expect(Math.hypot(all[i][0] - all[j][0], all[i][1] - all[j][1])).toBeGreaterThan(12)

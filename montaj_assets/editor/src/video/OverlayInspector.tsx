@@ -145,14 +145,14 @@ const ROWS: Record<TransformKeyframeProp, RowSpec> = {
 
 // In SHOWN units. A typed value is clamped to them on write (NumberField
 // leaves bounding to its caller), because the mask refuses a side of 0 and a
-// feather past 0.5.
+// feather past 1 (100%).
 const MASK_ROWS: Record<MaskKeyframeProp, MaskRowSpec> = {
   maskX:        { prop: 'maskX',        name: 'Mask X',        step: 1, factor: 100 },
   maskY:        { prop: 'maskY',        name: 'Mask Y',        step: 1, factor: 100 },
   maskW:        { prop: 'maskW',        name: 'Mask width',    step: 1, min: 1, factor: 100 },
   maskH:        { prop: 'maskH',        name: 'Mask height',   step: 1, min: 1, factor: 100 },
   maskRotation: { prop: 'maskRotation', name: 'Mask rotation', step: 1, factor: 1 },
-  maskFeather:  { prop: 'maskFeather',  name: 'Mask feather',  step: 1, min: 0, max: 50, factor: 100 },
+  maskFeather:  { prop: 'maskFeather',  name: 'Mask feather',  step: 1, min: 0, max: 100, factor: 100 },
 }
 
 /** The shape buttons, in timeline-core's picker order. lucide has no ellipse
@@ -1217,14 +1217,14 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
               </div>
 
               {/* The Scale row's slider and percent box: the slider on the
-                  stored fraction, the box in percent (0 to 50). */}
+                  stored fraction, the box in percent (0 to 100). */}
               <div className="flex items-center gap-2">
                 <span className={ROW_LABEL_CLASS}>Feather</span>
                 <Slider
                   aria-label="Mask feather slider"
                   value={mask.feather}
                   min={0}
-                  max={0.5}
+                  max={1}
                   step={0.01}
                   onChange={v => onPreview(writeProp(target, 'maskFeather', localT, v))}
                   onCommit={onCommit}

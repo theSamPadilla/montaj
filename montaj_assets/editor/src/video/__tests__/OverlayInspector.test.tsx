@@ -1491,7 +1491,7 @@ describe('OverlayInspector — keyframe all transform properties', () => {
 
 // §616: the Blend row and the Mask section, on clips only. Every mask value is
 // shown in percent of the clip's box (fraction x 100) and written back as the
-// fraction; the feather likewise, 0 to 50.
+// fraction; the feather likewise, 0 to 100.
 describe('OverlayInspector — blend and mask (clips, §616)', () => {
   function clip(over: Partial<VisualItem> = {}): VisualItem {
     return { id: 'v1', type: 'video', src: 'v.mp4', start: 0, end: 10, ...over } as VisualItem
@@ -1646,12 +1646,20 @@ describe('OverlayInspector — blend and mask (clips, §616)', () => {
     expect((onPreview.mock.calls[0][0] as VisualItem).mask!.feather).toBe(0.04)
   })
 
-  it('a typed feather past 50 is held at 0.5, the most the mask takes', () => {
+  it('Feather 80 writes 0.8', () => {
     const { onPreview } = renderInspector(clip({ mask: { shape: 'ellipse' } }), 5)
 
     fireEvent.change(screen.getByLabelText('Mask feather'), { target: { value: '80' } })
 
-    expect((onPreview.mock.calls[0][0] as VisualItem).mask!.feather).toBe(0.5)
+    expect((onPreview.mock.calls[0][0] as VisualItem).mask!.feather).toBe(0.8)
+  })
+
+  it('a typed feather past 100 is held at 1, the most the mask takes', () => {
+    const { onPreview } = renderInspector(clip({ mask: { shape: 'ellipse' } }), 5)
+
+    fireEvent.change(screen.getByLabelText('Mask feather'), { target: { value: '150' } })
+
+    expect((onPreview.mock.calls[0][0] as VisualItem).mask!.feather).toBe(1)
   })
 
   it('Invert writes invert: true', () => {

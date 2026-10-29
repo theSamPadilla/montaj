@@ -256,7 +256,7 @@ export interface ItemMask {
   rotation?: number
   /** Rect only: corner radius, fraction of half the rect's shorter side, 0-1. Default 0. */
   radius?: number
-  /** Gaussian sigma, fraction of the box's shorter side, 0-0.5. Default 0. */
+  /** Width of the soft band centred on the edge, fraction of the box's shorter side, 0-1. Default 0. */
   feather?: number
   /** Show outside the shape instead of inside. Default false. */
   invert?: boolean
