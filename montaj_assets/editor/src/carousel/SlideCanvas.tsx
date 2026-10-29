@@ -1,5 +1,5 @@
 import { Check, Image as ImageIcon, Type as TypeIcon, Shapes } from 'lucide-react'
-import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react'
+import { useEffect, useMemo, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react'
 import type { Slide, CarouselElement, OverlayElement, ImageElement, OverlayFactory } from '../types'
 import OverlayErrorBoundary from './OverlayErrorBoundary'
 import {
@@ -578,7 +578,7 @@ function textEditRect(element: OverlayElement, wrapper: HTMLElement | undefined,
 }
 
 export default function SlideCanvas({
-  slide,
+  slide: liveSlide,
   slideId,
   width,
   height,
@@ -616,7 +616,7 @@ export default function SlideCanvas({
   onContextMenu,
   editElements,
 }: Props) {
-  const sid = slideId ?? slide.id
+  const sid = slideId ?? liveSlide.id
   const resolveSrc = resolveImageSrc ?? ((el: ImageElement) => resolveAssetDefault(el.src))
   const resolveFontSrc = (src: string) => resolveSrc({ id: '', type: 'image', src, x: 0, y: 0, w: 0, h: 0, rotation: 0 })
   const hiddenSet = hiddenElementIds && hiddenElementIds.length ? new Set(hiddenElementIds) : null
@@ -633,6 +633,27 @@ export default function SlideCanvas({
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editRect, setEditRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
   const [editStyle, setEditStyle] = useState<Partial<CSSStyleDeclaration> | null>(null)
+  // The open edit's draft: the text as typed (drawn live, never written), and
+  // the box its container grows to hold it. `slide` is the live slide with
+  // both applied; writes read `liveSlide`.
+  const [draft, setDraft] = useState<{ elementId: string; text: string; runs: Run[]; base: BaseTextStyle } | null>(null)
+  const [draftBox, setDraftBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
+  const slide = useMemo((): Slide => {
+    if (!editingId || (!draft && !draftBox)) return liveSlide
+    return {
+      ...liveSlide,
+      elements: liveSlide.elements.map((el) => {
+        if (el.id !== editingId || el.type !== 'overlay') return el
+        const patch = draft && draft.elementId === el.id ? runsPatch(el.overlay.props, draft.text, draft.runs, draft.base) : {}
+        const props: Record<string, unknown> = { ...el.overlay.props }
+        for (const [k, v] of Object.entries(patch)) {
+          if (v === undefined) delete props[k]
+          else props[k] = v
+        }
+        return { ...el, ...(draftBox ?? {}), overlay: { ...el.overlay, props } }
+      }),
+    }
+  }, [liveSlide, editingId, draft, draftBox])
 
   // Crop mode (§556 M4): the crop in progress. The ref is what handlers read,
   // current within one tick; the state draws it.
@@ -903,6 +924,8 @@ export default function SlideCanvas({
     setEditingId(null)
     setEditRect(null)
     setEditStyle(null)
+    setDraft(null)
+    setDraftBox(null)
   }
 
   // The text being edited became locked: close without writing what was typed.
@@ -914,7 +937,7 @@ export default function SlideCanvas({
   // The editor's writes: a plain text keeps today's single `text` write; text
   // with runs writes them together, a style every char shares onto the element.
   function writeText(element: OverlayElement, value: string, runs: Run[], base: BaseTextStyle) {
-    const live = slide.elements.find((e) => e.id === element.id)
+    const live = liveSlide.elements.find((e) => e.id === element.id)
     const props = live?.type === 'overlay' ? live.overlay.props : element.overlay.props
     const patch = runsPatch(props, value, runs, base)
     const keys = Object.keys(patch)
@@ -923,9 +946,63 @@ export default function SlideCanvas({
   }
 
   function commitTextEdit(element: OverlayElement, value: string, runs: Run[], base: BaseTextStyle) {
-    void writeText(element, value, runs, base)
+    const live = liveSlide.elements.find((e) => e.id === element.id)
+    const box = draftBox
+    if (box && editElements && live?.type === 'overlay' && (box.x !== live.x || box.y !== live.y || box.w !== live.w || box.h !== live.h)) {
+      // The container grew or shrank with the text: text, runs and the fitted
+      // box are one undo step.
+      const patch = runsPatch(live.overlay.props, value, runs, base)
+      void editElements(sid, (els) => els.map((e) => {
+        if (e.id !== element.id || e.type !== 'overlay') return e
+        const props: Record<string, unknown> = { ...e.overlay.props }
+        for (const [k, v] of Object.entries(patch)) {
+          if (v === undefined) delete props[k]
+          else props[k] = v
+        }
+        return { ...e, ...box, overlay: { ...e.overlay, props } }
+      }))
+    } else void writeText(element, value, runs, base)
     endTextEdit()
   }
+
+  // While editing, the container follows the draft text: the box it grows to
+  // (a hugging pill's own size, kept to its anchor by textAlign; a custom
+  // overlay only ever grows wider) and the editor over the text node. Rendered
+  // with the box it drew last, so it settles in a pass or two.
+  useLayoutEffect(() => {
+    if (!interactive || !editingId || !draft) return
+    const live = liveSlide.elements.find((e) => e.id === editingId)
+    const shown = slide.elements.find((e) => e.id === editingId)
+    if (live?.type !== 'overlay' || shown?.type !== 'overlay' || (live.rotation ?? 0) !== 0) return
+    const wrapper = wrapperRefs.current.get(editingId)
+    const layer = wrapper?.querySelector<HTMLElement>('[data-overlay-layer]')
+    if (!wrapper || !layer || !(shown.w > 0)) return
+    const lr = layer.getBoundingClientRect()
+    if (!(lr.width > 0)) return
+    const k = lr.width / shown.w
+    const pill = layer.querySelector<HTMLElement>('[data-montaj-pill]')
+    let next: { x: number; y: number; w: number; h: number } | null = null
+    if (pill) {
+      const pr = pill.getBoundingClientRect()
+      if (!(pr.width > 0) || !(pr.height > 0)) return
+      const w = Math.ceil(pr.width / k)
+      const h = Math.ceil(pr.height / k)
+      const align = String(live.overlay.props.textAlign ?? 'center')
+      const x = align === 'left' ? live.x : align === 'right' ? live.x + live.w - w : live.x + (live.w - w) / 2
+      next = { x, y: live.y + (live.h - h) / 2, w, h }
+    } else if (typeof shown.overlay.props.text === 'string') {
+      const node = findTextNode(layer, shown.overlay.props.text)
+      const natural = node ? Math.ceil(node.scrollWidth) : 0
+      if (natural > live.w) next = { x: live.x, y: live.y, w: natural, h: live.h }
+    }
+    const same = (a: typeof next, b: typeof next) => a === b || (!!a && !!b && (['x', 'y', 'w', 'h'] as const).every((f) => Math.abs(a[f] - b[f]) < 0.5))
+    if (!same(next, draftBox)) {
+      setDraftBox(next)
+      return
+    }
+    const rect = textEditRect(shown, wrapper, scale)
+    if (editRect && (['left', 'top', 'width', 'height'] as const).some((f) => Math.abs(rect[f] - editRect[f]) > 0.01)) setEditRect(rect)
+  })
 
   // The open edit, for the host's style buttons.
   const editorHandle = useRef<InlineTextEditorHandle | null>(null)
@@ -1597,7 +1674,7 @@ export default function SlideCanvas({
 
         {/* Inline text editor (positioned in display coords over the element). */}
         {interactive && editingId && editRect && (() => {
-          const el = slide.elements.find((e) => e.id === editingId)
+          const el = liveSlide.elements.find((e) => e.id === editingId)
           if (!el || el.type !== 'overlay') return null
           const initial = typeof el.overlay.props.text === 'string' ? el.overlay.props.text : ''
           const styled = supportsRuns(el)
@@ -1612,8 +1689,9 @@ export default function SlideCanvas({
               rect={editRect}
               styleSnapshot={editStyle ?? FALLBACK_EDIT_STYLE}
               onChange={() => {}}
+              onDraft={(value, runs, base) => setDraft({ elementId: el.id, text: value, runs, base })}
               onCommit={(value, runs, base) => commitTextEdit(el, value, runs, base)}
-              onWrite={(value, runs, base) => void writeText(el, value, runs, base)}
+              onWrite={(value, runs, base) => { setDraft(null); void writeText(el, value, runs, base) }}
               onRangeStyle={styled && onTextRange ? (style) => reportTextRange(style ? { slideId: sid, elementId: el.id, style } : null) : undefined}
               onCancel={endTextEdit}
             />

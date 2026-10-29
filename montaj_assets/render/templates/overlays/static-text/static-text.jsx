@@ -37,7 +37,10 @@
  *   hug           — 'true' shrinks the box to the text as a pill that sits by
  *                   textAlign; the pill carries bgColor, padding, radius and
  *                   border while the full box stays clear. Without it bgColor
- *                   paints the whole box. `fit` is ignored with hug (default 'false')
+ *                   paints the whole box. `fit` is ignored with hug (default 'false').
+ *                   The pill is its text's natural single-line width (a typed
+ *                   newline breaks it), may reach past the box, and carries
+ *                   data-montaj-pill so the editor can size the box to it
  *
  * Effects are sized in em, so they follow the size the text is drawn at,
  * fitted or not. Fit measures the laid-out text in the browser (a callback
@@ -220,7 +223,9 @@ export default function StaticText({
       lineHeight:    1.2,
       letterSpacing: spacing(letterSpacing) ?? '-0.01em',
       width:         hugOn ? 'auto' : '100%',
-      whiteSpace:    'pre-wrap',
+      // A hugging pill is its text's natural single-line width (only a typed
+      // newline breaks it), so it grows with the text and the box follows.
+      whiteSpace:    hugOn ? 'pre' : 'pre-wrap',
       wordBreak:     'normal',
       overflowWrap:  'break-word',
       ...effectStyle(effect, effectColor, strength),
@@ -241,13 +246,14 @@ export default function StaticText({
           ? '6% 8%'
           : `${padYn === null ? '6%' : `${padYn}px`} ${padXn === null ? '8%' : `${padXn}px`}`,
       boxSizing:      'border-box',
-      overflow:       'hidden',
+      overflow:       hugOn ? 'visible' : 'hidden',
       ...(hugOn ? {} : container),
     }}>
       {hugOn ? (
-        <div style={{
+        <div data-montaj-pill="" style={{
           width:     'fit-content',
-          maxWidth:  '100%',
+          maxWidth:  'none',
+          flexShrink: 0,
           boxSizing: 'border-box',
           background: bgColor,
           padding:   `${padYn === null ? '0.35em' : `${padYn}px`} ${padXn === null ? '0.9em' : `${padXn}px`}`,

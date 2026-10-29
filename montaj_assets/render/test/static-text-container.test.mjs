@@ -73,9 +73,22 @@ test('pill: hug keeps the wrapper clear and the pill paints', opts, () => {
     padX: '30', padY: '10', radius: '999', borderColor: '#000000', borderWidth: '3', letterSpacing: '0.08', fit: 'true',
   })
   assert.match(html, /^<div style="[^"]*justify-content:flex-start;background:transparent;padding:0;box-sizing/)
-  assert.match(html, /<div style="width:fit-content;max-width:100%;box-sizing:border-box;background:#ffe066;padding:10px 30px;font-size:40px;border-radius:999px;border:3px solid #000000">/)
+  assert.match(html, /<div data-montaj-pill="" style="width:fit-content;max-width:none;flex-shrink:0;box-sizing:border-box;background:#ffe066;padding:10px 30px;font-size:40px;border-radius:999px;border:3px solid #000000">/)
   assert.match(html, /letter-spacing:0.08em;width:auto/)
   assert.doesNotMatch(html, /data-fitted-size/)
+})
+
+test('pill: hug is its natural one-line width and may pass the box', opts, () => {
+  const html = render({ text: 'Hi there', hug: 'true', bgColor: '#fff' })
+  assert.doesNotMatch(html, /max-width:100%/)
+  assert.doesNotMatch(html, /overflow:hidden/)
+  assert.match(html, /overflow:visible/)
+  assert.match(html, /white-space:pre;/)
+  // not hugging: unchanged
+  const plain = render({ text: 'Hi there', bgColor: '#fff' })
+  assert.match(plain, /overflow:hidden/)
+  assert.match(plain, /white-space:pre-wrap/)
+  assert.doesNotMatch(plain, /data-montaj-pill/)
 })
 
 test('pill: padding defaults to 0.35em 0.9em', opts, () => {

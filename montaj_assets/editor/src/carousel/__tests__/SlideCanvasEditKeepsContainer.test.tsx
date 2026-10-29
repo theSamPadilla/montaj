@@ -176,3 +176,129 @@ describe('editing a text keeps its container drawn', () => {
     vi.restoreAllMocks()
   })
 })
+
+// A hugging pill that is 10 px wide per character, 40 px tall.
+describe('the container follows the typed text', () => {
+  const CHAR = 10
+  const hugCompile = vi.fn(async () => (_f: number, _fps: number, _d: number, props: Record<string, unknown>) => (
+    <div data-testid="pill" data-montaj-pill="" style={{ background: '#ff66aa' }}>
+      <p data-montaj-text="" data-testid="label">{String(props.text)}</p>
+    </div>
+  ))
+
+  function rects() {
+    const box = (left: number, top: number, width: number, height: number) =>
+      ({ left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON() {} }) as DOMRect
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.hasAttribute('data-overlay-layer')) return box(0, 0, parseFloat(this.style.width), parseFloat(this.style.height))
+      const w = CHAR * (this.textContent ?? '').length
+      if (this.hasAttribute('data-montaj-pill')) return box(0, 0, w, 40)
+      if (this.getAttribute('data-testid') === 'label') return box(8, 6, w, 28)
+      return box(0, 0, 0, 0)
+    })
+  }
+
+  const el = (align: string) => pillOverlay({ x: 100, y: 100, w: 400, h: 120, overlay: { template: '/t/h.jsx', props: { text: 'Hi', textAlign: align, hug: 'true' } } } as Partial<OverlayElement>)
+
+  async function mountHug(align: string) {
+    rects()
+    const editElements = vi.fn(async () => {})
+    const updateOverlayProp = vi.fn(async () => {})
+    const updateOverlayProps = vi.fn(async () => {})
+    const element = el(align)
+    const r = render(
+      <SlideCanvas
+        slide={{ id: 's', base_color: '#ffffff', elements: [element] }}
+        width={1080} height={1080} interactive selectedElementId={element.id} scale={0.5}
+        compileOverlay={hugCompile as never} editElements={editElements} updateOverlayProp={updateOverlayProp}
+        updateOverlayProps={updateOverlayProps} onSelect={vi.fn()}
+      />,
+    )
+    await waitFor(() => expect(r.container.querySelector('[data-montaj-pill]')).not.toBeNull())
+    const q = (sel: string) => r.container.querySelector(sel) as HTMLElement
+    await act(async () => { fireEvent.doubleClick(q(`[data-element-id="${element.id}"]`)) })
+    const type = async (text: string) => {
+      const box = q('[role="textbox"]')
+      await act(async () => { box.textContent = text; fireEvent.input(box) })
+    }
+    // The box as drawn: x, y, w, h in slide px.
+    const drawn = () => {
+      const s = q(`[data-element-id="${element.id}"]`).style
+      const [tx, ty] = (/translate\(\s*(-?[\d.]+)px,\s*(-?[\d.]+)px/.exec(s.transform) ?? ['', '0', '0']).slice(1).map(Number)
+      return [tx * 2, ty * 2, parseFloat(s.width) * 2, parseFloat(s.height) * 2]
+    }
+    return { q, type, drawn, editElements, updateOverlayProp, updateOverlayProps }
+  }
+
+  it('left anchored: grows then shrinks with the text, x fixed', async () => {
+    const { type, drawn } = await mountHug('left')
+    await type('Hi there')           // 8 chars -> 80 wide
+    expect(drawn()).toEqual([100, 140, 80, 40])
+    await type('Hi there and more')  // 17 -> 170
+    expect(drawn().slice(0, 3)).toEqual([100, 140, 170])
+    await type('Hi')
+    expect(drawn().slice(0, 3)).toEqual([100, 140, 20])
+  })
+
+  it('centered keeps the centre, right keeps the right edge', async () => {
+    const c = await mountHug('center')
+    await c.type('Hi there')
+    expect(c.drawn().slice(0, 3)).toEqual([100 + (400 - 80) / 2, 140, 80])
+    const r = await mountHug('right')
+    await r.type('Hi there')
+    const [x, , w] = r.drawn()
+    expect(x + w).toBe(500)
+  })
+
+  it('draws the draft text in the overlay and writes nothing per keystroke', async () => {
+    const t = await mountHug('left')
+    await t.type('Hi there')
+    await t.type('Hi there!')
+    expect(t.q('[data-testid="label"]').textContent).toBe('Hi there!')
+    expect(t.editElements).not.toHaveBeenCalled()
+    expect(t.updateOverlayProp).not.toHaveBeenCalled()
+    expect(t.updateOverlayProps).not.toHaveBeenCalled()
+  })
+
+  it('an edit back to the original text closes without a write and restores the box', async () => {
+    const t = await mountHug('left')
+    await t.type('Hi there and more')
+    await t.type('Hi')
+    await act(async () => { fireEvent.keyDown(t.q('[role="textbox"]'), { key: 'Escape' }) })
+    expect(t.q('[data-testid="label"]').textContent).toBe('Hi')
+    expect(t.drawn()).toEqual([100, 100, 400, 120])
+    expect(t.editElements).not.toHaveBeenCalled()
+  })
+
+  it('commit writes text and the fitted box in one step', async () => {
+    const t = await mountHug('left')
+    await t.type('Hi there')
+    await act(async () => { fireEvent.keyDown(t.q('[role="textbox"]'), { key: 'Enter' }) })
+    expect(t.editElements).toHaveBeenCalledTimes(1)
+    const [, edit] = t.editElements.mock.calls[0] as unknown as [string, (e: unknown[]) => Array<Record<string, unknown>>]
+    const out = edit([el('left')])[0] as { x: number; y: number; w: number; h: number; overlay: { props: Record<string, unknown> } }
+    expect([out.x, out.y, out.w, out.h]).toEqual([100, 140, 80, 40])
+    expect(out.overlay.props.text).toBe('Hi there')
+    expect(t.updateOverlayProp).not.toHaveBeenCalled()
+  })
+
+  it('a custom overlay wider than its box grows the box, never shrinks it', async () => {
+    rects()
+    Object.defineProperty(HTMLElement.prototype, 'scrollWidth', { configurable: true, get() { return this.getAttribute('data-testid') === 'label' ? 10 * (this.textContent ?? '').length + 400 : 0 } })
+    try {
+      const editElements = vi.fn(async () => {})
+      const compile = vi.fn(async () => (_f: number, _fps: number, _d: number, props: Record<string, unknown>) => <div><div data-testid="label">{String(props.text)}</div></div>)
+      const element = pillOverlay({ x: 100, y: 100, w: 400, h: 120, overlay: { template: '/t/c.jsx', props: { text: 'Hi' } } } as Partial<OverlayElement>)
+      const r = render(<SlideCanvas slide={{ id: 's', base_color: '#fff', elements: [element] }} width={1080} height={1080} interactive selectedElementId="pill" scale={0.5} compileOverlay={compile as never} editElements={editElements} onSelect={vi.fn()} />)
+      await waitFor(() => expect(r.container.querySelector('[data-testid="label"]')).not.toBeNull())
+      await act(async () => { fireEvent.doubleClick(r.container.querySelector('[data-element-id="pill"]') as HTMLElement) })
+      const box = r.container.querySelector('[role="textbox"]') as HTMLElement
+      await act(async () => { box.textContent = 'Hi there'; fireEvent.input(box) })
+      const s = (r.container.querySelector('[data-element-id="pill"]') as HTMLElement).style
+      expect(parseFloat(s.width) * 2).toBe(480)
+    } finally {
+      delete (HTMLElement.prototype as { scrollWidth?: unknown }).scrollWidth
+    }
+  })
+})
+

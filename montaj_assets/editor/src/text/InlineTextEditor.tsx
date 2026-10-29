@@ -53,6 +53,8 @@ export type InlineTextEditorProps = {
   onChange: (value: string) => void
   /** A style action's write, made while the edit stays open. */
   onWrite?: (value: string, runs: Run[], base: BaseTextStyle) => void
+  /** The text as it stands after each change, in the shape `onCommit` gets it (a live draw; nothing is written). */
+  onDraft?: (value: string, runs: Run[], base: BaseTextStyle) => void
   /** The selected range's style, or null when nothing is selected. */
   onRangeStyle?: (style: BaseTextStyle | null) => void
   handleRef?: Ref<InlineTextEditorHandle>
@@ -141,6 +143,7 @@ export function InlineTextEditor({
   onCancel,
   onChange,
   onWrite,
+  onDraft,
   onRangeStyle,
   handleRef,
 }: InlineTextEditorProps): React.ReactElement {
@@ -167,8 +170,9 @@ export function InlineTextEditor({
   // Set once the editor has handed its result back, so the blur that follows an
   // Enter or Esc (the editor unmounting) does not write a second time.
   const settled = useRef(false)
-  const latest = useRef({ styled, onCommit, onCancel, onChange, onWrite, onRangeStyle })
-  latest.current = { styled, onCommit, onCancel, onChange, onWrite, onRangeStyle }
+  const latest = useRef({ styled, onCommit, onCancel, onChange, onWrite, onDraft, onRangeStyle })
+  latest.current = { styled, onCommit, onCancel, onChange, onWrite, onDraft, onRangeStyle }
+  const draft = () => latest.current.onDraft?.(model.current.text, rebaseRuns(model.current.runs, own, wrote.current), wrote.current)
 
   function selection(): { start: number; end: number } | null {
     const root = ref.current
@@ -259,7 +263,7 @@ export function InlineTextEditor({
     paint()
     const end = snap.text.length
     select(snap.sel ? { start: Math.min(snap.sel.start, end), end: Math.min(snap.sel.end, end) } : { start: end, end })
-    if (changed) latest.current.onChange(snap.text)
+    if (changed) { latest.current.onChange(snap.text); draft() }
     trackSelection()
   }
 
@@ -275,6 +279,7 @@ export function InlineTextEditor({
       const { start, end, insert } = diffEdit(before, next, at)
       model.current = { text: next, runs: spliceRuns(model.current.runs, start, end, insert) }
       latest.current.onChange(next)
+      draft()
     }
     if (!painted()) paint()
     trackSelection()
@@ -287,6 +292,7 @@ export function InlineTextEditor({
     const { text, runs } = model.current
     model.current = { text: text.slice(0, at.start) + insert + text.slice(at.end), runs: spliceRuns(runs, at.start, at.end, insert) }
     latest.current.onChange(model.current.text)
+    draft()
     paint()
     select({ start: at.start + insert.length, end: at.start + insert.length })
     trackSelection()
