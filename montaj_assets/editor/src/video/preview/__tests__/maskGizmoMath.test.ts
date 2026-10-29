@@ -7,6 +7,8 @@ import {
   featherRings,
   maskGestureChanges,
   maskHandles,
+  pinHandles,
+  PIN_INSET_PX,
   wipeLine,
 } from '../maskGizmoMath'
 
@@ -207,5 +209,47 @@ describe('maskHandles', () => {
     expect(h.rotate.at[0]).toBeCloseTo(50)
     // The inner side of a wipe is the side that shows: the left at rotation 0.
     expect(h.feather.at[0]).toBeLessThan(50)
+  })
+})
+
+describe('pinHandles', () => {
+  it('leaves handles inside the box where they are', () => {
+    const m = resolve({ shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5, feather: 0.1 })
+    const h = maskHandles(m, 100, 100)
+    const p = pinHandles(h, 100, 100)
+    expect(p.resize.map(r => r.at)).toEqual(h.resize.map(r => r.at))
+    expect(p.resize.every(r => !r.pinned)).toBe(true)
+    expect(p.rotate).toEqual({ ...h.rotate, pinned: false })
+    expect(p.feather).toEqual({ ...h.feather, pinned: false })
+  })
+
+  it('pins every handle of a mask grown past the box just inside it, apart from each other', () => {
+    // A reveal's end: 160% of a 9:16 box, feathered.
+    const m = resolve({ shape: 'ellipse', x: 0.5, y: 0.5, w: 1.6, h: 1.6, feather: 0.03 })
+    const p = pinHandles(maskHandles(m, 108, 192), 108, 192)
+    const all = [...p.resize.map(r => r.at), p.rotate.at, p.feather.at]
+    for (const [x, y] of all) {
+      expect(x).toBeGreaterThanOrEqual(PIN_INSET_PX)
+      expect(x).toBeLessThanOrEqual(108 - PIN_INSET_PX)
+      expect(y).toBeLessThanOrEqual(192 - PIN_INSET_PX)
+      expect(y).toBeGreaterThanOrEqual(PIN_INSET_PX)
+    }
+    expect(p.resize.find(r => r.handle === 'nw')!.at).toEqual([PIN_INSET_PX, PIN_INSET_PX])
+    expect(p.resize.find(r => r.handle === 'e')!.at).toEqual([108 - PIN_INSET_PX, 96])
+    expect(p.resize.every(r => r.pinned)).toBe(true)
+    // n and rotate both pin to the top middle; rotate slides along the edge, stalkless.
+    expect(p.rotate.pinned).toBe(true)
+    expect(p.rotate.stalkFrom).toBeNull()
+    expect(p.rotate.at[1]).toBe(PIN_INSET_PX)
+    expect(p.rotate.at[0]).not.toBe(54)
+    // The feather handle pins to the right edge with e, and slides down it.
+    expect(p.feather.pinned).toBe(true)
+    expect(p.feather.at[0]).toBe(108 - PIN_INSET_PX)
+    expect(p.feather.at[1]).toBeGreaterThan(96)
+    for (let i = 0; i < all.length; i++) {
+      for (let j = i + 1; j < all.length; j++) {
+        expect(Math.hypot(all[i][0] - all[j][0], all[i][1] - all[j][1])).toBeGreaterThan(12)
+      }
+    }
   })
 })

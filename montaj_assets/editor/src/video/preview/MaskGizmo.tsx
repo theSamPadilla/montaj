@@ -8,7 +8,9 @@
 //   - crop-style squares on the mask box's corners and edge midpoints (resize
 //     about the centre), a round handle above the top edge (rotate), and a
 //     round handle on the inner ring (feather, as board B places it);
-//   - the area inside the outline moves the mask (a wipe: its edge line).
+//   - the area inside the outline moves the mask (a wipe: its edge line);
+//   - a handle whose place is outside the clip's box is pinned just inside
+//     it (`pinHandles`), since the preview frame clips to the canvas.
 //
 // It draws in BOX PIXELS: the SVG's viewBox is the clip's box in preview
 // pixels (`0 0 boxW boxH`, as `maskSvg` uses), laid over an element whose box
@@ -36,6 +38,7 @@ import {
   maskCentre,
   maskGestureChanges,
   maskHandles,
+  pinHandles,
   pointsAttr,
   rotateStep,
   wipeLine,
@@ -202,7 +205,8 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
       })()
     : null
   const rings = featherRings(mask, boxW, boxH)
-  const handles = maskHandles(mask, boxW, boxH)
+  // Pinned inside the box when the mask outgrows it (`pinHandles`).
+  const handles = pinHandles(maskHandles(mask, boxW, boxH), boxW, boxH)
   // A mask over the whole box would take the clip's move with its fill: only
   // its outline moves it then.
   const covers = coversBox(mask, boxW, boxH)
@@ -295,19 +299,20 @@ export default function MaskGizmo({ mask, boxW, boxH, scaleX, scaleY, toBox, onP
           except a handle sitting on one of the clip's (see `zFor`). No z-index
           here, so each handle's own takes part in the clip's stacking. */}
       <div className="absolute inset-0 pointer-events-none">
-        {handles.resize.map(({ handle, at }) => (
+        {handles.resize.map(({ handle, at, pinned }) => (
           <button
             key={handle}
             type="button"
             aria-label="Resize mask"
             data-mask-handle={handle}
+            data-pinned={pinned || undefined}
             {...noTab}
             style={placed(at, SQUARE_FACE, RESIZE_CURSOR[handle])}
             {...press(`resize-${handle}`)}
           />
         ))}
-        <button type="button" aria-label="Rotate mask" data-mask-handle="rotate" {...noTab} style={placed(handles.rotate.at, ROTATE_FACE, 'grab')} {...press('rotate')} />
-        <button type="button" aria-label="Mask feather" data-mask-handle="feather" {...noTab} style={placed(handles.feather.at, FEATHER_FACE, 'ew-resize')} {...press('feather')} />
+        <button type="button" aria-label="Rotate mask" data-mask-handle="rotate" data-pinned={handles.rotate.pinned || undefined} {...noTab} style={placed(handles.rotate.at, ROTATE_FACE, 'grab')} {...press('rotate')} />
+        <button type="button" aria-label="Mask feather" data-mask-handle="feather" data-pinned={handles.feather.pinned || undefined} {...noTab} style={placed(handles.feather.at, FEATHER_FACE, 'ew-resize')} {...press('feather')} />
       </div>
     </div>
   )

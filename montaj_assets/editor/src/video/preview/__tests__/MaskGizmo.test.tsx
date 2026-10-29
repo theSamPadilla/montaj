@@ -327,6 +327,34 @@ describe('mask gizmo: gestures', () => {
   })
 })
 
+describe('mask gizmo: a mask grown past the clip', () => {
+  // 160% of the box: every handle's real place is outside the frame, which
+  // clips to the canvas, so each is pinned just inside the clip's edge.
+  const BIG = { ...MASK, w: 1.6, h: 1.6 }
+
+  it('keeps every handle inside the box', () => {
+    render(<Host initial={clip({ mask: BIG })} />)
+    const buttons = [...screen.getAllByLabelText('Resize mask'), screen.getByLabelText('Rotate mask'), screen.getByLabelText('Mask feather')]
+    for (const b of buttons) {
+      expect(b.getAttribute('data-pinned')).toBe('true')
+      const left = parseFloat((b as HTMLElement).style.left)
+      const top = parseFloat((b as HTMLElement).style.top)
+      expect(left).toBeGreaterThan(0)
+      expect(left).toBeLessThan(100)
+      expect(top).toBeGreaterThan(0)
+      expect(top).toBeLessThan(100)
+    }
+  })
+
+  it('a pinned edge square drags as the real edge would', () => {
+    render(<Host initial={clip({ mask: BIG })} />)
+    const e = screen.getAllByLabelText('Resize mask').find(b => b.getAttribute('data-mask-handle') === 'e')!
+    drag(e, { x: 90, y: 96 }, { x: 80, y: 96 })
+    expect(latest.mask!.w).toBeCloseTo(1.6 - 20 / BOX_W)
+    expect(latest.mask!.h).toBe(1.6)
+  })
+})
+
 describe('mask gizmo: a wipe', () => {
   const wipe = clip({ mask: { shape: 'wipe', x: 0.5, y: 0.5 } })
 

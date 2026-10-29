@@ -286,6 +286,58 @@ export function maskHandles(m: ResolvedMask, boxW: number, boxH: number): MaskHa
   }
 }
 
+/** How far inside the clip's edge a handle that left the box is pinned, px. */
+export const PIN_INSET_PX = 18
+/** The step along an edge that keeps two pinned handles apart, px. */
+const PIN_STEP_PX = 22
+
+export interface PinnedHandles {
+  resize: Array<{ handle: MaskHandle; at: [number, number]; pinned: boolean }>
+  rotate: { at: [number, number]; stalkFrom: [number, number] | null; pinned: boolean }
+  feather: { at: [number, number]; pinned: boolean }
+}
+
+/**
+ * The handles, each one outside the clip's box pinned just inside its edge.
+ * The preview frame clips to the canvas, so a mask grown past a full-frame
+ * clip (a reveal's end) would otherwise show none of its handles, and the
+ * only handles left on screen would be the clip's own. Every gesture works
+ * from the pointer's change, never its position, so a pinned handle drags as
+ * its real place would. A pinned handle slides along its edge, clear of the
+ * handles placed before it; a pinned rotate handle has no stalk.
+ */
+export function pinHandles(h: MaskHandles, boxW: number, boxH: number): PinnedHandles {
+  const taken: Array<[number, number]> = []
+  const clamp = (n: number, max: number) => Math.min(Math.max(n, PIN_INSET_PX), Math.max(PIN_INSET_PX, max - PIN_INSET_PX))
+  const pin = (at: [number, number]): { at: [number, number]; pinned: boolean } => {
+    if (at[0] >= 0 && at[0] <= boxW && at[1] >= 0 && at[1] <= boxH) {
+      taken.push(at)
+      return { at, pinned: false }
+    }
+    // Off the top or bottom: slide along x; off a side: along y.
+    const alongX = at[1] < 0 || at[1] > boxH
+    const base: [number, number] = [clamp(at[0], boxW), clamp(at[1], boxH)]
+    const free = (q: [number, number]) => !taken.some(t => Math.hypot(t[0] - q[0], t[1] - q[1]) < PIN_STEP_PX - 1)
+    let p = base
+    // Steps of +1, -1, +2, -2... along the edge, staying inside the box.
+    for (let k = 1; k <= 16 && !free(p); k++) {
+      const s = (k % 2 ? 1 : -1) * Math.ceil(k / 2) * PIN_STEP_PX
+      const q: [number, number] = alongX ? [base[0] + s, base[1]] : [base[0], base[1] + s]
+      if (alongX ? clamp(q[0], boxW) === q[0] : clamp(q[1], boxH) === q[1]) p = q
+    }
+    taken.push(p)
+    return { at: p, pinned: true }
+  }
+  const resize = h.resize.map(({ handle, at }) => ({ handle, ...pin(at) }))
+  const rotate = pin(h.rotate.at)
+  const feather = pin(h.feather.at)
+  return {
+    resize,
+    rotate: { ...rotate, stalkFrom: rotate.pinned ? null : h.rotate.stalkFrom },
+    feather,
+  }
+}
+
 /** An SVG `points` attribute. */
 export function pointsAttr(pts: ReadonlyArray<readonly [number, number]>): string {
   return pts.map(([x, y]) => `${x},${y}`).join(' ')
