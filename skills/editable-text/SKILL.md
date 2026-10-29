@@ -55,6 +55,45 @@ The 9 props are a floor, not a ceiling. The agent may add any other props (gradi
 
 Five more props light up editor controls when an overlay declares them: `effect` (`none` | `shadow` | `outline` | `glow`), `effectColor`, `effectStrength` (`"0"`..`"100"`), `fit` (`"true"` shrinks the text until it fits the box) and `minFontSize` (the size fit never goes below). Copy their handling from the canonical reference rather than writing your own: it sizes the effects in `em`, so they follow a fitted size, and it fits through a callback ref with no React hooks, because the editor preview calls the overlay function directly and a hook there breaks. Prefer `fit: "true"` with a `minFontSize` at the role's floor (see the carousel skill's sizes) over guessing a size for long copy.
 
+## Pills, accents and mixed styling (optional, editor-backed)
+
+Build a pill, a badge, a letter-spaced label or a title with one accent word with these optional props, all JSON strings, on the canonical `static-text` template. Never hardcode spans or a fake pill in custom JSX: hardcoded styling is not editable and does not survive an edit, while these props round-trip through the editor.
+
+- `runs`: a JSON string, an array of `{text, color?, fontStyle?, fontWeight?, fontFamily?}`. Unset keys inherit the overlay's own props. `text` must stay the joined plain string of the runs; rewrite `runs` whenever you change `text`.
+- `padX`, `padY` (px), `radius` (px), `borderColor`, `borderWidth` (px), `letterSpacing` (em, e.g. `"0.08"`).
+- `hug`: `"true"` shrinks the box to the text and places it by `textAlign`, so a pill hugs its words. With `hug`, `bgColor` and the border paint the pill; without it `bgColor` paints the whole box.
+
+(a) Serif title, one italic accent word:
+
+```jsonc
+"props": {
+  "text": "Skincare for beginners",
+  "runs": "[{\"text\":\"Skincare for \"},{\"text\":\"beginners\",\"color\":\"#f6e3a1\",\"fontStyle\":\"italic\"}]",
+  "fontFamily": "\"Playfair Display\", Georgia, serif", "fontSize": "88", "color": "#ffffff"
+}
+```
+
+(b) Letter-spaced uppercase pill:
+
+```jsonc
+"props": {
+  "text": "New this week", "textTransform": "uppercase", "letterSpacing": "0.08",
+  "hug": "true", "bgColor": "#f6e3a1", "color": "#111111",
+  "radius": "999", "padX": "28", "padY": "12", "fontSize": "28", "fontWeight": "700"
+}
+```
+
+(c) Outlined pill:
+
+```jsonc
+"props": {
+  "text": "Swipe", "hug": "true", "bgColor": "transparent", "color": "#ffffff",
+  "borderColor": "#ffffff", "borderWidth": "2", "radius": "999", "padX": "28", "padY": "12"
+}
+```
+
+A custom overlay that wants the same behaviour copies `static-text`'s handling of these props.
+
 ## Worked examples
 
 **Hook headline** — large, bold, sans, centered:
