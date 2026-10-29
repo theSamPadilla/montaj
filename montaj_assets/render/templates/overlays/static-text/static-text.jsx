@@ -25,7 +25,20 @@
  *                   run's text, `c` a hex colour, `b`/`i`/`u` 1 (bold, italic,
  *                   underline on) or 0 (off); absent = the element's own. Used
  *                   only when the runs spell `text` exactly and no boundary
- *                   splits an emoji's two halves; otherwise ignored.
+ *                   splits an emoji's two halves; otherwise ignored (empty or
+ *                   malformed too). A run may also use the long keys `text`,
+ *                   `color` (any CSS colour), `fontStyle`, `fontWeight` and
+ *                   `fontFamily`; each draws only the keys it sets.
+ *   padX, padY    — px; the box's inner padding. Absent = '6%' / '8%' (with hug:
+ *                   the pill's, default 0.35em / 0.9em)
+ *   radius        — px corner radius of the box (with hug: of the pill)
+ *   borderColor, borderWidth — a solid border, drawn only when both are set and
+ *                   the width (px) is above 0
+ *   letterSpacing — em, '0.08' or '0.08em' (default '-0.01em')
+ *   hug           — 'true' shrinks the box to the text as a pill that sits by
+ *                   textAlign; the pill carries bgColor, padding, radius and
+ *                   border while the full box stays clear. Without it bgColor
+ *                   paints the whole box. `fit` is ignored with hug (default 'false')
  *
  * Effects are sized in em, so they follow the size the text is drawn at,
  * fitted or not. Fit measures the laid-out text in the browser (a callback
@@ -53,13 +66,15 @@ function decodeRuns(raw, text) {
   if (typeof raw !== 'string' || raw === '') return null
   let list
   try { list = JSON.parse(raw) } catch { return null }
-  if (!Array.isArray(list) || !list.every(r => r && typeof r === 'object' && typeof r.t === 'string')) return null
+  if (!Array.isArray(list) || !list.every(r => r && typeof r === 'object' && typeof (r.t ?? r.text) === 'string')) return null
+  list = list.map(r => (typeof r.t === 'string' ? r : { ...r, t: r.text }))
   if (list.map(r => r.t).join('') !== String(text)) return null
   // A boundary between an emoji's two UTF-16 halves would draw each half alone.
   for (let i = 0; i < list.length - 1; i++) {
     if (/[\uD800-\uDBFF]$/.test(list[i].t) && /^[\uDC00-\uDFFF]/.test(list.slice(i + 1).map(r => r.t).join(''))) return null
   }
-  return list.filter(r => r.t !== '')
+  list = list.filter(r => r.t !== '')
+  return list.length ? list : null
 }
 
 // A run's own style. Underline is drawn per run: a child cannot take back its parent's.
@@ -68,7 +83,24 @@ function runStyle(r) {
   if (typeof r.c === 'string' && HEX.test(r.c)) s.color = r.c
   if (r.b === 1 || r.b === 0) s.fontWeight = r.b === 1 ? '700' : '400'
   if (r.i === 1 || r.i === 0) s.fontStyle = r.i === 1 ? 'italic' : 'normal'
+  if (typeof r.color === 'string' && r.color.trim()) s.color = r.color
+  for (const k of ['fontStyle', 'fontWeight', 'fontFamily']) {
+    if ((typeof r[k] === 'string' && r[k].trim()) || (k === 'fontWeight' && typeof r[k] === 'number')) s[k] = r[k]
+  }
   return s
+}
+
+// A px prop as a number, or null when absent or not a finite number >= 0.
+function px(v) {
+  const n = parseFloat(String(v ?? ''))
+  return Number.isFinite(n) && n >= 0 ? n : null
+}
+
+// '0.08' or '0.08em' as em; any other unit as is; null when absent.
+function spacing(v) {
+  const t = String(v ?? '').trim()
+  if (t === '') return null
+  return /^-?[\d.]+$/.test(t) ? `${t}em` : t
 }
 
 const em = (n) => `${+n.toFixed(4)}em`
@@ -131,6 +163,13 @@ export default function StaticText({
   fit           = 'false',
   minFontSize   = '24',
   runs          = '',
+  padX          = '',
+  padY          = '',
+  radius        = '',
+  borderColor   = '',
+  borderWidth   = '',
+  letterSpacing = '',
+  hug           = 'false',
 }) {
   // parseFloat (not Number) so we tolerate both "64" (legacy unit-less) and
   // "64px" (the canonical FontSizePicker storage format). Number("64px") = NaN
@@ -142,7 +181,16 @@ export default function StaticText({
   const floor = Math.min(safeSize, Number.isFinite(minNum) && minNum > 0 ? minNum : 24)
   const strengthNum = parseFloat(String(effectStrength))
   const strength = Number.isFinite(strengthNum) ? Math.min(Math.max(strengthNum, 0), 100) / 100 : 0.6
-  const fitOn = String(fit) === 'true'
+  const hugOn = String(hug) === 'true'
+  const fitOn = String(fit) === 'true' && !hugOn
+  const padXn = px(padX)
+  const padYn = px(padY)
+  const radiusN = px(radius)
+  const borderW = px(borderWidth)
+  const bordered = borderW > 0 && typeof borderColor === 'string' && borderColor.trim() !== ''
+  const container = {}
+  if (radiusN !== null) container.borderRadius = radiusN
+  if (bordered) container.border = `${borderW}px solid ${borderColor}`
   const styled = decodeRuns(runs, text)
 
   // Runs after every commit (a new function each render). With fit off it
@@ -166,6 +214,26 @@ export default function StaticText({
     }
   }
 
+  const paragraph = (
+    <p ref={sizeText} data-montaj-text="" style={{
+      margin:        0,
+      fontFamily,
+      fontWeight,
+      fontStyle,
+      color,
+      fontSize:      safeSize,
+      textAlign,
+      textTransform,
+      lineHeight:    1.2,
+      letterSpacing: spacing(letterSpacing) ?? '-0.01em',
+      width:         hugOn ? 'auto' : '100%',
+      whiteSpace:    'pre-wrap',
+      wordBreak:     'normal',
+      overflowWrap:  'break-word',
+      ...effectStyle(effect, effectColor, strength),
+    }}>{styled ? styled.map((r, i) => <span key={i} style={runStyle(r)}>{r.t}</span>) : text}</p>
+  )
+
   return (
     <div style={{
       position:       'absolute',
@@ -173,28 +241,25 @@ export default function StaticText({
       display:        'flex',
       alignItems:     'center',
       justifyContent: textAlign === 'left' ? 'flex-start' : textAlign === 'right' ? 'flex-end' : 'center',
-      background:     bgColor,
-      padding:        '6% 8%',
+      background:     hugOn ? 'transparent' : bgColor,
+      padding:        hugOn || (padXn === null && padYn === null)
+        ? '6% 8%'
+        : `${padYn === null ? '6%' : `${padYn}px`} ${padXn === null ? '8%' : `${padXn}px`}`,
       boxSizing:      'border-box',
       overflow:       'hidden',
+      ...(hugOn ? {} : container),
     }}>
-      <p ref={sizeText} data-montaj-text="" style={{
-        margin:        0,
-        fontFamily,
-        fontWeight,
-        fontStyle,
-        color,
-        fontSize:      safeSize,
-        textAlign,
-        textTransform,
-        lineHeight:    1.2,
-        letterSpacing: '-0.01em',
-        width:         '100%',
-        whiteSpace:    'pre-wrap',
-        wordBreak:     'normal',
-        overflowWrap:  'break-word',
-        ...effectStyle(effect, effectColor, strength),
-      }}>{styled ? styled.map((r, i) => <span key={i} style={runStyle(r)}>{r.t}</span>) : text}</p>
+      {hugOn ? (
+        <div style={{
+          width:     'fit-content',
+          maxWidth:  '100%',
+          boxSizing: 'border-box',
+          background: bgColor,
+          padding:   `${padYn === null ? '0.35em' : `${padYn}px`} ${padXn === null ? '0.9em' : `${padXn}px`}`,
+          fontSize:  safeSize,
+          ...container,
+        }}>{paragraph}</div>
+      ) : paragraph}
     </div>
   )
 }

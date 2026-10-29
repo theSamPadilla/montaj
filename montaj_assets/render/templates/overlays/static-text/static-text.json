@@ -15,6 +15,13 @@
     { "name": "effectStrength", "type": "string", "default": "60" },
     { "name": "fit",           "type": "string", "default": "false",       "enum": ["false", "true"] },
     { "name": "minFontSize",   "type": "string", "default": "24" },
-    { "name": "runs",          "type": "string" }
+    { "name": "runs",          "type": "string" },
+    { "name": "padX",          "type": "string" },
+    { "name": "padY",          "type": "string" },
+    { "name": "radius",        "type": "string" },
+    { "name": "borderColor",   "type": "string", "format": "color" },
+    { "name": "borderWidth",   "type": "string" },
+    { "name": "letterSpacing", "type": "string" },
+    { "name": "hug",           "type": "string", "default": "false",       "enum": ["false", "true"] }
   ]
 }
