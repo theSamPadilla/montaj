@@ -11,7 +11,8 @@ export async function loadOverlays(adapter: EditorAdapter<Project>, project: Pic
   const combined: GlobalOverlay[] = []
   for (const list of lists) {
     for (const o of list) {
-      if (seen.has(o.jsxPath)) continue
+      // serve lists an overlay group folder with nothing in it as { group, empty: true }: no name, no jsxPath to add.
+      if (!o.jsxPath || seen.has(o.jsxPath)) continue
       seen.add(o.jsxPath)
       combined.push(o)
     }
