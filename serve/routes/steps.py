@@ -42,6 +42,10 @@ STEP_TIMEOUT_S = int(os.environ.get("MONTAJ_STEP_TIMEOUT", "900"))
 # has its own bounded timeout and the whisper stage's is sized to the real audio.
 WHISPER_STEP_OVERHEAD_S = 300
 WHISPER_STEP_NO_DURATION_S = 12 * 3600
+# A kling-4.0 run's ceiling: the connector's own poll ceiling for what was asked
+# (connectors/kling.poll_ceiling_s) plus this for the upload, the download and
+# the clip's normalize. Cutting the step short abandons a task Kling still bills.
+KLING_STEP_OVERHEAD_S = 300
 
 
 def _runs_whisper(schema: dict) -> bool:
@@ -53,6 +57,22 @@ def _runs_whisper(schema: dict) -> bool:
                for p in schema.get("params", []))
 
 
+def _kling_timeout(body: dict) -> int:
+    """kling_generate's ceiling: the connector's poll ceiling for the model,
+    duration and resolution asked (the longest kling-4.0 clip when serve cannot
+    see the duration, as in project-aware mode, where the scene sets it), plus
+    KLING_STEP_OVERHEAD_S. A legacy model polls for MAX_POLL_S, under the flat
+    ceiling."""
+    from connectors.kling import DEFAULT_MODEL, poll_ceiling_s
+    model = body.get("model") or DEFAULT_MODEL
+    duration = body.get("duration") if not (body.get("project-id") or body.get("project_id")) else None
+    try:
+        duration = int(duration) if duration is not None else None
+    except (TypeError, ValueError):
+        duration = None
+    return int(poll_ceiling_s(model, duration, body.get("resolution"))) + KLING_STEP_OVERHEAD_S
+
+
 def _step_timeout(schema: dict, body: dict) -> int:
     """The subprocess ceiling for one step run: the flat STEP_TIMEOUT_S, except
     for a whisper step. Whisper on a CPU (Windows) runs far slower than on Apple
@@ -62,6 +82,8 @@ def _step_timeout(schema: dict, body: dict) -> int:
     whisper then fails as the step's structured transcription_timeout, not as
     this 504. A trim-spec input is sized by its source (an upper bound). Never
     below STEP_TIMEOUT_S, so MONTAJ_STEP_TIMEOUT still raises every step."""
+    if schema.get("name") == "kling_generate":
+        return max(STEP_TIMEOUT_S, _kling_timeout(body))
     if not _runs_whisper(schema):
         # A step may declare a longer ceiling of its own (export_editor renders
         # one movie per overlay); never below the flat one.

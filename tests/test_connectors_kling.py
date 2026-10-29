@@ -1109,6 +1109,17 @@ class TestV4Http:
             _kling.create_task(build_payload(prompt="a")["body"])
         assert "Flagship" not in str(ei.value)
 
+    def test_generate_polls_for_the_ceiling_of_what_was_asked(self, wire, monkeypatch, tmp_path):
+        wire(_Resp(200, V4_CREATED), _Resp(200, _task("succeeded", outputs=[{"type": "video", "url": "u"}])))
+        seen = {}
+        real = _kling.poll_until_done_v4
+        monkeypatch.setattr(_kling, "poll_until_done_v4",
+                            lambda tid, max_s=None: seen.setdefault("max_s", max_s) and real(tid, max_s))
+        monkeypatch.setattr(_kling, "_download_file", lambda url, out: out)
+        _kling.generate(prompt="a", out_path=str(tmp_path / "o.mp4"), model="kling-4.0", duration_seconds=30)
+        assert seen["max_s"] == 30 * 60 * 1.25
+
+
     def test_1201_is_model_retired_for_kling_4(self, wire):
         wire(_Resp(400, {"code": 1201, "message": "model is not supported"}))
         with pytest.raises(ConnectorError) as ei:
@@ -1196,3 +1207,40 @@ class TestV4Step:
         with pytest.raises(SystemExit):
             step.main()
         assert "no sound switch" in saved[0]
+
+
+class TestPollCeiling:
+    """kling-4.0's poll ceiling scales with the clip asked for: giving up abandons
+    a task Kling still bills, and waiting longer costs nothing (§ Kling 4.0)."""
+
+    def test_legacy_models_keep_max_poll_s(self):
+        for model in ("kling-v3-omni", "kling-video-o1"):
+            assert _kling.poll_ceiling_s(model, 15, "1080p") == _kling.MAX_POLL_S == 600.0
+
+    def test_v4_scales_with_duration_and_1080p(self):
+        assert _kling.poll_ceiling_s("kling-4.0", 30, "720p") == 1800.0
+        assert _kling.poll_ceiling_s("kling-4.0", 30, "1080p") == 2250.0
+        assert _kling.poll_ceiling_s("kling-4.0", 30) == 2250.0  # 1080p is the default (A)
+
+    def test_v4_never_below_max_poll_s(self):
+        assert _kling.poll_ceiling_s("kling-4.0", 3, "720p") == 600.0
+        assert _kling.poll_ceiling_s("kling-4.0", 3, "1080p") == 750.0
+
+    def test_v4_unknown_duration_takes_the_longest_clip(self):
+        assert _kling.poll_ceiling_s("kling-4.0") == 2250.0
+
+    def test_a_timeout_names_the_task_and_says_it_may_still_bill(self, monkeypatch):
+        monkeypatch.setattr(_kling.time, "sleep", lambda s: None)
+        monkeypatch.setattr(_kling, "query_task_v4", lambda tid: {"id": tid, "status": "processing"})
+        with pytest.raises(ConnectorError) as ei:
+            _kling.poll_until_done_v4("tk-9", max_s=_kling.POLL_INTERVAL_S * 2)
+        msg = str(ei.value)
+        assert "tk-9" in msg and "may still finish it and charge for it" in msg
+
+    def test_legacy_poll_stops_at_max_poll_s(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(_kling.time, "sleep", lambda s: None)
+        monkeypatch.setattr(_kling, "query_task", lambda tid, path=None: calls.append(tid) or {"task_status": "processing"})
+        with pytest.raises(ConnectorError, match="did not finish within 600 s"):
+            _kling.poll_until_done("tk-2")
+        assert len(calls) == int(_kling.MAX_POLL_S / _kling.POLL_INTERVAL_S)

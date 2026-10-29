@@ -83,6 +83,12 @@ MODELS = {
 V4_MAX_ENGLISH_CHARS = 26000
 V4_MAX_OTHER_CHARS = 11000
 V4_DEFAULT_RESOLUTION = "1080p"            # A: default 1080p
+# How long a kling-4.0 task is polled. No generation time is documented or
+# measured, and giving up abandons a task Kling still bills, so the ceiling
+# scales with what was asked: a minute per second of video, a quarter more
+# at 1080p, never below MAX_POLL_S. Waiting longer costs nothing.
+V4_POLL_S_PER_VIDEO_S = 60.0
+V4_1080P_POLL_FACTOR = 1.25
 V4_QUERY_PATH = "/tasks"                   # A: GET /tasks?task_ids=<id>
 # Aspect ratios only the legacy endpoint takes (lib/types/kling.py): 16:9, 9:16, 1:1.
 V4_ONLY_ASPECTS = ("21:9", "adaptive")
@@ -713,11 +719,27 @@ def query_task(task_id: str, path_template: str = VIDEO_QUERY_PATH) -> dict:
 MAX_CONSECUTIVE_POLL_FAILURES = 5
 
 
-def _poll(task_id: str, query, status_key: str, done: str, msg_key: str) -> dict:
+def poll_ceiling_s(model: str, duration_seconds: int = None, resolution: str = None) -> float:
+    """How long to poll one task of `model`. MAX_POLL_S for the legacy models;
+    for kling-4.0, scaled by the requested duration (the longest allowed when
+    unknown) and resolution (see V4_POLL_S_PER_VIDEO_S)."""
+    caps = MODELS.get(model, {})
+    if caps.get("api") != "v4":
+        return MAX_POLL_S
+    seconds = duration_seconds if duration_seconds is not None else max(caps["durations"])
+    ceiling = max(MAX_POLL_S, V4_POLL_S_PER_VIDEO_S * seconds)
+    if (resolution or V4_DEFAULT_RESOLUTION) == "1080p":
+        ceiling *= V4_1080P_POLL_FACTOR
+    return ceiling
+
+
+def _poll(task_id: str, query, status_key: str, done: str, msg_key: str,
+          max_s: float = None) -> dict:
     """Shared poll loop: query() until status_key reads `done` or "failed"."""
+    max_s = MAX_POLL_S if max_s is None else max_s
     elapsed = 0.0
     failures = 0
-    while elapsed < MAX_POLL_S:
+    while elapsed < max_s:
         try:
             task_data = query()
         except ConnectorError as e:
@@ -738,7 +760,11 @@ def _poll(task_id: str, query, status_key: str, done: str, msg_key: str) -> dict
                 raise ConnectorError(f"Kling task {task_id} failed: {msg}")
         time.sleep(POLL_INTERVAL_S)
         elapsed += POLL_INTERVAL_S
-    raise ConnectorError(f"Kling task {task_id} did not complete within {MAX_POLL_S}s")
+    # Kling keeps working on a task we stop waiting for, and bills it.
+    raise ConnectorError(
+        f"Kling task {task_id} did not finish within {int(max_s)} s. Kling may still "
+        f"finish it and charge for it; its task id is {task_id}."
+    )
 
 
 def poll_until_done(task_id: str, path_template: str = VIDEO_QUERY_PATH) -> dict:
@@ -747,10 +773,12 @@ def poll_until_done(task_id: str, path_template: str = VIDEO_QUERY_PATH) -> dict
                  "task_status", "succeed", "task_status_msg")
 
 
-def poll_until_done_v4(task_id: str) -> dict:
-    """Poll a kling-4.0 task until succeeded/failed (A statuses)."""
+def poll_until_done_v4(task_id: str, max_s: float = None) -> dict:
+    """Poll a kling-4.0 task until succeeded/failed (A statuses), for up to
+    max_s (poll_ceiling_s for the longest kling-4.0 clip when absent)."""
     return _poll(task_id, lambda: query_task_v4(task_id),
-                 "status", "succeeded", "message")
+                 "status", "succeeded", "message",
+                 max_s=poll_ceiling_s("kling-4.0") if max_s is None else max_s)
 
 
 def _download_file(url: str, out_path: str) -> str:
@@ -800,7 +828,9 @@ def generate(
     )
     if MODELS[model].get("api") == "v4":
         task_id = create_task_v4(payload["body"])["id"]
-        result = poll_until_done_v4(task_id)
+        settings = payload["body"]["settings"]
+        result = poll_until_done_v4(task_id, poll_ceiling_s(
+            model, settings.get("duration"), settings.get("resolution")))
         video_url = next((o.get("url") for o in result.get("outputs") or []
                           if isinstance(o, dict) and o.get("type") == "video" and o.get("url")), None)
         if not video_url:

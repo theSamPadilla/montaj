@@ -116,3 +116,24 @@ def test_an_absolute_input_never_asks_for_the_workspace(duration, tmp_path, monk
     spec.write_text(json.dumps({"input": "/clips/b.mp4", "keeps": [[0, 5]]}))
     steps._step_timeout(WHISPER, {"input": str(spec)})
     assert duration["path"] == "/clips/b.mp4"
+
+
+KLING = {"name": "kling_generate", "params": [{"name": "model", "type": "enum", "default": "kling-v3-omni"}]}
+
+
+def test_kling_legacy_models_keep_the_flat_ceiling():
+    assert steps._step_timeout(KLING, {"prompt": "a"}) == steps.STEP_TIMEOUT_S
+    assert steps._step_timeout(KLING, {"model": "kling-video-o1", "duration": 10}) == steps.STEP_TIMEOUT_S
+
+
+def test_kling_4_outlasts_its_poll_ceiling():
+    from connectors.kling import poll_ceiling_s
+    t = steps._step_timeout(KLING, {"model": "kling-4.0", "duration": 30, "resolution": "1080p"})
+    assert t == int(poll_ceiling_s("kling-4.0", 30, "1080p")) + steps.KLING_STEP_OVERHEAD_S == 2550
+    assert steps._step_timeout(KLING, {"model": "kling-4.0", "duration": 5, "resolution": "720p"}) == steps.STEP_TIMEOUT_S
+
+
+def test_kling_4_in_project_mode_sizes_for_the_longest_clip():
+    """The scene sets the duration there, which serve cannot see."""
+    t = steps._step_timeout(KLING, {"model": "kling-4.0", "project-id": "p", "scene-id": "s", "duration": 5})
+    assert t == 2250 + steps.KLING_STEP_OVERHEAD_S
