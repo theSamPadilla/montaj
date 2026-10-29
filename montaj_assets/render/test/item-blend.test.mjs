@@ -237,3 +237,27 @@ for (const mode of ['screen', 'multiply']) {
     assert.deepEqual(at(12, 12), bd)
   })
 }
+
+// sample-frame's canvas is RGBA, but a plain overlay before the blend hands it
+// on as yuv420 carrying the source frame's tags (a PNG: gbr, full range). Read
+// with the BT.709 matrix as YUV, saturated colours shifted (magenta's green
+// 38 came out 68). The blend first makes the backdrop the canvas's own RGB.
+test('ffmpeg: on an RGBA canvas, a backdrop an overlay handed on as tagged yuv420 keeps its colour', { skip: !ffOk }, () => {
+  const parts = blendCompositeParts({ backdrop: '[bg]', item: '[it]', x: '0', y: '0', vw: 16, vh: 16, mode: 'screen', idx: 1,
+    tenBit: false, matrix: 'bt709', canvasPixFmt: 'rgba', fps: 10, duration: 0.1, overlayFormat: '', out: '[o]' })
+  const fc = 'color=c=black:s=16x16:r=10:d=0.1,format=rgba[c0];'
+    + 'color=c=0xFF26FF:s=16x16:r=10:d=0.1,format=rgb24,setparams=colorspace=gbr:range=pc:color_primaries=bt709:color_trc=bt709,format=rgba[v0];'
+    + '[c0][v0]overlay=x=0:y=0:shortest=0[bg];'
+    // screen with black is the backdrop itself
+    + 'color=c=black:s=16x16:r=10:d=0.1,format=rgba[it];' + parts.join(';')
+  const r = spawnSync(FFMPEG, ['-v', 'error', '-filter_complex', fc, '-map', '[o]', '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'])
+  assert.equal(r.status, 0, String(r.stderr))
+  const px = [...r.stdout.subarray((8 * 16 + 8) * 3, (8 * 16 + 8) * 3 + 3)]
+  ;[255, 38, 255].forEach((v, i) => assert.ok(Math.abs(px[i] - v) <= 2, `got ${px}, want 255,38,255`))
+})
+
+test('parts: an RGB canvas turns the backdrop into that format before splitting it; a YUV canvas does not', () => {
+  const rgb = blendCompositeParts({ ...base, canvasPixFmt: 'rgba' })
+  assert.equal(rgb[0], '[iv3]format=rgba,split=2[blk4][blb4]')
+  assert.equal(blendCompositeParts(base)[0], '[iv3]split=2[blk4][blb4]')
+})

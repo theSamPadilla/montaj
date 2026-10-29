@@ -94,8 +94,13 @@ export function blendCompositeParts({ backdrop, item, x, y, vw, vh, mode, idx, t
   const layerFmt = canvasPixFmt.replace(/^yuv/, 'yuva')
   const toRgb = `scale=in_color_matrix=${matrix}:out_color_matrix=${matrix}:in_range=tv`
   const toYuv = `scale=in_color_matrix=${matrix}:out_color_matrix=${matrix}:out_range=tv`
+  // An RGB canvas (sample-frame's rgba) can reach here as the yuv420 a plain
+  // overlay hands on, still carrying its source's tags (a PNG's gbr, full
+  // range): read as BT.709 YUV, saturated colours shift. Back to the canvas's
+  // own format first; a YUV canvas is already what `toRgb` reads.
+  const backdropFmt = /^yuv/.test(canvasPixFmt) ? '' : `format=${canvasPixFmt},`
   return [
-    `${backdrop}split=2[blk${n}][blb${n}]`,
+    `${backdrop}${backdropFmt}split=2[blk${n}][blb${n}]`,
     `[blb${n}]${toRgb},format=${rgba}[blg${n}]`,
     `color=c=black@0:s=${vw}x${vh}:r=${fps}:d=${duration},format=yuva444p,setparams=colorspace=${tag}:range=tv[blt${n}]`,
     `[blt${n}]${item}overlay=x=${x}:y=${y}:format=yuv444:shortest=0,${toRgb},format=${rgba}[blr${n}]`,
