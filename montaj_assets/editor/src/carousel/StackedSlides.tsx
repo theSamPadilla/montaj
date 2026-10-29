@@ -55,11 +55,13 @@ export interface StackedSlidesProps {
   selectedElementIds?: readonly string[]
   /** The person scrolled the whole selection far out of view: the editor lets it go (and applies a crop). */
   onSelectionScrolledAway?: () => void
+  /** A click (press and release) on the grey around the slides, outside any slide's own canvas and header. */
+  onBackdropClick?: () => void
 }
 
 export default function StackedSlides({
   slides, activeSlideId, onScrollActivate, scrollTarget, containerRef, margin, scale, renderHeader, renderSlide,
-  selectedElementIds, onSelectionScrolledAway,
+  selectedElementIds, onSelectionScrolledAway, onBackdropClick,
 }: StackedSlidesProps) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const setRoot = useCallback((el: HTMLDivElement | null) => {
@@ -240,15 +242,33 @@ export default function StackedSlides({
   if (activeIdx !== undefined) live.add(activeIdx)
   const modeOf = (i: number): StackSlideMode => (live.has(i) ? 'live' : near.has(i) ? 'thumb' : 'placeholder')
 
+  // The grey around the slides is these boxes themselves (the scroll area, the
+  // column, a slide's section); a press inside a slide's canvas, its margin or
+  // its header lands on something deeper. Only a press that began there ends
+  // there as a click, so a drag-select let go off the slide clears nothing.
+  const backdropDown = useRef(false)
+  const onBackdrop = (e: { target: EventTarget }) => (e.target as HTMLElement).hasAttribute?.('data-stack-bg')
   return (
-    <div ref={setRoot} data-slide-stack="" className="flex-1 min-h-0 overflow-auto">
+    <div
+      ref={setRoot}
+      data-slide-stack=""
+      data-stack-bg=""
+      className="flex-1 min-h-0 overflow-auto"
+      onPointerDown={(e) => { backdropDown.current = onBackdrop(e) }}
+      onClick={(e) => {
+        const began = backdropDown.current
+        backdropDown.current = false
+        if (began && onBackdrop(e)) onBackdropClick?.()
+      }}
+    >
       {/* Wider than the view when zoomed: the column grows and the stack scrolls sideways. */}
-      <div className="flex flex-col items-center py-2 w-max min-w-full">
+      <div data-stack-bg="" className="flex flex-col items-center py-2 w-max min-w-full">
         {slides.map((slide, i) => (
           <section
             key={slide.id}
             ref={sectionRef(slide.id)}
             data-slide-section={slide.id}
+            data-stack-bg=""
             aria-label={`Slide ${i + 1}`}
             className="flex-shrink-0 flex flex-col items-center"
             // The top margin holds the header; the bottom one is the handles'

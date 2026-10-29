@@ -2228,6 +2228,14 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           </div>
   ) : null
 
+  // A click on the grey around the slides lets the selection go, as a click on
+  // a slide's empty area does (a crop in progress is applied first).
+  const clearSelectionFromBackdrop = () => {
+    if (cropElementIdRef.current) applyCrop()
+    setSelectedElementId(null)
+  }
+  const classicBackdropDown = useRef(false)
+
   // The classic layout's slide viewport.
   const canvasInner = (
     <>
@@ -2582,6 +2590,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
           selectedElementIds={liveSelectedIds}
           // Scrolled far out of view, the selection goes, as a press on another slide takes it.
           onSelectionScrolledAway={() => { applyCrop(); setSelectedElementId(null) }}
+          onBackdropClick={clearSelectionFromBackdrop}
         />
       )}
       {errorBanner}
@@ -2834,7 +2843,16 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
 
         {/* SCROLL AREA: the slide viewport. ResizeObserver lives here so
             canvasScale measures the slide-rendering area, not the toolbar. */}
-        <div ref={setCanvasContainer} className="relative flex-1 flex flex-col items-center justify-center gap-4 overflow-y-auto min-h-0 p-4">
+        <div
+          ref={setCanvasContainer}
+          className="relative flex-1 flex flex-col items-center justify-center gap-4 overflow-y-auto min-h-0 p-4"
+          onPointerDown={(e) => { classicBackdropDown.current = e.target === e.currentTarget }}
+          onClick={(e) => {
+            const began = classicBackdropDown.current
+            classicBackdropDown.current = false
+            if (began && e.target === e.currentTarget) clearSelectionFromBackdrop()
+          }}
+        >
         {canvasInner}
         </div>
       </div>
