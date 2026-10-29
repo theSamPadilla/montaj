@@ -8,6 +8,7 @@ import { FontFamilyPicker, FontSizePicker, type PickerCustomFont } from '../text
 import { caseLabel, keepEditProps, TEXT_ALIGNS, TextBackgroundControl, TextColorControl, textFormatting } from '../text/TextFormattingToolbar'
 import { runsOf, supportsRuns, type BaseTextStyle, type RunPatch } from '../text/runs'
 import { supportsEffects, supportsFit, TextEffectControls } from '../text/TextEffectControls'
+import { TextContainerControls, supportsContainer } from '../text/TextContainerControls'
 import { AlignControls, type AlignPatch } from './AlignControls'
 import { cropBlockedReason, HideToggle, LayerOrderButtons, OverlayPropsSection, schemaPropsFor, TEXT_CONTROL_PROPS, useReplaceImagePicker } from './ElementControls'
 import { isLocked } from './lock'
@@ -169,7 +170,7 @@ function TextGroup({
   const alignAt = Math.max(0, TEXT_ALIGNS.findIndex((a) => a.value === fmt.currentAlign))
   const align = TEXT_ALIGNS[alignAt]
   const nextAlign = TEXT_ALIGNS[(alignAt + 1) % TEXT_ALIGNS.length]
-  const hasEffects = supportsEffects(element) || supportsFit(element) || supported.has('textTransform') || supported.has('bgColor')
+  const hasEffects = supportsEffects(element) || supportsFit(element) || supportsContainer(element) || supported.has('textTransform') || supported.has('bgColor')
   const hasStyle = supported.has('color') || supported.has('fontWeight') || supported.has('fontStyle') || supported.has('textAlign')
   return (
     <div className="flex min-w-0 items-center gap-0.5">
@@ -399,6 +400,7 @@ function EffectsContent({ slideId, element, update, disabled, mode }: { slideId:
         </div>
       )}
       <TextEffectControls slideId={slideId} element={element} updateOverlayProp={update} mode={mode} />
+      <TextContainerControls slideId={slideId} element={element} updateOverlayProp={update} mode={mode} />
     </fieldset>
   )
 }

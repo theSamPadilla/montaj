@@ -9,6 +9,7 @@ import type {
 import { Button, cn } from '../ui'
 import { TextFormattingToolbar } from '../text/TextFormattingToolbar'
 import { TextEffectControls } from '../text/TextEffectControls'
+import { TextContainerControls } from '../text/TextContainerControls'
 import { AlignControls } from './AlignControls'
 import { cropBlockedReason, fieldLabelClass, HideToggle, OverlayPropsSection, SlideBackgroundField, TransformFields, useOverlaySchemas, useReplaceImagePicker } from './ElementControls'
 
@@ -258,6 +259,15 @@ export default function SlidePropertyPanel({
               {/* Effect presets and Fit, for a template that takes them (static-text). */}
               {updateOverlayProp && (
                 <TextEffectControls
+                  slideId={slide.id}
+                  element={overlayEl}
+                  updateOverlayProp={updateOverlayProp}
+                  mode={mode}
+                />
+              )}
+
+              {updateOverlayProp && (
+                <TextContainerControls
                   slideId={slide.id}
                   element={overlayEl}
                   updateOverlayProp={updateOverlayProp}

@@ -39,3 +39,19 @@ export function readPropAsString(element: OverlayElement, key: string): string {
   if (value === undefined || value === null) return ''
   return String(value)
 }
+
+// Optional container props a text overlay may declare (static-text: padding,
+// radius, border, letter spacing, hug). Kept apart from STANDARD_TEXT_PROPS,
+// which is the required 9-prop contract; the container controls gate on these.
+export const CONTAINER_TEXT_PROPS: ReadonlySet<string> = new Set([
+  'padX', 'padY', 'radius', 'borderWidth', 'borderColor', 'letterSpacing', 'hug',
+])
+
+/** Whether the element already carries any optional container prop. */
+export function hasContainerProps(element: OverlayElement): boolean {
+  const props = element.overlay.props
+  for (const key of CONTAINER_TEXT_PROPS) {
+    if (props[key] !== undefined && props[key] !== null) return true
+  }
+  return false
+}
