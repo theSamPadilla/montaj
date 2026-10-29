@@ -550,6 +550,49 @@ function captureTextStyle(
   } as Partial<CSSStyleDeclaration>
 }
 
+type Box = { x: number; y: number; w: number; h: number }
+const boxSig = (el: { x: number; y: number; w: number; h: number; rotation?: number }) => `${el.x},${el.y},${el.w},${el.h},${el.rotation ?? 0}`
+const sameBox = (a: Box, b: Box) => (['x', 'y', 'w', 'h'] as const).every((f) => Math.abs(a[f] - b[f]) < 0.25)
+
+// The box of the pill (`[data-montaj-pill]`) inside `layer`, in slide px, as
+// an element box: the pill's own size, centred where the pill is, so the pill
+// does not move when the box snaps to it. `shown` is the box the layer is drawn
+// at. A turned element's pill is read from its layout box (unturned) and its
+// centre carried through the turn. Null when there is no pill or nothing
+// measures (jsdom, a hidden canvas).
+function measurePill(layer: HTMLElement, shown: { x: number; y: number; w: number; h: number; rotation?: number }): Box | null {
+  const pill = layer.querySelector<HTMLElement>('[data-montaj-pill]')
+  if (!pill || !(shown.w > 0) || !(shown.h > 0)) return null
+  const rotation = shown.rotation ?? 0
+  let ox: number, oy: number, ow: number, oh: number
+  if (rotation === 0) {
+    const lr = layer.getBoundingClientRect()
+    const pr = pill.getBoundingClientRect()
+    if (!(lr.width > 0) || !(pr.width > 0) || !(pr.height > 0)) return null
+    const k = lr.width / shown.w
+    ox = (pr.left - lr.left) / k
+    oy = (pr.top - lr.top) / k
+    ow = pr.width / k
+    oh = pr.height / k
+  } else {
+    ow = pill.offsetWidth
+    oh = pill.offsetHeight
+    if (!(ow > 0) || !(oh > 0)) return null
+    ox = pill.offsetLeft
+    oy = pill.offsetTop
+  }
+  const w = Math.ceil(ow)
+  const h = Math.ceil(oh)
+  // The pill's centre from the layer's centre, turned with the element.
+  const dx = ox + ow / 2 - shown.w / 2
+  const dy = oy + oh / 2 - shown.h / 2
+  const t = (rotation * Math.PI) / 180
+  const cx = shown.x + shown.w / 2 + Math.cos(t) * dx - Math.sin(t) * dy
+  const cy = shown.y + shown.h / 2 + Math.sin(t) * dx + Math.cos(t) * dy
+  const r2 = (n: number) => Math.round(n * 100) / 100
+  return { x: r2(cx - w / 2), y: r2(cy - h / 2), w, h }
+}
+
 // Where the editor goes: over the text node, so typed text sits inside a pill
 // the way the drawn text did (padding, vertical centring). The node's offset
 // in the layer is read in slide px (undoing the drawn scale, host zoom
@@ -636,23 +679,38 @@ export default function SlideCanvas({
   // the box its container grows to hold it. `slide` is the live slide with
   // both applied; writes read `liveSlide`.
   const [draft, setDraft] = useState<{ elementId: string; text: string; runs: Run[]; base: BaseTextStyle } | null>(null)
-  const [draftBox, setDraftBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
+  // A hugging pill's element box IS the pill: the box it measures, shown in
+  // place of the stored one (never written on its own) while the stored box
+  // is the one it was measured for. Gestures and the text commit start from
+  // the shown box, so the pill does not move on screen.
+  const [fitted, setFitted] = useState<Record<string, { for: string; box: Box }>>({})
   const slide = useMemo((): Slide => {
-    if (!editingId || (!draft && !draftBox)) return liveSlide
+    const fits = liveSlide.elements.some((el) => fitted[el.id]?.for === boxSig(el))
+    if (!fits && !(editingId && draft)) return liveSlide
     return {
       ...liveSlide,
       elements: liveSlide.elements.map((el) => {
-        if (el.id !== editingId || el.type !== 'overlay') return el
-        const patch = draft && draft.elementId === el.id ? runsPatch(el.overlay.props, draft.text, draft.runs, draft.base) : {}
+        if (el.type !== 'overlay') return el
+        const fit = fitted[el.id]?.for === boxSig(el) ? fitted[el.id].box : null
+        const typing = el.id === editingId && draft && draft.elementId === el.id
+        if (!fit && !typing) return el
         const props: Record<string, unknown> = { ...el.overlay.props }
-        for (const [k, v] of Object.entries(patch)) {
-          if (v === undefined) delete props[k]
-          else props[k] = v
+        if (typing) {
+          for (const [k, v] of Object.entries(runsPatch(el.overlay.props, draft.text, draft.runs, draft.base))) {
+            if (v === undefined) delete props[k]
+            else props[k] = v
+          }
         }
-        return { ...el, ...(draftBox ?? {}), overlay: { ...el.overlay, props } }
+        return { ...el, ...(fit ?? {}), overlay: { ...el.overlay, props } }
       }),
     }
-  }, [liveSlide, editingId, draft, draftBox])
+  }, [liveSlide, editingId, draft, fitted])
+  /** The shown box of `id` when a measured pill replaces its stored one. */
+  const fitOf = (id: string) => {
+    const live = liveSlide.elements.find((e) => e.id === id)
+    const fit = fitted[id]
+    return live && fit && fit.for === boxSig(live) ? fit.box : null
+  }
 
   // Crop mode (§556 M4): the crop in progress. The ref is what handlers read,
   // current within one tick; the state draws it.
@@ -737,6 +795,19 @@ export default function SlideCanvas({
       .filter((e) => !dragged.includes(e.id) && !hiddenSet?.has(e.id))
       .map((e) => ({ x: e.x, y: e.y, w: e.w, h: e.h, rotation: e.rotation }))
 
+  // A move or a turn of a hugging pill writes the box it is shown at with it
+  // (one step), or the stored wide box would put the pill elsewhere after.
+  const moveBox = async (id: string, x: number, y: number) => {
+    const fit = fitOf(id)
+    if (fit && editElements) await editElements(sid, (els) => els.map((e) => (e.id === id ? { ...e, x, y, w: fit.w, h: fit.h } : e)))
+    else await moveElement?.(sid, id, x, y)
+  }
+  const turnBox = async (id: string, rotation: number) => {
+    const fit = fitOf(id)
+    if (fit && editElements) await editElements(sid, (els) => els.map((e) => (e.id === id ? { ...e, ...fit, rotation } : e)))
+    else await rotateElement?.(sid, id, rotation)
+  }
+
   const drag = useOverlayDrag({
     scale,
     slide: { w: width, h: height },
@@ -750,7 +821,7 @@ export default function SlideCanvas({
       const ny = Math.round(y)
       applyPreviewTransform(id, nx, ny, el.rotation)
       if (nx === el.x && ny === el.y) return
-      await moveElement?.(sid, id, nx, ny)
+      await moveBox(id, nx, ny)
       await commit?.()
     },
   })
@@ -805,7 +876,7 @@ export default function SlideCanvas({
       const same = ((next - (el.rotation ?? 0)) % 360 + 360) % 360 === 0
       applyPreviewTransform(id, el.x, el.y, same ? el.rotation : next)
       if (same) return
-      await rotateElement?.(sid, id, next)
+      await turnBox(id, next)
       await commit?.()
     },
   })
@@ -924,7 +995,6 @@ export default function SlideCanvas({
     setEditRect(null)
     setEditStyle(null)
     setDraft(null)
-    setDraftBox(null)
   }
 
   // The text being edited became locked: close without writing what was typed.
@@ -946,9 +1016,9 @@ export default function SlideCanvas({
 
   function commitTextEdit(element: OverlayElement, value: string, runs: Run[], base: BaseTextStyle) {
     const live = liveSlide.elements.find((e) => e.id === element.id)
-    const box = draftBox
+    const box = slide.elements.find((e) => e.id === element.id)
     if (box && editElements && live?.type === 'overlay' && (box.x !== live.x || box.y !== live.y || box.w !== live.w || box.h !== live.h)) {
-      // The container grew or shrank with the text: text, runs and the fitted
+      // The container grew or shrank with the text: text, runs and the shown
       // box are one undo step.
       const patch = runsPatch(live.overlay.props, value, runs, base)
       void editElements(sid, (els) => els.map((e) => {
@@ -958,47 +1028,81 @@ export default function SlideCanvas({
           if (v === undefined) delete props[k]
           else props[k] = v
         }
-        return { ...e, ...box, overlay: { ...e.overlay, props } }
+        return { ...e, x: box.x, y: box.y, w: box.w, h: box.h, overlay: { ...e.overlay, props } }
       }))
     } else void writeText(element, value, runs, base)
     endTextEdit()
   }
 
-  // While editing, the container follows the draft text: the box it grows to
-  // (a hugging pill's own size, kept to its anchor by textAlign; a custom
-  // overlay only ever grows wider) and the editor over the text node. Rendered
-  // with the box it drew last, so it settles in a pass or two.
-  useLayoutEffect(() => {
-    if (!interactive || !editingId || !draft) return
-    const live = liveSlide.elements.find((e) => e.id === editingId)
-    const shown = slide.elements.find((e) => e.id === editingId)
-    if (live?.type !== 'overlay' || shown?.type !== 'overlay' || (live.rotation ?? 0) !== 0) return
-    const wrapper = wrapperRefs.current.get(editingId)
-    const layer = wrapper?.querySelector<HTMLElement>('[data-overlay-layer]')
-    if (!wrapper || !layer || !(shown.w > 0)) return
-    const lr = layer.getBoundingClientRect()
-    if (!(lr.width > 0)) return
-    const k = lr.width / shown.w
-    const pill = layer.querySelector<HTMLElement>('[data-montaj-pill]')
-    let next: { x: number; y: number; w: number; h: number } | null = null
-    if (pill) {
-      const pr = pill.getBoundingClientRect()
-      if (!(pr.width > 0) || !(pr.height > 0)) return
-      const w = Math.ceil(pr.width / k)
-      const h = Math.ceil(pr.height / k)
-      const align = String(live.overlay.props.textAlign ?? 'center')
-      const x = align === 'left' ? live.x : align === 'right' ? live.x + live.w - w : live.x + (live.w - w) / 2
-      next = { x, y: live.y + (live.h - h) / 2, w, h }
-    } else if (typeof shown.overlay.props.text === 'string') {
-      const node = findTextNode(layer, shown.overlay.props.text)
-      const natural = node ? Math.ceil(node.scrollWidth) : 0
-      if (natural > live.w) next = { x: live.x, y: live.y, w: natural, h: live.h }
+  // A pill is drawn after its overlay compiles, and its size follows fonts as
+  // they load: neither re-renders this canvas, so a change in what the canvas
+  // holds asks for another measure.
+  const [, setMeasureTick] = useState(0)
+  const fitStreak = useRef(0)
+  const hugCount = liveSlide.elements.filter((e) => e.type === 'overlay' && String(e.overlay.props.hug) === 'true').length
+  useEffect(() => {
+    const root = rootRef.current
+    if (!interactive || !hugCount || !root || typeof MutationObserver === 'undefined') return
+    let pending = false
+    let gone = false
+    const bump = () => {
+      if (pending || gone) return
+      pending = true
+      setTimeout(() => { pending = false; if (!gone) setMeasureTick((t) => t + 1) }, 0)
     }
-    const same = (a: typeof next, b: typeof next) => a === b || (!!a && !!b && (['x', 'y', 'w', 'h'] as const).every((f) => Math.abs(a[f] - b[f]) < 0.5))
-    if (!same(next, draftBox)) {
-      setDraftBox(next)
+    const mo = new MutationObserver(bump)
+    mo.observe(root, { childList: true, subtree: true, characterData: true })
+    if (typeof document !== 'undefined' && document.fonts?.ready) void document.fonts.ready.then(bump)
+    return () => { gone = true; mo.disconnect() }
+  }, [interactive, hugCount])
+
+  // Keeps each hugging pill's shown box on its measured pill, and (while a
+  // text is typed) the box a custom overlay grows to; then the editor over the
+  // text node. Measured with the box drawn last, so it settles in a pass or two.
+  useLayoutEffect(() => {
+    if (!interactive) return
+    const updates: Array<[string, { for: string; box: Box } | null]> = []
+    for (const live of liveSlide.elements) {
+      if (live.type !== 'overlay') continue
+      const text = live.overlay.props.text
+      const hug = String(live.overlay.props.hug) === 'true' && typeof text === 'string'
+      const typing = live.id === editingId && !!draft
+      const entry = fitted[live.id]
+      if (!hug && !typing && !entry) continue
+      const shown = slide.elements.find((e) => e.id === live.id)
+      const layer = wrapperRefs.current.get(live.id)?.querySelector<HTMLElement>('[data-overlay-layer]')
+      if (shown?.type !== 'overlay' || !layer) continue
+      const own = { x: live.x, y: live.y, w: live.w, h: live.h }
+      let cand: Box | null = own
+      if (hug) cand = measurePill(layer, shown)
+      else if (typing && typeof shown.overlay.props.text === 'string') {
+        const node = findTextNode(layer, shown.overlay.props.text)
+        const natural = node ? Math.ceil(node.scrollWidth) : 0
+        if (natural > live.w && (live.rotation ?? 0) === 0) cand = { ...own, w: natural }
+      }
+      if (!cand) continue
+      const cur = entry && entry.for === boxSig(live) ? entry.box : own
+      if (sameBox(cand, cur)) continue
+      updates.push([live.id, sameBox(cand, own) ? null : { for: boxSig(live), box: cand }])
+    }
+    if (updates.length) {
+      // A measure that keeps moving the box (it should settle in a pass or
+      // two) is left where it is rather than looping.
+      if (++fitStreak.current > 12) return
+      setFitted((prev) => {
+        const next = { ...prev }
+        for (const [id, v] of updates) {
+          if (v) next[id] = v
+          else delete next[id]
+        }
+        return next
+      })
       return
     }
+    fitStreak.current = 0
+    const shown = editingId ? slide.elements.find((e) => e.id === editingId) : null
+    const wrapper = editingId ? wrapperRefs.current.get(editingId) : undefined
+    if (!draft || shown?.type !== 'overlay' || !wrapper) return
     const rect = textEditRect(shown, wrapper, scale)
     if (editRect && (['left', 'top', 'width', 'height'] as const).some((f) => Math.abs(rect[f] - editRect[f]) > 0.01)) setEditRect(rect)
   })
@@ -1208,7 +1312,7 @@ export default function SlideCanvas({
         return
       }
       void (async () => {
-        for (const p of moves) await moveElement?.(sid, p.id, p.x, p.y)
+        for (const p of moves) await moveBox(p.id, p.x, p.y)
         await commit?.()
       })()
     },

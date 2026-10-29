@@ -181,7 +181,7 @@ describe('editing a text keeps its container drawn', () => {
 describe('the container follows the typed text', () => {
   const CHAR = 10
   const hugCompile = vi.fn(async () => (_f: number, _fps: number, _d: number, props: Record<string, unknown>) => (
-    <div data-testid="pill" data-montaj-pill="" style={{ background: '#ff66aa' }}>
+    <div data-testid="pill" data-montaj-pill="" data-align={String(props.textAlign)} style={{ background: '#ff66aa' }}>
       <p data-montaj-text="" data-testid="label">{String(props.text)}</p>
     </div>
   ))
@@ -192,7 +192,14 @@ describe('the container follows the typed text', () => {
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
       if (this.hasAttribute('data-overlay-layer')) return box(0, 0, parseFloat(this.style.width), parseFloat(this.style.height))
       const w = CHAR * (this.textContent ?? '').length
-      if (this.hasAttribute('data-montaj-pill')) return box(0, 0, w, 40)
+      if (this.hasAttribute('data-montaj-pill')) {
+        // The flex wrapper sits the pill by textAlign in the layer, past either end when wider.
+        const layerW = parseFloat((this.closest('[data-overlay-layer]') as HTMLElement).style.width)
+        const align = this.getAttribute('data-align')
+        const left = align === 'left' ? 0 : align === 'right' ? layerW - w : (layerW - w) / 2
+        const layerH = parseFloat((this.closest('[data-overlay-layer]') as HTMLElement).style.height)
+        return box(left, (layerH - 40) / 2, w, 40)
+      }
       if (this.getAttribute('data-testid') === 'label') return box(8, 6, w, 28)
       return box(0, 0, 0, 0)
     })
@@ -232,6 +239,7 @@ describe('the container follows the typed text', () => {
 
   it('left anchored: grows then shrinks with the text, x fixed', async () => {
     const { type, drawn } = await mountHug('left')
+    expect(drawn()).toEqual([100, 140, 20, 40])  // the pill's own box before any typing
     await type('Hi there')           // 8 chars -> 80 wide
     expect(drawn()).toEqual([100, 140, 80, 40])
     await type('Hi there and more')  // 17 -> 170
@@ -266,7 +274,7 @@ describe('the container follows the typed text', () => {
     await t.type('Hi')
     await act(async () => { fireEvent.keyDown(t.q('[role="textbox"]'), { key: 'Escape' }) })
     expect(t.q('[data-testid="label"]').textContent).toBe('Hi')
-    expect(t.drawn()).toEqual([100, 100, 400, 120])
+    expect(t.drawn()).toEqual([100, 140, 20, 40])
     expect(t.editElements).not.toHaveBeenCalled()
   })
 
