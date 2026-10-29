@@ -16,9 +16,11 @@ export interface StrokeColourProps {
   onCommit: (v: string) => void
   onCancel?: () => void
   ariaLabel?: string
+  /** The element prop the panel colours (default `stroke`). */
+  prop?: string
 }
 
-export function StrokeColour({ value, onPreview, onCommit, onCancel, ariaLabel = 'Stroke color' }: StrokeColourProps) {
+export function StrokeColour({ value, onPreview, onCommit, onCancel, ariaLabel = 'Stroke color', prop = 'stroke' }: StrokeColourProps) {
   const [shown, setShown] = useState(value)
   useEffect(() => setShown(value), [value])
   return (
@@ -32,6 +34,7 @@ export function StrokeColour({ value, onPreview, onCommit, onCancel, ariaLabel =
       showValue={false}
       size="sm"
       alpha
+      prop={prop}
     />
   )
 }

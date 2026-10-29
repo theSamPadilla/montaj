@@ -19,6 +19,8 @@ export interface ColourRequest {
   cancel?: () => void
   /** What is coloured: an element (default; a locked one keeps its colour) or the slide itself. */
   target?: 'element' | 'slide'
+  /** Which prop of the element is coloured (`fill`, `stroke`, `color`), so a swatch for another prop does not follow the panel. */
+  prop?: string
 }
 
 export type OpenColourPanel = (request: ColourRequest) => void

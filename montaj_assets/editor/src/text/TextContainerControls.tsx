@@ -78,7 +78,7 @@ export function TextContainerControls({ slideId, element, updateOverlayProp, mod
             className="w-12"
           />
         ))}
-        <StrokeColour value={border} onPreview={setBorder} onCommit={(v) => write('borderColor', v)} ariaLabel="Border color" />
+        <StrokeColour value={border} onPreview={setBorder} onCommit={(v) => write('borderColor', v)} ariaLabel="Border color" prop="borderColor" />
         {anySet && (
           <Button
             type="button"

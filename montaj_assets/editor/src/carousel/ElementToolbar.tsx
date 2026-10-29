@@ -80,6 +80,10 @@ export interface ElementToolbarProps {
   /** The colour panel is open on a colour of this element: the colour it shows now.
    *  The swatch shows that one, and a click on it closes the panel. */
   colourShown?: string | null
+  /** The element prop the open panel colours. A swatch for another prop (the Fill swatch
+   *  while the panel is on the stroke) keeps its own colour and does not read as open.
+   *  Absent: the swatch follows any open panel. */
+  colourProp?: string | null
   onCloseColour?: () => void
   /** The profile's font, for the font picker's "Use brand default". */
   brandFont?: string
@@ -282,7 +286,7 @@ function StrokeWeightIcon() {
 const TILE_DASH: Record<StrokeStyle, string | undefined> = { solid: undefined, 'long-dash': '9 6', 'short-dash': '4.5 3', dotted: '0 6' }
 
 /** The props the stroke popover writes: the Edit popover leaves them out. */
-const STROKE_CONTROL_PROPS: ReadonlySet<string> = new Set(['strokeStyle', 'roundCaps', 'roundJoins', 'strokeWidth', 'arrowhead'])
+const STROKE_CONTROL_PROPS: ReadonlySet<string> = new Set(['stroke', 'strokeStyle', 'roundCaps', 'roundJoins', 'strokeWidth', 'arrowhead'])
 
 /** The Stroke popover: style tiles, rounded ends or corners, and the weight. */
 function StrokeContent({
@@ -448,6 +452,7 @@ export default function ElementToolbar({
   onOpenTextColour,
   onOpenElementColour,
   colourShown,
+  colourProp,
   onCloseColour,
   brandFont,
   brandGoogleFonts,
@@ -500,12 +505,13 @@ export default function ElementToolbar({
   const cropReason = image ? cropBlockedReason(image) : null
   // The colour swatch: the element's own colour, or the one the open panel is on.
   const colourTarget = element && onOpenElementColour ? elementColourTarget(element) : null
-  const colourOpen = colourShown != null
+  const ownPanel = colourShown != null && (!colourProp || !colourTarget || colourProp === colourTarget.key)
+  const colourOpen = ownPanel
   const rangeShown = text && textRange && colourTarget?.key === 'color' ? textRange : null
   const swatch = colourTarget && (
     <ColourSwatch
       keepTextEdit={!!rangeShown}
-      value={colourShown ?? rangeShown?.color ?? colourTarget.value}
+      value={(ownPanel ? colourShown : null) ?? rangeShown?.color ?? colourTarget.value}
       label={colourTarget.label}
       open={colourOpen}
       onClick={colourOpen ? () => onCloseColour?.() : run(onOpenElementColour!)}

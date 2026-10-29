@@ -37,6 +37,8 @@ export interface SwatchInputProps {
   alpha?: boolean
   /** Rail layout: what the colour panel colours (see `ColourRequest.target`). */
   target?: 'element' | 'slide'
+  /** Rail layout: which element prop the panel colours (see `ColourRequest.prop`). */
+  prop?: string
 }
 
 export function SwatchInput({
@@ -50,6 +52,7 @@ export function SwatchInput({
   title,
   alpha,
   target,
+  prop,
 }: SwatchInputProps) {
   // In the rail layout the swatch opens the colour panel, not the OS picker.
   const openPanel = useContext(ColourPanelContext)
@@ -77,6 +80,7 @@ export function SwatchInput({
             commit: onCommit ?? onChange,
             cancel: onCancel,
             target,
+            prop,
           })}
         />
         {showValue && (

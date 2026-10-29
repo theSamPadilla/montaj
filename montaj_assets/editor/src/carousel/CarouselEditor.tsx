@@ -1951,11 +1951,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // panel until closed or the selection moves.
   // `shown`: the colour the open panel shows now, which the toolbar swatch follows (§587 R9).
   // `range`: the panel colours a text range in the open inline edit, which it keeps open.
-  const [colourOpen, setColourOpen] = useState<{ request: ColourRequest; seq: number; shown?: string; range?: boolean } | null>(null)
+  const [colourOpen, setColourOpen] = useState<{ request: ColourRequest; seq: number; shown?: string; range?: boolean; prop?: string } | null>(null)
   const colourSeq = useRef(0)
   function openColourPanel(request: ColourRequest, range?: boolean) {
     beforeToolbarAction()
-    setColourOpen({ request, seq: ++colourSeq.current, ...(range ? { range } : null) })
+    setColourOpen({ request, seq: ++colourSeq.current, ...(range ? { range } : null), ...(request.prop ? { prop: request.prop } : null) })
   }
 
   // ── Styled runs (§587 round 3) ──
@@ -1992,6 +1992,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       // A range in the open edit: previewed in the editor, one write per pick.
       openColourPanel({
         label: target.label,
+        prop: target.key,
         value: textRange?.style.color ?? target.value,
         alpha: target.alpha,
         preview: v => editor.previewStyle({ c: v }),
@@ -2009,6 +2010,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       : (v: string) => state.previewSlides(all => setOverlayPropIn(all, slideId, sel.id, target.key, v))
     openColourPanel({
       label: target.label,
+      prop: target.key,
       value: target.value,
       alpha: target.alpha,
       preview: set,
@@ -2638,6 +2640,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             textRange={textRange && textRange.elementId === selectedElementId ? textRange.style : null}
             onTextStyle={styleText}
             colourShown={colourShown}
+            colourProp={colourOpen && colourOpen.request.target !== 'slide' ? colourOpen.prop ?? null : null}
             onCloseColour={() => setColourOpen(null)}
             brandFont={brand?.fonts?.heading}
             brandGoogleFonts={brand?.fonts?.googleFonts}

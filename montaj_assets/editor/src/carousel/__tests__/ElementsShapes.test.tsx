@@ -243,10 +243,25 @@ describe('Edit popover for a shape: colour props; the stroke popover owns weight
     await pickSlideOf('el-line')
     await act(async () => { fireEvent.click(within(r.getByRole('toolbar', { name: 'Element' })).getByRole('button', { name: 'Edit' })) })
     const pop = r.getByRole('dialog', { name: 'Edit' })
-    await waitFor(() => within(pop).getByRole('button', { name: 'stroke' }))
+    // The stroke colour is the Stroke popover's (its swatch is first there), not a raw field here.
+    await waitFor(() => expect(r.queryByLabelText('Loading overlay props')).toBeNull())
+    expect(within(pop).queryByRole('button', { name: 'stroke' })).toBeNull()
     expect(within(pop).queryByRole('textbox', { name: 'stroke' })).toBeNull()
     expect(within(pop).queryByRole('combobox', { name: 'arrowhead' })).toBeNull()
     expect(within(pop).queryByRole('spinbutton', { name: 'strokeWidth' })).toBeNull()
+  })
+
+  it('a shape keeps its fill swatch here and loses the raw stroke one', async () => {
+    const rect: OverlayElement = {
+      id: 'el-rect', type: 'overlay', frame: 59, x: 100, y: 500, w: 300, h: 300, rotation: 0,
+      overlay: { template: RECT.jsxPath, props: { fill: '#bdbdbd', stroke: '#111111', strokeWidth: '4' } },
+    }
+    const { r } = await mount(makeProject([slide(0, [img('el-0'), rect])]))
+    await pickSlideOf('el-rect')
+    await act(async () => { fireEvent.click(within(r.getByRole('toolbar', { name: 'Element' })).getByRole('button', { name: 'Edit' })) })
+    const pop = r.getByRole('dialog', { name: 'Edit' })
+    await waitFor(() => within(pop).getByRole('button', { name: 'fill' }))
+    expect(within(pop).queryByRole('button', { name: 'stroke' })).toBeNull()
   })
 
   it('an option prop on another overlay gets a select, which writes one undo step', async () => {
@@ -297,7 +312,7 @@ describe('Edit popover for a shape: no Frame field', () => {
     await pickSlideOf('el-line')
     await act(async () => { fireEvent.click(within(r.getByRole('toolbar', { name: 'Element' })).getByRole('button', { name: 'Edit' })) })
     const pop = r.getByRole('dialog', { name: 'Edit' })
-    await waitFor(() => within(pop).getByRole('button', { name: 'stroke' }))
+    await waitFor(() => expect(r.queryByLabelText('Loading overlay props')).toBeNull())
     expect(within(pop).queryByText('Frame')).toBeNull()
     expect(within(pop).queryByRole('spinbutton', { name: 'Frame' })).toBeNull()
   })

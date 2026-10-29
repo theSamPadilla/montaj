@@ -318,3 +318,40 @@ describe('Colour panel sections (§587 R9)', () => {
     expect(buttons[1].getAttribute('aria-pressed')).toBe('false')
   })
 })
+
+describe('Fill swatch while the panel is on the stroke', () => {
+  const strokeSwatch = (r: ReturnType<typeof render>) => within(r.getByRole('dialog', { name: 'Stroke' })).getByRole('button', { name: 'Stroke color' })
+
+  it('keeps showing the fill, and is not marked open', async () => {
+    const { r } = await mount()
+    await click('el-rect')
+    await press(tb(r, 'Stroke'))
+    await press(strokeSwatch(r))
+    expect(panelTitle(r)).toBe('Stroke color')
+    expect(hexOf(ball(r))).toBe('#bdbdbd')
+    expect(swatch(r).getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('a stroke pick does not recolour the Fill swatch; the swatch still edits the fill', async () => {
+    const { adapter, r } = await mount()
+    await click('el-rect')
+    await press(tb(r, 'Stroke'))
+    await press(strokeSwatch(r))
+    await press(within(panel(r)).getByRole('button', { name: 'Default color #ef4444' }))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(propsOf(last(adapter), 'el-rect')).toMatchObject({ stroke: '#ef4444', fill: '#bdbdbd' })
+    expect(hexOf(ball(r))).toBe('#bdbdbd')
+    await press(swatch(r))
+    expect(panelTitle(r)).toBe('Fill color')
+    expect(swatch(r).getAttribute('aria-expanded')).toBe('true')
+    expect(hexOf(ball(r))).toBe('#bdbdbd')
+  })
+
+  it('a shape with no fill: the swatch is the stroke and follows the stroke panel', async () => {
+    const { r } = await mount()
+    await click('el-hollow')
+    await press(tb(r, 'Stroke'))
+    await press(strokeSwatch(r))
+    expect(swatch(r).getAttribute('aria-expanded')).toBe('true')
+  })
+})
