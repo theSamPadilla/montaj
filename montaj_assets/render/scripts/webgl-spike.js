@@ -23,7 +23,7 @@ const renderRoot = dirname(__dirname)
 // Mirror renderer.js launch args exactly (plus the headless mode swap from Task 2).
 const LAUNCH_OPTS = {
   headless: 'new',
-  args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-web-security', '--allow-file-access-from-files'],
+  args: ['--use-mock-keychain', '--password-store=basic', '--no-sandbox', '--disable-setuid-sandbox', '--disable-web-security', '--allow-file-access-from-files'],
 }
 
 const SCREENSHOT_PATH = '/tmp/montaj-webgl-spike.png'

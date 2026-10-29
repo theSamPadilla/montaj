@@ -92,6 +92,15 @@ export function hostResolverRules({ needsGoogleFonts = false } = {}) {
 }
 
 /**
+ * Flags every Chromium montaj launches carries, so no run ever touches the
+ * macOS keychain: without them Chrome asks for "Chromium Safe Storage" (a
+ * system prompt on the user's screen) to encrypt its profile's passwords and
+ * cookies. A headless capture keeps none, so a mock keychain and plain storage
+ * lose nothing.
+ */
+export const NO_KEYCHAIN_ARGS = Object.freeze(['--use-mock-keychain', '--password-store=basic'])
+
+/**
  * The puppeteer.launch options of every browser that loads an overlay page
  * (renderer.js, sample-frame.js, render-carousel.js). capture-site.js is NOT
  * one: it loads remote pages and must never get the file-access flag.
@@ -105,6 +114,7 @@ export function overlayPageLaunchOptions({ needsGoogleFonts = false, disableWebS
   return {
     headless: 'new',
     args: [
+      ...NO_KEYCHAIN_ARGS,
       '--no-sandbox',
       '--disable-setuid-sandbox',
       // /tmp instead of the container's 64MB /dev/shm (the Docker default), which

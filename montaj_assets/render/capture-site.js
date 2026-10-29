@@ -18,6 +18,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import puppeteer from 'puppeteer'
+import { NO_KEYCHAIN_ARGS } from './page-guard.js'
 
 const MAX_LOGO_BYTES = 5 * 1024 * 1024
 const LOGO_FETCH_TIMEOUT_MS = 10000
@@ -38,7 +39,9 @@ async function launchBrowser() {
     headless: 'new',
     // --disable-dev-shm-usage: use /tmp instead of the container's 64MB /dev/shm
     // (Docker default) so heavy renders don't crash Chromium on shm exhaustion.
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    // No keychain: Chromium otherwise asks macOS for "Chromium Safe Storage"
+    // (page-guard.js NO_KEYCHAIN_ARGS).
+    args: [...NO_KEYCHAIN_ARGS, '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
     protocolTimeout: 300000,
   })
 }

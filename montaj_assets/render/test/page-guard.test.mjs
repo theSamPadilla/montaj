@@ -21,7 +21,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createServer } from 'node:http'
 import puppeteer from 'puppeteer'
 import {
-  GOOGLE_FONT_HOSTS, hostResolverRules, overlayPageLaunchOptions, overlayPageCsp, overlayPageCspMeta,
+  GOOGLE_FONT_HOSTS, hostResolverRules, overlayPageLaunchOptions, overlayPageCsp, overlayPageCspMeta, NO_KEYCHAIN_ARGS,
   pageNeedsGoogleFonts, pageRequestDecision, installPageGuard, prefetchPropsUrls, PropsFetchError,
 } from '../page-guard.js'
 import { generateHtml } from '../bundle.js'
@@ -88,6 +88,42 @@ describe('(a) every overlay page is launched, guarded and bundled through the sh
     // preview-bundle's options start from overlayEsbuildOptions and keep its plugins.
     assert.match(src('preview-bundle.js'),
       /const base = overlayEsbuildOptions\(\{ boundary:[^]*?\.\.\.base,[^]*?plugins:\s*\[\.\.\.base\.plugins,/)
+  })
+
+  test('no Chromium montaj launches touches the macOS keychain', () => {
+    assert.deepEqual([...NO_KEYCHAIN_ARGS], ['--use-mock-keychain', '--password-store=basic'])
+    for (const needsGoogleFonts of [false, true]) {
+      for (const disableWebSecurity of [false, true]) {
+        for (const gpuCompositing of [false, true]) {
+          const { args } = overlayPageLaunchOptions({ needsGoogleFonts, disableWebSecurity, gpuCompositing })
+          for (const flag of NO_KEYCHAIN_ARGS) assert.ok(args.includes(flag), flag)
+        }
+      }
+    }
+    // Every file under montaj_assets that launches Chromium (the engine, its
+    // tests and scripts, the editor's browser tests): each launch goes through
+    // overlayPageLaunchOptions, or the file carries both flags itself.
+    const ASSETS = join(RENDER, '..')
+    const files = []
+    const walk = (dir) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (e.name === 'node_modules' || e.name === 'dist' || e.name.startsWith('.')) continue
+        const p = join(dir, e.name)
+        if (e.isDirectory()) walk(p)
+        else if (/\.(m?js|cjs|ts|tsx)$/.test(e.name)) files.push(p)
+      }
+    }
+    walk(ASSETS)
+    const launchers = files.filter(f => /puppeteer\.launch\(/.test(readFileSync(f, 'utf8')))
+    assert.ok(launchers.length >= 15, `found ${launchers.length}`)
+    for (const f of launchers) {
+      const text = readFileSync(f, 'utf8')
+      const all = text.match(/puppeteer\.launch\(/g).length
+      const shared = text.match(/puppeteer\.launch\(\s*(\{\s*\.\.\.)?overlayPageLaunchOptions\(/g)?.length ?? 0
+      if (shared === all) continue
+      const own = text.includes('NO_KEYCHAIN_ARGS') || (text.includes("'--use-mock-keychain'") && text.includes("'--password-store=basic'"))
+      assert.ok(own, `${f.slice(ASSETS.length + 1)}: launches Chromium without --use-mock-keychain and --password-store=basic`)
+    }
   })
 
   test('capture-site.js loads remote pages and launches with neither file-access flag', () => {

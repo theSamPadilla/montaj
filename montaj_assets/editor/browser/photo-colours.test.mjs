@@ -120,7 +120,7 @@ before(async () => {
     res.setHeader('content-type', 'image/png')
     res.end(png)
   })
-  browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] })
+  browser = await puppeteer.launch({ headless: 'new', args: ['--use-mock-keychain', '--password-store=basic', '--no-sandbox'] })
   page = await browser.newPage()
   await page.goto(`http://127.0.0.1:${a}/`)
   await page.waitForFunction(() => typeof window.photoColoursOf === 'function')

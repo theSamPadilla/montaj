@@ -209,7 +209,7 @@ before(async () => {
   const port = server.address().port
   browser = await puppeteer.launch({
     headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--autoplay-policy=no-user-gesture-required'],
+    args: ['--use-mock-keychain', '--password-store=basic', '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--autoplay-policy=no-user-gesture-required'],
     protocolTimeout: 120000,
   })
   page = await browser.newPage()

@@ -90,7 +90,7 @@ before(async () => {
   origin = `http://127.0.0.1:${server.address().port}`
   browser = await puppeteer.launch({
     headless: 'new',
-    args: ['--no-sandbox', '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1', '--autoplay-policy=no-user-gesture-required'],
+    args: ['--use-mock-keychain', '--password-store=basic', '--no-sandbox', '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1', '--autoplay-policy=no-user-gesture-required'],
   })
 })
 

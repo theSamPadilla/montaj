@@ -69,7 +69,7 @@ before(async () => {
   )
   browser = await puppeteer.launch({
     headless: 'new',
-    args: ['--no-sandbox', '--host-resolver-rules=MAP * ~NOTFOUND'],
+    args: ['--use-mock-keychain', '--password-store=basic', '--no-sandbox', '--host-resolver-rules=MAP * ~NOTFOUND'],
   })
   page = await browser.newPage()
   await page.setViewport({ width: 1400, height: 1000, deviceScaleFactor: 1 })

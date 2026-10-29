@@ -72,7 +72,7 @@ before(async () => {
   )
   browser = await puppeteer.launch({
     headless: 'new',
-    args: ['--no-sandbox', '--host-resolver-rules=MAP * ~NOTFOUND', '--autoplay-policy=no-user-gesture-required'],
+    args: ['--use-mock-keychain', '--password-store=basic', '--no-sandbox', '--host-resolver-rules=MAP * ~NOTFOUND', '--autoplay-policy=no-user-gesture-required'],
   })
 })
 
