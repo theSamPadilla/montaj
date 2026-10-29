@@ -67,7 +67,20 @@ describe('lookalike carousel (static-text, SSR)', () => {
     expect(pill.textContent).toBe('→')
   })
 
+  it('hug pills sit flush: no outer padding, so pills at the same x share a left edge', () => {
+    const pink = propsOf(slides, 'pill-pink')
+    const yellow = propsOf(slides, 'pill-yellow')
+    const els = fixture.slides[0].elements as unknown as Array<{ id: string; x: number }>
+    expect(els.find((e) => e.id === 'pill-pink')!.x).toBe(els.find((e) => e.id === 'pill-yellow')!.x)
+    expect(pink.textAlign).toBe(yellow.textAlign)
+    for (const id of ['pill-pink', 'pill-yellow']) {
+      expect(pillOf(id).parentElement!.style.padding).toMatch(/^0(px)?$/)
+    }
+  })
+
   describe('a text edit keeps container props', () => {
+    // The edit goes through the real write path (runsPatch -> setOverlayPropsIn)
+    // and the result is drawn again: a dropped container prop changes the markup.
     it.each(['pill-pink', 'pill-yellow', 'pill-arrow', 'title'])('%s', (id) => {
       const before = propsOf(slides, id)
       const text = before.text
@@ -76,15 +89,22 @@ describe('lookalike carousel (static-text, SSR)', () => {
       const next = setOverlayPropsIn(slides, 'slide-0', id, patch)
       const after = propsOf(next, id)
       expect(after.text).toBe('X' + text)
-      for (const k of ['hug', 'bgColor', 'radius', 'padX', 'padY', 'borderColor', 'borderWidth', 'letterSpacing', 'fontFamily', 'fontSize', 'textTransform']) {
-        expect(after[k]).toBe(before[k])
+      for (const k of Object.keys(before)) {
+        if (!['text', 'runs'].includes(k)) expect(after[k]).toBe(before[k])
       }
-      if (after.runs) expect(runsOf(after).map((r) => r.t).join('')).toBe(after.text)
-      // and the edited overlay still draws its container
+      // Same container markup either side of the edit, bar the text itself.
+      const shell = (props: Record<string, string>) => {
+        const d = document.createElement('div')
+        d.innerHTML = renderToStaticMarkup(<StaticText {...props} />)
+        d.querySelectorAll('p').forEach((p) => (p.innerHTML = ''))
+        return d.innerHTML
+      }
+      expect(shell(after)).toBe(shell(before))
+      expect(shell(after)).toBe(shell({ ...before, text: 'X' + text }))
+      expect(shell(after)).not.toBe(shell({ text: 'X' + text }))
       const edited = document.createElement('div')
       edited.innerHTML = renderToStaticMarkup(<StaticText {...after} />)
       expect(edited.textContent).toBe('X' + text)
-      if (before.hug) expect((edited.querySelector('p')!.parentElement as HTMLElement).style.borderRadius).toBe(before.radius + 'px')
     })
 
     it('title: italic gold word survives an insert before it', () => {

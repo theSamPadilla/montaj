@@ -72,7 +72,7 @@ test('pill: hug keeps the wrapper clear and the pill paints', opts, () => {
     text: 'Hi', fontSize: '40', bgColor: '#ffe066', hug: 'true', textAlign: 'left',
     padX: '30', padY: '10', radius: '999', borderColor: '#000000', borderWidth: '3', letterSpacing: '0.08', fit: 'true',
   })
-  assert.match(html, /^<div style="[^"]*justify-content:flex-start;background:transparent;padding:6% 8%;/)
+  assert.match(html, /^<div style="[^"]*justify-content:flex-start;background:transparent;padding:0;box-sizing/)
   assert.match(html, /<div style="width:fit-content;max-width:100%;box-sizing:border-box;background:#ffe066;padding:10px 30px;font-size:40px;border-radius:999px;border:3px solid #000000">/)
   assert.match(html, /letter-spacing:0.08em;width:auto/)
   assert.doesNotMatch(html, /data-fitted-size/)
@@ -97,4 +97,9 @@ test('border needs both color and a width above 0', opts, () => {
 test('no hug: bgColor still paints the whole box', opts, () => {
   const html = render({ text: 'Hi', bgColor: '#123456' })
   assert.match(html, /^<div style="[^"]*background:#123456;padding:6% 8%/)
+})
+
+test('letterSpacing: malformed numbers pass through as is, not as em', opts, () => {
+  assert.match(render({ text: 'Hi', letterSpacing: '1.2.3' }), /letter-spacing:1\.2\.3[;"]/)
+  assert.match(render({ text: 'Hi', letterSpacing: '.5' }), /letter-spacing:0\.5em|letter-spacing:\.5em/)
 })

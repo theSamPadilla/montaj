@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'r
 import { ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, Eye, EyeOff, type LucideIcon } from 'lucide-react'
 import type { CarouselElement, EditorAdapter, GlobalOverlay, GlobalOverlayProp, ImageElement, OverlayElement, Project, Slide } from '../types'
 import type { ReorderDirection } from '../state/project-reducer'
-import { STANDARD_TEXT_PROPS } from '../overlays/contract'
+import { CONTAINER_TEXT_PROPS, STANDARD_TEXT_PROPS } from '../overlays/contract'
 import { cn, inspectorInputClass, NumberField, Select, stepValue, SwatchInput } from '../ui'
 import { Loader } from '../ui/Loader'
 import { elementCategory } from './overlayElement'
@@ -270,6 +270,7 @@ export function useOverlaySchemas(
 export const TEXT_CONTROL_PROPS: ReadonlySet<string> = new Set([
   ...STANDARD_TEXT_PROPS,
   'effect', 'effectColor', 'effectStrength', 'fit', 'runs',
+  ...CONTAINER_TEXT_PROPS,
 ])
 
 function PropEditor({

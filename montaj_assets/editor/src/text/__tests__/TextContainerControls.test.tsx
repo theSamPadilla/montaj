@@ -72,4 +72,34 @@ describe('TextContainerControls', () => {
     fireEvent.click(screen.getByRole('switch', { name: 'Hug text' }))
     expect(update).toHaveBeenLastCalledWith('s1', 'el-1', 'hug', '')
   })
+
+  it('border width above 0 also writes the shown colour when none is saved', () => {
+    const update = renderControls(makeOverlay({ text: 'Hi' }))
+    typeAndBlur('Border width', '3')
+    expect(update.mock.calls).toEqual([
+      ['s1', 'el-1', 'borderWidth', '3'],
+      ['s1', 'el-1', 'borderColor', '#000000'],
+    ])
+  })
+
+  it('border width keeps a saved colour, 3-digit hex included', () => {
+    const update = renderControls(makeOverlay({ text: 'Hi', borderColor: '#fff' }))
+    typeAndBlur('Border width', '2')
+    expect(update.mock.calls).toEqual([['s1', 'el-1', 'borderWidth', '2']])
+  })
+
+  it('shows stored values with a unit as numbers', () => {
+    renderControls(makeOverlay({ text: 'Hi', letterSpacing: '0.08em', radius: '999px' }))
+    expect((screen.getByLabelText('Letter spacing') as HTMLInputElement).value).toBe('0.08')
+    expect((screen.getByLabelText('Radius') as HTMLInputElement).value).toBe('999')
+  })
+
+  it('reset clears every set container prop, and is absent when none is set', () => {
+    const update = renderControls(makeOverlay({ text: 'Hi', radius: '12', padX: '8' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reset container' }))
+    expect(update.mock.calls).toEqual([
+      ['s1', 'el-1', 'padX', ''],
+      ['s1', 'el-1', 'radius', ''],
+    ])
+  })
 })

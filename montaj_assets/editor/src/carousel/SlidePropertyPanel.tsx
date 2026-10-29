@@ -9,7 +9,8 @@ import type {
 import { Button, cn } from '../ui'
 import { TextFormattingToolbar } from '../text/TextFormattingToolbar'
 import { TextEffectControls } from '../text/TextEffectControls'
-import { TextContainerControls } from '../text/TextContainerControls'
+import { CONTAINER_TEXT_PROPS } from '../overlays/contract'
+import { TextContainerControls, supportsContainer } from '../text/TextContainerControls'
 import { AlignControls } from './AlignControls'
 import { cropBlockedReason, fieldLabelClass, HideToggle, OverlayPropsSection, SlideBackgroundField, TransformFields, useOverlaySchemas, useReplaceImagePicker } from './ElementControls'
 
@@ -280,6 +281,7 @@ export default function SlidePropertyPanel({
                 schema={overlaySchema}
                 loading={schemasLoading}
                 onElementChange={onElementChange}
+                exclude={supportsContainer(overlayEl) ? CONTAINER_TEXT_PROPS : undefined}
               />
             </fieldset>
           )}

@@ -60,8 +60,8 @@ Five more props light up editor controls when an overlay declares them: `effect`
 Build a pill, a badge, a letter-spaced label or a title with one accent word with these optional props, all JSON strings, on the canonical `static-text` template. Never hardcode spans or a fake pill in custom JSX: hardcoded styling is not editable and does not survive an edit, while these props round-trip through the editor.
 
 - `runs`: a JSON array string beside `text`, e.g. `[{"t":"Make it "},{"t":"red","c":"#ff0000","i":1}]`. `t` is the run's text, `c` a hex colour, `b`, `i`, `u` are 1 (on) or 0 (off); an absent key takes the overlay's own style. The runs must spell `text` exactly or they are ignored, so rewrite `runs` whenever you change `text`.
-- `padX`, `padY` (px, default `"6%"`/`"8%"` without `hug`), `radius` (px), `borderColor` and `borderWidth` (px, a border draws only when both are set), `letterSpacing` (em, e.g. `"0.08"`).
-- `hug`: `"true"` shrinks the box to the text as a pill that sits by `textAlign`; the pill carries `bgColor`, padding, radius and border. Without it `bgColor` paints the whole box. `fit` is ignored with `hug`.
+- `padX`, `padY` (px; default `"8%"`/`"6%"` without `hug`, and `0.9em`/`0.35em` for the pill with it), `radius` (px), `borderColor` and `borderWidth` (px, a border draws only when both are set), `letterSpacing` (em, e.g. `"0.08"`).
+- `hug`: `"true"` shrinks the box to the text as a pill that sits by `textAlign`; the pill carries `bgColor`, padding, radius and border, and sits flush at the box edge (the box has no padding of its own, so pills at the same x line up). Without it `bgColor` paints the whole box. `fit` is ignored with `hug`.
 
 (a) Serif title, one italic accent word:
 

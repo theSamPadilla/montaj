@@ -26,8 +26,10 @@
  *                   underline on) or 0 (off); absent = the element's own. Used
  *                   only when the runs spell `text` exactly and no boundary
  *                   splits an emoji's two halves; otherwise ignored.
- *   padX, padY    — px; the box's inner padding. Absent = '6%' / '8%' (with hug:
- *                   the pill's, default 0.35em / 0.9em)
+ *   padX, padY    — px; the box's inner padding. Absent = 8% / 6% (with hug: the
+ *                   pill's, default 0.9em / 0.35em, and the box itself has no
+ *                   padding, so the pill sits flush at the box edge and pills
+ *                   at the same x line up)
  *   radius        — px corner radius of the box (with hug: of the pill)
  *   borderColor, borderWidth — a solid border, drawn only when both are set and
  *                   the width (px) is above 0
@@ -91,7 +93,7 @@ function px(v) {
 function spacing(v) {
   const t = String(v ?? '').trim()
   if (t === '') return null
-  return /^-?[\d.]+$/.test(t) ? `${t}em` : t
+  return /^-?(\d+\.?\d*|\.\d+)$/.test(t) ? `${t}em` : t
 }
 
 const em = (n) => `${+n.toFixed(4)}em`
@@ -233,9 +235,11 @@ export default function StaticText({
       alignItems:     'center',
       justifyContent: textAlign === 'left' ? 'flex-start' : textAlign === 'right' ? 'flex-end' : 'center',
       background:     hugOn ? 'transparent' : bgColor,
-      padding:        hugOn || (padXn === null && padYn === null)
-        ? '6% 8%'
-        : `${padYn === null ? '6%' : `${padYn}px`} ${padXn === null ? '8%' : `${padXn}px`}`,
+      padding:        hugOn
+        ? 0
+        : padXn === null && padYn === null
+          ? '6% 8%'
+          : `${padYn === null ? '6%' : `${padYn}px`} ${padXn === null ? '8%' : `${padXn}px`}`,
       boxSizing:      'border-box',
       overflow:       'hidden',
       ...(hugOn ? {} : container),
