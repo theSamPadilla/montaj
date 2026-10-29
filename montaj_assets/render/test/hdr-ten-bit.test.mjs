@@ -71,3 +71,43 @@ test('encodeSegment: an HDR overlay composites at yuv420p10, SDR at yuv420', asy
   const sdr = await compositeOf('sdr_bt709')
   assert.ok(sdr.includes(':format=yuv420:'))
 })
+
+// ── The cutout's colour declaration, and rotate staying 10-bit ──────────────
+const hdrOpts = { segStart: 0, duration: 5, projectColorSpace: 'hdr_hlg', zscaleAvailable: true, canvasPixFmt: TEN }
+const hdrVideo = (item, extra = {}) =>
+  buildVideoItemFilterParts(item, 1080, 1920, 0, '[base]', { ...hdrOpts, ...extra }).filterParts
+const sdrVideo = (item) => video(item)
+const head = (parts) => parts.find(p => p.startsWith('[0:v]'))
+const BT601 = 'setparams=colorspace=smpte170m,'
+const SDR_TAG = 'setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709,'
+
+test('HDR untagged remove_bg cutout is declared BT.601 after the trim, before setpts', () => {
+  const cut = { ...mov, inPoint: 1, colorTransfer: 'unknown', remove_bg: true, nobg_src: '/cut.mov' }
+  const h = head(hdrVideo(cut))
+  assert.ok(h.includes(BT601), h)
+  assert.ok(h.indexOf('trim=') < h.indexOf(BT601) && h.indexOf(BT601) < h.indexOf('setpts='), h)
+})
+
+test('HDR untagged non-cutout is not declared BT.601 (zscale tags it)', () => {
+  const h = head(hdrVideo({ ...vid, colorTransfer: 'unknown' }))
+  assert.ok(!h.includes(BT601), h)
+})
+
+test('HDR tagged video gets no such tag', () => {
+  const h = head(hdrVideo({ ...vid, colorTransfer: 'arib-std-b67' }))
+  assert.ok(!h.includes(BT601), h)
+})
+
+test('SDR untaggedTag is unchanged', () => {
+  assert.ok(head(sdrVideo({ ...vid, colorTransfer: 'unknown' })).includes(SDR_TAG))
+  assert.ok(!head(sdrVideo({ ...vid, colorTransfer: 'bt709' })).includes('setparams='))
+})
+
+test('a rotated video pins yuva444p10le on the 10-bit canvas, yuva420p on SDR', () => {
+  const rot = { ...vid, rotation: 30 }
+  assert.ok(hdrVideo(rot).join(';').includes('format=yuva444p10le,rotate='))
+  assert.ok(sdrVideo(rot).join(';').includes('format=yuva420p,rotate='))
+  const anim = { ...vid, keyframes: [{ prop: 'rotation', points: [{ t: 0, value: 0 }, { t: 5, value: 45 }] }] }
+  assert.ok(hdrVideo(anim).join(';').includes('format=yuva444p10le,pad='))
+  assert.ok(sdrVideo(anim).join(';').includes('format=yuva420p,pad='))
+})

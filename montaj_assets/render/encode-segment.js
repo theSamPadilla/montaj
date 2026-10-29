@@ -618,7 +618,11 @@ export function buildCutoutGradeFilter(srcKey, hasZscaleFlag, opts = {}) {
  *   — a `toRotatedPixelBox` result. Note that 180° is NOT identity: the box
  *   does not grow, but the pixels still have to turn.
  * @param {boolean} [alphaPin=false] — true on the video path only.
- * @returns {string} `''`, or `,[format=yuva420p,]rotate=…`
+ * @param {boolean} [tenBit=false] — the 10-bit (HDR) canvas: the pin is
+ *   `yuva444p10le`, the format the pad already pins there, so an HDR item is
+ *   not narrowed to 8 bits before `rotate`.
+ * @returns {string} `''`, or `,[format=yuva420p,]rotate=…` (the pin is
+ *   `yuva444p10le` when `tenBit`)
  */
 /**
  * ANIMATED-ITEM GEOMETRY — the keyframed sibling of `toRotatedPixelBox`.
@@ -835,9 +839,9 @@ function staticBoxPosition(anim, box) {
  * already synthesized by the static pad upstream, and painting more black here
  * would draw bars beyond the item's actual box.
  */
-function animatedRotateStep(anim, alphaPin = false) {
+function animatedRotateStep(anim, alphaPin = false, tenBit = false) {
   if (!anim.emitRotate) return ''
-  return `,${alphaPin ? 'format=yuva420p,' : ''}`
+  return `,${alphaPin ? `format=${tenBit ? 'yuva444p10le' : 'yuva420p'},` : ''}`
        + `pad=${anim.peakW}:${anim.peakH}:(ow-iw)/2:(oh-ih)/2:color=black@0.0:eval=frame,`
        + `rotate='${anim.angleExpr}':ow=${anim.rotOutW}:oh=${anim.rotOutH}:c=black@0.0`
 }
@@ -1145,9 +1149,9 @@ function animatedVideoCrop(item, fitW, fitH, timeOffset, duration, onCap, budget
   return { chain: m.chain, width: m.bw, height: m.bh }
 }
 
-function rotateFilterStep(box, alphaPin = false) {
+function rotateFilterStep(box, alphaPin = false, tenBit = false) {
   if (box.isIdentity) return ''
-  const pin = alphaPin ? 'format=yuva420p,' : ''
+  const pin = alphaPin ? `format=${tenBit ? 'yuva444p10le' : 'yuva420p'},` : ''
   return `,${pin}rotate=${box.rotationDeg}*PI/180:ow=${box.outW}:oh=${box.outH}:c=black@0.0`
 }
 
@@ -1628,8 +1632,16 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // encoded from RGB with ffmpeg's BT.601 default, and converting them is right.
   // A graded cutout is the exception: its alpha file holds HDR signal, and the
   // grade's own declaration says so (buildCutoutGradeFilter).
+  // HDR: an untagged remove_bg cutout (no conversion, no grade) holds BT.601
+  // YUV, because remove_bg decodes with the source's matrix and writes YUV with
+  // PyAV's BT.601 default. The SDR pass declares the same (buildCutoutGradeFilter);
+  // ffmpeg's "unknown" would read it as BT.601 only by negotiation. Measured on an
+  // HLG skin tone (YUV 690/369/614): smpte170m lands at 689/370/614 (within 1
+  // code), bt2020nc at 683/365/624 (up to 10 off). Never bt2020nc.
   const untaggedTag = !isHdr(projectColorSpace) && item.colorTransfer === 'unknown' && !cutoutGrade
-    ? 'setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709,' : ''
+    ? 'setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709,'
+    : isHdr(projectColorSpace) && item.colorTransfer === 'unknown' && !conversionStep && !cutoutGrade
+      ? 'setparams=colorspace=smpte170m,' : ''
 
   // ── The pad fill: transparent where the preview shows nothing ─────────────
   //
@@ -1667,9 +1679,9 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   //     lossless yuv→yuva conversion inserted instead.
   // An HDR→SDR grade reaches this pad already pinned to yuv420p (gradePin,
   // above), so for it the 10-bit pin only adds the alpha plane.
-  // A rotated item still passes through rotateFilterStep's `format=yuva420p`
-  // pin after this, which narrows a converted item to 8 bits before `rotate`.
-  // That predates this fill and is left alone here.
+  // A rotated item still passes through rotateFilterStep's alpha pin after
+  // this. On a 10-bit canvas that pin is yuva444p10le too; only an SDR canvas
+  // narrows to yuva420p before `rotate`.
   //
   // A MASKED item (§616) always takes the transparent fill. The mask multiplies
   // the item's alpha, so the item must carry an alpha plane by the time the
@@ -1706,8 +1718,8 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // rotate. Each starts with its own comma, and the static one may be empty.
   const afterPad = anim?.needsAnimatedChain
     ? `,scale=w='${anim.boxWExpr}':h='${anim.boxHExpr}':eval=frame` +
-      `${animatedRotateStep(anim, true)}`
-    : rotateFilterStep(box, true)
+      `${animatedRotateStep(anim, true, isHdr(projectColorSpace))}`
+    : rotateFilterStep(box, true, isHdr(projectColorSpace))
   // A mask (§616) goes BETWEEN the two: after pad, which made the box the
   // mask's fractions are measured in, and before the resize and rotate, so it
   // moves with the item as the preview's clip does. The chain is cut at the
