@@ -1206,7 +1206,7 @@ export declare function fadeShape(
 // ---------------------------------------------------------------------------
 
 /** A mask's shape. */
-export type MaskShape = 'ellipse' | 'rect' | 'wipe'
+export type MaskShape = 'ellipse' | 'rect' | 'wipe' | 'path'
 
 /** A clip's blend mode. Absent (or unknown) is `'normal'`. */
 export type BlendMode = 'normal' | 'screen' | 'multiply' | 'add' | 'lighten' | 'darken' | 'overlay'
@@ -1232,10 +1232,18 @@ export interface ItemMask {
   invert?: boolean
   /** Default true. `false` turns the mask off and keeps its settings: {@link maskAt} reads it as no mask. */
   enabled?: boolean
+  /** Path only, and required there: 3 to 64 [x, y] in 0-1 of the mask's own box (`x`, `y`, `w`, `h`, `rotation` place the box). */
+  points?: Array<[number, number]>
+  /** Path only: a closed Catmull-Rom curve through the points instead of straight segments. Default false. */
+  smooth?: boolean
 }
 
 /** A mask with every field resolved, as {@link maskAt} returns it. No `enabled`: a mask that is off resolves to null. */
-export type ResolvedMask = Required<Omit<ItemMask, 'enabled'>>
+export type ResolvedMask = Required<Omit<ItemMask, 'enabled' | 'points' | 'smooth'>> & {
+  /** A path's points at the instant (its `maskPoints` track sampled), else absent. */
+  points?: Array<[number, number]>
+  smooth?: boolean
+}
 
 /** The fields of an item the compositing functions read. */
 export interface CompositeItem {
@@ -1251,6 +1259,18 @@ export declare const MASK_SHAPES: ReadonlyArray<MaskShape>
 export declare const BLEND_MODES: ReadonlyArray<BlendMode>
 /** The keyframeable mask props. Each overrides one field of `mask`. */
 export declare const MASK_KEYFRAME_PROPS: ReadonlyArray<'maskX' | 'maskY' | 'maskW' | 'maskH' | 'maskRotation' | 'maskFeather'>
+/** The keyframe prop that morphs a path: values are point arrays of the mask's own length. */
+export declare const MASK_POINTS_PROP: 'maskPoints'
+export declare const MASK_POINTS_MIN: number
+export declare const MASK_POINTS_MAX: number
+/** Whether `points` is a path's point list (3 to 64 [x, y] pairs in 0-1), of length `n` when given. */
+export declare function validPoints(points: unknown, n?: number): points is Array<[number, number]>
+/** A `maskPoints` track at `localT`, point by point with easing; keys of another length are skipped. */
+export declare function samplePointsTrack(
+  track: { points?: ReadonlyArray<{ t: number; value: unknown; easing?: EasingName }> } | undefined,
+  localT: number,
+  n: number,
+): Array<[number, number]> | undefined
 /** The `mask` field each mask keyframe prop drives. */
 export declare const MASK_FIELD_OF: Readonly<{
   maskX: 'x'; maskY: 'y'; maskW: 'w'; maskH: 'h'; maskRotation: 'rotation'; maskFeather: 'feather'

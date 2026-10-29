@@ -3,12 +3,15 @@ import assert from 'node:assert/strict'
 import {
   MASK_SHAPES, BLEND_MODES, MASK_KEYFRAME_PROPS, maskAt, hasMaskKeyframes, maskSigmaPx,
   maskPolygon, rasterizeMask, maskSvg, blendModeOf, cssBlendMode, isPlainComposite,
+  MASK_POINTS_PROP, MASK_POINTS_MAX, validPoints, samplePointsTrack,
 } from '../index.js'
 
 const ell = { shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5 }
 
 test('constants', () => {
-  assert.deepEqual([...MASK_SHAPES], ['ellipse', 'rect', 'wipe'])
+  assert.deepEqual([...MASK_SHAPES], ['ellipse', 'rect', 'wipe', 'path'])
+  assert.equal(MASK_POINTS_PROP, 'maskPoints')
+  assert.equal(MASK_POINTS_MAX, 64)
   assert.deepEqual([...BLEND_MODES], ['normal', 'screen', 'multiply', 'add', 'lighten', 'darken', 'overlay'])
   assert.deepEqual([...MASK_KEYFRAME_PROPS], ['maskX', 'maskY', 'maskW', 'maskH', 'maskRotation', 'maskFeather'])
 })
@@ -136,4 +139,69 @@ test('blend modes', () => {
   assert.equal(isPlainComposite({ blendMode: 'multiply' }), false)
   assert.equal(isPlainComposite({ opacity: 0.5 }), false)
   assert.equal(isPlainComposite({ keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 1 }, { t: 1, value: 0 }] }] }), false)
+})
+
+// ── Paths ────────────────────────────────────────────────────────────────────
+
+const tri = [[0.5, 0], [1, 1], [0, 1]]
+
+test('path: points are fractions of the mask box, placed by x, y, w, h and rotation', () => {
+  const m = maskAt({ mask: { shape: 'path', points: tri, x: 0.5, y: 0.5, w: 0.5, h: 0.5 } }, 0)
+  assert.deepEqual(m.points, tri)
+  assert.equal(m.smooth, false)
+  // A 200 x 100 box: the mask box is 100 x 50 about (100, 50).
+  assert.deepEqual(maskPolygon(m, 200, 100), [[100, 25], [150, 75], [50, 75]])
+  const turned = maskPolygon({ ...m, rotation: 180 }, 200, 100)
+  assert.ok(Math.abs(turned[0][0] - 100) < 1e-9 && Math.abs(turned[0][1] - 75) < 1e-9)
+})
+
+test('path: smooth passes through every point, 12 curve points per segment', () => {
+  const sq = [[0, 0], [1, 0], [1, 1], [0, 1]]
+  const m = maskAt({ mask: { shape: 'path', points: sq, smooth: true, w: 1, h: 1 } }, 0)
+  const poly = maskPolygon(m, 100, 100)
+  assert.equal(poly.length, 4 * 12)
+  for (let i = 0; i < 4; i++) {
+    const [x, y] = poly[i * 12]
+    assert.ok(Math.abs(x - sq[i][0] * 100) < 1e-9 && Math.abs(y - sq[i][1] * 100) < 1e-9)
+  }
+})
+
+test('path: invalid points are no mask', () => {
+  assert.equal(maskAt({ mask: { shape: 'path' } }, 0), null)
+  assert.equal(maskAt({ mask: { shape: 'path', points: [[0, 0], [1, 1]] } }, 0), null)
+  assert.equal(maskAt({ mask: { shape: 'path', points: [[0, 0], [1, 1], [2, 0]] } }, 0), null)
+  assert.equal(maskAt({ mask: { shape: 'path', points: Array.from({ length: 65 }, (_, i) => [i / 64, 0.5]) } }, 0), null)
+  assert.equal(validPoints(tri), true)
+  assert.equal(validPoints(tri, 4), false)
+  assert.equal(validPoints([[0, 0], [1, NaN], [0, 1]]), false)
+})
+
+test('path: a maskPoints track morphs point by point, with easing; a wrong length is skipped', () => {
+  const to = [[0.5, 0.5], [0.5, 0.5], [0.5, 0.5]]
+  const item = {
+    mask: { shape: 'path', points: tri },
+    keyframes: [{ prop: 'maskPoints', points: [{ t: 0, value: tri }, { t: 2, value: to }, { t: 3, value: [[0, 0], [1, 0], [1, 1], [0, 1]] }] }],
+  }
+  assert.deepEqual(maskAt(item, 0).points, tri)
+  assert.deepEqual(maskAt(item, 1).points, [[0.5, 0.25], [0.75, 0.75], [0.25, 0.75]])
+  // The 4-point key does not count: the track holds at its last usable key.
+  assert.deepEqual(maskAt(item, 5).points, to)
+  const eased = samplePointsTrack({ prop: 'maskPoints', points: [{ t: 0, value: tri, easing: 'hold' }, { t: 2, value: to }] }, 1, 3)
+  assert.deepEqual(eased, tri)
+  assert.equal(samplePointsTrack(undefined, 1, 3), undefined)
+  assert.equal(hasMaskKeyframes(item), true)
+  assert.equal(hasMaskKeyframes({ mask: ell, keyframes: item.keyframes }), false)
+})
+
+test('rasterizeMask: a concave path fills even-odd (the notch stays empty)', () => {
+  // A U: the notch between the arms is outside the shape.
+  const u = [[0, 0], [0.3, 0], [0.3, 0.7], [0.7, 0.7], [0.7, 0], [1, 0], [1, 1], [0, 1]]
+  const m = maskAt({ mask: { shape: 'path', points: u, w: 1, h: 1 } }, 0)
+  const { data } = rasterizeMask(m, 100, 100, { margin: 0 })
+  assert.equal(data[20 * 100 + 15], 255) // left arm
+  assert.equal(data[20 * 100 + 50], 0) // the notch
+  assert.equal(data[20 * 100 + 85], 255) // right arm
+  assert.equal(data[90 * 100 + 50], 255) // the base
+  assert.match(maskSvg(m, 100, 100), /fill-rule="evenodd"/)
+  assert.ok(!maskSvg(maskAt({ mask: ell }, 0), 100, 100).includes('fill-rule'))
 })

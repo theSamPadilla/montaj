@@ -40,11 +40,11 @@
 // geometry.js must never import this module: this one imports geometry.js
 // (for `fullOpacitySpans`), and the reverse would be an ESM cycle.
 
-import { sampleTrack } from './curves.js'
+import { sampleTrack, easeProgress } from './curves.js'
 import { fullOpacitySpans } from './geometry.js'
 
 /**
- * @typedef {'ellipse' | 'rect' | 'wipe'} MaskShape
+ * @typedef {'ellipse' | 'rect' | 'wipe' | 'path'} MaskShape
  */
 
 /**
@@ -56,22 +56,24 @@ import { fullOpacitySpans } from './geometry.js'
  *
  * @typedef {Object} ItemMask
  * @property {MaskShape} shape
- * @property {number} [x] Centre (ellipse, rect) or a point on the edge (wipe), fraction of box width. Default 0.5.
+ * @property {number} [x] Centre (ellipse, rect, path) or a point on the edge (wipe), fraction of box width. Default 0.5.
  * @property {number} [y] The same, fraction of box height. Default 0.5.
- * @property {number} [w] Ellipse diameter / rect side, fraction of box width, > 0. Default 0.5. Wipe ignores.
+ * @property {number} [w] Ellipse diameter / rect side / a path's box, fraction of box width, > 0. Default 0.5. Wipe ignores.
  * @property {number} [h] The same, fraction of box height. Default 0.5.
  * @property {number} [rotation] Degrees clockwise about (x, y). Default 0.
  * @property {number} [radius] Rect only: corner radius, fraction of half the rect's shorter side, 0-1. Default 0.
  * @property {number} [feather] Width of the soft band centred on the edge, fraction of the box's shorter side, 0-1. Default 0.
  * @property {boolean} [invert] Default false.
  * @property {boolean} [enabled] Default true. `false` turns the mask off and keeps its settings.
+ * @property {Array<[number, number]>} [points] Path only, and required there: 3 to {@link MASK_POINTS_MAX} [x, y] in 0-1 of the mask's own box (`x`, `y`, `w`, `h`, `rotation` place that box).
+ * @property {boolean} [smooth] Path only: a closed Catmull-Rom curve through the points instead of straight segments. Default false.
  */
 
 /**
  * A mask with every field resolved, as {@link maskAt} returns it. No
  * `enabled`: a mask that is off resolves to null.
  *
- * @typedef {Required<Omit<ItemMask, 'enabled'>>} ResolvedMask
+ * @typedef {Required<Omit<ItemMask, 'enabled' | 'points' | 'smooth'>> & { points?: Array<[number, number]>, smooth?: boolean }} ResolvedMask
  */
 
 /**
@@ -85,7 +87,7 @@ import { fullOpacitySpans } from './geometry.js'
  */
 
 /** The mask shapes, in picker order. */
-export const MASK_SHAPES = Object.freeze(/** @type {const} */ (['ellipse', 'rect', 'wipe']))
+export const MASK_SHAPES = Object.freeze(/** @type {const} */ (['ellipse', 'rect', 'wipe', 'path']))
 
 /** The blend modes, in picker order. `normal` is the default. */
 export const BLEND_MODES = Object.freeze(/** @type {const} */ (
@@ -100,12 +102,24 @@ export const MASK_FIELD_OF = Object.freeze(/** @type {const} */ ({
   maskX: 'x', maskY: 'y', maskW: 'w', maskH: 'h', maskRotation: 'rotation', maskFeather: 'feather',
 }))
 
+/**
+ * The keyframe prop that morphs a path: each point's value is a `points` array
+ * of the mask's own length, interpolated point by point. Not in
+ * {@link MASK_KEYFRAME_PROPS}, whose values are numbers.
+ */
+export const MASK_POINTS_PROP = 'maskPoints'
+/** A path's point count: at least 3, at most this. */
+export const MASK_POINTS_MIN = 3
+export const MASK_POINTS_MAX = 64
+
 /** The ellipse's vertex count. */
 const ELLIPSE_POINTS = 256
 /** Arc points per rounded rect corner, both ends included. */
 const CORNER_POINTS = 16
 /** The smallest mask side, as a fraction of the box: a mask never collapses to nothing. */
 const MIN_SIDE = 1e-4
+/** Curve points per segment of a smooth path. */
+const SMOOTH_STEPS = 12
 /** Anti-aliasing sub-rows per pixel row in {@link rasterizeMask}. */
 const SUB_ROWS = 4
 
@@ -124,7 +138,83 @@ const MASK_PROP_SET = new Set(/** @type {readonly string[]} */ (MASK_KEYFRAME_PR
 function validMask(item) {
   const mask = item?.mask
   if (!mask || typeof mask !== 'object' || !SHAPE_SET.has(mask.shape) || mask.enabled === false) return null
+  if (mask.shape === 'path' && !validPoints(mask.points)) return null
   return mask
+}
+
+/**
+ * Whether `points` is a path's point list: an array of MASK_POINTS_MIN to
+ * MASK_POINTS_MAX pairs of finite numbers in 0-1 (and, given `n`, exactly n).
+ *
+ * @param {unknown} points
+ * @param {number} [n]
+ * @returns {points is Array<[number, number]>}
+ */
+export function validPoints(points, n) {
+  if (!Array.isArray(points) || points.length < MASK_POINTS_MIN || points.length > MASK_POINTS_MAX) return false
+  if (n !== undefined && points.length !== n) return false
+  return points.every(p => Array.isArray(p) && p.length === 2
+    && p.every(v => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1))
+}
+
+/**
+ * A `maskPoints` track at item-relative `localT`: the points of the keyframes
+ * either side, interpolated point by point with the earlier one's easing, as
+ * {@link sampleTrack} does for a number. Keyframes whose value is not a valid
+ * point list of length `n` are skipped. Undefined with no usable keyframe.
+ *
+ * @param {import('./curves.js').KeyframeTrack | undefined} track
+ * @param {number} localT
+ * @param {number} n
+ * @returns {Array<[number, number]> | undefined}
+ */
+export function samplePointsTrack(track, localT, n) {
+  const all = Array.isArray(track?.points) ? track.points : []
+  const pts = all.filter(k => k && Number.isFinite(k.t) && validPoints(k.value, n))
+  if (pts.length === 0) return undefined
+  let prev = pts[0]
+  const t = Number.isFinite(localT) ? localT : prev.t
+  const copy = (v) => v.map(([x, y]) => /** @type {[number, number]} */ ([x, y]))
+  if (t < prev.t) return copy(prev.value)
+  for (let i = 1; i < pts.length; i++) {
+    const cur = pts[i]
+    if (t < cur.t) {
+      const span = cur.t - prev.t
+      if (!(span > 0)) return copy(cur.value)
+      const e = easeProgress(prev.easing, (t - prev.t) / span)
+      return prev.value.map(([x0, y0], j) => /** @type {[number, number]} */ ([x0 + (cur.value[j][0] - x0) * e, y0 + (cur.value[j][1] - y0) * e]))
+    }
+    prev = cur
+  }
+  return copy(prev.value)
+}
+
+/**
+ * A closed uniform Catmull-Rom curve through `points`, SMOOTH_STEPS points per
+ * segment, starting at the first point.
+ *
+ * @param {Array<[number, number]>} points
+ * @returns {Array<[number, number]>}
+ */
+function smoothPath(points) {
+  const n = points.length
+  /** @type {Array<[number, number]>} */
+  const out = []
+  for (let i = 0; i < n; i++) {
+    const p0 = points[(i - 1 + n) % n]
+    const p1 = points[i]
+    const p2 = points[(i + 1) % n]
+    const p3 = points[(i + 2) % n]
+    for (let s = 0; s < SMOOTH_STEPS; s++) {
+      const t = s / SMOOTH_STEPS
+      const t2 = t * t
+      const t3 = t2 * t
+      const at = (/** @type {number} */ k) => 0.5 * (2 * p1[k] + (p2[k] - p0[k]) * t
+        + (2 * p0[k] - 5 * p1[k] + 4 * p2[k] - p3[k]) * t2 + (3 * p1[k] - p0[k] - 3 * p2[k] + p3[k]) * t3)
+      out.push([at(0), at(1)])
+    }
+  }
+  return out
 }
 
 /**
@@ -183,7 +273,8 @@ export function maskAt(item, localT) {
       if (typeof sampled === 'number' && Number.isFinite(sampled)) v[MASK_FIELD_OF[prop]] = sampled
     }
   }
-  return {
+  /** @type {ResolvedMask} */
+  const out = {
     shape: mask.shape,
     x: v.x,
     y: v.y,
@@ -194,6 +285,15 @@ export function maskAt(item, localT) {
     feather: clamp(v.feather, 0, MASK_FEATHER_MAX),
     invert: mask.invert === true,
   }
+  if (mask.shape === 'path') {
+    const stored = /** @type {Array<[number, number]>} */ (mask.points)
+    const sampled = Array.isArray(tracks)
+      ? samplePointsTrack(trackFor(tracks, MASK_POINTS_PROP), localT, stored.length)
+      : undefined
+    out.points = sampled ?? stored.map(([x, y]) => /** @type {[number, number]} */ ([x, y]))
+    out.smooth = mask.smooth === true
+  }
+  return out
 }
 
 /**
@@ -205,12 +305,14 @@ export function maskAt(item, localT) {
  * @returns {boolean}
  */
 export function hasMaskKeyframes(item) {
-  if (!validMask(item)) return false
+  const mask = validMask(item)
+  if (!mask) return false
   const tracks = item?.keyframes
   if (!Array.isArray(tracks)) return false
   for (let i = 0; i < tracks.length; i++) {
     const track = tracks[i]
-    if (track && MASK_PROP_SET.has(track.prop) && Array.isArray(track.points) && track.points.length > 0) return true
+    if (!track || !Array.isArray(track.points) || track.points.length === 0) continue
+    if (MASK_PROP_SET.has(track.prop) || (track.prop === MASK_POINTS_PROP && mask.shape === 'path')) return true
   }
   return false
 }
@@ -238,9 +340,10 @@ export function maskSigmaPx(mask, boxW, boxH) {
 }
 
 /**
- * The hard (unfeathered, uninverted) mask outline as a convex polygon in box
- * pixels, y down, clockwise on screen. THE outline both engines draw: the SVG
- * fills it, the rasterizer scan-converts it.
+ * The hard (unfeathered, uninverted) mask outline as a polygon in box pixels,
+ * y down: convex and clockwise on screen for every shape but a path, which is
+ * as its points run. THE outline both engines draw: the SVG fills it, the
+ * rasterizer scan-converts it, both even-odd.
  *
  * - ellipse: 256 points, rotated about its centre.
  * - rect: its 4 corners, or 16 arc points per corner when `radius > 0`,
@@ -248,6 +351,8 @@ export function maskSigmaPx(mask, boxW, boxH) {
  * - wipe: the visible half-plane clipped to a square of half side
  *   `4·max(boxW, boxH)` around the box centre; empty when that square lies
  *   wholly on the hidden side.
+ * - path: its points (or, smooth, 12 curve points per segment) placed in the
+ *   mask's box (`w` x `h` about (x, y)) and rotated about its centre.
  *
  * @param {ResolvedMask} mask
  * @param {number} boxW
@@ -272,6 +377,12 @@ export function maskPolygon(mask, boxW, boxH) {
       const a = (2 * Math.PI * i) / ELLIPSE_POINTS
       local.push([rx * Math.cos(a), ry * Math.sin(a)])
     }
+  } else if (mask.shape === 'path') {
+    // The points are fractions of the mask's own box, centred on (x, y).
+    const bw = mask.w * boxW
+    const bh = mask.h * boxH
+    const pts = mask.points ?? []
+    for (const [px, py] of mask.smooth ? smoothPath(pts) : pts) local.push([(px - 0.5) * bw, (py - 0.5) * bh])
   } else {
     const hw = (mask.w * boxW) / 2
     const hh = (mask.h * boxH) / 2
@@ -347,7 +458,8 @@ function wipePolygon(cx, cy, cos, sin, boxW, boxH) {
  * pixel times 255, rounded; inverted, `255 - v`.
  *
  * Anti-aliased by 4 sub-rows per pixel row, each with exact horizontal
- * coverage between the polygon's two crossings (it is convex), so the cost is
+ * coverage between pairs of the polygon's sorted crossings (even-odd: a convex
+ * shape has two, a path may have more), so the cost is
  * O(rows × (edges + width)) with no per-pixel inside test.
  *
  * @param {ResolvedMask} mask
@@ -375,14 +487,30 @@ export function rasterizeMask(mask, w, h, { margin } = {}) {
   }
   const row = new Float32Array(W)
   const sub = 1 / SUB_ROWS
+  /** @type {number[]} */
+  const cross = []
+  /** Adds exact coverage of [xl, xr) on one sub-row. */
+  const span = (/** @type {number} */ xl, /** @type {number} */ xr) => {
+    if (xl < 0) xl = 0
+    if (xr > W) xr = W
+    if (!(xr > xl)) return
+    const il = Math.floor(xl)
+    const ir = Math.floor(xr)
+    if (il === ir) {
+      row[il] += sub * (xr - xl)
+    } else {
+      row[il] += sub * (il + 1 - xl)
+      for (let k = il + 1; k < ir; k++) row[k] += sub
+      if (ir < W) row[ir] += sub * (xr - ir)
+    }
+  }
 
   for (let py = 0; py < H; py++) {
     row.fill(0)
     if (n >= 3 && py + 1 > minY && py < maxY) {
       for (let s = 0; s < SUB_ROWS; s++) {
         const sy = py + (s + 0.5) * sub
-        let xl = Infinity
-        let xr = -Infinity
+        cross.length = 0
         for (let i = 0; i < n; i++) {
           const j = i + 1 === n ? 0 : i + 1
           const y0 = ys[i]
@@ -390,23 +518,12 @@ export function rasterizeMask(mask, w, h, { margin } = {}) {
           // Half-open in y, so a vertex on the sub-row counts once and a
           // horizontal edge never.
           if ((y0 <= sy && sy < y1) || (y1 <= sy && sy < y0)) {
-            const x = xs[i] + ((sy - y0) * (xs[j] - xs[i])) / (y1 - y0)
-            if (x < xl) xl = x
-            if (x > xr) xr = x
+            cross.push(xs[i] + ((sy - y0) * (xs[j] - xs[i])) / (y1 - y0))
           }
         }
-        if (xl < 0) xl = 0
-        if (xr > W) xr = W
-        if (!(xr > xl)) continue
-        const il = Math.floor(xl)
-        const ir = Math.floor(xr)
-        if (il === ir) {
-          row[il] += sub * (xr - xl)
-        } else {
-          row[il] += sub * (il + 1 - xl)
-          for (let k = il + 1; k < ir; k++) row[k] += sub
-          if (ir < W) row[ir] += sub * (xr - ir)
-        }
+        if (cross.length > 2) cross.sort((a, b) => a - b)
+        else if (cross.length === 2 && cross[0] > cross[1]) cross.reverse()
+        for (let c = 0; c + 1 < cross.length; c += 2) span(cross[c], cross[c + 1])
       }
     }
     const base = py * W
@@ -456,7 +573,7 @@ export function maskSvg(mask, boxW, boxH) {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${fmt(boxW)} ${fmt(boxH)}" preserveAspectRatio="none">`
     + filter
     + `<rect x="${fmt(-boxW)}" y="${fmt(-boxH)}" width="${fmt(3 * boxW)}" height="${fmt(3 * boxH)}" fill="${mask.invert ? '#fff' : '#000'}"/>`
-    + `<polygon points="${pts}" fill="${mask.invert ? '#000' : '#fff'}"${sigma > 0 ? ' filter="url(#f)"' : ''}/>`
+    + `<polygon points="${pts}" fill="${mask.invert ? '#000' : '#fff'}"${mask.shape === 'path' ? ' fill-rule="evenodd"' : ''}${sigma > 0 ? ' filter="url(#f)"' : ''}/>`
     + '</svg>'
 }
 
