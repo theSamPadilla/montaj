@@ -1210,6 +1210,16 @@ function blendOpts(opts, o) {
   }
 }
 
+/**
+ * The `overlay` format of a layer's composite. A 10-bit canvas (HDR) keeps 10
+ * bits: `yuv420`, overlay's default, converts the canvas and everything on it
+ * to 8-bit yuv420p (measured: a 10-bit ramp steps by 4). Otherwise `sdr`,
+ * today's flag, so every SDR graph stays byte-identical. §619.
+ */
+function compositeFormat(canvasPixFmt, sdr) {
+  return canvasPixFmt?.includes('10') ? 'yuv420p10' : sdr
+}
+
 // NOTE: item.speed is intentionally ignored here — a still image has no
 // motion to time-scale, so speed is a no-op for image items (unlike video,
 // where it re-times decoded frames).
@@ -1336,19 +1346,20 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
     ? (anim.needsAnimatedChain ? { x: anim.xExpr, y: anim.yExpr } : staticBoxPosition(anim, box))
     : null
   const blend = blendModeOf(item)
+  const imgFmt = opts?.canvasPixFmt?.includes('10') ? ':format=yuv420p10' : ''
   if (blend !== 'normal') {
     // A blend mode (§616) replaces this overlay with item-blend.js's graph,
     // which places the image with the same x/y (expressions included) and
-    // merges it with this overlay's own (default) format.
+    // merges it with this overlay's own format (imgFmt).
     filterParts.push(...blendCompositeParts(blendOpts(opts, {
-      backdrop: videoLabel, item: src, mode: blend, idx, vw, vh, duration, overlayFormat: '',
+      backdrop: videoLabel, item: src, mode: blend, idx, vw, vh, duration, overlayFormat: imgFmt,
       x: iPos ? `'${iPos.x}'` : box.x, y: iPos ? `'${iPos.y}'` : box.y,
     })))
   } else {
     filterParts.push(
       `${videoLabel}${src}overlay=` +
       `x=${iPos ? `'${iPos.x}'` : box.x}:y=${iPos ? `'${iPos.y}'` : box.y}` +
-      `:shortest=0[iv${idx}]`
+      `${imgFmt}:shortest=0[iv${idx}]`
     )
   }
   const newVideoLabel = `[iv${idx}]`
@@ -1426,8 +1437,9 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // and 0.5x: the animation lands identically at all three.
   const anim = animatedGeometry(item, 'video', vw, vh, seekOffset, duration, warnIfCapped(item, 'video'))
 
-  // ProRes 4444 (.mov from remove-bg) has alpha — use format=auto
-  const ovFmt = item.src.endsWith('.mov') ? ':format=auto' : ':format=yuv420'
+  // ProRes 4444 (.mov from remove-bg) has alpha: format=auto. A 10-bit canvas
+  // composites at yuv420p10 either way (§619).
+  const ovFmt = ':format=' + compositeFormat(opts.canvasPixFmt, item.src.endsWith('.mov') ? 'auto' : 'yuv420')
 
   const itemColorSpace = detectFromTransfer(item.colorTransfer)
   // The key this item's conversion starts from. render.js's per-layer SDR pass
@@ -2255,7 +2267,8 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
         buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, start, duration,
           { fps, captureToBt709: !isHdr(projectColorSpace),
             captureToHdr: isHdr(projectColorSpace) ? projectColorSpace : null,
-            dryRun: opts._dryRun })
+            dryRun: opts._dryRun,
+            compositeFormatFlag: compositeFormat(spec.outputPixFmt, 'yuv420') })
       inputs.push(...inputArgs)
       filterParts.push(...fp)
       videoLabel = newVideoLabel

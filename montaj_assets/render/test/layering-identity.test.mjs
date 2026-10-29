@@ -125,7 +125,11 @@ function whiteLutDiff(args, colorSpace) {
   if (colorSpace === 'sdr_bt709') return { args }
   const name = (nits) => graphicsLutPath(colorSpace, { write: false, whiteNits: nits }).split('/').pop()
   const [from, to] = [name(300), name(800)]
-  const swapped = args.map((x) => (typeof x === 'string' ? x.split(from).join(to) : x))
+  // §619: HDR composites at 10 bits, so the frozen 8-bit overlay formats become yuv420p10.
+  const ten = (x) => x.split(from).join(to)
+    .replace(/:format=(yuv420|auto):shortest=0\[/g, ':format=yuv420p10:shortest=0[')
+    .replace(/(overlay=x=[^;]*?):shortest=0\[iv/g, (m, a) => (a.includes(':format=') ? m : `${a}:format=yuv420p10:shortest=0[iv`))
+  const swapped = args.map((x) => (typeof x === 'string' ? ten(x) : x))
   return { args: swapped }
 }
 
