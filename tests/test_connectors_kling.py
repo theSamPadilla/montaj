@@ -429,6 +429,7 @@ def test_mode_defaults_to_pro():
 
 import importlib.util  # noqa: E402
 import json  # noqa: E402
+import re  # noqa: E402
 import sys  # noqa: E402
 from pathlib import Path  # noqa: E402
 
@@ -781,7 +782,9 @@ def test_step_mode_defaults_to_pro(step, monkeypatch):
     monkeypatch.setattr(step.kling, "generate", capture)
     monkeypatch.setattr(sys, "argv", ["kling_generate.py", *_STANDALONE])
     step.main()
-    assert seen["mode"] == "pro"
+    # The connector resolves None to pro for the legacy models (kling-4.0 has no mode).
+    assert seen["mode"] is None
+    assert build_payload(prompt="a cat", mode=seen["mode"])["body"]["mode"] == "pro"
 
 
 def test_step_project_mode_never_switches_model(step, monkeypatch):
@@ -802,7 +805,7 @@ def test_step_project_mode_never_switches_model(step, monkeypatch):
                                       "--scene-id", "s1", "--out", "o.mp4"])
     step.main()
     assert seen["model"] == "kling-v3-omni"
-    assert seen["mode"] == "pro"
+    assert seen["mode"] is None
 
 
 class TestMissingKeyMessages:
@@ -854,3 +857,305 @@ class TestMissingKeyMessages:
             kling._bearer()
         assert not isinstance(ei.value, MissingCredentialError)
         assert "not valid JSON" in str(ei.value)
+
+
+# ---------------------------------------------------------------------------
+# Kling 4.0. Fixtures are shaped from Kling's 4.0 API docs (A,
+# https://kling.ai/document-api/api/video/4-0), not captured from a live call.
+# ---------------------------------------------------------------------------
+
+from connectors import kling as _kling  # noqa: E402
+
+
+def _png(tmp_path, name, data=b"PNG"):
+    p = tmp_path / name
+    p.write_bytes(data)
+    return str(p)
+
+
+def _b64(data):
+    return base64.b64encode(data).decode("ascii")
+
+
+def _v4(**kw):
+    return build_payload(prompt=kw.pop("prompt", "a cat"), model="kling-4.0", **kw)
+
+
+class TestV4Payload:
+    def test_text_only_body_shape(self):
+        r = _v4()
+        assert r["body"] == {
+            "contents": [{"type": "prompt", "text": "a cat"}],
+            "settings": {"resolution": "1080p", "duration": 5, "aspect_ratio": "16:9"},
+        }
+        assert r["truncated"] is False
+        assert r["original_prompt_length"] == 5
+
+    def test_image_ids_and_order(self, tmp_path):
+        first, last = _png(tmp_path, "f.png", b"F"), _png(tmp_path, "l.png", b"L")
+        r1, r2 = _png(tmp_path, "r1.png", b"R1"), _png(tmp_path, "r2.png", b"R2")
+        c = _v4(first_frame_path=first, last_frame_path=last,
+                reference_image_paths=[r1, r2], external_task_id="s1-abc")["body"]
+        assert c["contents"][1:] == [
+            {"type": "first_frame", "url": _b64(b"F"), "id": "image_1"},
+            {"type": "last_frame", "url": _b64(b"L"), "id": "image_2"},
+            {"type": "refer_image", "url": _b64(b"R1"), "id": "image_3"},
+            {"type": "refer_image", "url": _b64(b"R2"), "id": "image_4"},
+        ]
+        assert c["options"] == {"external_task_id": "s1-abc"}
+
+    def test_no_options_without_external_task_id(self):
+        assert "options" not in _v4()["body"]
+
+    def test_last_frame_without_first_is_allowed(self, tmp_path):
+        c = _v4(last_frame_path=_png(tmp_path, "l.png"))["body"]["contents"]
+        assert c[1]["type"] == "last_frame" and c[1]["id"] == "image_1"
+
+    def test_legacy_tokens_become_at_ids(self, tmp_path):
+        first, r1 = _png(tmp_path, "f.png"), _png(tmp_path, "r1.png")
+        r = _v4(prompt="The man <<<image_2>>> meets the dog <<<image_3>>>",
+                first_frame_path=first, last_frame_path=first, reference_image_paths=[r1])
+        assert r["runtime_prompt"] == "The man @image_2 meets the dog @image_3"
+        assert r["body"]["contents"][0]["text"] == r["runtime_prompt"]
+        assert [i["id"] for i in r["body"]["contents"][1:]] == ["image_1", "image_2", "image_3"]
+
+    def test_more_than_ten_images_refused(self, tmp_path):
+        refs = [_png(tmp_path, f"r{i}.png") for i in range(9)]
+        _v4(first_frame_path=refs[0], reference_image_paths=refs)  # 1 + 9 = 10 passes
+        with pytest.raises(ConnectorError, match="at most 10"):
+            _v4(first_frame_path=refs[0], last_frame_path=refs[1], reference_image_paths=refs)
+
+    def test_resolution_default_and_choices(self):
+        assert _v4()["body"]["settings"]["resolution"] == "1080p"
+        assert _v4(resolution="720p")["body"]["settings"]["resolution"] == "720p"
+        with pytest.raises(ConnectorError, match="resolution"):
+            _v4(resolution="4k")
+
+    @pytest.mark.parametrize("aspect", ["21:9", "16:9", "9:16", "1:1", "adaptive"])
+    def test_aspect_enum_allowed(self, aspect):
+        assert _v4(aspect_ratio=aspect)["body"]["settings"]["aspect_ratio"] == aspect
+
+    def test_aspect_outside_enum_refused(self):
+        with pytest.raises(ConnectorError, match="aspect ratio"):
+            _v4(aspect_ratio="4:3")
+
+    @pytest.mark.parametrize("asked, sent", [(1, 3), (3, 3), (17, 17), (30, 30), (45, 30)])
+    def test_duration_snaps_to_3_30(self, asked, sent):
+        d = _v4(duration_seconds=asked)["body"]["settings"]["duration"]
+        assert d == sent and isinstance(d, int)
+
+    def test_empty_prompt_refused(self):
+        with pytest.raises(ConnectorError, match="empty"):
+            _v4(prompt="  ")
+
+    def test_english_prompt_limit(self):
+        assert _v4(prompt="a" * 26000)["runtime_prompt"] == "a" * 26000  # never truncated
+        with pytest.raises(ConnectorError, match="26,000"):
+            _v4(prompt="a" * 26001)
+
+    def test_non_english_prompt_limit(self):
+        _v4(prompt="é" * 11000)
+        with pytest.raises(ConnectorError, match="11,000"):
+            _v4(prompt="é" * 11001)
+
+    def test_mixed_prompt_rule(self):
+        _v4(prompt="a" * 13000 + "é" * 5500)           # 0.5 + 0.5 = 1.0
+        with pytest.raises(ConnectorError, match="too long"):
+            _v4(prompt="a" * 13000 + "é" * 5501)
+
+    @pytest.mark.parametrize("kw, text", [
+        ({"multi_shot": True, "shot_type": "intelligence"}, "multi-shot"),
+        ({"shot_type": "customize"}, "multi-shot"),
+        ({"multi_prompt": [{"index": 1}]}, "multi-shot"),
+        ({"mode": "pro"}, "no std/pro mode; use --resolution 720p or 1080p."),
+        ({"sound": "on"}, "no sound switch: it always generates audio."),
+        ({"sound": "off"}, "Describe the sound you want in the prompt"),
+        ({"negative_prompt": "blurry"}, "negative prompt"),
+        ({"seed": 7}, "no seed"),
+    ])
+    def test_refusals(self, kw, text):
+        with pytest.raises(ConnectorError, match=re.escape(text)):
+            _v4(**kw)
+
+
+class TestLegacyAfterV4:
+    def test_none_mode_and_sound_resolve_to_pro_and_on(self):
+        body = build_payload(prompt="a cat", mode=None, sound=None)["body"]
+        assert body["mode"] == "pro" and body["sound"] == "on"
+
+    def test_refuses_resolution(self):
+        with pytest.raises(ConnectorError, match="kling-4.0 only"):
+            build_payload(prompt="a cat", resolution="720p")
+
+    @pytest.mark.parametrize("aspect", ["21:9", "adaptive"])
+    def test_refuses_v4_only_aspects(self, aspect):
+        with pytest.raises(ConnectorError, match="kling-4.0 only; kling-v3-omni takes 16:9, 9:16, 1:1"):
+            build_payload(prompt="a cat", aspect_ratio=aspect)
+
+    def test_o1_end_frame_still_needs_pro_by_default(self, tmp_path):
+        img = _png(tmp_path, "l.png")
+        assert build_payload(prompt="a", last_frame_path=img, model="kling-video-o1")["body"]["mode"] == "pro"
+        with pytest.raises(ConnectorError, match="--mode pro"):
+            build_payload(prompt="a", last_frame_path=img, model="kling-video-o1", mode="std")
+
+
+class TestV4Auth:
+    def test_legacy_pair_only_gets_the_api_key_message(self, monkeypatch):
+        from lib.credentials import MissingCredentialError
+        monkeypatch.setenv("KLING_ACCESS_KEY", "test-access-key-0000000000000000")
+        monkeypatch.setenv("KLING_SECRET_KEY", "test-secret-key-0000000000000000")
+        with pytest.raises(MissingCredentialError) as ei:
+            _kling._bearer_v4()
+        assert str(ei.value) == (
+            "Kling 4.0 needs a Kling API key; your access key and secret key work only "
+            "for older Kling models. Add your Kling API key in Montaj under Connectors."
+        )
+        assert ei.value.key == "api_key"
+
+    def test_api_key_is_the_bearer(self, monkeypatch):
+        monkeypatch.setenv("KLING_API_KEY", "test-api-key-0000000000000000")
+        assert _kling._bearer_v4() == "test-api-key-0000000000000000"
+
+    def test_nothing_stored_is_the_missing_key_message(self):
+        from lib.credentials import MissingCredentialError
+        with pytest.raises(MissingCredentialError) as ei:
+            _kling._bearer_v4()
+        assert str(ei.value) == "No Kling key. Add one in Montaj under Connectors."
+        assert ei.value.key == "api_key"
+
+
+V4_KEY = "test-api-key-0000000000000000"
+V4_URL = "https://api-singapore.klingai.com/omni-video/kling-4.0"
+V4_QUERY = "https://api-singapore.klingai.com/tasks"
+V4_CREATED = {"code": 0, "message": "ok", "request_id": "r1",
+              "data": {"id": "tk-1", "status": "submitted", "create_time": 1, "update_time": 1}}
+
+
+def _task(status, **extra):
+    return {"code": 0, "message": "ok", "request_id": "r",
+            "data": [{"id": "other", "status": "processing"},
+                     {"id": "tk-1", "status": status, **extra}]}
+
+
+class TestV4Http:
+    @pytest.fixture(autouse=True)
+    def _key(self, monkeypatch):
+        monkeypatch.setenv("KLING_API_KEY", V4_KEY)
+        monkeypatch.setattr(_kling.time, "sleep", lambda s: None)
+
+    def test_create_url_body_and_bearer(self, wire):
+        fake = wire(_Resp(200, V4_CREATED))
+        body = _v4()["body"]
+        assert _kling.create_task_v4(body)["id"] == "tk-1"
+        method, url, kw = fake.calls[0]
+        assert (method, url, kw["json"]) == ("POST", V4_URL, body)
+        assert kw["headers"]["Authorization"] == f"Bearer {V4_KEY}"
+
+    def test_query_url_and_task_ids_param(self, wire):
+        fake = wire(_Resp(200, _task("processing")))
+        assert _kling.query_task_v4("tk-1")["id"] == "tk-1"
+        method, url, kw = fake.calls[0]
+        assert (method, url, kw["params"]) == ("GET", V4_QUERY, {"task_ids": "tk-1"})
+
+    def test_query_without_the_task_raises(self, wire):
+        wire(_Resp(200, {"code": 0, "message": "ok", "data": []}))
+        with pytest.raises(ConnectorError, match="not found"):
+            _kling.query_task_v4("tk-1")
+
+    def test_generate_submitted_processing_succeeded_downloads_video(self, wire, monkeypatch, tmp_path):
+        done = _task("succeeded", outputs=[
+            {"type": "audio", "id": "a", "url": "https://cdn/x.mp3"},
+            {"type": "video", "id": "v", "url": "https://cdn/x.mp4", "watermark_url": "https://cdn/w.mp4"}])
+        fake = wire(_Resp(200, V4_CREATED), _Resp(200, _task("submitted")),
+                    _Resp(200, _task("processing")), _Resp(200, done))
+        got = []
+        monkeypatch.setattr(_kling, "_download_file", lambda url, out: got.append((url, out)) or out)
+        out = _kling.generate(prompt="a cat", out_path=str(tmp_path / "o.mp4"), model="kling-4.0",
+                              resolution="720p", duration_seconds=12)
+        assert out == str(tmp_path / "o.mp4")
+        assert got == [("https://cdn/x.mp4", out)]
+        assert [c[1] for c in fake.calls] == [V4_URL, V4_QUERY, V4_QUERY, V4_QUERY]
+        assert fake.calls[0][2]["json"]["settings"] == {"resolution": "720p", "duration": 12, "aspect_ratio": "16:9"}
+
+    def test_succeeded_without_a_video_raises(self, wire, monkeypatch, tmp_path):
+        wire(_Resp(200, V4_CREATED), _Resp(200, _task("succeeded", outputs=[{"type": "image", "url": "u"}])))
+        monkeypatch.setattr(_kling, "_download_file", lambda *a: pytest.fail("no download"))
+        with pytest.raises(ConnectorError, match="no video"):
+            _kling.generate(prompt="a", out_path=str(tmp_path / "o.mp4"), model="kling-4.0")
+
+    def test_failed_raises_with_the_message(self, wire, tmp_path):
+        wire(_Resp(200, V4_CREATED), _Resp(200, _task("failed", message="content refused")))
+        with pytest.raises(ConnectorError, match="failed: content refused"):
+            _kling.generate(prompt="a", out_path=str(tmp_path / "o.mp4"), model="kling-4.0")
+
+    def test_1102_is_insufficient_credit(self, wire):
+        wire(_Resp(429, BALANCE_429))
+        with pytest.raises(ConnectorError) as ei:
+            _kling.create_task_v4(_v4()["body"])
+        assert ei.value.reason == INSUFFICIENT_CREDIT
+
+    def test_1201_is_model_retired_for_kling_4(self, wire):
+        wire(_Resp(400, {"code": 1201, "message": "model is not supported"}))
+        with pytest.raises(ConnectorError) as ei:
+            _kling.create_task_v4(_v4()["body"])
+        assert ei.value.reason == MODEL_RETIRED
+        assert "kling-4.0" in str(ei.value)
+
+    def test_legacy_pair_never_reaches_the_network(self, wire, monkeypatch, tmp_path):
+        monkeypatch.delenv("KLING_API_KEY")
+        monkeypatch.setenv("KLING_ACCESS_KEY", "test-access-key-0000000000000000")
+        monkeypatch.setenv("KLING_SECRET_KEY", "test-secret-key-0000000000000000")
+        fake = wire()  # any call fails the test
+        with pytest.raises(Exception, match="needs a Kling API key"):
+            _kling.generate(prompt="a", out_path=str(tmp_path / "o.mp4"), model="kling-4.0")
+        assert fake.calls == []
+
+
+class TestV4Step:
+    def test_standalone_passes_resolution_and_no_mode_or_sound(self, step, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(step.kling, "generate", lambda **kw: seen.update(kw) or kw["out_path"])
+        monkeypatch.setattr(sys, "argv", ["kling_generate.py", *_STANDALONE,
+                                          "--model", "kling-4.0", "--resolution", "720p"])
+        step.main()
+        assert (seen["model"], seen["resolution"]) == ("kling-4.0", "720p")
+        assert seen["mode"] is None and seen["sound"] is None
+
+    def test_standalone_long_prompt_has_no_truncation_warning(self, step, monkeypatch, capsys):
+        monkeypatch.setattr(step.kling, "generate", lambda **kw: kw["out_path"])
+        monkeypatch.setattr(sys, "argv", ["kling_generate.py", "--prompt", "x" * 3000, "--out", "o.mp4",
+                                          "--model", "kling-4.0"])
+        step.main()
+        assert "prompt_truncated" not in capsys.readouterr().err
+
+    @pytest.mark.parametrize("scene_sound, want_sound", [(None, None), ("on", None), ("off", "off")])
+    def test_project_mode_sends_no_negative_prompt_or_seed(self, step, monkeypatch, scene_sound, want_sound):
+        scene = {"id": "s1", "duration": 5}
+        if scene_sound:
+            scene["sound"] = scene_sound
+        project = {"storyboard": {"scenes": [scene]}}
+        seen, saved = {}, {}
+        monkeypatch.setattr(step, "find_project", lambda pid: ("p.json", project))
+        monkeypatch.setattr(step, "compose_prompt", lambda p, s: "a cat")
+        monkeypatch.setattr(step, "resolve_ref_paths", lambda p, s: [])
+        monkeypatch.setattr(step, "save_clip_to_project", lambda *a, **kw: saved.update(kw))
+        monkeypatch.setattr(step.kling, "generate", lambda **kw: seen.update(kw) or kw["out_path"])
+        monkeypatch.setattr(sys, "argv", ["kling_generate.py", "--project-id", "p", "--scene-id", "s1",
+                                          "--out", "o.mp4", "--model", "kling-4.0"])
+        step.main()
+        assert seen["negative_prompt"] is None and seen["seed"] is None
+        assert seen["sound"] == want_sound
+        assert saved["seed"] is None and saved["model"] == "kling-4.0"
+
+    def test_scene_sound_off_is_refused_and_saved_to_the_project(self, step, monkeypatch, capsys):
+        project = {"storyboard": {"scenes": [{"id": "s1", "duration": 5, "sound": "off"}]}}
+        saved = []
+        monkeypatch.setattr(step, "find_project", lambda pid: ("p.json", project))
+        monkeypatch.setattr(step, "compose_prompt", lambda p, s: "a cat")
+        monkeypatch.setattr(step, "resolve_ref_paths", lambda p, s: [])
+        monkeypatch.setattr(step, "save_error_to_project", lambda path, proj, sid, msg: saved.append(msg))
+        monkeypatch.setattr(sys, "argv", ["kling_generate.py", "--project-id", "p", "--scene-id", "s1",
+                                          "--out", "o.mp4", "--model", "kling-4.0"])
+        with pytest.raises(SystemExit):
+            step.main()
+        assert "no sound switch" in saved[0]

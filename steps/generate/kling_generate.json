@@ -1,7 +1,7 @@
 {
   "name": "kling_generate",
   "provenance": {"provider": "kling"},
-  "description": "Generate video via Kling v3 Omni. Standalone mode: pass --prompt and --ref-image directly. Project-aware mode: pass --project-id and --scene-id and the step reads the project, composes the prompt (styleAnchor + ref clause + inline tokens), generates, and saves the clip to tracks[0]. Also supports multi-shot (up to 6 scenes in one API call).",
+  "description": "Generate video via Kling (v3 Omni default, 4.0, O1). Project-aware with --project-id and --scene-id: composes the prompt, saves the clip to tracks[0]. Multi-shot: up to 6 scenes per call.",
   "output": {
     "type": "video",
     "description": "Path to the generated .mp4 file"
@@ -12,12 +12,13 @@
     {"name": "first-frame", "type": "path", "required": false, "description": "Starting image. Not supported in multi-shot mode."},
     {"name": "last-frame", "type": "path", "required": false, "description": "Ending image (requires --first-frame). Not supported in multi-shot mode."},
     {"name": "ref-image", "type": "path", "required": false, "repeatable": true, "description": "Reference image (max 7)"},
-    {"name": "duration", "type": "int", "required": false, "default": 5, "description": "Clip length in seconds (3-15). Ignored in multi-shot customize mode (derived from sum of multi_prompt durations)."},
+    {"name": "duration", "type": "int", "required": false, "default": 5, "description": "Clip length in seconds (3-15; kling-4.0 3-30). Ignored in multi-shot customize mode (derived from sum of multi_prompt durations)."},
     {"name": "negative-prompt", "type": "string", "required": false, "description": "Things to avoid"},
-    {"name": "sound", "type": "enum", "required": false, "default": "on", "options": ["on", "off"], "description": "on|off"},
-    {"name": "aspect-ratio", "type": "string", "required": false, "default": "16:9", "description": "16:9|9:16|1:1"},
-    {"name": "mode", "type": "enum", "required": false, "default": "pro", "options": ["std", "pro"], "description": "std|pro"},
-    {"name": "model", "type": "enum", "required": false, "default": "kling-v3-omni", "options": ["kling-v3-omni", "kling-video-o1"], "description": "kling-v3-omni (default and best model: flexible durations, multi-shot, audio) | kling-video-o1 (earlier model: 5s/10s only, no multi-shot, no audio)"},
+    {"name": "sound", "type": "enum", "required": false, "options": ["on", "off"], "description": "on|off (default on; not kling-4.0)"},
+    {"name": "aspect-ratio", "type": "string", "required": false, "default": "16:9", "description": "16:9|9:16|1:1; kling-4.0 also 21:9|adaptive"},
+    {"name": "mode", "type": "enum", "required": false, "options": ["std", "pro"], "description": "std|pro (default pro; not kling-4.0)"},
+    {"name": "resolution", "type": "enum", "required": false, "options": ["720p", "1080p"], "description": "kling-4.0 only (default 1080p)"},
+    {"name": "model", "type": "enum", "required": false, "default": "kling-v3-omni", "options": ["kling-v3-omni", "kling-video-o1", "kling-4.0"], "description": "kling-v3-omni (default and best model: flexible durations, multi-shot, audio) | kling-video-o1 (earlier model: 5s/10s only, no multi-shot, no audio) | kling-4.0 (3-30 s, 720p/1080p, always has audio; no mode, sound, multi-shot)"},
     {"name": "external-task-id", "type": "string", "required": false, "description": "Caller correlation ID echoed back by Kling on queries"},
     {"name": "multi-shot", "type": "bool", "required": false, "default": false, "description": "Enable multi-shot mode (up to 6 scenes in one API call)"},
     {"name": "shot-type", "type": "enum", "required": false, "options": ["customize", "intelligence"], "description": "customize|intelligence. Required when --multi-shot is set. customize = caller defines each shot via --multi-prompt; intelligence = Kling splits a single --prompt into shots."},

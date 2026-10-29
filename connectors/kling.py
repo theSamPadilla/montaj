@@ -14,7 +14,7 @@ Current functions:
 Library code — raises ConnectorError, never calls fail() or sys.exit.
 Step scripts catch ConnectorError and translate to fail().
 """
-import base64, os, time
+import base64, os, re, time
 from connectors import (
     ConnectorError, _http, classify_http_error,
     INVALID_API_KEY, INSUFFICIENT_CREDIT, MODEL_RETIRED, UNREACHABLE,
@@ -23,9 +23,7 @@ from lib.credentials import get_credential, CredentialError, MissingCredentialEr
 
 # api.klingai.com answers identically (verified 2026-09-28); keep Singapore.
 BASE_URL = "https://api-singapore.klingai.com"
-# Observed live 2026-09-28 as served to this account (the 4.0 family answered
-# "model is not supported") before the balance ran out. No generation has
-# been verified since: no Kling pack, by operator decision.
+# kling-v3-omni is the default and stays so; kling-4.0 is chosen with --model.
 DEFAULT_MODEL = "kling-v3-omni"
 DEFAULT_MODE = "pro"   # the higher-quality of std/pro; costs more per clip
 POLL_INTERVAL_S = 10.0
@@ -43,11 +41,17 @@ VALID_SHOT_TYPES = ("customize", "intelligence")
 MAX_REF_IMAGES = 7
 
 # Model capabilities — the connector validates constraints per model.
-# Probed live 2026-09-28 (PV29): the omni-video model enum also lists
-# kling-4.0, kling-4.0-flash and kling-3.0-turbo, but Kling answers them with
-# 1201 "model is not supported", so kling-v3-omni is the best model the
-# account can run. Re-probe at each release: with an empty balance a served
-# model answers 1102 and an unserved one 1201, both for free.
+# The 1201 "model is not supported" answers of 2026-09-28 (PV29) came from
+# calling kling-4.0 on the legacy /v1/videos/omni-video endpoint. kling-4.0 has
+# its own endpoint (A, below) and is served there. kling-3.0-turbo also has its
+# own endpoint and is out of scope. With an empty balance a served model
+# answers 1102 and an unserved one 1201, both for free.
+#
+# Kling 4.0, from Kling's docs (read 2026-10-29), cited A, B or C per fact:
+#   A  https://kling.ai/document-api/api/video/4-0 (endpoint, body, query)
+#   B  https://kling.ai/document-api/api/get-started/authentication (API key)
+#   C  https://kling.ai/dev/model-release/kling-4 (release note)
+# Kling 4.0 Flash also exists (C) but A documents no endpoint for it: not added.
 MODELS = {
     "kling-v3-omni": {
         "durations": list(range(3, 16)),       # 3–15, any integer
@@ -61,7 +65,27 @@ MODELS = {
         "end_frame_modes": ("pro",),           # end frame only in pro mode
         "sound": False,                        # does NOT generate audio
     },
+    "kling-4.0": {
+        "api": "v4",                           # own endpoint and body shape (A)
+        "path": "/omni-video/kling-4.0",       # A: POST create
+        "durations": list(range(3, 31)),       # A: settings.duration, int enum 3..30
+        "multi_shot": False,                   # A: no multi_shot field
+        "resolutions": ("720p", "1080p"),      # A: settings.resolution
+        "aspect_ratios": ("21:9", "16:9", "9:16", "1:1", "adaptive"),  # A
+        "max_images": 10,                      # A: "Maximum number of images: 10."
+        # No end_frame_modes and no sound switch: audio is native stereo (C),
+        # described in the prompt (A has no sound field).
+    },
 }
+
+# Kling 4.0 (A). Prompt limit: English-only 26,000 chars, non-English-only
+# 11,000, mixed input E / 26000 + N / 11000 <= 1.
+V4_MAX_ENGLISH_CHARS = 26000
+V4_MAX_OTHER_CHARS = 11000
+V4_DEFAULT_RESOLUTION = "1080p"            # A: default 1080p
+V4_QUERY_PATH = "/tasks"                   # A: GET /tasks?task_ids=<id>
+# Aspect ratios only the legacy endpoint takes (lib/types/kling.py): 16:9, 9:16, 1:1.
+V4_ONLY_ASPECTS = ("21:9", "adaptive")
 
 # Retired model -> its replacement. build_payload refuses these before any
 # HTTP call. Kling has no model-list endpoint and announces nothing, so a
@@ -202,9 +226,31 @@ def _bearer() -> str:
         return _make_token()
 
 
-def _auth_headers() -> dict:
+def _bearer_v4() -> str:
+    """The bearer for Kling 4.0: the API key only.
+
+    B: "API Key (for all models)" against "Access Key / Secret Key (API only
+    applicable to legacy version design standards)". A stored legacy pair does
+    not work on 4.0, so it gets its own message instead of a JWT.
+    """
+    try:
+        return get_credential("kling", "api_key")
+    except MissingCredentialError:
+        pass
+    try:
+        _legacy_pair()
+    except MissingCredentialError:
+        raise MissingCredentialError(missing_key_message("kling"), "kling", "api_key")
+    raise MissingCredentialError(
+        "Kling 4.0 needs a Kling API key; your access key and secret key work only "
+        "for older Kling models. Add your Kling API key in Montaj under Connectors.",
+        "kling", "api_key",
+    )
+
+
+def _auth_headers(bearer: str = None) -> dict:
     return {
-        "Authorization": f"Bearer {_bearer()}",
+        "Authorization": f"Bearer {bearer or _bearer()}",
         "Content-Type": "application/json",
     }
 
@@ -249,17 +295,21 @@ def build_payload(
     reference_image_paths: list[str] = None,
     duration_seconds: int = 5,
     negative_prompt: str = None,
-    sound: str = "on",
+    sound: str = None,
     aspect_ratio: str = "16:9",
-    mode: str = DEFAULT_MODE,
+    mode: str = None,
     external_task_id: str = None,
     multi_shot: bool = False,
     shot_type: str = None,
     multi_prompt: list[dict] = None,
     model: str = DEFAULT_MODEL,
     seed: int = None,
+    resolution: str = None,
 ) -> dict:
     """Build the omni-video request payload.
+
+    mode=None means DEFAULT_MODE and sound=None means "on" for the legacy
+    models; kling-4.0 refuses both (it has neither) and builds its own body.
 
     Returns {runtime_prompt, body, truncated, original_prompt_length, max_prompt_chars}.
 
@@ -283,6 +333,32 @@ def build_payload(
             f"Unknown model {model!r}; supported: {', '.join(MODELS)}"
         )
     model_caps = MODELS[model]
+
+    if model_caps.get("api") == "v4":
+        return build_payload_v4(
+            prompt=prompt, first_frame_path=first_frame_path,
+            last_frame_path=last_frame_path, reference_image_paths=reference_image_paths,
+            duration_seconds=duration_seconds, negative_prompt=negative_prompt,
+            sound=sound, aspect_ratio=aspect_ratio, mode=mode,
+            external_task_id=external_task_id, multi_shot=multi_shot,
+            shot_type=shot_type, multi_prompt=multi_prompt, model=model,
+            seed=seed, resolution=resolution,
+        )
+
+    # ---- Legacy-only arguments ----
+    if resolution is not None:
+        raise ConnectorError(
+            f"--resolution is for kling-4.0 only; {model} has no resolution switch "
+            f"(use --mode std or pro)."
+        )
+    if aspect_ratio in V4_ONLY_ASPECTS:
+        raise ConnectorError(
+            f"Aspect ratio {aspect_ratio} is kling-4.0 only; {model} takes 16:9, 9:16, 1:1."
+        )
+    if mode is None:
+        mode = DEFAULT_MODE
+    if sound is None:
+        sound = "on"
 
     # ---- Multi-shot preconditions ----
     if multi_shot:
@@ -415,6 +491,124 @@ def build_payload(
     }
 
 
+def _is_english(ch: str) -> bool:
+    return ord(ch) < 128
+
+
+def build_payload_v4(
+    prompt: str = None,
+    first_frame_path: str = None,
+    last_frame_path: str = None,
+    reference_image_paths: list[str] = None,
+    duration_seconds: int = 10,
+    negative_prompt: str = None,
+    sound: str = None,
+    aspect_ratio: str = "16:9",
+    mode: str = None,
+    external_task_id: str = None,
+    multi_shot: bool = False,
+    shot_type: str = None,
+    multi_prompt: list[dict] = None,
+    model: str = "kling-4.0",
+    seed: int = None,
+    resolution: str = None,
+) -> dict:
+    """Build the kling-4.0 request body (A: POST /omni-video/kling-4.0).
+
+    Same return shape as build_payload. A has no model_name, mode, sound,
+    multi_shot, negative_prompt or seed field, so each is refused here, never
+    silently dropped.
+    """
+    caps = MODELS[model]
+    if multi_shot or shot_type or multi_prompt:
+        raise ConnectorError(
+            f"{model} has no multi-shot mode. Generate each shot as its own clip, "
+            f"or use {DEFAULT_MODEL} for multi-shot."
+        )
+    if mode is not None:
+        raise ConnectorError(f"{model} has no std/pro mode; use --resolution 720p or 1080p.")
+    if sound is not None:
+        raise ConnectorError(
+            f"{model} has no sound switch: it always generates audio. Describe the "
+            f"sound you want in the prompt, or use {DEFAULT_MODEL} for --sound off."
+        )
+    if negative_prompt:
+        raise ConnectorError(
+            f"{model} has no negative prompt. Say what you want in the prompt, "
+            f"or use {DEFAULT_MODEL}."
+        )
+    if seed is not None:
+        raise ConnectorError(f"{model} has no seed. Drop the seed, or use {DEFAULT_MODEL}.")
+
+    # A: a prompt item is required in contents.
+    if not prompt or not prompt.strip():
+        raise ConnectorError("Prompt must not be empty")
+    # A: inputs are referenced as @id; the composer writes legacy <<<image_N>>>
+    # tokens, N counting first frame, end frame, then refs. The ids below use
+    # the same order, so a composed prompt keeps pointing at the same images.
+    runtime_prompt = re.sub(r"<<<image_(\d+)>>>", r"@image_\1", prompt)
+    english = sum(1 for c in runtime_prompt if _is_english(c))
+    other = len(runtime_prompt) - english
+    if english / V4_MAX_ENGLISH_CHARS + other / V4_MAX_OTHER_CHARS > 1:
+        raise ConnectorError(
+            f"Prompt is too long for {model}: {V4_MAX_ENGLISH_CHARS:,} characters if "
+            f"English only, {V4_MAX_OTHER_CHARS:,} if not, and mixed text must satisfy "
+            f"English/{V4_MAX_ENGLISH_CHARS} + other/{V4_MAX_OTHER_CHARS} <= 1 "
+            f"(yours: {english:,} English, {other:,} other). Shorten it."
+        )
+
+    refs = list(reference_image_paths or [])
+    total_images = (1 if first_frame_path else 0) + (1 if last_frame_path else 0) + len(refs)
+    if total_images > caps["max_images"]:
+        raise ConnectorError(
+            f"Too many images ({total_images}); {model} takes at most {caps['max_images']}."
+        )
+
+    resolution = resolution or V4_DEFAULT_RESOLUTION
+    if resolution not in caps["resolutions"]:
+        raise ConnectorError(
+            f"Unknown resolution {resolution!r}; {model} takes {', '.join(caps['resolutions'])}."
+        )
+    if aspect_ratio is not None and aspect_ratio not in caps["aspect_ratios"]:
+        raise ConnectorError(
+            f"Unknown aspect ratio {aspect_ratio!r}; {model} takes "
+            f"{', '.join(caps['aspect_ratios'])}."
+        )
+    allowed = caps["durations"]
+    if duration_seconds not in allowed:
+        duration_seconds = min(allowed, key=lambda d: abs(d - duration_seconds))
+
+    contents = [{"type": "prompt", "text": runtime_prompt}]
+    n = 0
+
+    def add(kind: str, path: str):
+        nonlocal n
+        n += 1
+        contents.append({"type": kind, "url": _file_to_base64(path), "id": f"image_{n}"})
+
+    if first_frame_path:
+        add("first_frame", first_frame_path)
+    if last_frame_path:   # A lists last_frame independently of first_frame
+        add("last_frame", last_frame_path)
+    for ref_path in refs:
+        add("refer_image", ref_path)
+
+    settings = {"resolution": resolution, "duration": int(duration_seconds)}
+    if aspect_ratio is not None:
+        settings["aspect_ratio"] = aspect_ratio
+    body = {"contents": contents, "settings": settings}
+    if external_task_id:
+        body["options"] = {"external_task_id": external_task_id}
+
+    return {
+        "runtime_prompt": runtime_prompt,
+        "body": body,
+        "truncated": False,
+        "original_prompt_length": len(prompt),
+        "max_prompt_chars": V4_MAX_ENGLISH_CHARS,
+    }
+
+
 def _parse(r) -> dict | None:
     """The response body as a JSON object, or None when it isn't one."""
     try:
@@ -484,6 +678,26 @@ def create_task(body: dict) -> dict:
     return _ok_body(r, "Kling API", model=body.get("model_name"))["data"]
 
 
+def create_task_v4(body: dict) -> dict:
+    """POST /omni-video/kling-4.0 (A). Returns response data; the task id is data["id"].
+    Same retry policy as create_task: a rate-limit 429 only."""
+    url = f"{BASE_URL}{MODELS['kling-4.0']['path']}"
+    r = _request("POST", url, json=body, headers=_auth_headers(_bearer_v4()), timeout=120,
+                 retry_exceptions=False)
+    return _ok_body(r, "Kling API", model="kling-4.0")["data"]
+
+
+def query_task_v4(task_id: str) -> dict:
+    """GET /tasks?task_ids=<id> (A). data is a list; returns the task whose id matches."""
+    r = _request("GET", f"{BASE_URL}{V4_QUERY_PATH}", params={"task_ids": task_id},
+                 headers=_auth_headers(_bearer_v4()), timeout=30,
+                 retry_statuses=_http.TRANSIENT_STATUS)
+    for task in _ok_body(r, "Kling API")["data"] or []:
+        if isinstance(task, dict) and task.get("id") == task_id:
+            return task
+    raise ConnectorError(f"Kling task {task_id} not found in the status response")
+
+
 def query_task(task_id: str, path_template: str = VIDEO_QUERY_PATH) -> dict:
     """GET task status by ID. Idempotent — transient failures are retried."""
     url = f"{BASE_URL}{path_template.format(task_id=task_id)}"
@@ -498,13 +712,13 @@ def query_task(task_id: str, path_template: str = VIDEO_QUERY_PATH) -> dict:
 MAX_CONSECUTIVE_POLL_FAILURES = 5
 
 
-def poll_until_done(task_id: str, path_template: str = VIDEO_QUERY_PATH) -> dict:
-    """Poll task until succeed/failed. Returns task data on success."""
+def _poll(task_id: str, query, status_key: str, done: str, msg_key: str) -> dict:
+    """Shared poll loop: query() until status_key reads `done` or "failed"."""
     elapsed = 0.0
     failures = 0
     while elapsed < MAX_POLL_S:
         try:
-            task_data = query_task(task_id, path_template)
+            task_data = query()
         except ConnectorError as e:
             failures += 1
             if failures >= MAX_CONSECUTIVE_POLL_FAILURES:
@@ -515,15 +729,27 @@ def poll_until_done(task_id: str, path_template: str = VIDEO_QUERY_PATH) -> dict
                 ) from e
         else:
             failures = 0
-            status = task_data.get("task_status")
-            if status == "succeed":
+            status = task_data.get(status_key)
+            if status == done:
                 return task_data
             if status == "failed":
-                msg = task_data.get("task_status_msg", "unknown error")
+                msg = task_data.get(msg_key, "unknown error")
                 raise ConnectorError(f"Kling task {task_id} failed: {msg}")
         time.sleep(POLL_INTERVAL_S)
         elapsed += POLL_INTERVAL_S
     raise ConnectorError(f"Kling task {task_id} did not complete within {MAX_POLL_S}s")
+
+
+def poll_until_done(task_id: str, path_template: str = VIDEO_QUERY_PATH) -> dict:
+    """Poll task until succeed/failed. Returns task data on success."""
+    return _poll(task_id, lambda: query_task(task_id, path_template),
+                 "task_status", "succeed", "task_status_msg")
+
+
+def poll_until_done_v4(task_id: str) -> dict:
+    """Poll a kling-4.0 task until succeeded/failed (A statuses)."""
+    return _poll(task_id, lambda: query_task_v4(task_id),
+                 "status", "succeeded", "message")
 
 
 def _download_file(url: str, out_path: str) -> str:
@@ -539,15 +765,16 @@ def generate(
     reference_image_paths: list[str] = None,
     duration_seconds: int = 5,
     negative_prompt: str = None,
-    sound: str = "on",
+    sound: str = None,
     aspect_ratio: str = "16:9",
-    mode: str = DEFAULT_MODE,
+    mode: str = None,
     external_task_id: str = None,
     multi_shot: bool = False,
     shot_type: str = None,
     multi_prompt: list[dict] = None,
     model: str = DEFAULT_MODEL,
     seed: int = None,
+    resolution: str = None,
 ) -> str:
     """Top-level entry: build -> create -> poll -> download. Returns out_path."""
     if not out_path:
@@ -568,7 +795,16 @@ def generate(
         multi_prompt=multi_prompt,
         model=model,
         seed=seed,
+        resolution=resolution,
     )
+    if MODELS[model].get("api") == "v4":
+        task_id = create_task_v4(payload["body"])["id"]
+        result = poll_until_done_v4(task_id)
+        video_url = next((o.get("url") for o in result.get("outputs") or []
+                          if isinstance(o, dict) and o.get("type") == "video" and o.get("url")), None)
+        if not video_url:
+            raise ConnectorError(f"Kling task {task_id} finished with no video output")
+        return _download_file(video_url, out_path)
     task_data = create_task(payload["body"])
     task_id = task_data["task_id"]
     result = poll_until_done(task_id)

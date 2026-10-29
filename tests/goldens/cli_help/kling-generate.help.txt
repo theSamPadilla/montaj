@@ -4,8 +4,8 @@ usage: montaj kling-generate [-h] [--prompt PROMPT]
                              [--duration DURATION]
                              [--negative-prompt NEGATIVE_PROMPT]
                              [--sound {on,off}] [--aspect-ratio ASPECT_RATIO]
-                             [--mode {std,pro}]
-                             [--model {kling-v3-omni,kling-video-o1}]
+                             [--mode {std,pro}] [--resolution {720p,1080p}]
+                             [--model {kling-v3-omni,kling-video-o1,kling-4.0}]
                              [--external-task-id EXTERNAL_TASK_ID]
                              [--multi-shot]
                              [--shot-type {customize,intelligence}]
@@ -25,19 +25,23 @@ options:
                         in multi-shot mode.
   --ref-image REF_IMAGE
                         Reference image (max 7)
-  --duration DURATION   Clip length in seconds (3-15). Ignored in multi-shot
-                        customize mode (derived from sum of multi_prompt
-                        durations).
+  --duration DURATION   Clip length in seconds (3-15; kling-4.0 3-30). Ignored
+                        in multi-shot customize mode (derived from sum of
+                        multi_prompt durations).
   --negative-prompt NEGATIVE_PROMPT
                         Things to avoid
-  --sound {on,off}      on|off
+  --sound {on,off}      on|off (default on; not kling-4.0)
   --aspect-ratio ASPECT_RATIO
-                        16:9|9:16|1:1
-  --mode {std,pro}      std|pro
-  --model {kling-v3-omni,kling-video-o1}
+                        16:9|9:16|1:1; kling-4.0 also 21:9|adaptive
+  --mode {std,pro}      std|pro (default pro; not kling-4.0)
+  --resolution {720p,1080p}
+                        kling-4.0 only (default 1080p)
+  --model {kling-v3-omni,kling-video-o1,kling-4.0}
                         kling-v3-omni (default and best model: flexible
                         durations, multi-shot, audio) | kling-video-o1
                         (earlier model: 5s/10s only, no multi-shot, no audio)
+                        | kling-4.0 (3-30 s, 720p/1080p, always has audio; no
+                        mode, sound, multi-shot)
   --external-task-id EXTERNAL_TASK_ID
                         Caller correlation ID echoed back by Kling on queries
   --multi-shot          Enable multi-shot mode (up to 6 scenes in one API

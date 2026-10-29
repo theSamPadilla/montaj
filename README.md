@@ -139,7 +139,7 @@ API connectors for external services. Installed via `pip install "montaj[connect
 
 | Connector | Used for |
 |-----------|----------|
-| **Kling** | AI video generation (v3-omni, video-o1) |
+| **Kling** | AI video generation (v3-omni, video-o1, 4.0) |
 | **Gemini** | Media analysis, scene evaluation, image generation |
 
 ## Render Engine

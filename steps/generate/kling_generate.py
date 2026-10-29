@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate video via Kling v3 Omni.
+"""Generate video via Kling.
 
 Standalone mode (no project context):
     --prompt "..." --out video.mp4 [--ref-image path ...] [--first-frame ...]
@@ -39,7 +39,7 @@ def _fail(e: ConnectorError):
 # ---------------------------------------------------------------------------
 
 def main():
-    p = argparse.ArgumentParser(description="Generate video via Kling v3 Omni")
+    p = argparse.ArgumentParser(description="Generate video via Kling")
     p.add_argument("--prompt",
                    help="Scene description. Required in standalone single-shot mode. "
                         "Ignored in project-aware mode (composed from project context).")
@@ -51,15 +51,23 @@ def main():
     p.add_argument("--ref-image", dest="ref_image", action="append", default=[],
                    help="Reference image (repeatable, max 7). Ignored in project-aware mode.")
     p.add_argument("--duration", type=int, default=5,
-                   help="Clip length in seconds. Ignored in project-aware mode (read from scene).")
+                   help="Clip length in seconds: 3-15 (kling-v3-omni), 5 or 10 (kling-video-o1), "
+                        "3-30 (kling-4.0). Ignored in project-aware mode (read from scene).")
     p.add_argument("--negative-prompt", dest="negative_prompt")
-    p.add_argument("--sound", default="on", choices=["on", "off"])
-    p.add_argument("--aspect-ratio", dest="aspect_ratio", default="16:9")
-    p.add_argument("--mode", default=kling.DEFAULT_MODE, choices=["std", "pro"])
+    p.add_argument("--sound", default=None, choices=["on", "off"],
+                   help="Default on. kling-4.0 refuses it: it always generates audio.")
+    p.add_argument("--aspect-ratio", dest="aspect_ratio", default="16:9",
+                   help="16:9, 9:16 or 1:1; kling-4.0 also takes 21:9 and adaptive.")
+    p.add_argument("--mode", default=None, choices=["std", "pro"],
+                   help="Default pro. kling-4.0 refuses it (use --resolution).")
+    p.add_argument("--resolution", default=None, choices=["720p", "1080p"],
+                   help="kling-4.0 only, default 1080p.")
     p.add_argument("--model", default="kling-v3-omni",
-                   choices=["kling-v3-omni", "kling-video-o1"],
-                   help="kling-v3-omni is the default and best model. kling-video-o1 is the earlier "
-                        "model: 5s/10s only, no multi-shot, no audio.")
+                   choices=["kling-v3-omni", "kling-video-o1", "kling-4.0"],
+                   help="kling-v3-omni is the default. kling-video-o1 is the earlier "
+                        "model: 5s/10s only, no multi-shot, no audio. kling-4.0: 3-30 s, "
+                        "720p/1080p, always has audio, needs a Kling API key; no mode, "
+                        "sound, negative prompt or multi-shot.")
     p.add_argument("--external-task-id", dest="external_task_id",
                    help="Caller correlation ID. Auto-generated in project-aware mode.")
     p.add_argument("--multi-shot", dest="multi_shot", action="store_true",
@@ -98,24 +106,27 @@ def main():
 
         # Read scene/project-level params
         duration = scene.get("duration", 5)
-        sound = scene.get("sound", "on")
+        v4 = kling.MODELS.get(args.model, {}).get("api") == "v4"
+        # kling-4.0 has no sound switch: pass it only when the scene asks for
+        # "off", so the connector refuses it with its message.
+        sound = ("off" if scene.get("sound") == "off" else None) if v4 else scene.get("sound", "on")
         aspect_ratio = project.get("storyboard", {}).get("aspectRatio", "16:9")
         task_id = f"{args.scene_id}-{uuid.uuid4().hex[:8]}"
 
         # Default negative prompt — targets common Kling failure modes.
         # CLI override replaces entirely if provided.
-        negative_prompt = args.negative_prompt or (
+        negative_prompt = args.negative_prompt or (None if v4 else (
             "duplicate characters, two copies of same person, extra fingers, "
             "floating limbs, morphing, text, words, letters, watermark, "
             "realistic, photographic, 3d render"
-        )
+        ))
 
         # The default is the best model; never switch silently. Another model
         # only via --model.
         model = args.model
 
         # Generate a seed for reproducibility. Eval retries can offset from this.
-        seed = random.randint(1, 2**31 - 1)
+        seed = None if v4 else random.randint(1, 2**31 - 1)
 
         progress(f"Composing prompt for {args.scene_id}: {len(composed_prompt)} chars, {len(ref_paths)} refs, {duration}s, sound={sound}")
         progress(f"Generating {args.scene_id} via Kling ({model}, task={task_id}, seed={seed})...")
@@ -135,6 +146,7 @@ def main():
                 external_task_id=task_id,
                 model=model,
                 seed=seed,
+                resolution=args.resolution,
             )
         except ConnectorError as e:
             progress(f"Failed {args.scene_id}: {e}")
@@ -198,7 +210,8 @@ def main():
     for r in args.ref_image:
         require_file(r)
 
-    if args.prompt and not args.multi_shot and len(args.prompt) > kling.MAX_PROMPT_CHARS:
+    if (args.prompt and not args.multi_shot and args.model != "kling-4.0"
+            and len(args.prompt) > kling.MAX_PROMPT_CHARS):
         print(
             json.dumps({
                 "warn": "prompt_truncated",
@@ -230,6 +243,7 @@ def main():
             shot_type=args.shot_type,
             multi_prompt=multi_prompt,
             model=args.model,
+            resolution=args.resolution,
         )
     except ConnectorError as e:
         _fail(e)
