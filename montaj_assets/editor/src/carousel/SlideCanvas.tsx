@@ -153,20 +153,20 @@ function OverlayLayer({
   const layerRef = useRef<HTMLDivElement>(null)
   const text = element.overlay.props.text
   // Hide the live text while it's being edited in place so the
-  // InlineTextEditor isn't doubled over it. Only the text node: the fill,
-  // border and radius around it stay drawn. With no text node found the whole
-  // layer is hidden, as before.
-  useEffect(() => {
+  // InlineTextEditor isn't doubled over it. Only the text: the fill, border
+  // and radius around it stay drawn. With no text node found the whole layer
+  // is hidden, as before. A layout effect, so no frame draws both.
+  useLayoutEffect(() => {
     const layer = layerRef.current
     if (!hidden || !layer) return
-    const node = (typeof text === 'string' && findTextNode(layer, text)) || layer
-    const prev = node.style.visibility
-    node.style.visibility = 'hidden'
-    return () => { node.style.visibility = prev }
+    const nodes = typeof text === 'string' ? matchText(layer, text).hide : []
+    const restores = (nodes.length ? nodes : [layer]).map(hideGlyphs)
+    return () => { restores.forEach((r) => r()) }
   }, [hidden, text])
   return (
     <div
       ref={layerRef}
+      data-overlay-layer
       style={{
         width: box.w,
         height: box.h,
@@ -431,12 +431,21 @@ const FALLBACK_EDIT_STYLE: Partial<CSSStyleDeclaration> = {
 // Find the innermost element under `root` whose full text equals `text` — the
 // overlay's text container. Used to copy its computed style onto the editor.
 function findTextNode(root: HTMLElement, text: string): HTMLElement | null {
+  return matchText(root, text).primary
+}
+
+// The text node (whose style the editor copies) and the nodes to hide while
+// editing: the same one, or, for a text split over sibling blocks, each
+// top-most piece of it. `hide` is empty when nothing was found.
+function matchText(root: HTMLElement, text: string): { primary: HTMLElement | null; hide: HTMLElement[] } {
+  const none = { primary: null, hide: [] }
+  const one = (el: HTMLElement) => ({ primary: el, hide: [el] })
   // A template that marks its text box (static-text) is read there: with runs,
   // a lone run's span holds all the text too, in that run's own style.
   const marked = root.querySelector<HTMLElement>('[data-montaj-text]')
-  if (marked) return marked
+  if (marked) return one(marked)
   const want = text.trim()
-  if (!want) return null
+  if (!want) return none
   // Whitespace-collapsed and lower-cased: a text-transform or a wrapped source
   // draws the same words with other case or spacing.
   const norm = (v: string) => v.replace(/\s+/g, ' ').trim().toLowerCase()
@@ -458,17 +467,55 @@ function findTextNode(root: HTMLElement, text: string): HTMLElement | null {
   const innermost = (list: HTMLElement[]) => list.reduce((best, el) =>
     el.querySelectorAll('*').length < best.querySelectorAll('*').length ? el : best,
   )
-  if (exact.length) return innermost(exact)
-  if (loose.length) return innermost(loose)
+  if (exact.length) return one(innermost(exact))
+  if (loose.length) return one(innermost(loose))
   // No element holds the whole text (it is split over sibling spans): the
   // deepest one holding the most of it, never the root when another will do.
   const holds = all.filter((c) => c.el !== root && c.text && wantNorm.includes(c.text))
   const pool = holds.length ? holds : all.filter((c) => c.el !== root && c.text.includes(wantNorm))
-  if (!pool.length) return null
+  if (!pool.length) return none
   const best = pool.reduce((a, b) =>
     b.text.length > a.text.length || (b.text.length === a.text.length && b.depth > a.depth) ? b : a,
   )
-  return best.el
+  if (!holds.length) return one(best.el)
+  const held = new Set(holds.map((c) => c.el))
+  return { primary: best.el, hide: holds.map((c) => c.el).filter((el) => !el.parentElement || !held.has(el.parentElement)) }
+}
+
+/** Whether `el` paints a box of its own (a fill, a border or a shadow). */
+function paintsBox(el: HTMLElement): boolean {
+  const cs = window.getComputedStyle(el)
+  const fill = cs.backgroundColor && cs.backgroundColor !== 'transparent' && cs.backgroundColor !== 'rgba(0, 0, 0, 0)'
+  const image = !!cs.backgroundImage && cs.backgroundImage !== 'none'
+  const border = [cs.borderTopWidth, cs.borderRightWidth, cs.borderBottomWidth, cs.borderLeftWidth].some((w) => parseFloat(w) > 0)
+    && [cs.borderTopStyle, cs.borderLeftStyle].some((v) => !!v && v !== 'none')
+  const shadow = !!cs.boxShadow && cs.boxShadow !== 'none'
+  return !!fill || image || border || shadow
+}
+
+const GLYPH_PROPS: Array<[string, string]> = [
+  ['-webkit-text-fill-color', 'transparent'],
+  ['text-shadow', 'none'],
+  ['-webkit-text-stroke-width', '0'],
+  ['text-decoration-color', 'transparent'],
+]
+
+/**
+ * Hide `el`'s text without hiding its box when it has one (the text sits
+ * directly in a pill): only the glyphs go. Returns the undo.
+ */
+function hideGlyphs(el: HTMLElement): () => void {
+  if (!paintsBox(el)) {
+    const prev = el.style.visibility
+    el.style.visibility = 'hidden'
+    return () => { el.style.visibility = prev }
+  }
+  const prev = GLYPH_PROPS.map(([k]) => [el.style.getPropertyValue(k), el.style.getPropertyPriority(k)] as const)
+  GLYPH_PROPS.forEach(([k, v]) => el.style.setProperty(k, v))
+  return () => GLYPH_PROPS.forEach(([k], i) => {
+    if (prev[i][0]) el.style.setProperty(k, prev[i][0], prev[i][1])
+    else el.style.removeProperty(k)
+  })
 }
 
 // Snapshot the rendered overlay text's computed style so the inline editor
@@ -502,6 +549,32 @@ function captureTextStyle(
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
   } as Partial<CSSStyleDeclaration>
+}
+
+// Where the editor goes: over the text node, so typed text sits inside a pill
+// the way the drawn text did (padding, vertical centring). The node's offset
+// in the layer is read in slide px (undoing the drawn scale, host zoom
+// included); the width stays the box's less that offset, so the text wraps
+// as the box does and not at the pill's edge. The element's own box when it
+// is turned or nothing measures (jsdom).
+function textEditRect(element: OverlayElement, wrapper: HTMLElement | undefined, scale: number) {
+  const whole = { left: element.x * scale, top: element.y * scale, width: element.w * scale, height: element.h * scale }
+  if (!wrapper || (element.rotation ?? 0) !== 0 || typeof window === 'undefined') return whole
+  const layer = wrapper.querySelector<HTMLElement>('[data-overlay-layer]')
+  const node = layer && typeof element.overlay.props.text === 'string' ? findTextNode(layer, element.overlay.props.text) : null
+  if (!layer || !node || node === layer) return whole
+  const lr = layer.getBoundingClientRect()
+  const nr = node.getBoundingClientRect()
+  if (!(lr.width > 0) || !(nr.width > 0) || !(nr.height > 0) || !(element.w > 0)) return whole
+  const k = lr.width / element.w
+  const dx = (nr.left - lr.left) / k
+  const dy = (nr.top - lr.top) / k
+  return {
+    left: (element.x + dx) * scale,
+    top: (element.y + dy) * scale,
+    width: Math.max(0, element.w - dx) * scale,
+    height: (nr.height / k) * scale,
+  }
 }
 
 export default function SlideCanvas({
@@ -807,12 +880,7 @@ export default function SlideCanvas({
     setEditStyle(
       captureTextStyle(wrapperRefs.current.get(element.id), element.overlay.props.text, scale),
     )
-    setEditRect({
-      left: element.x * scale,
-      top: element.y * scale,
-      width: element.w * scale,
-      height: element.h * scale,
-    })
+    setEditRect(textEditRect(element, wrapperRefs.current.get(element.id), scale))
     setEditingId(element.id)
   }
 
