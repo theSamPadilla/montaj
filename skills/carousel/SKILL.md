@@ -127,7 +127,8 @@ After generation, store the file under the project workspace (e.g. `<workspace>/
 Carousel overlays are **custom JSX written per project** — there is no built-in template library. Author each overlay you need (headline, subhead, callout, etc.) per the rules below.
 
 - For **text overlays** that the operator should be able to restyle from the editor toolbar (font / size / color / weight / case / alignment), follow `skills/editable-text/SKILL.md`. The canonical reference is `montaj_assets/render/templates/overlays/static-text/static-text.jsx`.
-- For **pills, badges, letter-spaced labels and one accent word in a title**, use static-text's optional props (`runs`, `hug`, `padX`, `padY`, `radius`, `borderColor`, `borderWidth`, `letterSpacing`) as `skills/editable-text/SKILL.md` describes; never fake them in custom JSX.
+- A static-text element styles one word or range with `runs` beside `text`: a JSON array string such as `[{"t":"Make it "},{"t":"red","c":"#ff0000","b":1}]` (`c` hex colour; `b`/`i`/`u` 1 on, 0 off; absent: the element's own). Runs that do not join to exactly `text` are ignored, so rewrite them whenever you change `text`.
+- For **pills, badges, letter-spaced labels and accent words**, use static-text's props (`runs`, `hug`, `padX`, `padY`, `radius`, `borderColor`, `borderWidth`, `letterSpacing`) as `skills/editable-text/SKILL.md` describes; never fake them in custom JSX.
 - For **charts (`bar-chart`, `line-chart`, `pie-chart`)** — single-series bar, multi-series line, pie/donut. SVG-rendered via Recharts. Sized from the overlay element's w/h.
 - For **non-text overlays** (logos, decorative shapes, image-based overlays, stylized brand marks), follow `skills/write-overlay/SKILL.md` as before.
 

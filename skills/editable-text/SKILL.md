@@ -59,16 +59,16 @@ Five more props light up editor controls when an overlay declares them: `effect`
 
 Build a pill, a badge, a letter-spaced label or a title with one accent word with these optional props, all JSON strings, on the canonical `static-text` template. Never hardcode spans or a fake pill in custom JSX: hardcoded styling is not editable and does not survive an edit, while these props round-trip through the editor.
 
-- `runs`: a JSON string, an array of `{text, color?, fontStyle?, fontWeight?, fontFamily?}`. Unset keys inherit the overlay's own props. `text` must stay the joined plain string of the runs; rewrite `runs` whenever you change `text`.
-- `padX`, `padY` (px), `radius` (px), `borderColor`, `borderWidth` (px), `letterSpacing` (em, e.g. `"0.08"`).
-- `hug`: `"true"` shrinks the box to the text and places it by `textAlign`, so a pill hugs its words. With `hug`, `bgColor` and the border paint the pill; without it `bgColor` paints the whole box.
+- `runs`: a JSON array string beside `text`, e.g. `[{"t":"Make it "},{"t":"red","c":"#ff0000","i":1}]`. `t` is the run's text, `c` a hex colour, `b`, `i`, `u` are 1 (on) or 0 (off); an absent key takes the overlay's own style. The runs must spell `text` exactly or they are ignored, so rewrite `runs` whenever you change `text`.
+- `padX`, `padY` (px, default `"6%"`/`"8%"` without `hug`), `radius` (px), `borderColor` and `borderWidth` (px, a border draws only when both are set), `letterSpacing` (em, e.g. `"0.08"`).
+- `hug`: `"true"` shrinks the box to the text as a pill that sits by `textAlign`; the pill carries `bgColor`, padding, radius and border. Without it `bgColor` paints the whole box. `fit` is ignored with `hug`.
 
 (a) Serif title, one italic accent word:
 
 ```jsonc
 "props": {
   "text": "Skincare for beginners",
-  "runs": "[{\"text\":\"Skincare for \"},{\"text\":\"beginners\",\"color\":\"#f6e3a1\",\"fontStyle\":\"italic\"}]",
+  "runs": "[{\"t\":\"Skincare for \"},{\"t\":\"beginners\",\"c\":\"#f6e3a1\",\"i\":1}]",
   "fontFamily": "\"Playfair Display\", Georgia, serif", "fontSize": "88", "color": "#ffffff"
 }
 ```
