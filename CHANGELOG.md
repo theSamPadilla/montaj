@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Fixed (render): HDR exports composite every layer at 10 bits (§619).** A clip under a caption or overlay no longer bands.
 - **Fixed (render): no Chromium montaj launches asks for the macOS keychain (Sam).** Every launch (the renderer, sample-frame, the carousel, site capture, and the tests and scripts) passes `--use-mock-keychain` and `--password-store=basic`, so Chrome no longer shows a "Chromium Safe Storage" prompt.
 - **Added (skills): pills, accents and mixed styling through text props (§621).** `editable-text` teaches the existing `runs` (`t`, `c`, `b`, `i`, `u`) for an accent word and the new `padX`, `padY`, `radius`, `borderColor`, `borderWidth`, `letterSpacing` and `hug` props on the static-text template (a serif title with one italic coloured word, a letter-spaced fill pill, an outlined pill), and says to build them with the props, never with hardcoded spans or a fake pill in custom JSX. The carousel skill points to it and keeps its `runs` line.
 - **Changed (steps): `creator_diagnostic` takes a `profile` link (Sam, §608).** A TikTok or YouTube profile is listed here with yt-dlp (latest 30, newest first), then measured as before. Instagram, a block or a missing profile fails once with a reason (`profile_unsupported`, `profile_failed`) so the agent falls back to its browser and `items`.

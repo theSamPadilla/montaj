@@ -345,6 +345,8 @@ the encoder/pix_fmt/color args from the color-space spec:
   missing — accompanied by a loud warning, and without the denoise).
 - **`hdr_hlg` project:** `libx265 -pix_fmt yuv420p10le` with `bt2020nc` /
   `arib-std-b67` stream metadata.
+  Every layer composites onto the 10-bit canvas at 10 bits
+  (`overlay=format=yuv420p10`), except a blended clip's own placement (8-bit).
 - **`hdr_pq` project:** `libx265 -pix_fmt yuv420p10le` with `bt2020nc` /
   `smpte2084` stream metadata + static HDR10 mastering metadata.
 

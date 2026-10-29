@@ -27,10 +27,10 @@
 // main with alpha unpremultiplies in 8-bit arithmetic, so on a 10-bit
 // transparent main every partly transparent pixel came out at a quarter of
 // its colour (measured: #c04020 at alpha 0.5 placed as 48,15,8). The plain
-// composite already brings a 10-bit canvas and its clip to 8 bits
-// (`overlay=format=yuv420`, measured: a 10-bit ramp leaves it in steps of 4),
-// so an 8-bit placement loses nothing the plain composite keeps. Revisit both
-// together if the plain composite ever goes 10-bit.
+// composite is 10-bit on a 10-bit canvas since §619 (`format=yuv420p10`), but
+// a blended clip's placement stays 8-bit for the unpremultiply reason above.
+// So only that clip's own layer is 8-bit; its backdrop, the blend and the final
+// overlay are 10-bit.
 // Every YUV <-> RGB step names its matrix (BT.709, or BT.2020 on an HDR
 // canvas) and range rather than leaving it to negotiation.
 //
