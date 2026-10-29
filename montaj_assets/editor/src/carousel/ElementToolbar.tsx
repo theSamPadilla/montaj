@@ -2,7 +2,7 @@ import { useEffect, useRef, type ReactNode } from 'react'
 import { ArrowLeft, ArrowRight, Bold, Copy, Crop, Eraser, Group, Italic, Loader2, Lock, LockOpen, Replace, Trash2, Underline, Ungroup } from 'lucide-react'
 import type { CarouselElement, GlobalOverlay, OverlayElement } from '../types'
 import type { ReorderDirection } from '../state/project-reducer'
-import { cn, NumberField, Slider, Switch } from '../ui'
+import { cn, NumberField, Slider, StrokeColour, Switch } from '../ui'
 import { shortcutText } from '../ui/modifierKeys'
 import { FontFamilyPicker, FontSizePicker, type PickerCustomFont } from '../text/FontPicker'
 import { caseLabel, keepEditProps, TEXT_ALIGNS, TextBackgroundControl, TextColorControl, textFormatting } from '../text/TextFormattingToolbar'
@@ -293,6 +293,9 @@ function StrokeContent({
   previewWidth,
   commitWidth,
   cancelWidth,
+  previewColour,
+  commitColour,
+  cancelColour,
 }: {
   stroke: StrokeState
   disabled: boolean
@@ -304,11 +307,19 @@ function StrokeContent({
   commitWidth: (value: number) => void
   /** Escape in the weight field: drop the live weight. */
   cancelWidth?: () => void
+  /** The stroke colour live (absent: no live preview), once on commit, and given up. */
+  previewColour?: (value: string) => void
+  commitColour: (value: string) => void
+  cancelColour?: () => void
 }) {
   const roundLabel = stroke.kind === 'line' ? 'Rounded end points' : 'Rounded corners'
   const min = stroke.kind === 'line' ? 1 : 0
   return (
     <fieldset disabled={disabled} className="m-0 flex min-w-0 flex-col gap-4 border-0 p-0">
+      <div className="flex items-center justify-between">
+        <span className={railEyebrow}>Color</span>
+        <StrokeColour value={stroke.color} onPreview={previewColour} onCommit={commitColour} onCancel={cancelColour} />
+      </div>
       <div className="grid grid-cols-4 gap-2">
         {STROKE_STYLES.map(({ value, label }) => {
           const on = stroke.style === value
@@ -685,6 +696,14 @@ export default function ElementToolbar({
             set={(key, value) => void update(slideId, element.id, key, value)}
             previewWidth={(v) => (onPreviewOverlayProp ? onPreviewOverlayProp(slideId, element.id, 'strokeWidth', String(v)) : void update(slideId, element.id, 'strokeWidth', String(v)))}
             cancelWidth={onCancelPropPreview}
+            previewColour={onPreviewOverlayProp && ((v) => onPreviewOverlayProp(slideId, element.id, 'stroke', v))}
+            commitColour={(v) => {
+              if (onPreviewOverlayProp && onCommitPropPreview) {
+                onPreviewOverlayProp(slideId, element.id, 'stroke', v)
+                onCommitPropPreview()
+              } else void update(slideId, element.id, 'stroke', v)
+            }}
+            cancelColour={onCancelPropPreview}
             commitWidth={(v) => (onCommitPropPreview ? onCommitPropPreview() : void update(slideId, element.id, 'strokeWidth', String(v)))}
           />
         </Popover>

@@ -290,3 +290,45 @@ describe('Stroke control (§587 round 2, F-F)', () => {
     expect(r.queryByRole('dialog', { name: 'Stroke' })).toBeNull()
   })
 })
+
+describe('Stroke colour (the same panel as Fill)', () => {
+  const colourPanel = (r: ReturnType<typeof render>) => r.getByRole('region', { name: 'Colour panel' })
+  const strokeSwatch = (r: ReturnType<typeof render>) => within(strokePop(r)).getByRole('button', { name: 'Stroke color' }) as HTMLButtonElement
+
+  it('the swatch sits first in the popover and shows the stroke colour', async () => {
+    const { r } = await mount()
+    const pop = await openStroke(r, 'el-rect')
+    expect(pop.querySelector('button')).toBe(strokeSwatch(r))
+    expect(strokeSwatch(r).style.backgroundColor).toBe('rgb(17, 17, 17)')
+  })
+
+  it('opens the colour panel and a pick writes the stroke prop, not the fill', async () => {
+    const { adapter, r } = await mount()
+    await openStroke(r, 'el-rect')
+    await press(strokeSwatch(r))
+    expect(within(colourPanel(r)).getByRole('heading').textContent).toBe('Stroke color')
+    expect(within(colourPanel(r)).getByRole('slider', { name: 'Transparency' })).toBeTruthy()
+    await press(within(colourPanel(r)).getByRole('button', { name: 'Default color #ef4444' }))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(propsOf(last(adapter), 'el-rect')).toMatchObject({ stroke: '#ef4444', fill: '#bdbdbd', strokeWidth: 4 })
+    await undo()
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(propsOf(last(adapter), 'el-rect').stroke).toBe('#111111')
+  })
+
+  it('a line and a frame get it too', async () => {
+    const { r } = await mount()
+    for (const id of ['el-line', 'el-frame']) {
+      await openStroke(r, id)
+      expect(strokeSwatch(r)).toBeTruthy()
+    }
+  })
+
+  it('a shape that was never touched is unchanged: no stroke write without a pick', async () => {
+    const { adapter, r } = await mount()
+    await openStroke(r, 'el-rect')
+    await press(strokeSwatch(r))
+    await settle()
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+})

@@ -103,3 +103,20 @@ describe('TextContainerControls', () => {
     ])
   })
 })
+
+describe('TextContainerControls border colour', () => {
+  it('is the shared stroke colour control, labelled for the border', () => {
+    renderControls(makeOverlay({ text: 'Hi', borderColor: '#336699' }))
+    const sw = screen.getByLabelText('Border color')
+    expect(sw).toBeTruthy()
+    expect((sw as HTMLInputElement).value).toBe('#336699')
+  })
+
+  it('a pick (native picker) writes borderColor on blur', () => {
+    const update = renderControls(makeOverlay({ text: 'Hi' }))
+    const input = screen.getByLabelText('Border color')
+    fireEvent.change(input, { target: { value: '#ff0000' } })
+    fireEvent.blur(input)
+    expect(update).toHaveBeenLastCalledWith('s1', 'el-1', 'borderColor', '#ff0000')
+  })
+})

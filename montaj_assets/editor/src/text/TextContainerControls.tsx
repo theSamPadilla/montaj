@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { OverlayElement } from '../types'
 import { hasContainerProps, readPropAsString } from '../overlays/contract'
 import { RotateCcw } from 'lucide-react'
-import { Button, NumberField, SwatchInput, Switch } from '../ui'
+import { Button, NumberField, StrokeColour, Switch } from '../ui'
 import { supportsRuns } from './runs'
 
 // The text box's container: padding, corner radius, border, letter spacing and
@@ -78,15 +78,7 @@ export function TextContainerControls({ slideId, element, updateOverlayProp, mod
             className="w-12"
           />
         ))}
-        <SwatchInput
-          value={border}
-          onChange={setBorder}
-          onCommit={(v) => write('borderColor', v)}
-          ariaLabel="Border color"
-          title="Border color"
-          showValue={false}
-          size="sm"
-        />
+        <StrokeColour value={border} onPreview={setBorder} onCommit={(v) => write('borderColor', v)} ariaLabel="Border color" />
         {anySet && (
           <Button
             type="button"

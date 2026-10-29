@@ -1,5 +1,6 @@
 import type { CarouselElement } from '../types'
 import { shippedTemplateKey } from './shippedTemplate'
+import { normalizeHex } from './colours'
 
 // The element toolbar's stroke control (§587 round 2, F-F): which shipped
 // templates take it, and what their stroke props read as now. Pure.
@@ -84,6 +85,8 @@ export interface StrokeState {
   width: number
   /** A line's `arrowhead`: none, start, end or both. */
   arrowhead: string
+  /** The stroke colour, `#rrggbb` or `#rrggbbaa` (the sidecars' default when the prop is absent). */
+  color: string
 }
 
 const isStyle = (v: unknown): v is StrokeStyle => STROKE_STYLES.some((s) => s.value === v)
@@ -104,6 +107,7 @@ export function strokeStateOf(el: CarouselElement | undefined): StrokeState | nu
     round,
     width: Number.isFinite(w) ? w : t.width,
     arrowhead: typeof props.arrowhead === 'string' ? props.arrowhead : t.arrowhead,
+    color: (typeof props.stroke === 'string' && normalizeHex(props.stroke)) || '#111111',
   }
 }
 
