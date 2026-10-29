@@ -1,13 +1,12 @@
 import type { PointerEvent as ReactPointerEvent, RefObject } from 'react'
 import { buildElementTransform, type ResizeHandle } from '../gestures'
+import { HANDLE_LOOK, HANDLE_SIZE, HitPad, KNOB_LOOK, OUTLINE, ROTATE_KNOB, ROTATE_OFFSET } from './chromeStyle'
 
 // A selected group's box on the canvas (§587): the box its members cover, with
 // the resize and rotate handles one element has, in the same look. A locked
 // group shows the lock badge instead. It lives in the slide's chrome layer;
 // only the handles and the badge take the pointer.
 
-const HANDLE_SIZE = 8
-const ROTATE_OFFSET = 20
 const LOCK_BADGE_SIZE = 24
 
 const HANDLES: { id: ResizeHandle; cursor: string; xPct: number; yPct: number }[] = [
@@ -58,7 +57,7 @@ export default function GroupChrome({ box, scale, boxRef, locked, handles, onRes
         height: box.h * scale,
         transform: buildElementTransform(box.x, box.y, scale, 0),
         transformOrigin: 'center center',
-        outline: '1px solid var(--editor-selection)',
+        outline: `${OUTLINE} solid var(--editor-selection)`,
         pointerEvents: 'none',
       }}
     >
@@ -112,24 +111,23 @@ export default function GroupChrome({ box, scale, boxRef, locked, handles, onRes
                 marginTop: -HANDLE_SIZE / 2,
                 width: HANDLE_SIZE,
                 height: HANDLE_SIZE,
-                background: 'var(--editor-selection)',
-                border: '1px solid #fff',
-                borderRadius: 1,
+                ...HANDLE_LOOK,
                 cursor: h.cursor,
                 zIndex: 10,
-                boxSizing: 'border-box',
                 pointerEvents: 'auto',
                 touchAction: 'none',
               }}
-            />
+            >
+              <HitPad />
+            </div>
           ))}
           <div
             style={{
               position: 'absolute',
               left: '50%',
-              marginLeft: -0.5,
+              marginLeft: -1,
               top: -ROTATE_OFFSET,
-              width: 1,
+              width: 2,
               height: ROTATE_OFFSET,
               background: 'var(--editor-selection)',
               pointerEvents: 'none',
@@ -143,16 +141,13 @@ export default function GroupChrome({ box, scale, boxRef, locked, handles, onRes
             style={{
               position: 'absolute',
               left: '50%',
-              marginLeft: -7,
-              top: -ROTATE_OFFSET - 14,
-              width: 14,
-              height: 14,
-              background: 'var(--editor-selection)',
-              border: '2px solid #fff',
-              borderRadius: '50%',
+              marginLeft: -ROTATE_KNOB / 2,
+              top: -ROTATE_OFFSET - ROTATE_KNOB,
+              width: ROTATE_KNOB,
+              height: ROTATE_KNOB,
+              ...KNOB_LOOK,
               cursor: 'crosshair',
               zIndex: 10,
-              boxSizing: 'border-box',
               pointerEvents: 'auto',
               touchAction: 'none',
             }}

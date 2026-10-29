@@ -161,7 +161,7 @@ describe('SlideCanvas resize handles (ยง556 M3)', () => {
       for (const id of HANDLES) {
         const h = c.handle(id)
         expect([h.style.left, h.style.top]).toEqual(where[id])
-        expect([h.style.marginLeft, h.style.marginTop]).toEqual(['-4px', '-4px'])
+        expect([h.style.marginLeft, h.style.marginTop]).toEqual(['-5px', '-5px'])
       }
     }
     check()
@@ -329,5 +329,23 @@ describe('SlideCanvas: a gesture whose release never arrives ends where it is (ย
     await act(async () => { pointer(window, 'pointerup', { clientX: 40, clientY: 20, pointerType: 'pen' }) })
     expect(c.moveElement).toHaveBeenCalledTimes(1)
     expect(c.moveElement).toHaveBeenCalledWith('s', 'a', 180, 140)
+  })
+})
+
+describe('selection chrome is readable on a busy photo', () => {
+  it('the outline is 2px, the handles are 10px squares with a white 2px edge and a press target past them, and the knob is 16px', () => {
+    const c = setup(image())
+    const chrome = c.r.container.querySelector('[data-chrome-for="el"]') as HTMLElement
+    expect(chrome.style.outline).toContain('2px solid')
+    for (const id of HANDLES) {
+      const h = c.handle(id)
+      expect([h.style.width, h.style.height]).toEqual(['10px', '10px'])
+      expect(h.style.border).toBe('2px solid rgb(255, 255, 255)')
+      expect(h.style.boxShadow).not.toBe('')
+      // The invisible target reaches at least as far as the old 8px square did.
+      expect(h.querySelector('[data-chrome-hit]')).not.toBeNull()
+    }
+    expect([c.rotateHandle.style.width, c.rotateHandle.style.height]).toEqual(['16px', '16px'])
+    expect(c.rotateHandle.style.border).toBe('2px solid rgb(255, 255, 255)')
   })
 })

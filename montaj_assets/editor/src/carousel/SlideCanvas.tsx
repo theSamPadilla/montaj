@@ -2,6 +2,7 @@ import { Check, Image as ImageIcon, Type as TypeIcon, Shapes } from 'lucide-reac
 import { useEffect, useMemo, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react'
 import type { Slide, CarouselElement, OverlayElement, ImageElement, OverlayFactory } from '../types'
 import OverlayErrorBoundary from './OverlayErrorBoundary'
+import { HANDLE_LOOK, HANDLE_SIZE, HitPad, KNOB_LOOK, OUTLINE, ROTATE_KNOB, ROTATE_OFFSET } from './chromeStyle'
 import {
   useOverlayDrag,
   useOverlayResize,
@@ -55,8 +56,6 @@ const GUIDE_STYLE: React.CSSProperties = {
 
 // ── Resize / Rotate handle geometry ────────────────────────────────────────────
 
-const HANDLE_SIZE = 8
-const ROTATE_OFFSET = 20
 
 const HANDLES: { id: ResizeHandleId; cursor: string; xPct: number; yPct: number }[] = [
   { id: 'nw', cursor: 'nwse-resize', xPct: 0,   yPct: 0   },
@@ -1854,7 +1853,7 @@ export default function SlideCanvas({
                     height: element.h * scale,
                     transform: buildElementTransform(element.x, element.y, scale, element.rotation),
                     transformOrigin: 'center center',
-                    outline: `1px ${picked ? 'dashed' : 'solid'} var(--editor-selection)`,
+                    outline: `${OUTLINE} ${picked ? 'dashed' : 'solid'} var(--editor-selection)`,
                     pointerEvents: 'none',
                   }}
                 >
@@ -1947,25 +1946,24 @@ export default function SlideCanvas({
                             marginTop: -HANDLE_SIZE / 2,
                             width: HANDLE_SIZE,
                             height: HANDLE_SIZE,
-                            background: 'var(--editor-selection)',
-                            border: '1px solid #fff',
-                            borderRadius: 1,
+                            ...HANDLE_LOOK,
                             cursor: h.cursor,
                             zIndex: 10,
-                            boxSizing: 'border-box',
                             pointerEvents: 'auto',
                             touchAction: 'none',
                           }}
-                        />
+                        >
+                          <HitPad />
+                        </div>
                       ))}
                       {/* Rotate handle */}
                       <div
                         style={{
                           position: 'absolute',
                           left: '50%',
-                          marginLeft: -0.5,
+                          marginLeft: -1,
                           top: -ROTATE_OFFSET,
-                          width: 1,
+                          width: 2,
                           height: ROTATE_OFFSET,
                           background: 'var(--editor-selection)',
                           pointerEvents: 'none',
@@ -1996,16 +1994,13 @@ export default function SlideCanvas({
                         style={{
                           position: 'absolute',
                           left: '50%',
-                          marginLeft: -7,
-                          top: -ROTATE_OFFSET - 14,
-                          width: 14,
-                          height: 14,
-                          background: 'var(--editor-selection)',
-                          border: '2px solid #fff',
-                          borderRadius: '50%',
+                          marginLeft: -ROTATE_KNOB / 2,
+                          top: -ROTATE_OFFSET - ROTATE_KNOB,
+                          width: ROTATE_KNOB,
+                          height: ROTATE_KNOB,
+                          ...KNOB_LOOK,
                           cursor: 'crosshair',
                           zIndex: 10,
-                          boxSizing: 'border-box',
                           pointerEvents: 'auto',
                           touchAction: 'none',
                         }}
