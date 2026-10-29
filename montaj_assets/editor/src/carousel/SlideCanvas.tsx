@@ -150,16 +150,28 @@ function OverlayLayer({
   const live = useLiveBox(liveBoxes, element.id)
   const ratio = live?.ratio ?? 1
   const box = live ? { w: live.w / ratio, h: live.h / ratio } : { w: element.w, h: element.h }
+  const layerRef = useRef<HTMLDivElement>(null)
+  const text = element.overlay.props.text
+  // Hide the live text while it's being edited in place so the
+  // InlineTextEditor isn't doubled over it. Only the text node: the fill,
+  // border and radius around it stay drawn. With no text node found the whole
+  // layer is hidden, as before.
+  useEffect(() => {
+    const layer = layerRef.current
+    if (!hidden || !layer) return
+    const node = (typeof text === 'string' && findTextNode(layer, text)) || layer
+    const prev = node.style.visibility
+    node.style.visibility = 'hidden'
+    return () => { node.style.visibility = prev }
+  }, [hidden, text])
   return (
     <div
+      ref={layerRef}
       style={{
         width: box.w,
         height: box.h,
         transform: `scale(${scale * ratio})`,
         transformOrigin: 'top left',
-        // Hide the live text while it's being edited in place so the
-        // InlineTextEditor isn't doubled over it.
-        visibility: hidden ? 'hidden' : undefined,
       }}
     >
       <OverlayErrorBoundary
@@ -425,19 +437,38 @@ function findTextNode(root: HTMLElement, text: string): HTMLElement | null {
   if (marked) return marked
   const want = text.trim()
   if (!want) return null
-  const matches: HTMLElement[] = []
-  const walk = (el: HTMLElement) => {
-    if ((el.textContent ?? '').trim() === want) matches.push(el)
+  // Whitespace-collapsed and lower-cased: a text-transform or a wrapped source
+  // draws the same words with other case or spacing.
+  const norm = (v: string) => v.replace(/\s+/g, ' ').trim().toLowerCase()
+  const wantNorm = norm(want)
+  const exact: HTMLElement[] = []
+  const loose: HTMLElement[] = []
+  const all: Array<{ el: HTMLElement; text: string; depth: number }> = []
+  const walk = (el: HTMLElement, depth: number) => {
+    const t = el.textContent ?? ''
+    if (t.trim() === want) exact.push(el)
+    else if (norm(t) === wantNorm) loose.push(el)
+    all.push({ el, text: norm(t), depth })
     for (const child of Array.from(el.children)) {
-      if (child instanceof HTMLElement) walk(child)
+      if (child instanceof HTMLElement) walk(child, depth + 1)
     }
   }
-  walk(root)
-  if (matches.length === 0) return null
+  walk(root, 0)
   // Innermost match = the one with the fewest descendant elements.
-  return matches.reduce((best, el) =>
+  const innermost = (list: HTMLElement[]) => list.reduce((best, el) =>
     el.querySelectorAll('*').length < best.querySelectorAll('*').length ? el : best,
   )
+  if (exact.length) return innermost(exact)
+  if (loose.length) return innermost(loose)
+  // No element holds the whole text (it is split over sibling spans): the
+  // deepest one holding the most of it, never the root when another will do.
+  const holds = all.filter((c) => c.el !== root && c.text && wantNorm.includes(c.text))
+  const pool = holds.length ? holds : all.filter((c) => c.el !== root && c.text.includes(wantNorm))
+  if (!pool.length) return null
+  const best = pool.reduce((a, b) =>
+    b.text.length > a.text.length || (b.text.length === a.text.length && b.depth > a.depth) ? b : a,
+  )
+  return best.el
 }
 
 // Snapshot the rendered overlay text's computed style so the inline editor
