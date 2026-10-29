@@ -669,10 +669,13 @@ function unsupportedOf(entry, motionBlur) {
   const { item, kind } = entry
   const out = []
   // A mask that is turned off draws nothing, so its tracks are not left out.
-  const maskOff = kind !== 'graphic' && !maskAt(item, 0)
+  const mask0 = kind !== 'graphic' ? maskAt(item, 0) : null
+  const maskOff = kind !== 'graphic' && !mask0
   for (const track of Array.isArray(item.keyframes) ? item.keyframes : []) {
     if (!track || !Array.isArray(track.points) || track.points.length === 0) continue
     if (maskOff && (MASK_KEYFRAME_PROPS.includes(track.prop) || track.prop === MASK_POINTS_PROP)) continue
+    // A morph only drives a path: on another shape it draws nothing.
+    if (track.prop === MASK_POINTS_PROP && mask0?.shape !== 'path') continue
     const mark = `keyframes:${track.prop}`
     if (!out.includes(mark)) out.push(mark)
   }

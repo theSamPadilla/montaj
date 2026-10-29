@@ -15,7 +15,7 @@ import {
   RectangleHorizontal,
   RotateCcw,
 } from 'lucide-react'
-import { BLEND_MODES, MASK_FIELD_OF, MASK_SHAPES, blendModeOf, maskAt } from '@bycrux/timeline-core'
+import { BLEND_MODES, MASK_FIELD_OF, MASK_POINTS_PROP, MASK_SHAPES, blendModeOf, maskAt } from '@bycrux/timeline-core'
 import type { BlendMode, ItemMask, KeyframeProp, MaskKeyframeProp, TransformKeyframeProp, VisualItem } from '../schema'
 import {
   KEYFRAME_TIME_EPSILON,
@@ -32,6 +32,7 @@ import {
   valueAt,
   writeProp,
   canKeyframeProp,
+  disableKeyframing,
 } from './keyframeOps'
 import { usePlaybackTime, type PlaybackClock } from './playback-clock'
 import { NumberField, Slider, cn, inspectorInputClass, stepValue } from '../ui'
@@ -859,6 +860,17 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
     if (target.mask) onChange({ ...target, mask: { ...target.mask, ...fields } })
   }
 
+  /**
+   * A shape button. Leaving a path drops its `maskPoints` track in the same
+   * write: a save refuses that track on any other shape. The path's own
+   * `points` stay on the mask, harmless, for switching back.
+   */
+  function switchShape(shape: ItemMask['shape']) {
+    if (!target.mask) return
+    const next = { ...target, mask: { ...target.mask, shape } }
+    onChange(target.mask.shape === 'path' ? disableKeyframing(next, MASK_POINTS_PROP as KeyframeProp, localT) : next)
+  }
+
   function handleInvert() {
     if (!target.mask) return
     const next = { ...target.mask }
@@ -1178,7 +1190,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
                 <span className={ROW_LABEL_CLASS}>Shape</span>
                 <div className="flex items-center gap-0.5">
                   {MASK_SHAPE_BUTTONS.map(({ shape, label, icon: Icon }) => (
-                    <IconButton key={shape} label={label} pressed={mask.shape === shape} onClick={() => { if (mask.shape !== shape) writeMask({ shape }) }}>
+                    <IconButton key={shape} label={label} pressed={mask.shape === shape} onClick={() => { if (mask.shape !== shape) switchShape(shape) }}>
                       <Icon size={12} />
                     </IconButton>
                   ))}

@@ -108,4 +108,6 @@ export * from './src/mask.js'
 // sample_frame cached before draws such an item unmasked and unblended.
 // '8': a mask's `feather` is the soft band's WIDTH (sigma = width / 4), not
 // its sigma (§616 QA), so a cached feathered frame is wrong.
-export const RESOLVER_VERSION = '8'
+// '9': a `path` mask (points, smooth, a maskPoints morph) draws; before, that
+// shape resolved to no mask, so a cached frame of it is unmasked.
+export const RESOLVER_VERSION = '9'

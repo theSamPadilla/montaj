@@ -148,11 +148,19 @@ def sample_track(track, local_t):
 MASK_POINTS_PROP = "maskPoints"
 
 
+# mask.js MASK_POINTS_MIN / MASK_POINTS_MAX.
+MASK_POINTS_MIN = 3
+MASK_POINTS_MAX = 64
+
+
 def _valid_pairs(value, n=None):
-    """mask.js validPoints: a list of [x, y] pairs of finite numbers (n of them when given)."""
-    if not isinstance(value, list) or (n is not None and len(value) != n) or len(value) < (1 if n is None else 0):
+    """mask.js validPoints: 3 to 64 [x, y] pairs of finite numbers from 0 to 1 (n of them when given)."""
+    if not isinstance(value, list) or not MASK_POINTS_MIN <= len(value) <= MASK_POINTS_MAX:
         return False
-    return all(isinstance(q, (list, tuple)) and len(q) == 2 and _finite(q[0]) and _finite(q[1]) for q in value)
+    if n is not None and len(value) != n:
+        return False
+    return all(isinstance(q, (list, tuple)) and len(q) == 2
+               and all(_finite(v) and 0 <= v <= 1 for v in q) for q in value)
 
 
 def _pairs_len(points):

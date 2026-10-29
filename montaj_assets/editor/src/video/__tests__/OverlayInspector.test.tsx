@@ -1719,13 +1719,19 @@ describe('OverlayInspector — path mask (§616)', () => {
     expect(screen.queryByRole('button', { name: /path/i })).toBeNull()
   })
 
-  it('a shape button switches the shape and leaves the points on the mask', () => {
-    const { onChange } = renderInspector(pathClip({ smooth: true }), 5)
+  it('a shape button switches the shape, leaves the points on the mask and drops the maskPoints track', () => {
+    const item = pathClip({ smooth: true })
+    item.keyframes = [
+      { prop: 'maskPoints', points: [{ t: 0, value: POINTS }, { t: 4, value: POINTS }] },
+      { prop: 'maskX', points: [{ t: 0, value: 0.4 }, { t: 4, value: 0.6 }] },
+    ] as unknown as VisualItem['keyframes']
+    const { onChange } = renderInspector(item, 5)
     fireEvent.click(screen.getByRole('button', { name: 'Rectangle mask' }))
-    const mask = (onChange.mock.calls[0][0] as VisualItem).mask!
-    expect(mask.shape).toBe('rect')
-    expect(mask.points).toEqual(POINTS)
-    expect(mask.smooth).toBe(true)
+    const next = onChange.mock.calls[0][0] as VisualItem
+    expect(next.mask!.shape).toBe('rect')
+    expect(next.mask!.points).toEqual(POINTS)
+    expect(next.mask!.smooth).toBe(true)
+    expect((next.keyframes ?? []).map(k => k.prop)).toEqual(['maskX'])
   })
 
   it('invert writes invert and keeps the points', () => {

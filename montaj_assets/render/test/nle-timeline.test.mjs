@@ -518,16 +518,18 @@ describe('left out of the editor', () => {
 
   test('a path mask with a morph track lists the mask and keyframes:maskPoints (array values do not crash)', () => {
     const tri = [[0.5, 0], [1, 1], [0, 1]]
-    const mk = (enabled) => build({
+    const mk = (enabled, shape = 'path') => build({
       id: 'cp', status: 'final', settings: { resolution: [1920, 1080], fps: 30 },
       tracks: [{ id: 'trk-0', items: [
         { id: 'p', type: 'video', src: '/abs/m.mp4', start: 0, end: 2, inPoint: 0, outPoint: 2,
-          mask: { shape: 'path', points: tri, smooth: true, enabled },
+          mask: { shape, points: tri, smooth: true, enabled },
           keyframes: [{ prop: 'maskPoints', points: [{ t: 0, value: tri }, { t: 1, value: [[0.5, 0.2], [0.9, 0.9], [0.1, 0.9]] }] }] },
       ] }],
     })
     assert.deepEqual(clip(mk(true), 'p').unsupported, ['keyframes:maskPoints', 'mask'])
     assert.deepEqual(clip(mk(false), 'p').unsupported, [])
+    // A morph left on another shape draws nothing, so it is not left out.
+    assert.deepEqual(clip(mk(true, 'rect'), 'p').unsupported, ['mask'])
   })
 
   test('a clip whose mask is turned off lists no mask or mask-track mark', () => {
