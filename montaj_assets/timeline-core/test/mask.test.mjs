@@ -47,11 +47,11 @@ test('maskAt clamps out-of-range values', () => {
   const m = maskAt({ mask: { shape: 'rect', w: -1, radius: 3, feather: 9 } }, 0)
   assert.ok(m.w > 0)
   assert.equal(m.radius, 1)
-  assert.equal(m.feather, 0.5)
+  assert.equal(m.feather, 1)
 })
 
-test('maskSigmaPx is feather x the shorter side', () => {
-  assert.equal(maskSigmaPx({ ...ell, feather: 0.1 }, 1000, 500), 50)
+test('maskSigmaPx is the band width (feather x the shorter side) over 4', () => {
+  assert.equal(maskSigmaPx({ ...ell, feather: 0.1 }, 1000, 500), 12.5)
   assert.equal(maskSigmaPx({ ...ell, feather: 0 }, 1000, 500), 0)
 })
 
@@ -86,7 +86,8 @@ test('rasterizeMask: coverage inside 255, outside 0, edge between; invert flips'
 })
 
 test('rasterizeMask: the margin extends the plane (default 3 sigma, ceil)', () => {
-  const m = maskAt({ mask: { ...ell, feather: 0.1 } }, 0)
+  // A band 40% of the side: sigma 10 px, margin 30.
+  const m = maskAt({ mask: { ...ell, feather: 0.4 } }, 0)
   const r = rasterizeMask(m, 100, 100)
   assert.equal(r.margin, 30)
   assert.equal(r.width, 160); assert.equal(r.height, 160)
@@ -105,7 +106,7 @@ test('maskSvg: same polygon, blur only when feathered, inverted colours', () => 
   assert.match(svg, /^<svg xmlns="http:\/\/www.w3.org\/2000\/svg" viewBox="0 0 200 100" preserveAspectRatio="none">/)
   assert.ok(!svg.includes('feGaussianBlur'))
   assert.match(svg, /<polygon points="[^"]+" fill="#fff"/)
-  const soft = maskSvg({ ...m, feather: 0.1 }, 200, 100)
+  const soft = maskSvg({ ...m, feather: 0.4 }, 200, 100)
   assert.match(soft, /<feGaussianBlur stdDeviation="10"\/>/)
   // user-space filter region: the box plus 3 sigma, not a fraction of the shape's own box
   assert.match(soft, /<filter id="f" filterUnits="userSpaceOnUse" x="-30" y="-30" width="260" height="160">/)
@@ -115,7 +116,7 @@ test('maskSvg: same polygon, blur only when feathered, inverted colours', () => 
 })
 
 test('maskSvg: the filter region holds the whole blur of a small shape (box +/- 3 sigma)', () => {
-  const m = maskAt({ mask: { shape: 'ellipse', w: 0.1, h: 0.1, feather: 0.2 } }, 0)
+  const m = maskAt({ mask: { shape: 'ellipse', w: 0.1, h: 0.1, feather: 0.8 } }, 0)
   const svg = maskSvg(m, 400, 400)
   const f = svg.match(/<filter id="f" filterUnits="userSpaceOnUse" x="([-\d.]+)" y="([-\d.]+)" width="([\d.]+)" height="([\d.]+)"/)
   assert.ok(f, svg)

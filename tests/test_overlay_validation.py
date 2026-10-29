@@ -52,7 +52,7 @@ def test_valid_compositing_passes(make):
     ({"mask": {"shape": "ellipse", "w": 0}}, "mask.w must be a number greater than 0"),
     ({"mask": {"shape": "ellipse", "h": -1}}, "mask.h must be a number greater than 0"),
     ({"mask": {"shape": "rect", "radius": 1.5}}, "mask.radius must be a number from 0 to 1"),
-    ({"mask": {"shape": "rect", "feather": 0.6}}, "mask.feather must be a number from 0 to 0.5"),
+    ({"mask": {"shape": "rect", "feather": 1.2}}, "mask.feather must be a number from 0 to 1.0"),
     ({"mask": {"shape": "rect", "invert": 1}}, "mask.invert must be a boolean"),
     ({"mask": {"shape": "rect", "enabled": 0}}, "mask.enabled must be a boolean"),
     ({"mask": {"shape": "rect", "enabled": "false"}}, "mask.enabled must be a boolean"),
@@ -63,7 +63,7 @@ def test_valid_compositing_passes(make):
     ({"keyframes": [{"prop": "maskX", "points": [{"t": 0, "value": 0.5}]}]}, "keyframes[0] maskX needs a mask"),
     ({"keyframes": [{"prop": "opacity", "points": [{"t": 0, "value": 2}]}]}, "keyframes[0].points[0].value must be a number from 0 to 1"),
     ({"keyframes": [{"prop": "offsetX", "points": [{"t": 0, "value": float("nan")}]}]}, "keyframes[0].points[0].value must be a finite number"),
-    ({"mask": {"shape": "rect"}, "keyframes": [{"prop": "maskFeather", "points": [{"t": 0, "value": 0.9}]}]}, "must be a number from 0 to 0.5"),
+    ({"mask": {"shape": "rect"}, "keyframes": [{"prop": "maskFeather", "points": [{"t": 0, "value": 1.5}]}]}, "must be a number from 0 to 1.0"),
     ({"mask": {"shape": "rect"}, "keyframes": [{"prop": "maskH", "points": [{"t": 0, "value": 0}]}]}, "must be a number greater than 0"),
 ])
 def test_bad_compositing_is_named(make, over, needle):

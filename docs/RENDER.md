@@ -191,7 +191,7 @@ scale-animated item. Expression arm count is free — 64 arms measured the same 
 
 **Opacity.** ffmpeg applies alpha through `colorchannelmixer`, whose `aa` option is a literal number (no expression). A clip's `opacity` track is therefore sampled per frame in Node (`render/item-opacity.js`) and sent to the filter with `sendcmd`. No per-frame browser bake is involved.
 
-**Masks.** A clip's `mask` is rasterized by a pre-pass (`render/item-mask.js`): Node draws the shared polygon (`timeline-core/src/mask.js`) per frame, ffmpeg `gblur` applies the feather, and the result is a gray PNG for a still mask or an ffv1 file for a moving one. `encode-segment.js` multiplies the clip's alpha by it.
+**Masks.** A clip's `mask` is rasterized by a pre-pass (`render/item-mask.js`): Node draws the shared polygon (`timeline-core/src/mask.js`) per frame, ffmpeg `gblur` applies the feather (sigma = the band's width / 4, `maskSigmaPx`), and the result is a gray PNG for a still mask or an ffv1 file for a moving one. `encode-segment.js` multiplies the clip's alpha by it.
 
 **Blend modes.** A blended clip (`render/item-blend.js`) is mixed in RGB with the backdrop as the first input, then composited as a canvas-format layer carrying the item's alpha, so pixels outside the item are bit-exact. Cost at 4K is about 50 ms a frame for a blended clip, against about 6 ms for a plain one.
 

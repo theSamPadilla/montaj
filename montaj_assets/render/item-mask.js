@@ -14,7 +14,8 @@
 // that extends a margin past the box, so the blur has real black (or, inverted,
 // white) to pull in. `steps=6`: gblur approximates a Gaussian with that many box
 // passes; 3 drifts up to 11 codes from the true curve at a large feather on a
-// small shape (feather 0.2: exact 45, steps=3 gives 56, steps=6 gives 50), and
+// small shape (a band 0.8 wide, sigma 0.2 of the side: exact 45, steps=3 gives
+// 56, steps=6 gives 50), and
 // the preview's SVG blur is close to exact. A still mask is one PNG, looped; a moving mask is one
 // frame per output frame in a lossless ffv1 file.
 import { spawn } from 'child_process'

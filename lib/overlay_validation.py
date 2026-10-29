@@ -58,7 +58,8 @@ CROP_KEYFRAME_PROPS = ("cropX", "cropY", "cropW", "cropH")
 CLIP_KEYFRAME_PROPS = GEOMETRY_KEYFRAME_PROPS + CROP_KEYFRAME_PROPS + ("opacity",) + MASK_KEYFRAME_PROPS
 VISUAL_TYPES = ("image", "video")
 ITEM_TYPES = ("overlay",) + VISUAL_TYPES
-MASK_FEATHER_MAX = 0.5
+# A mask's feather is the soft band's width over the box's shorter side.
+MASK_FEATHER_MAX = 1.0
 
 REQUIRED_STRING = ("src",)
 REQUIRED_NUMBER = ("start", "end")

@@ -1226,7 +1226,7 @@ export interface ItemMask {
   rotation?: number
   /** Rect only: corner radius, fraction of half the rect's shorter side, 0-1. Default 0. */
   radius?: number
-  /** Gaussian sigma, fraction of the box's shorter side, 0-0.5. Default 0. */
+  /** Width of the soft band centred on the edge, fraction of the box's shorter side, 0-1. Default 0. */
   feather?: number
   /** Default false. */
   invert?: boolean
@@ -1260,14 +1260,18 @@ export declare const MASK_FIELD_OF: Readonly<{
  * The item's mask at item-relative `localT`, every field resolved, or null when
  * the item has no `mask` object, its `shape` is unknown, or it is `enabled: false`. Defaults, then the
  * stored finite fields, then each mask track that samples to a finite number.
- * Clamped: `w`, `h` >= 1e-4; `radius` to [0, 1]; `feather` to [0, 0.5].
+ * Clamped: `w`, `h` >= 1e-4; `radius` to [0, 1]; `feather` to [0, 1].
  */
 export declare function maskAt(item: CompositeItem | null | undefined, localT: number): ResolvedMask | null
 
 /** True when the item has a valid mask and a mask keyframe track with at least one point. */
 export declare function hasMaskKeyframes(item: CompositeItem | null | undefined): boolean
 
-/** The feather's Gaussian sigma in box pixels: `feather` x the box's shorter side. */
+/** The largest `feather`: a soft band as wide as the box's shorter side. */
+export declare const MASK_FEATHER_MAX: number
+/** How many sigmas wide the feather's band is (4: from 2 sigma inside the outline to 2 sigma outside). */
+export declare const FEATHER_BAND_SIGMAS: number
+/** The feather's Gaussian sigma in box pixels: `feather` x the box's shorter side / FEATHER_BAND_SIGMAS. */
 export declare function maskSigmaPx(mask: ResolvedMask, boxW: number, boxH: number): number
 
 /**

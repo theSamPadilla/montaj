@@ -13,8 +13,11 @@
 //
 // Both read ONE polygon, {@link maskPolygon}, so the outline is the same
 // vertex list in both: the SVG fills it, the rasterizer scan-converts it. The
-// feather is a Gaussian sigma in BOX pixels ({@link maskSigmaPx}), applied by
-// `feGaussianBlur` on one side and by the render's blur on the other.
+// feather is the WIDTH of the soft band, centred on the outline (half inside,
+// half outside), as a fraction of the box's shorter side. It is drawn as a
+// Gaussian blur whose sigma is a quarter of that width ({@link maskSigmaPx}),
+// so the band holds the falloff from about 2% to 98%; `feGaussianBlur` on one
+// side and the render's blur on the other.
 //
 // ── Conventions ─────────────────────────────────────────────────────────────
 //
@@ -59,7 +62,7 @@ import { fullOpacitySpans } from './geometry.js'
  * @property {number} [h] The same, fraction of box height. Default 0.5.
  * @property {number} [rotation] Degrees clockwise about (x, y). Default 0.
  * @property {number} [radius] Rect only: corner radius, fraction of half the rect's shorter side, 0-1. Default 0.
- * @property {number} [feather] Gaussian sigma, fraction of the box's shorter side, 0-0.5. Default 0.
+ * @property {number} [feather] Width of the soft band centred on the edge, fraction of the box's shorter side, 0-1. Default 0.
  * @property {boolean} [invert] Default false.
  * @property {boolean} [enabled] Default true. `false` turns the mask off and keeps its settings.
  */
@@ -158,7 +161,7 @@ function clamp(v, lo, hi) {
  * Starts from the defaults, takes each finite numeric field of `item.mask`,
  * then lets each mask keyframe track that samples to a finite number override
  * its field. Clamped last: `w`, `h` to at least 1e-4, `radius` to [0, 1],
- * `feather` to [0, 0.5]. `invert` is true only when stored as `true`.
+ * `feather` to [0, MASK_FEATHER_MAX]. `invert` is true only when stored as `true`.
  *
  * @param {CompositeItem | null | undefined} item
  * @param {number} localT Seconds from the item's own `start`.
@@ -188,7 +191,7 @@ export function maskAt(item, localT) {
     h: Math.max(MIN_SIDE, v.h),
     rotation: v.rotation,
     radius: clamp(v.radius, 0, 1),
-    feather: clamp(v.feather, 0, 0.5),
+    feather: clamp(v.feather, 0, MASK_FEATHER_MAX),
     invert: mask.invert === true,
   }
 }
@@ -212,9 +215,18 @@ export function hasMaskKeyframes(item) {
   return false
 }
 
+/** The largest `feather`: a soft band as wide as the box's shorter side. */
+export const MASK_FEATHER_MAX = 1
+
 /**
- * The feather's Gaussian sigma in box pixels: `feather` times the box's
- * shorter side.
+ * How many sigmas wide the feather's band is: the band runs from 2 sigma
+ * inside the outline to 2 sigma outside, about 98% to 2% of the falloff.
+ */
+export const FEATHER_BAND_SIGMAS = 4
+
+/**
+ * The feather's Gaussian sigma in box pixels: the band's width (`feather`
+ * times the box's shorter side) over {@link FEATHER_BAND_SIGMAS}.
  *
  * @param {ResolvedMask} mask
  * @param {number} boxW
@@ -222,7 +234,7 @@ export function hasMaskKeyframes(item) {
  * @returns {number}
  */
 export function maskSigmaPx(mask, boxW, boxH) {
-  return mask.feather * Math.min(boxW, boxH)
+  return (mask.feather * Math.min(boxW, boxH)) / FEATHER_BAND_SIGMAS
 }
 
 /**

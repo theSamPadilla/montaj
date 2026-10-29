@@ -9,7 +9,7 @@ import { planItemMask, writeItemMask, prepareMaskWrite, maskFilterParts } from '
 import { encodeSegment, buildVideoItemFilterParts } from '../encode-segment.js'
 import { FFMPEG } from '../ffmpeg-bin.js'
 
-const still = { mask: { shape: 'ellipse', w: 0.5, h: 0.5, feather: 0.05 } }
+const still = { mask: { shape: 'ellipse', w: 0.5, h: 0.5, feather: 0.2 } }
 const grow = { mask: { shape: 'ellipse', w: 0.2, h: 0.2 }, keyframes: [{ prop: 'maskW', points: [{ t: 0, value: 0.2 }, { t: 1, value: 1 }] }] }
 
 test('no mask: no plan', () => { assert.equal(planItemMask({}, 100, 100, 0, 1, 30, '/x'), null) })
@@ -51,10 +51,10 @@ test('write: a growing mask covers more each frame', () => {
 })
 test('write: feather blurs the edge (no hard step)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'mask-'))
-  const p = planItemMask({ mask: { shape: 'wipe', x: 0.5, feather: 0.1 } }, 100, 10, 0, 1, 30, join(dir, 'm'))
+  const p = planItemMask({ mask: { shape: 'wipe', x: 0.5, feather: 0.4 } }, 100, 10, 0, 1, 30, join(dir, 'm'))
   return writeItemMask(p).then(() => {
     const r = spawnSync(FFMPEG, ['-v', 'error', '-i', p.path, '-f', 'rawvideo', '-pix_fmt', 'gray', '-'])
-    // sigma = 0.1 x min(100, 10) = 1 px; the edge sits between pixels 49 and 50
+    // sigma = 0.4 x min(100, 10) / 4 = 1 px; the edge sits between pixels 49 and 50
     const row = [...r.stdout.subarray(500, 600)]
     assert.ok(row[49] > 140 && row[49] < 235)
     assert.ok(row[50] > 20 && row[50] < 115)
@@ -65,8 +65,8 @@ test('write: feather blurs the edge (no hard step)', () => {
 })
 test('write: a keyframed feather softens the edge frame by frame (sendcmd on gblur)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'mask-'))
-  const soften = { mask: { shape: 'wipe', x: 0.5, feather: 0.02 },
-    keyframes: [{ prop: 'maskFeather', points: [{ t: 0, value: 0.02 }, { t: 1, value: 0.2 }] }] }
+  const soften = { mask: { shape: 'wipe', x: 0.5, feather: 0.08 },
+    keyframes: [{ prop: 'maskFeather', points: [{ t: 0, value: 0.08 }, { t: 1, value: 0.8 }] }] }
   const p = planItemMask(soften, 100, 10, 0, 1, 10, join(dir, 'm'))
   assert.equal(p.kind, 'frames')
   return writeItemMask(p).then(() => {
@@ -84,9 +84,9 @@ test('write: a keyframed feather softens the edge frame by frame (sendcmd on gbl
 // small shape with a big feather, where a thin filter region or too few gblur
 // passes each cost tens of codes.
 const hasRsvg = !spawnSync('rsvg-convert', ['--version']).error
-test('preview SVG and export gblur agree along a row (small shape, feather 0.2)', { skip: !hasRsvg }, async () => {
+test('preview SVG and export gblur agree along a row (small shape, feather 0.8)', { skip: !hasRsvg }, async () => {
   const B = 400
-  const item = { mask: { shape: 'ellipse', w: 0.25, h: 0.25, feather: 0.2 } }
+  const item = { mask: { shape: 'ellipse', w: 0.25, h: 0.25, feather: 0.8 } }
   const dir = mkdtempSync(join(tmpdir(), 'mask-parity-'))
   writeFileSync(join(dir, 'm.svg'), maskSvg(maskAt(item, 0), B, B))
   const svgRun = spawnSync('rsvg-convert', ['-w', String(B), '-h', String(B), '-o', join(dir, 'm.png'), join(dir, 'm.svg')])
@@ -297,8 +297,8 @@ test('ffmpeg: a masked 10-bit item keeps its colour planes and gets the mask as 
 
 test('write: a long keyframed feather keeps every ffmpeg argument under 32,767 characters', () => {
   const dir = mkdtempSync(join(tmpdir(), 'mask-long-'))
-  const ramp = { mask: { shape: 'wipe', x: 0.5, feather: 0.02 },
-    keyframes: [{ prop: 'maskFeather', points: [{ t: 0, value: 0.02 }, { t: 20, value: 0.3 }] }] }
+  const ramp = { mask: { shape: 'wipe', x: 0.5, feather: 0.08 },
+    keyframes: [{ prop: 'maskFeather', points: [{ t: 0, value: 0.08 }, { t: 20, value: 1 }] }] }
   const p = planItemMask(ramp, 400, 300, 0, 20, 60, join(dir, 'm'))
   assert.equal(p.frames, 1201)
   const w = prepareMaskWrite(p)

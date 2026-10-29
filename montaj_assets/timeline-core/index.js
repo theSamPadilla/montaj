@@ -106,4 +106,6 @@ export * from './src/mask.js'
 // '7': video and image items take a mask (ellipse, rect, wipe; feathered,
 // inverted, keyframed), a blend mode and keyframed opacity (§616). A frame
 // sample_frame cached before draws such an item unmasked and unblended.
-export const RESOLVER_VERSION = '7'
+// '8': a mask's `feather` is the soft band's WIDTH (sigma = width / 4), not
+// its sigma (§616 QA), so a cached feathered frame is wrong.
+export const RESOLVER_VERSION = '8'
