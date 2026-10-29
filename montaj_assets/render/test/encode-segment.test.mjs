@@ -1740,6 +1740,7 @@ const cutout = {
 }
 const cutoutOpts = (projectColorSpace) => ({
   segStart: 0, duration: 3, projectColorSpace, zscaleAvailable: true, lut3dAvailable: true,
+  canvasPixFmt: projectColorSpace === 'sdr_bt709' ? 'yuv420p' : 'yuv420p10le',
 })
 const cutoutGraph = (item, projectColorSpace) =>
   buildVideoItemFilterParts(item, 1080, 1920, 1, '[canvas]', cutoutOpts(projectColorSpace)).filterParts
@@ -1793,11 +1794,11 @@ test('alphaGrade cutout, whole segment: every filter label is defined once', asy
   assert.deepEqual(dup, [], `labels defined twice: ${dup.join(', ')} in ${graph}`)
 })
 
-test('a remove_bg cutout in an HLG or PQ segment is byte-identical to 5.5.6 but for the BT.601 declaration (§619), alphaGrade or not', () => {
+test('a remove_bg cutout in an HLG or PQ segment is byte-identical to 5.5.6 but for the BT.601 declaration and the 10-bit composite (§619), alphaGrade or not', () => {
   const frozen = [
     '[1:v]setparams=colorspace=smpte170m,setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=decrease,format=yuva444p10le,'
       + 'pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0.0[vid1]',
-    '[canvas][vid1]overlay=x=0:y=0:format=auto:shortest=0[iv1]',
+    '[canvas][vid1]overlay=x=0:y=0:format=yuv420p10:shortest=0[iv1]',
   ]
   for (const cs of ['hdr_hlg', 'hdr_pq']) {
     assert.deepEqual(cutoutGraph(cutout, cs), frozen, `${cs}: a plain cutout moved`)

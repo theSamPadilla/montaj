@@ -618,7 +618,7 @@ export function buildCutoutGradeFilter(srcKey, hasZscaleFlag, opts = {}) {
  *   — a `toRotatedPixelBox` result. Note that 180° is NOT identity: the box
  *   does not grow, but the pixels still have to turn.
  * @param {boolean} [alphaPin=false] — true on the video path only.
- * @param {boolean} [tenBit=false] — the 10-bit (HDR) canvas: the pin is
+ * @param {boolean} [tenBit=false]: the 10-bit (HDR) canvas: the pin is
  *   `yuva444p10le`, the format the pad already pins there, so an HDR item is
  *   not narrowed to 8 bits before `rotate`.
  * @returns {string} `''`, or `,[format=yuva420p,]rotate=…` (the pin is
@@ -1350,7 +1350,8 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
     ? (anim.needsAnimatedChain ? { x: anim.xExpr, y: anim.yExpr } : staticBoxPosition(anim, box))
     : null
   const blend = blendModeOf(item)
-  const imgFmt = opts?.canvasPixFmt?.includes('10') ? ':format=yuv420p10' : ''
+  const imgComposite = compositeFormat(opts?.canvasPixFmt, '')
+  const imgFmt = imgComposite ? ':format=' + imgComposite : ''
   if (blend !== 'normal') {
     // A blend mode (§616) replaces this overlay with item-blend.js's graph,
     // which places the image with the same x/y (expressions included) and
@@ -1623,11 +1624,12 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // time. A no-op (bare setpts=PTS-STARTPTS) at speed undefined/1.
   const ptsStep = hasSpeed ? `setpts=(PTS-STARTPTS)/${speed}` : 'setpts=PTS-STARTPTS'
   // An untagged video is taken as BT.709, which is what it is underneath in
-  // practice (web downloads such as X exports; remove_bg's ProRes, which keeps
-  // its source's YUV). Against the tagged SDR canvas an untagged layer would be
+  // practice (web downloads such as X exports). Against the tagged SDR canvas an untagged layer would be
   // read as "unknown" (BT.601) and converted: measured red -19/-25, green
   // +8/+19. Tagged here, it composites unchanged, as it did before the canvas
-  // was tagged. Keyed on the probed transfer, which render.js stamps 'unknown'
+  // was tagged. An untagged SDR cutout is still declared BT.709 here, though
+  // remove_bg writes BT.601; it is left as is so SDR graphs stay byte-identical,
+  // and a queue row tracks it. Keyed on the probed transfer, which render.js stamps 'unknown'
   // for an untagged file. Overlay captures and images are NOT tagged: those are
   // encoded from RGB with ffmpeg's BT.601 default, and converting them is right.
   // A graded cutout is the exception: its alpha file holds HDR signal, and the
@@ -2123,8 +2125,9 @@ export function segmentVideoArgs(spec, projectColorSpace, fps, duration) {
     // joins segments with `-c:v copy` and the joined mp4 keeps only the FIRST
     // segment's parameter sets, so one segment's range flag is the whole
     // film's. The HDR canvas's range tag (Step 1) would not hold on its own:
-    // the 10-bit canvas reaches `overlay=format=yuv420` through an
-    // inserted scaler that is free to change range. So each segment took the
+    // each layer reaches `overlay` through an inserted scaler that is free to
+    // change range (before §619 the 10-bit canvas did too, through
+    // `overlay=format=yuv420`). So each segment took the
     // range of the layers it composited, full for a clip normalized from a
     // full-range source (an iPhone screen recording). One at 0 s flagged a
     // film full range over limited samples: every player lifted the blacks
