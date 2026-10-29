@@ -897,10 +897,10 @@ class TestV4Payload:
         c = _v4(first_frame_path=first, last_frame_path=last,
                 reference_image_paths=[r1, r2], external_task_id="s1-abc")["body"]
         assert c["contents"][1:] == [
-            {"type": "first_frame", "url": _b64(b"F"), "id": "image_1"},
-            {"type": "last_frame", "url": _b64(b"L"), "id": "image_2"},
-            {"type": "refer_image", "url": _b64(b"R1"), "id": "image_3"},
-            {"type": "refer_image", "url": _b64(b"R2"), "id": "image_4"},
+            {"type": "first_frame", "url": _b64(b"F"), "id": "first_frame"},
+            {"type": "last_frame", "url": _b64(b"L"), "id": "last_frame"},
+            {"type": "refer_image", "url": _b64(b"R1"), "id": "image_1"},
+            {"type": "refer_image", "url": _b64(b"R2"), "id": "image_2"},
         ]
         assert c["options"] == {"external_task_id": "s1-abc"}
 
@@ -909,15 +909,24 @@ class TestV4Payload:
 
     def test_last_frame_without_first_is_allowed(self, tmp_path):
         c = _v4(last_frame_path=_png(tmp_path, "l.png"))["body"]["contents"]
-        assert c[1]["type"] == "last_frame" and c[1]["id"] == "image_1"
+        assert c[1]["type"] == "last_frame" and c[1]["id"] == "last_frame"
 
     def test_legacy_tokens_become_at_ids(self, tmp_path):
         first, r1 = _png(tmp_path, "f.png"), _png(tmp_path, "r1.png")
-        r = _v4(prompt="The man <<<image_2>>> meets the dog <<<image_3>>>",
-                first_frame_path=first, last_frame_path=first, reference_image_paths=[r1])
-        assert r["runtime_prompt"] == "The man @image_2 meets the dog @image_3"
+        r = _v4(prompt="The man <<<image_1>>> meets the dog <<<image_2>>>",
+                first_frame_path=first, last_frame_path=first, reference_image_paths=[r1, r1])
+        assert r["runtime_prompt"] == "The man @image_1 meets the dog @image_2"
         assert r["body"]["contents"][0]["text"] == r["runtime_prompt"]
-        assert [i["id"] for i in r["body"]["contents"][1:]] == ["image_1", "image_2", "image_3"]
+        assert [i["id"] for i in r["body"]["contents"][1:]] == [
+            "first_frame", "last_frame", "image_1", "image_2"]
+
+    def test_first_frame_does_not_shift_ref_tokens(self, tmp_path):
+        first, r1 = _png(tmp_path, "f.png"), _png(tmp_path, "r1.png", b"R1")
+        r = _v4(prompt="The man <<<image_1>>> walks", first_frame_path=first,
+                reference_image_paths=[r1])
+        assert r["runtime_prompt"] == "The man @image_1 walks"
+        ref = [i for i in r["body"]["contents"] if i["type"] == "refer_image"]
+        assert ref == [{"type": "refer_image", "url": _b64(b"R1"), "id": "image_1"}]
 
     def test_more_than_ten_images_refused(self, tmp_path):
         refs = [_png(tmp_path, f"r{i}.png") for i in range(9)]
@@ -1057,10 +1066,9 @@ class TestV4Http:
         method, url, kw = fake.calls[0]
         assert (method, url, kw["params"]) == ("GET", V4_QUERY, {"task_ids": "tk-1"})
 
-    def test_query_without_the_task_raises(self, wire):
+    def test_query_without_the_task_reports_submitted(self, wire):
         wire(_Resp(200, {"code": 0, "message": "ok", "data": []}))
-        with pytest.raises(ConnectorError, match="not found"):
-            _kling.query_task_v4("tk-1")
+        assert _kling.query_task_v4("tk-1") == {"id": "tk-1", "status": "submitted"}
 
     def test_generate_submitted_processing_succeeded_downloads_video(self, wire, monkeypatch, tmp_path):
         done = _task("succeeded", outputs=[
@@ -1093,6 +1101,13 @@ class TestV4Http:
         with pytest.raises(ConnectorError) as ei:
             _kling.create_task_v4(_v4()["body"])
         assert ei.value.reason == INSUFFICIENT_CREDIT
+        assert "Flagship Resource Pack or account balance" in str(ei.value)
+
+    def test_legacy_credit_error_has_no_flagship_note(self, wire):
+        wire(_Resp(429, BALANCE_429))
+        with pytest.raises(ConnectorError) as ei:
+            _kling.create_task(build_payload(prompt="a")["body"])
+        assert "Flagship" not in str(ei.value)
 
     def test_1201_is_model_retired_for_kling_4(self, wire):
         wire(_Resp(400, {"code": 1201, "message": "model is not supported"}))
@@ -1146,6 +1161,28 @@ class TestV4Step:
         assert seen["negative_prompt"] is None and seen["seed"] is None
         assert seen["sound"] == want_sound
         assert saved["seed"] is None and saved["model"] == "kling-4.0"
+
+    def test_project_mode_first_frame_and_ref_token_targets_the_ref(self, step, monkeypatch, tmp_path):
+        first, ref = _png(tmp_path, "f.png", b"F"), _png(tmp_path, "r.png", b"R")
+        project = {"storyboard": {"scenes": [{"id": "s1", "duration": 5}]}}
+        seen = {}
+        monkeypatch.setattr(step, "find_project", lambda pid: ("p.json", project))
+        monkeypatch.setattr(step, "compose_prompt", lambda p, s: "The man <<<image_1>>> waves")
+        monkeypatch.setattr(step, "resolve_ref_paths", lambda p, s: [ref])
+        monkeypatch.setattr(step, "save_clip_to_project", lambda *a, **kw: None)
+
+        def capture(**kw):
+            seen.update(build_payload(**{k: v for k, v in kw.items() if k != "out_path"}))
+            return kw["out_path"]
+        monkeypatch.setattr(step.kling, "generate", capture)
+        monkeypatch.setattr(sys, "argv", ["kling_generate.py", "--project-id", "p", "--scene-id", "s1",
+                                          "--out", "o.mp4", "--model", "kling-4.0",
+                                          "--first-frame", first])
+        step.main()
+        assert seen["runtime_prompt"] == "The man @image_1 waves"
+        by_id = {i["id"]: i for i in seen["body"]["contents"][1:]}
+        assert by_id["image_1"] == {"type": "refer_image", "url": _b64(b"R"), "id": "image_1"}
+        assert by_id["first_frame"]["type"] == "first_frame"
 
     def test_scene_sound_off_is_refused_and_saved_to_the_project(self, step, monkeypatch, capsys):
         project = {"storyboard": {"scenes": [{"id": "s1", "duration": 5, "sound": "off"}]}}

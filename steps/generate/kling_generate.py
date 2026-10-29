@@ -210,7 +210,7 @@ def main():
     for r in args.ref_image:
         require_file(r)
 
-    if (args.prompt and not args.multi_shot and args.model != "kling-4.0"
+    if (args.prompt and not args.multi_shot and kling.MODELS.get(args.model, {}).get("api") != "v4"
             and len(args.prompt) > kling.MAX_PROMPT_CHARS):
         print(
             json.dumps({

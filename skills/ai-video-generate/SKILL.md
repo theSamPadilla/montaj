@@ -193,7 +193,7 @@ Three Kling models are available. Pass `--model <name>` to `kling_generate`.
 
 - **`kling-v3-omni`** (default and best model): flexible 3-15s durations, multi-shot support, start+end frame in both std/pro. **Generates audio** when `sound: "on"`. Use this unless a scene specifically needs o1 or 4.0.
 - **`kling-video-o1`** (earlier model): **Only 5s or 10s durations.** No multi-shot. End frame (`--last-frame`) requires `--mode pro`. **Does NOT generate audio**, clips are silent.
-- **`kling-4.0`**: 3-30s and `--resolution 720p|1080p` (default 1080p); aspect also 21:9 and `adaptive`. Always generates stereo audio, so describe the sound in the prompt. No `--mode`, `--sound`, `--negative-prompt` or multi-shot (the step refuses them). First and last frame plus refs, up to 10 images in all. Needs a Kling API key (not the older access/secret pair), and is billed only from Kling's Flagship packs.
+- **`kling-4.0`**: 3-30s and `--resolution 720p|1080p` (default 1080p); aspect also 21:9 and `adaptive`. Always generates stereo audio, so describe the sound in the prompt. No `--mode`, `--sound`, `--negative-prompt` or multi-shot (the step refuses them). First and last frame plus refs, up to 10 images in all. Needs a Kling API key (not the older access/secret pair), and needs Kling's Flagship Resource Pack or account balance.
 
 **How to decide:** The model is **per-scene, not per-project**, so you can mix and match, but the step never switches models on its own. Stay on `kling-v3-omni` unless a scene needs o1's look and can do without audio, or the user asks for 4.0; then pass `--model kling-video-o1` or `--model kling-4.0` explicitly. Kling generates in `--mode pro` by default (the higher-quality of std/pro).
 

@@ -544,8 +544,8 @@ def build_payload_v4(
     if not prompt or not prompt.strip():
         raise ConnectorError("Prompt must not be empty")
     # A: inputs are referenced as @id; the composer writes legacy <<<image_N>>>
-    # tokens, N counting first frame, end frame, then refs. The ids below use
-    # the same order, so a composed prompt keeps pointing at the same images.
+    # tokens. N counts reference images only (compose_prompt and the skill), so
+    # ref i is image_i. Frames carry their own ids (A: ids unique per task).
     runtime_prompt = re.sub(r"<<<image_(\d+)>>>", r"@image_\1", prompt)
     english = sum(1 for c in runtime_prompt if _is_english(c))
     other = len(runtime_prompt) - english
@@ -579,19 +579,16 @@ def build_payload_v4(
         duration_seconds = min(allowed, key=lambda d: abs(d - duration_seconds))
 
     contents = [{"type": "prompt", "text": runtime_prompt}]
-    n = 0
 
-    def add(kind: str, path: str):
-        nonlocal n
-        n += 1
-        contents.append({"type": kind, "url": _file_to_base64(path), "id": f"image_{n}"})
+    def add(kind: str, path: str, id_: str):
+        contents.append({"type": kind, "url": _file_to_base64(path), "id": id_})
 
     if first_frame_path:
-        add("first_frame", first_frame_path)
+        add("first_frame", first_frame_path, "first_frame")
     if last_frame_path:   # A lists last_frame independently of first_frame
-        add("last_frame", last_frame_path)
-    for ref_path in refs:
-        add("refer_image", ref_path)
+        add("last_frame", last_frame_path, "last_frame")
+    for i, ref_path in enumerate(refs, 1):
+        add("refer_image", ref_path, f"image_{i}")
 
     settings = {"resolution": resolution, "duration": int(duration_seconds)}
     if aspect_ratio is not None:
@@ -651,7 +648,9 @@ def _error(r, label: str, model: str = None) -> ConnectorError:
     if reason == INVALID_API_KEY:
         return ConnectorError(f"Kling rejected the key: {msg}", reason=reason)
     if reason == INSUFFICIENT_CREDIT:
-        return ConnectorError(f'{OUT_OF_CREDIT_MESSAGE} Kling says: "{msg}"', reason=reason)
+        extra = (" Kling 4.0 draws only on a Flagship Resource Pack or account balance."
+                 if model == "kling-4.0" else "")
+        return ConnectorError(f'{OUT_OF_CREDIT_MESSAGE} Kling says: "{msg}"{extra}', reason=reason)
     if reason == MODEL_RETIRED:
         return ConnectorError(f'Kling no longer serves {model or "this model"}: "{msg}"',
                               reason=reason)
@@ -695,7 +694,9 @@ def query_task_v4(task_id: str) -> dict:
     for task in _ok_body(r, "Kling API")["data"] or []:
         if isinstance(task, dict) and task.get("id") == task_id:
             return task
-    raise ConnectorError(f"Kling task {task_id} not found in the status response")
+    # A freshly created task may not be listed yet. Report it as submitted so
+    # _poll keeps waiting within MAX_POLL_S instead of abandoning a paid task.
+    return {"id": task_id, "status": "submitted"}
 
 
 def query_task(task_id: str, path_template: str = VIDEO_QUERY_PATH) -> dict:
