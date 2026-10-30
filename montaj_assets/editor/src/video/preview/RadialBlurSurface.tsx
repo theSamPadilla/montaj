@@ -13,10 +13,11 @@
 // `loadeddata`; an <img> on `load`; anything else (the engine canvas) when the
 // host calls the handle's `draw()` from its paint.
 //
-// FAILURE. No WebGL2, or a lost context: the component renders nothing and
-// calls `onStatus(false)`, so the host shows the source unblurred (one console
-// warning, from radialBlurGL.ts). After the context is restored it renders and
-// draws again and calls `onStatus(true)`.
+// FAILURE. No WebGL2, a lost context, or a source WebGL may not read (a
+// cross-origin <video> or <img> without CORS): the component renders nothing
+// and calls `onStatus(false)`, so the host shows the source unblurred (one
+// console warning, from radialBlurGL.ts). After the context is restored (or
+// for a new source) it renders and draws again and calls `onStatus(true)`.
 //
 // BUDGET. Full resolution (the box's device pixels, capped at the 1080 short
 // edge) whenever paused. While `playing`, the page's animation frames are
@@ -56,6 +57,8 @@ export interface RadialBlurSurfaceProps {
   /** false when the surface cannot draw (no WebGL2, lost context) and the host should show the source; true
    *  once it draws. */
   onStatus?: (drawing: boolean) => void
+  /** Called after every frame the surface draws (a performance HUD, tests). */
+  onDraw?: () => void
   className?: string
   style?: CSSProperties
   ref?: Ref<RadialBlurSurfaceHandle>
@@ -74,6 +77,8 @@ export default function RadialBlurSurface(props: RadialBlurSurfaceProps) {
   const [ok, setOk] = useState(() => radialBlurAvailable())
   const [css, setCss] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
   const [half, setHalf] = useState(false)
+  // A source WebGL may not read (cross-origin): nothing drawn until the source changes.
+  const [blocked, setBlocked] = useState<RadialBlurSource | null>(null)
 
   // The latest props for draw(), which frame callbacks hold on to.
   const latest = useRef(props)
@@ -94,7 +99,8 @@ export default function RadialBlurSurface(props: RadialBlurSurfaceProps) {
       center: p.center, pictureRect: p.pictureRect, sourceRect: p.sourceRect,
     })
     if (res === 'unsupported' || res === 'lost') { setOk(false); report(false) }
-    else if (res === 'drawn') report(true)
+    else if (res === 'blocked') { setBlocked(p.source); report(false) }
+    else if (res === 'drawn') { report(true); p.onDraw?.() }
   }, [report])
 
   useImperativeHandle(ref, () => ({ draw }), [draw])
@@ -132,9 +138,11 @@ export default function RadialBlurSurface(props: RadialBlurSurfaceProps) {
     pictureRect.x, pictureRect.y, pictureRect.w, pictureRect.h,
     sourceRect?.x, sourceRect?.y, sourceRect?.w, sourceRect?.h])
 
-  // The source's own redraws.
+  // The source's own redraws. One draw now too: a source that finished loading
+  // between the first draw and these listeners fires no event again.
   useEffect(() => {
     if (!ok || !source) return
+    draw()
     if (isVideo(source)) {
       const stop = watchVideoFrames(source, draw)
       source.addEventListener('seeked', draw)
@@ -168,7 +176,7 @@ export default function RadialBlurSurface(props: RadialBlurSurfaceProps) {
     return () => cancelAnimationFrame(raf)
   }, [playing, half])
 
-  if (!ok) return null
+  if (!ok || (blocked && blocked === source)) return null
   return (
     <canvas
       ref={canvasRef}

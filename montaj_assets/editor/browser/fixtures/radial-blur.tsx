@@ -16,6 +16,9 @@ declare global {
     __webgl2: boolean
     __compare: typeof compare
     __timing: typeof timing
+    __videoSurface: typeof videoSurface
+    __videoState: typeof videoState
+    __video: () => HTMLVideoElement | null
     __surface: typeof surface
     __surfaceState: () => { canvases: number; status: boolean[] }
     __lose: () => boolean
@@ -181,7 +184,42 @@ function timing(o: { type: Kind; amount: number; w: number; h: number; runs: num
   return (performance.now() - t0) / o.runs
 }
 
+/** A <video> source (mounted at opacity 0, as the host keeps it) under a surface; counts its draws. */
+let videoDraws = 0
+let videoEl: HTMLVideoElement | null = null
+function videoSurface(src: string) {
+  const host = document.getElementById('video')!
+  host.style.cssText = 'position:relative;width:90px;height:160px'
+  videoEl = document.createElement('video')
+  videoEl.muted = true
+  videoEl.playsInline = true
+  videoEl.src = src
+  videoEl.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;opacity:0'
+  host.appendChild(videoEl)
+  const layer = document.createElement('div')
+  layer.style.cssText = 'position:absolute;inset:0'
+  host.appendChild(layer)
+  createRoot(layer).render(
+    <RadialBlurSurface source={videoEl} type="spin" amount={40} center={{ x: 0.5, y: 0.5 }}
+      pictureRect={{ x: 0, y: 0, w: 1, h: 1 }} onDraw={() => { videoDraws++ }} />,
+  )
+}
+/** Draws so far, and how much of the surface is painted (alpha > 0). */
+function videoState() {
+  const canvas = document.querySelector('#video canvas') as HTMLCanvasElement | null
+  let painted = 0
+  if (canvas && canvas.width > 0) {
+    const d = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 0) painted++
+    painted /= d.length / 4
+  }
+  return { draws: videoDraws, painted, time: videoEl?.currentTime ?? 0, paused: videoEl?.paused ?? true }
+}
+
 window.__compare = compare
+window.__videoSurface = videoSurface
+window.__videoState = videoState
+window.__video = () => videoEl
 window.__timing = timing
 window.__surface = surface
 window.__surfaceState = () => ({ canvases: document.querySelectorAll('#surface canvas').length, status: [...status] })

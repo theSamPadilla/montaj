@@ -43,9 +43,11 @@
 // ALPHA. The context has premultipliedAlpha: true; the OUT pass writes
 // premultiplied colour, and the 2D canvas it is drawn into stores it as is.
 //
-// FAILURE. No WebGL2 or OffscreenCanvas, or a lost context: `drawRadialBlur`
-// answers 'unsupported' or 'lost' and draws nothing, and one console warning
-// says so; the host shows the source unblurred. After `webglcontextrestored`
+// FAILURE. No WebGL2 or OffscreenCanvas, a lost context, or a source WebGL
+// may not read (cross-origin without CORS: the media must be same-origin or
+// served with CORS and loaded with crossOrigin): `drawRadialBlur` answers
+// 'unsupported', 'lost' or 'blocked' and draws nothing, and one console
+// warning says so; the host shows the source unblurred. After `webglcontextrestored`
 // the programs are rebuilt and every subscriber redraws.
 
 import { radialBlurPlan, radialTapInverse } from '@bycrux/timeline-core'
@@ -73,8 +75,9 @@ export interface RadialBlurJob {
 }
 
 /** 'drawn'; 'empty' (the source has no frame yet, or no picture: the target is left as it was);
- *  'unsupported' (no WebGL2) or 'lost' (the context is lost): nothing drawn, show the source. */
-export type RadialBlurResult = 'drawn' | 'empty' | 'unsupported' | 'lost'
+ *  'unsupported' (no WebGL2), 'lost' (the context is lost) or 'blocked' (the source is cross-origin
+ *  without CORS, so WebGL may not read it): nothing drawn, show the source. */
+export type RadialBlurResult = 'drawn' | 'empty' | 'unsupported' | 'lost' | 'blocked'
 
 /** The most taps a pass takes (timeline-core RADIAL_MAX_TAPS): the shader's uniform array. */
 const MAX_TAPS = 12
@@ -355,7 +358,15 @@ export function drawRadialBlur(job: RadialBlurJob): RadialBlurResult {
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
   gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true)
   gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.BROWSER_DEFAULT_WEBGL)
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, job.source as TexImageSource)
+  try {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, job.source as TexImageSource)
+  } catch (e) {
+    // A cross-origin source without CORS (a media URL on another origin, a
+    // file:// video in a page that may not read files) taints: WebGL refuses it.
+    if ((e as DOMException)?.name !== 'SecurityError') throw e
+    warnOnce('blocked', 'a clip\'s picture is cross-origin without CORS, so WebGL may not read it')
+    return 'blocked'
+  }
   const sr = job.sourceRect ?? { x: 0, y: 0, w: 1, h: 1 }
   gl.bindFramebuffer(gl.FRAMEBUFFER, s.work[0].fb)
   gl.viewport(0, 0, pw + 2, ph + 2)

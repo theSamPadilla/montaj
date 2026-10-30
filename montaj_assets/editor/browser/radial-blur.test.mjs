@@ -34,6 +34,8 @@ const GL_ARGS = process.platform === 'darwin'
   ? ['--use-angle=metal']
   : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader']
 
+const BASE_ARGS = ['--use-mock-keychain', '--password-store=basic', '--no-sandbox', '--host-resolver-rules=MAP * ~NOTFOUND', ...GL_ARGS]
+
 let browser
 let workDir
 let url
@@ -50,11 +52,12 @@ before(async () => {
     logLevel: 'error',
   })
   writeFileSync(join(workDir, 'index.html'),
-    '<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0"><div id="surface"></div><script src="page.js"></script></body></html>')
+    '<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0"><div id="surface"></div><div id="video"></div><script src="page.js"></script></body></html>')
   url = pathToFileURL(join(workDir, 'index.html')).href
   browser = await puppeteer.launch({
     headless: 'new',
-    args: ['--use-mock-keychain', '--password-store=basic', '--no-sandbox', '--host-resolver-rules=MAP * ~NOTFOUND', ...GL_ARGS],
+    // File access: the video test reads a file:// clip into WebGL (see that test).
+    args: [...BASE_ARGS, '--allow-file-access-from-files'],
   })
 })
 
@@ -63,8 +66,8 @@ after(async () => {
   if (workDir) rmSync(workDir, { recursive: true, force: true })
 })
 
-async function open({ noWebgl = false } = {}) {
-  const page = await browser.newPage()
+async function open({ noWebgl = false, on = browser } = {}) {
+  const page = await on.newPage()
   await page.setViewport({ width: 400, height: 400, deviceScaleFactor: 1 })
   const errors = []
   const warnings = []
@@ -176,6 +179,43 @@ test('RadialBlurSurface draws what the pass draws, at the box\'s size; loses its
     assert.equal(s.worst, 0, 'draws the same after the restore')
     assert.deepEqual(errors, [])
   } finally { await page.close() }
+})
+
+test('a <video> source: drawn on the frame a seek lands on, and on every presented frame while it plays', { timeout: 60_000 }, async (t) => {
+  const { page, errors } = await open()
+  try {
+    if (!(await page.evaluate(() => window.__webgl2))) { t.skip('no WebGL2'); return }
+    const clip = pathToFileURL(join(HERE, 'fixtures', 'play-glyph-clip.mp4')).href
+    await page.evaluate((src) => window.__videoSurface(src), clip)
+    await page.waitForFunction(() => window.__videoState().draws > 0 && window.__videoState().painted > 0.99, { timeout: 10_000 })
+    // A seek: the frame it lands on is drawn.
+    const before = (await page.evaluate(() => window.__videoState())).draws
+    await page.evaluate(() => { window.__video().currentTime = 1.2 })
+    await page.waitForFunction((n) => window.__videoState().draws > n, { timeout: 10_000 }, before)
+    // Playback: requestVideoFrameCallback draws frame after frame.
+    const atPlay = (await page.evaluate(() => window.__videoState())).draws
+    await page.evaluate(() => { const v = window.__video(); v.currentTime = 0; return v.play() })
+    await new Promise((r) => setTimeout(r, 800))
+    const playing = await page.evaluate(() => { const s = window.__videoState(); window.__video().pause(); return s })
+    t.diagnostic(`${playing.draws - atPlay} draws in 0.8 s of playback`)
+    assert.ok(playing.draws - atPlay >= 10, `only ${playing.draws - atPlay} draws while playing`)
+    assert.ok(playing.painted > 0.99, 'the picture is painted')
+    assert.deepEqual(errors, [])
+  } finally { await page.close() }
+})
+
+test('a cross-origin <video> (file:// without file access): renders nothing, says so once, no error', { timeout: 60_000 }, async (t) => {
+  const strict = await puppeteer.launch({ headless: 'new', args: BASE_ARGS })
+  try {
+    const { page, errors, warnings } = await open({ on: strict })
+    if (!(await page.evaluate(() => window.__webgl2))) { t.skip('no WebGL2'); return }
+    await page.evaluate((src) => window.__videoSurface(src), pathToFileURL(join(HERE, 'fixtures', 'play-glyph-clip.mp4')).href)
+    await page.waitForFunction(() => window.__video().readyState >= 2, { timeout: 10_000 })
+    await page.waitForFunction(() => document.querySelectorAll('#video canvas').length === 0, { timeout: 10_000 })
+    assert.equal((await page.evaluate(() => window.__videoState())).draws, 0)
+    assert.equal(warnings.filter((w) => w.includes('cross-origin')).length, 1, warnings.join('\n'))
+    assert.deepEqual(errors, [])
+  } finally { await strict.close() }
 })
 
 test('no WebGL2: the surface renders nothing, says so once, and the host is told', { timeout: 60_000 }, async () => {
