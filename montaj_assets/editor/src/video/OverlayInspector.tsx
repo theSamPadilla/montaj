@@ -67,10 +67,10 @@ import { NumberField, Slider, cn, inspectorInputClass, stepValue } from '../ui'
  * the last keyframe leaves behind.
  *
  * Clips (video and image) get three more controls: a Blend row (§616, the
- * `blendMode` the clip composites with), a Blur row (the `blur` over its
- * picture, in pixels of the 1080 canvas; static, so no keyframe unit) and a
- * collapsible Mask section (§616, the `mask` it shows through: shape,
- * position, size, rotation, feather, invert).
+ * `blendMode` the clip composites with), a collapsible Mask section (§616, the
+ * `mask` it shows through: shape, position, size, rotation, feather, invert)
+ * and under it a collapsible Blur section (the `blur` over its picture, in
+ * pixels of the 1080 canvas; static, so no keyframe unit).
  * Mask values are shown in percent of the clip's box and stored as fractions;
  * every one goes through the same {@link writeProp} rule, so a keyframed mask
  * prop is keyed at the playhead. Overlays take neither.
@@ -158,9 +158,11 @@ const MASK_ROWS: Record<MaskKeyframeProp, MaskRowSpec> = {
   maskFeather:  { prop: 'maskFeather',  name: 'Mask feather',  step: 1, min: 0, max: 100, factor: 100 },
 }
 
-/** The Blur row: pixels of the 1080-short-edge canvas, 0 to BLUR_MAX (what
- *  save accepts). Not keyframable, so it writes the static field. */
-const BLUR_ROW: CellSpec = { name: 'Blur', step: 1, min: 0, max: BLUR_MAX }
+/** The Blur section's amount: pixels of the 1080-short-edge canvas, 0 to
+ *  BLUR_MAX (what save accepts). Not keyframable, so it writes the static field. */
+const BLUR_ROW: CellSpec = { name: 'Blur amount', step: 1, min: 0, max: BLUR_MAX }
+/** What the Blur switch turns on at when the panel has no earlier amount. */
+const BLUR_DEFAULT = 20
 
 /** The shape buttons, in timeline-core's picker order. lucide has no ellipse
  *  glyph, so the ellipse is its circle. */
@@ -604,6 +606,11 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   // The Mask section's chevron. Local UI state, like a disclosure: it is not
   // part of the item, so it may outlive a selection change.
   const [maskOpen, setMaskOpen] = useState(true)
+  // The Blur section's chevron, and the amount its switch turns back on at:
+  // the switch removes `blur` (0 is the default), so the last amount is kept
+  // here while the panel is open.
+  const [blurOpen, setBlurOpen] = useState(true)
+  const lastBlur = useRef(BLUR_DEFAULT)
 
   if (!canKeyframe(item)) {
     return (
@@ -846,6 +853,18 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
     if (v > 0) next.blur = v
     else delete next.blur
     return next
+  }
+
+  /** The Blur switch: off removes the blur and remembers it; on restores the
+   *  last amount (BLUR_DEFAULT the first time). One discrete edit. */
+  function handleBlurSwitch() {
+    const now = blurOf(target)
+    if (now > 0) {
+      lastBlur.current = now
+      onChange(withBlur(0))
+    } else {
+      onChange(withBlur(lastBlur.current > 0 ? lastBlur.current : BLUR_DEFAULT))
+    }
   }
 
   /** Normal is the default, so it removes the key rather than storing it. */
@@ -1149,22 +1168,6 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
           </div>
         )}
 
-        {/* ── Blur (clips) ─────────────────────────────────────────────────
-            Not keyframable, so no unit. Typing previews and commits like
-            the other boxes; a step is one discrete edit. */}
-        {isClip && (
-          <div className="flex items-center gap-2">
-            <span className={ROW_LABEL_CLASS}>Blur</span>
-            <NumberCell
-              row={BLUR_ROW}
-              value={blurOf(target)}
-              onPreview={v => onPreview(withBlur(v))}
-              onCommit={onCommit}
-              onStep={d => onChange(withBlur(stepValue(blurOf(target), d, BLUR_ROW)))}
-            />
-          </div>
-        )}
-
         {/* ── Align ────────────────────────────────────────────────────── */}
         <div className="flex items-center gap-2">
           <span className={ROW_LABEL_CLASS}>Align</span>
@@ -1288,6 +1291,54 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
               <div className="flex items-center gap-2">
                 <span className={ROW_LABEL_CLASS}>Invert</span>
                 <Toggle checked={mask.invert} label="Invert mask" onClick={handleInvert} />
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── Blur (clips) ───────────────────────────────────────────────────
+          Built like Mask: a header (chevron, "Blur", switch), then the amount
+          while the blur is on and the section is open. Not keyframable, so no
+          unit; typing previews and commits like the other boxes, and a step
+          or a slider release is one edit. */}
+      {isClip && (
+        <>
+          <div className={cn('shrink-0 flex items-center gap-1 border-t border-[var(--editor-border)] px-2 py-1.5', blurOpen && blurOf(target) > 0 && 'border-b')}>
+            <button
+              type="button"
+              aria-label={blurOpen ? 'Collapse blur' : 'Expand blur'}
+              aria-expanded={blurOpen}
+              onClick={() => setBlurOpen(open => !open)}
+              className={ICON_BUTTON_CLASS}
+            >
+              {blurOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            </button>
+            <span className={HEADER_CAPS_CLASS}>Blur</span>
+            <Toggle checked={blurOf(target) > 0} label="Blur" onClick={handleBlurSwitch} />
+          </div>
+
+          {blurOpen && blurOf(target) > 0 && (
+            <div className="flex flex-col gap-2 p-2">
+              <div className="flex items-center gap-2">
+                <span className={ROW_LABEL_CLASS}>Amount</span>
+                <Slider
+                  aria-label="Blur amount slider"
+                  value={blurOf(target)}
+                  min={1}
+                  max={BLUR_MAX}
+                  step={1}
+                  onChange={v => onPreview(withBlur(v))}
+                  onCommit={onCommit}
+                  className="min-w-0 flex-1"
+                />
+                <NumberCell
+                  row={BLUR_ROW}
+                  value={blurOf(target)}
+                  onPreview={v => onPreview(withBlur(v))}
+                  onCommit={onCommit}
+                  onStep={d => onChange(withBlur(stepValue(blurOf(target), d, BLUR_ROW)))}
+                />
               </div>
             </div>
           )}

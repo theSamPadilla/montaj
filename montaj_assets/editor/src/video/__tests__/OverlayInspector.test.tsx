@@ -1531,34 +1531,59 @@ describe('OverlayInspector — blend and mask (clips, §616)', () => {
     expect('blendMode' in (onChange.mock.calls[0][0] as VisualItem)).toBe(false)
   })
 
-  it('shows a Blur row on a clip (0 when absent), none on an overlay', () => {
+  const blurSwitch = () => screen.getByRole('checkbox', { name: 'Blur' })
+  const blurAmount = () => screen.getByLabelText('Blur amount')
+
+  it('a clip has a Blur section under Mask, off with no amount row when blur is absent; an overlay has none', () => {
     const { unmount } = renderInspector(clip(), 5)
-    expect(screen.getByLabelText('Blur')).toHaveValue(0)
+    expect(blurSwitch()).toHaveAttribute('aria-checked', 'false')
+    expect(screen.queryByLabelText('Blur amount')).toBeNull()
+    const order = [screen.getByRole('checkbox', { name: 'Mask' }), blurSwitch()]
+    expect(order[0].compareDocumentPosition(order[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     unmount()
-    renderInspector(clip({ blur: 40 }), 5)
-    expect(screen.getByLabelText('Blur')).toHaveValue(40)
-  })
-
-  it('no Blur row on an overlay', () => {
     renderInspector(overlayItem(), 5)
-    expect(screen.queryByLabelText('Blur')).toBeNull()
+    expect(screen.queryByRole('checkbox', { name: 'Blur' })).toBeNull()
   })
 
-  it('typing a blur previews the static field, held to 0..200; 0 removes the key', () => {
-    const { onPreview } = renderInspector(clip(), 5)
+  it('a blurred clip shows the switch on and its amount; the chevron hides and shows it', () => {
+    renderInspector(clip({ blur: 40 }), 5)
+    expect(blurSwitch()).toHaveAttribute('aria-checked', 'true')
+    expect(blurAmount()).toHaveValue(40)
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse blur' }))
+    expect(screen.queryByLabelText('Blur amount')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Expand blur' }))
+    expect(blurAmount()).toHaveValue(40)
+  })
+
+  it('the switch turns blur off (removing the key) and back on at the last amount, default 20', () => {
+    const first = renderInspector(clip(), 5)
+    fireEvent.click(blurSwitch())
+    expect((first.onChange.mock.calls[0][0] as VisualItem).blur).toBe(20)
+    first.unmount()
+    const { onChange, rerender } = renderInspector(clip({ blur: 55 }), 5)
+    fireEvent.click(blurSwitch())
+    const off = onChange.mock.calls[0][0] as VisualItem
+    expect('blur' in off).toBe(false)
+    rerender(<OverlayInspector item={off} clock={createPlaybackClock(5)} onPreview={vi.fn()} onCommit={vi.fn()} onChange={onChange} />)
+    fireEvent.click(blurSwitch())
+    expect((onChange.mock.calls[1][0] as VisualItem).blur).toBe(55)
+  })
+
+  it('typing a blur amount previews the static field, held to 0..200; 0 removes the key', () => {
+    const { onPreview } = renderInspector(clip({ blur: 10 }), 5)
     const last = () => onPreview.mock.calls[onPreview.mock.calls.length - 1][0] as VisualItem
-    fireEvent.change(screen.getByLabelText('Blur'), { target: { value: '40' } })
+    fireEvent.change(blurAmount(), { target: { value: '40' } })
     expect(last().blur).toBe(40)
     expect(hasKeyframes(last(), 'blur' as KeyframeProp)).toBe(false)
-    fireEvent.change(screen.getByLabelText('Blur'), { target: { value: '500' } })
+    fireEvent.change(blurAmount(), { target: { value: '500' } })
     expect(last().blur).toBe(200)
-    fireEvent.change(screen.getByLabelText('Blur'), { target: { value: '0' } })
+    fireEvent.change(blurAmount(), { target: { value: '0' } })
     expect('blur' in last()).toBe(false)
   })
 
-  it('the Blur stepper is one discrete edit', () => {
+  it('the Blur amount stepper is one discrete edit', () => {
     const { onChange } = renderInspector(clip({ blur: 40 }), 5)
-    fireEvent.click(screen.getByRole('button', { name: 'Increase Blur' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Increase Blur amount' }))
     expect(onChange).toHaveBeenCalledTimes(1)
     expect((onChange.mock.calls[0][0] as VisualItem).blur).toBe(41)
   })
