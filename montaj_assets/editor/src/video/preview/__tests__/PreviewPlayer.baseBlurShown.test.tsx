@@ -159,3 +159,33 @@ describe('the base clip blur on the engine path', () => {
     expect(back(container).contains(hud)).toBe(false)
   })
 })
+
+describe('the base clip blur through an engine crossfade', () => {
+  async function at(items: VisualItem[], t: number) {
+    __setEngineCapabilityForTests(true)
+    const r = renderAt(project(items, 'px'), t, { enabled: true })
+    await waitFor(() => expect(r.container.querySelector('canvas[data-montaj-engine-canvas]')).not.toBeNull())
+    act(() => deps!.onStatusChange?.({ ...status }))
+    return r
+  }
+  const pair = (a: Record<string, unknown>, b: Record<string, unknown>) =>
+    [clip('c0', 0, 5, { proxySrc: 'c0p.mp4', ...a }), clip('c1', 3, 8, { proxySrc: 'c1p.mp4', ...b })]
+
+  it('blurs that differ: the blend draws sharp for the overlap (the incoming clip never takes the outgoing blur)', async () => {
+    const { container } = await at(pair({}, { blur: 0 }), 4)
+    expect(surface(container)).toBeNull()
+    expect(back(container).style.opacity).toBe('')
+  })
+
+  it('a spin against a zoom, or a moved centre, differ too', async () => {
+    expect(surface((await at(pair({}, { blurType: 'zoom' }), 4)).container)).toBeNull()
+  })
+
+  it('outside the overlap the active clip blurs as ever', async () => {
+    expect(surface((await at(pair({}, { blur: 0 }), 1)).container)).not.toBeNull()
+  })
+
+  it('the same blur on both: the blend is blurred (blurring the blend is blurring each)', async () => {
+    expect(surface((await at(pair({}, {}), 4)).container)).not.toBeNull()
+  })
+})

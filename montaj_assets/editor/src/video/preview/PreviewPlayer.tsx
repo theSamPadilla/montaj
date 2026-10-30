@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react'
-import { containsTime, geometryAt, hasCropKeyframes, maskAt } from '@bycrux/timeline-core'
+import { blurAngleOf, blurCenterOf, blurOf, blurTypeOf, containsTime, geometryAt, hasCropKeyframes, maskAt, transitionPairs } from '@bycrux/timeline-core'
 import { videoTransformContainerStyle, videoTransformBoxPct, mediaBoxStyle, perAxisRatio, zoomTo, type VideoTransform } from './transformStyle'
 import type { EditorProject as Project, VisualItem } from '../../schema'
 import type { OverlayFactory } from '../../types'
@@ -243,6 +243,17 @@ interface PreviewPlayerProps {
  * `zoomChanges`). For a clip with no animation this is exactly its static
  * fields, as it always was.
  */
+/** What a clip's blur draws, as one comparable string: two clips with equal keys blur alike. */
+function blurKey(item: VisualItem): string {
+  const amount = blurOf(item)
+  if (!(amount > 0)) return 'none'
+  const type = blurTypeOf(item)
+  const c = blurCenterOf(item)
+  return type === 'linear' ? `linear:${amount}:${blurAngleOf(item)}`
+    : type === 'spin' || type === 'zoom' ? `${type}:${amount}:${c.x}:${c.y}`
+      : `uniform:${amount}`
+}
+
 function clipTransformAt(clip: VisualItem | undefined, time: number): VideoTransform {
   if (!clip) return { scale: 1, offsetX: 0, offsetY: 0 }
   const g = geometryAt(clip, 'video', localTimeOf(clip, time))
@@ -741,7 +752,17 @@ function PreviewSurface({
   // clip: `activeClip` falls back to the last clip in a gap and past the end,
   // where the slots go to opacity 0 (or the engine clears to black), but a
   // spin or zoom surface would keep showing the last frame it drew.
-  const blurred = showVideo && !!activeClip && containsTime(activeClip.start, activeClip.end, currentTime) ? baseShown : null
+  //
+  // CROSSFADES (engine path). The engine blends both clips into its one
+  // canvas, and the blur is drawn over that canvas, so the incoming clip
+  // would take the outgoing (active) clip's blur for the whole overlap. When
+  // the two clips' blurs differ, the preview draws the blend sharp instead;
+  // when they match, blurring the blend is blurring each (every blur here is
+  // linear in the picture). The export blurs each clip on its own.
+  const crossfades = useMemo(() => (playback.mode === 'engine' ? transitionPairs(clips) : []), [playback.mode, clips])
+  const fading = crossfades.find((pair) => pair.start <= currentTime && currentTime < pair.end)
+  const blendSharp = !!fading && blurKey(fading.from as VisualItem) !== blurKey(fading.to as VisualItem)
+  const blurred = showVideo && !blendSharp && !!activeClip && containsTime(activeClip.start, activeClip.end, currentTime) ? baseShown : null
   const baseBlur = useItemBlur(blurred && !isCanvasProject ? {
     item: blurred,
     src: fileUrl(blurred.src ?? ''),

@@ -681,6 +681,11 @@ None is keyframable. Uniform and linear draw live in the preview as SVG filters
 inside its media box, so its mask and blend apply (`preview/RadialBlurSurface.tsx`,
 `preview/radialBlurGL.ts`); the clip's own `<video>`, `<img>` or engine canvas
 stays mounted underneath at opacity 0, and shows sharp when there is no WebGL2.
+The base clip blurs only while its picture shows and the playhead is inside it
+(never in a gap, past the end, or over a black or preparing engine canvas).
+Through an engine crossfade the blur is drawn over the blended canvas, so when
+the two clips' blurs differ the blend shows sharp for the overlap (the export
+blurs each clip on its own); equal blurs stay blurred.
 They match the export within 8 codes (mean under 1). Their export cost, a 10 s
 1080x1920 full-frame clip of known footage size: 11.7 s for spin 30 degrees and
 12.3 s for zoom 40%, against 4.6 s unblurred, 5.7 s uniform 40 and 8.6 s linear

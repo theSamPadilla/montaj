@@ -74,6 +74,11 @@
 // picture's rect and the part of the source that fills it come from
 // {@link radialBlurSpec}. Measured against the export in Chromium: worst 8
 // codes, mean under 1 (editor/browser/radial-blur.test.mjs).
+//
+// THE BASE CLIP (PreviewPlayer) blurs only while its picture shows and the
+// playhead is inside it. On the engine path the blur runs over the engine's
+// one canvas, which holds a crossfade's blend of two clips: when their blurs
+// differ the preview draws that blend sharp (the export blurs each clip).
 
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { blurAngleOf, blurCenterOf, blurOf, blurTypeOf, pictureRectInBox } from '@bycrux/timeline-core'
