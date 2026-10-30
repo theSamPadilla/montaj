@@ -140,12 +140,34 @@ def overlay_base_key(jsx, props, fonts, duration, fps, timestamps, tile_width, w
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def _norm(p: str) -> str:
+    """A path as the cache sees it: forward slashes, so the key reads the same on every OS."""
+    return p.replace("\\", "/")
+
+
 def overlay_key(base_key: str, imports: list) -> str:
     """The cache key: the base key plus the content of every file the overlay imports, so an edit to one retires it."""
     h = hashlib.sha256(base_key.encode())
-    for p in sorted(imports):
-        h.update(b"\0" + p.encode() + b"\0" + _file_sha(p).encode())
+    for p in sorted({_norm(i): i for i in imports}.items()):
+        h.update(b"\0" + p[0].encode() + b"\0" + _file_sha(p[1]).encode())
     return h.hexdigest()
+
+
+def _write_json_atomic(path: str, obj, valid=None):
+    """Write via a temp file in the same folder, then rename. On Windows a rename over an existing file can fail
+    (EPERM/EEXIST): if the target already exists and `valid(target)` holds, that is a cache hit, not an error."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(obj, f)
+    try:
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        if not (os.path.isfile(path) and (valid is None or valid(_read_json(path)))):
+            raise
 
 
 def _read_json(path):
@@ -223,8 +245,7 @@ def build_overlay(jsx, duration, out_dir, max_tiles, min_interval, cols, tile_wi
         got = run_overlay_strip_node(cmd, timeout)
         imports = sorted({p for p, _ in got.get("inputs", [])} | {jsx})
         os.makedirs(os.path.join(out_dir, base), exist_ok=True)
-        with open(os.path.join(out_dir, base, "imports.json"), "w") as f:
-            json.dump(imports, f)
+        _write_json_atomic(os.path.join(out_dir, base, "imports.json"), imports, valid=lambda d: isinstance(d, list))
         key_dir = os.path.join(out_dir, overlay_key(base, imports))
         os.makedirs(key_dir, exist_ok=True)
 
@@ -242,10 +263,8 @@ def build_overlay(jsx, duration, out_dir, max_tiles, min_interval, cols, tile_wi
                 "tiles": [{"t": round(t, 3), "row": i // cols, "col": i % cols} for i, t in enumerate(chunk)],
             })
         index = {"sheets": sheets, "interval": round(interval, 3), "tileWidth": tile_width, "tileHeight": tile_height}
-        tmp = os.path.join(key_dir, "index.json.tmp")
-        with open(tmp, "w") as f:
-            json.dump(index, f)
-        os.replace(tmp, os.path.join(key_dir, "index.json"))  # last, so a hit never sees half a strip
+        # last, so a hit never sees half a strip
+        _write_json_atomic(os.path.join(key_dir, "index.json"), index, valid=lambda d: isinstance(d, dict) and bool(d.get("sheets")))
         return index
     finally:
         shutil.rmtree(work, ignore_errors=True)

@@ -169,3 +169,26 @@ def test_real_overlay_strip_three_tiles(overlay, tmp_path):
     assert len(data["sheets"][0]["tiles"]) == 3
     assert data["tileWidth"] == 108 and data["tileHeight"] == 192
     assert (out / data["sheets"][0]["path"].split("/")[-2] / "index.json").exists()
+
+
+def test_key_is_stable_across_path_separators(monkeypatch):
+    # content reads are a host concern; the pure key code sees only the (normalised) path text
+    monkeypatch.setattr(fs, "_file_sha", lambda p: "same")
+    posix = "C:/Users/x/ov/a.js"
+    win = "C:\\Users\\x\\ov\\a.js"
+    assert fs.overlay_key("base", [posix]) == fs.overlay_key("base", [win])
+    assert fs._norm("C:\\Users\\x\\o.jsx") == "C:/Users/x/o.jsx"
+
+
+def test_rename_failure_over_a_valid_target_is_a_hit(tmp_path, monkeypatch):
+    target = tmp_path / "index.json"
+    target.write_text(json.dumps({"sheets": [1]}))
+    def boom(*a):
+        raise PermissionError("EPERM")
+    monkeypatch.setattr(fs.os, "replace", boom)
+    fs._write_json_atomic(str(target), {"sheets": [2]}, valid=lambda d: bool(d and d.get("sheets")))
+    assert json.loads(target.read_text()) == {"sheets": [1]}
+    assert not list(tmp_path.glob("*.tmp"))
+    target.write_text("junk")
+    with pytest.raises(PermissionError):
+        fs._write_json_atomic(str(target), {"sheets": [2]}, valid=lambda d: bool(d and d.get("sheets")))
