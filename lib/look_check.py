@@ -341,7 +341,9 @@ def caption_ink_issues(project, project_dir=None):
     measured, or set for a card that is no longer on screen. Only ink the step wrote (inkAuto naming the same ink) is
     judged; a person's ink is never flagged. No render here: a card is found by the project data (an opaque overlay, a
     3D scene with a backdrop, read from `project_dir`), so a card that only measuring can find (a paper matte round a
-    window) is not flagged before the step has run."""
+    window) is not flagged before the step has run. Each caption is judged at its own middle, the time the step judges
+    it at (a piece of a split caption is a caption of its own), so a caption over a card that reaches the band only
+    partway through its span is judged where the step judged it."""
     from lib import caption_ink
     out = []
     width, height = design_size(project)

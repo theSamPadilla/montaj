@@ -1,5 +1,6 @@
 """caption_ink (lib/caption_ink.py): which card is under a caption, how light its backdrop is, and what the plan
 writes. The render is faked: a PNG per card, light for one and dark for another."""
+import copy
 import sys
 import time
 from pathlib import Path
@@ -416,11 +417,15 @@ def test_footage_below_the_matte_does_not_hide_it(tmp_path):
     assert ("id", "a") in changes
 
 
-def test_an_overlay_is_rendered_once_at_the_middle_of_its_own_span(tmp_path):
+def test_a_static_overlay_is_rendered_only_at_the_coarse_frames_either_side_of_its_captions(tmp_path):
+    # Was one render at the middle of the overlay's span for every caption; an overlay is now judged at each caption's
+    # own time. 30 fps: the fine grid is 8 frames, the coarse 32. a (mid 1.5 s, frame 48) lies between 32 and 64, b
+    # (5.5 s, 168) between 160 and 192, c (8.5 s) is 256, on the coarse grid itself. The anchors agree, so nothing
+    # between them is rendered.
     calls = []
     p = _project([_matte()], [_seg("a", 1, 2), _seg("b", 5, 6), _seg("c", 8, 9)])
     changes, _, _ = _plan2(p, tmp_path, _alpha_png(tmp_path, "m7", window=(60, 300, 1020, 900)), calls=calls)
-    assert calls == [("matte", 150)], "frame = round((middle of the span - start) * fps), one render for every caption"
+    assert sorted(calls) == [("matte", n) for n in (32, 64, 160, 192, 256)], "each frame once"
     assert set(changes) == {("id", "a"), ("id", "b"), ("id", "c")}
 
 
@@ -893,8 +898,9 @@ def test_a_second_plan_renders_no_overlay_and_reads_the_same(tmp_path, opaque):
     p = _ov_project(tmp_path, opaque=opaque)
     calls = []
     first = _ov_cached(p, tmp_path, calls)
+    rendered = len(calls)
     second = _ov_cached(p, tmp_path, calls)
-    assert len(calls) == 1
+    assert rendered and len(calls) == rendered, "the second plan renders nothing"
     assert second[0] == first[0] and second[1] == first[1]
     plain = _plan2(p, tmp_path, _alpha_png(tmp_path, "ovc", window=(60, 300, 1020, 900)))
     assert first[0] == plain[0], "cached rows give the numbers the PNG gives"
@@ -930,18 +936,20 @@ def test_an_overlay_changing_is_a_miss(tmp_path, edit):
     p = _ov_project(tmp_path)
     calls = []
     _ov_cached(p, tmp_path, calls)
+    rendered = len(calls)
     edit(p, tmp_path)
     _ov_cached(p, tmp_path, calls)
-    assert len(calls) == 2
+    assert rendered and len(calls) == 2 * rendered
 
 
 def test_a_caption_only_change_does_not_render_an_overlay(tmp_path):
     p = _ov_project(tmp_path)
     calls = []
     _ov_cached(p, tmp_path, calls)
+    rendered = len(calls)
     p["captions"]["segments"][0]["text"] = "another line"
     _ov_cached(p, tmp_path, calls)
-    assert len(calls) == 1
+    assert rendered and len(calls) == rendered
 
 
 # -- a caption that overhangs its card by a few frames is snapped to the card's edge -------------------------------
@@ -1072,3 +1080,94 @@ def test_a_short_edge_piece_of_two_words_or_inside_the_caption_still_does_not_sp
     p = _project([_card("card", 0, 2.5), _card("card2", 2.6, 10)], [_straddler("b", spec)])
     changes, counts, _ = _plan(p, tmp_path, light=("card", "card2"), dark=())
     assert counts["split"] == 0
+
+
+# -- an overlay whose coverage changes over its span is judged at each caption's own time ------------------------
+# A footage card (a paper surround with a hole where the clip below is): the clip starts full-screen, so the hole is
+# the whole frame and the overlay covers nothing in the band, then shrinks into a card and the surround covers the
+# band. It was judged at the middle of its span for every caption over it: settled, a card, so the words over the
+# full-screen clip were inked dark over footage.
+
+SWITCH = 78   # 2.6 s at 30 fps: the frame from which the surround covers the band
+
+
+def _settling(tmp_path):
+    clear, card = _alpha_png(tmp_path, "settle-clear", window="all"), _alpha_png(tmp_path, "settle-card", window=(60, 300, 1020, 900))
+    return lambda item, n: card if n >= SWITCH else clear
+
+
+def _settle_project(tmp_path, segs):
+    (tmp_path / "overlays").mkdir(exist_ok=True)
+    (tmp_path / "overlays" / "footage-card.jsx").write_text("export default () => null")
+    return _project([_matte(end=6)], segs)
+
+
+def _settle_plan(project, tmp_path, calls=None, cache=True):
+    alpha = _settling(tmp_path)
+
+    def overlay(item, n):
+        if calls is not None:
+            calls.append(n)
+        return alpha(item, n)
+
+    def frame(t):
+        raise AssertionError("a JSX card renders no frame")
+    return ci.plan(project, frame, W, H, overlay_fn=overlay, project_dir=str(tmp_path),
+                   cache_path=str(tmp_path / "cache.json") if cache else None)
+
+
+def test_a_caption_before_the_card_settles_is_over_footage_and_one_after_is_dark(tmp_path):
+    p = _settle_project(tmp_path, [_seg("pre", 0.2, 0.8), _seg("post", 4.5, 5.5)])
+    changes, counts, warnings = _settle_plan(p, tmp_path)
+    assert ("id", "pre") not in changes, "at 0.5 s the overlay covers nothing in the band: the caption is over footage"
+    assert changes[("id", "post")]["ink"] == "dark" and changes[("id", "post")]["inkAuto"]["card"] == "matte"
+    assert changes[("id", "post")]["inkAuto"]["backdrop"] == pytest.approx(_lum(PAPER[:3]), abs=0.002)
+    assert (counts["dark"], counts["light"]) == (1, 0) and warnings == []
+
+
+def test_ink_of_ours_set_at_the_cards_middle_is_cleared_where_the_card_is_not_there_yet(tmp_path):
+    p = _settle_project(tmp_path, [_seg("pre", 0.2, 0.8, ink="dark", inkAuto=_auto("matte", "dark"))])
+    changes, counts, _ = _settle_plan(p, tmp_path)
+    assert changes == {("id", "pre"): None} and counts["cleared"] == 1
+
+
+def test_a_caption_straddling_the_moment_the_card_reaches_the_band_is_split(tmp_path):
+    p = _settle_project(tmp_path, [_straddler(), _seg("pre", 0.2, 0.8), _seg("post", 4.5, 5.5)])
+    calls = []
+    changes, counts, warnings = _settle_plan(p, tmp_path, calls)
+    pieces = changes[("id", "a")]["split"]
+    # word middles 1.25 .. 3.75 s are frames 40, 56, 64 (before 78) and 80, 96, 112 (after)
+    assert [x["text"] for x in pieces] == ["one two three", "four five six"]
+    assert [(x["start"], x["end"]) for x in pieces] == [(1.0, 2.5), (2.5, 4.0)]
+    assert "ink" not in pieces[0] and pieces[1]["ink"] == "dark" and pieces[1]["inkAuto"]["card"] == "matte"
+    assert ("id", "pre") not in changes and changes[("id", "post")]["ink"] == "dark"
+    assert (counts["split"], counts["dark"]) == (1, 2) and warnings == []
+    # the coarse frames either side of every caption (0..160, 32 apart), then 80 only, where 64 and 96 disagree
+    assert sorted(calls) == [0, 32, 64, 80, 96, 128, 160]
+
+
+def test_a_rerun_over_an_unchanged_settling_card_renders_nothing_and_says_the_same(tmp_path):
+    p = _settle_project(tmp_path, [_straddler(), _seg("pre", 0.2, 0.8), _seg("post", 4.5, 5.5)])
+    calls = []
+    first = _settle_plan(p, tmp_path, calls)
+    rendered = len(calls)
+    second = _settle_plan(p, tmp_path, calls)
+    assert rendered == 7 and len(calls) == rendered, "every frame is a cache hit"
+    assert second[0] == first[0] and second[1] == first[1]
+
+
+def test_the_split_is_written_is_idempotent_and_look_reports_nothing(tmp_path):
+    from lib import look_check as lc
+    p = _settle_project(tmp_path, [_straddler(), _seg("post", 4.5, 5.5)])
+    changes, _, _ = _settle_plan(p, tmp_path)
+    fresh = copy.deepcopy(p)
+    assert ci.apply_changes(fresh, changes, _read_of(p), str(tmp_path))
+    assert lc.caption_ink_issues(fresh, str(tmp_path)) == [], "each piece was judged at its own time"
+    again, counts, _ = _settle_plan(fresh, tmp_path)
+    assert counts["split"] == 0
+    assert not ci.apply_changes(copy.deepcopy(fresh), again, _read_of(fresh), str(tmp_path))
+
+
+def test_the_frame_for_a_time_is_on_the_quarter_second_grid_within_the_span():
+    item = _matte(start=10, end=12.1)   # 63 frames: 0..62; 12.09 s is nearest grid frame 64, past the last
+    assert [ci._frame_at(item, t, 30) for t in (10, 10.1, 10.14, 11.5, 11.99, 12.09)] == [0, 0, 8, 48, 56, 62]
