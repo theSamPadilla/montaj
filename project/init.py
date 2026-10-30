@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Initialize a montaj project workspace."""
-import argparse, json, os, re, shutil, signal, subprocess, sys, threading, time, uuid
+import argparse, errno, json, os, re, shutil, signal, subprocess, sys, tempfile, threading, time, uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -11,7 +11,7 @@ from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, fps_from
 from lib.common import SAFE_NAME, fail, ffprobe_bin, progress, ff_path
 from lib import disk_space
 from lib.fs_remove import rmtree_force
-from lib.fs_safe import open_write_no_follow
+from lib.fs_safe import _is_link, open_write_no_follow
 from lib.remote_io import fetch_to_disk, parse_allowed_hosts
 from lib.color_provenance import ProbeError, proxy_source_for
 from lib.normalize import normalize, normalized_output_path, is_normalized, probe_video
@@ -106,6 +106,170 @@ def _write_project_json(project_path: str, project: dict) -> None:
             f.write(json.dumps(project, indent=2).encode("utf-8"))
     finally:
         _add_phase("write", t0)
+
+
+def _atomic_replace_bytes(path: str, data: bytes, mode: int = 0o644) -> None:
+    """Write *data* over *path* atomically: a temp file in the same folder, then
+    `os.replace`, so a reader never sees half a file and a failure part way leaves
+    the old one whole. A symlink (or Windows reparse point) at *path* is refused,
+    never written through or replaced (H4). `os.replace` is retried a few times on
+    PermissionError: Windows refuses to replace a file another process holds open
+    (the editor, an indexer, antivirus)."""
+    folder = os.path.dirname(os.path.abspath(path))
+    tmp = None
+    try:
+        if _is_link(path):
+            raise OSError(errno.ELOOP, "refusing to write through a symlink", path)
+        fd, tmp = tempfile.mkstemp(dir=folder, prefix=".project.json.", suffix=".tmp")
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.chmod(tmp, mode)
+        except OSError:
+            pass
+        for attempt in range(5):
+            if _is_link(path):
+                raise OSError(errno.ELOOP, "refusing to write through a symlink", path)
+            try:
+                os.replace(tmp, path)
+                tmp = None
+                return
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.2 * (attempt + 1))
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _replace_project_json(project_path: str, project: dict, mode: int = 0o644) -> bytes:
+    """§631: write *project* over the seed's existing project.json atomically
+    (`_atomic_replace_bytes`), the same bytes `_write_project_json` writes.
+    Returns the bytes written."""
+    t0 = time.perf_counter()
+    try:
+        data = json.dumps(project, indent=2).encode("utf-8")
+        _atomic_replace_bytes(project_path, data, mode)
+        return data
+    finally:
+        _add_phase("write", t0)
+
+
+# §631 --adopt-seed: workflow project types a seed cannot become.
+_ADOPT_UNSUPPORTED_TYPES = ("carousel", "ai_video")
+
+
+def _tracks_empty(tracks) -> bool:
+    """True when no track holds an item, in either shape a track has on disk: a
+    bare list of items, or ``{"items": [...]}``. Anything unreadable is not
+    empty: an adopt never overwrites what it cannot read."""
+    if tracks is None:
+        return True
+    if not isinstance(tracks, list):
+        return False
+    for track in tracks:
+        if isinstance(track, list):
+            if track:
+                return False
+        elif isinstance(track, dict):
+            if track.get("items") not in (None, []):
+                return False
+        else:
+            return False
+    return True
+
+
+def _seed_refusal(project) -> str | None:
+    """Why a project.json is not a seed init may adopt, or None when it is one:
+    it says `seed: true` and holds nothing but `sources` (no track item, no
+    asset, no audio track, no voiceover)."""
+    if not isinstance(project, dict):
+        return "project.json is not an object"
+    if project.get("seed") is not True:
+        return "the project is not a seed"
+    if not isinstance(project.get("sources", []), list):
+        return "the seed's sources are not a list"
+    if not _tracks_empty(project.get("tracks")):
+        return "the seed has items on its timeline"
+    if project.get("assets"):
+        return "the seed has assets"
+    audio = project.get("audio")
+    if audio and (not isinstance(audio, dict) or audio.get("tracks")):
+        return "the seed has audio tracks"
+    if project.get("voiceover"):
+        return "the seed has a voiceover"
+    return None
+
+
+def _load_seed(project_dir: str) -> dict:
+    """The seed's project.json, parsed, with its file mode; or fail() with
+    `adopt_refused` before anything is written."""
+    project_path = os.path.join(project_dir, "project.json")
+    if _is_link(project_path):
+        fail("adopt_refused", f"{project_path} is a symlink")
+    try:
+        with open(project_path, "rb") as f:
+            data = json.loads(f.read().decode("utf-8"))
+        mode = os.stat(project_path).st_mode & 0o777
+    except (OSError, ValueError) as exc:
+        fail("adopt_refused", f"the seed's project.json cannot be read: {exc}")
+    reason = _seed_refusal(data)
+    if reason:
+        fail("adopt_refused", reason)
+    return {"project": data, "mode": mode}
+
+
+def _source_path(src, project_dir: str) -> str | None:
+    """A source's `src` as a path: absolute as stored, or relative to the project folder."""
+    if not isinstance(src, str) or not src:
+        return None
+    return os.path.normpath(src if os.path.isabs(src) else os.path.join(project_dir, src))
+
+
+def _probe_existing_sources(sources: list, project_dir: str) -> list:
+    """probe_video of each existing source that reads as video, in order; a
+    source that is missing or fails to probe is skipped (fail open)."""
+    infos = []
+    for source in sources:
+        path = _source_path(source.get("src") if isinstance(source, dict) else None, project_dir)
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            info = probe_video(path)
+        except (Exception, SystemExit):
+            info = None
+        if info:
+            infos.append(info)
+    return infos
+
+
+def _free_clip_id(taken: set) -> str:
+    """The first `clip-<n>` no source holds, reserved in *taken*."""
+    n = 0
+    while f"clip-{n}" in taken:
+        n += 1
+    taken.add(f"clip-{n}")
+    return f"clip-{n}"
+
+
+def _norm(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _files_under(folder: str) -> set:
+    """Every file under *folder* (`.git` left out), as `_norm` paths."""
+    out = set()
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = [d for d in dirs if d != ".git"]
+        for name in files:
+            out.add(_norm(os.path.join(root, name)))
+    return out
 
 
 def _safe_clip_ext(path: str) -> str:
@@ -531,6 +695,12 @@ def _main():
              "(transcribe, rm_nonspeech, rm_fillers); non-English values auto-select a "
              "multilingual whisper model. Default 'en'.",
     )
+    parser.add_argument(
+        "--adopt-seed", dest="adopt_seed", action="store_true",
+        help="Turn the seed project --id names (made when a person recorded with no project) "
+             "into this project in place: same id, same folder, its sources kept verbatim and "
+             "first. Refused unless that project is a seed holding nothing but sources.",
+    )
     args = parser.parse_args()
 
     # Normalize mode: CLI flag overrides workflow JSON; workflow JSON overrides default "eager".
@@ -547,6 +717,19 @@ def _main():
 
     # Early carousel detection — validate incompatible args BEFORE any on-disk side effects.
     early_project_type = _read_project_type(args.workflow)
+
+    # §631 --adopt-seed: refused before anything is read or written.
+    if args.adopt_seed:
+        if args.project_id is None:
+            fail("adopt_needs_id", "--adopt-seed needs --id (the seed project's id)")
+        if args.project_path is not None:
+            fail("mutually_exclusive", "--adopt-seed and --project-path are mutually exclusive")
+        if args.remote_clips or args.remote_assets:
+            # A download names its own file in the folder, which could be a take's.
+            fail("mutually_exclusive", "--adopt-seed does not take --remote-clip or --remote-asset")
+        if early_project_type in _ADOPT_UNSUPPORTED_TYPES:
+            fail("adopt_unsupported", f"a seed cannot become a {early_project_type} project")
+
     if early_project_type == "carousel":
         _validate_carousel_args(args)
 
@@ -640,7 +823,20 @@ def _main():
         except Exception:
             pass
 
-    if args.project_path is not None:
+    seed = None
+    if args.adopt_seed:
+        # §631: the seed's own folder, found the way serve finds a project. It is
+        # never made and never removed: a failure undoes only what this run added.
+        from serve.common import DuplicateProjectId, find_project_dir
+        try:
+            found = find_project_dir(Path(workspace_root), args.project_id)
+        except DuplicateProjectId as exc:
+            fail("duplicate_project_id", str(exc))
+        if found is None or not os.path.isdir(found):
+            fail("adopt_not_found", f"No project with id {args.project_id} in {workspace_root}")
+        workspace_dir = os.path.abspath(str(found))
+        seed = _load_seed(workspace_dir)
+    elif args.project_path is not None:
         workspace_subpath = validate_project_path(args.project_path)
         full_dir = os.path.join(workspace_root, workspace_subpath)
         if os.path.exists(full_dir):
@@ -667,21 +863,30 @@ def _main():
     # a free space that can't be read never blocks (fail open).
     disk_space.preflight(workspace_root, _bytes_to_copy(args, all_remote_items))
 
-    # The folders makedirs will make on the way to it (a nested --project-path),
-    # deepest last, below the workspace root: a failed create removes those too.
-    made_parents = []
-    parent = os.path.dirname(os.path.abspath(workspace_dir))
-    root_abs = os.path.abspath(workspace_root)
-    while parent.startswith(root_abs + os.sep) and not os.path.exists(parent):
-        made_parents.insert(0, parent)
-        parent = os.path.dirname(parent)
-    os.makedirs(workspace_dir)
-    _CREATED["parents"] = made_parents
-    # From here a failure of any kind removes this folder (main(), §627);
-    # nothing before this line wrote anything.
-    _CREATED["dir"] = workspace_dir
-    _CREATED["root"] = workspace_root
-    _CREATED["copied_from"] = []
+    if seed is not None:
+        # §631: what a failure undoes in the seed's folder (_undo_adopt): the
+        # files this run adds, never one that was there before, and project.json
+        # once replaced. The folder itself is not registered in _CREATED["dir"].
+        _CREATED["root"] = workspace_root
+        _CREATED["copied_from"] = []
+        _CREATED["adopt"] = {"dir": workspace_dir, "before": _files_under(workspace_dir),
+                             "files": [], "clips": [], "git_made": False, "project_json": None}
+    else:
+        # The folders makedirs will make on the way to it (a nested --project-path),
+        # deepest last, below the workspace root: a failed create removes those too.
+        made_parents = []
+        parent = os.path.dirname(os.path.abspath(workspace_dir))
+        root_abs = os.path.abspath(workspace_root)
+        while parent.startswith(root_abs + os.sep) and not os.path.exists(parent):
+            made_parents.insert(0, parent)
+            parent = os.path.dirname(parent)
+        os.makedirs(workspace_dir)
+        _CREATED["parents"] = made_parents
+        # From here a failure of any kind removes this folder (main(), §627);
+        # nothing before this line wrote anything.
+        _CREATED["dir"] = workspace_dir
+        _CREATED["root"] = workspace_root
+        _CREATED["copied_from"] = []
 
     # --- Fetch remote items into workspace (all-or-nothing) ---
     if all_remote_items:
@@ -701,6 +906,8 @@ def _main():
             args.assets.append(os.path.join(workspace_dir, item["destPath"]))
 
     if not os.path.isdir(os.path.join(workspace_dir, ".git")):
+        if seed is not None:
+            _CREATED["adopt"]["git_made"] = True
         git(["init", workspace_dir], cwd=os.getcwd())
 
     # Staged-upload tracking: sources consumed out of the workspace-level
@@ -715,6 +922,8 @@ def _main():
         if not link:
             _CREATED["copied_from"].append(os.path.abspath(src))
         dest = _copy_into_workspace(src, workspace_dir, prefix, link=link, name=name)
+        if seed is not None:
+            _CREATED["adopt"]["files"].append(dest)
         # Track for post-init cleanup: real copies only (a symlink still
         # points at the source), and only files sitting directly inside the
         # workspace-level _uploads/ junk drawer.
@@ -726,8 +935,13 @@ def _main():
 
     # start/end are placeholder 0.0 values — the agent sets real values after running probe. Zero-duration
     # is technically valid under the validator (it only requires the fields exist, not that end > start).
+    # §631: the seed's sources stay first and verbatim; a new clip takes the
+    # first clip-<n> none of them holds.
+    existing_sources = list(seed["project"].get("sources") or []) if seed is not None else []
+    taken_ids = {s.get("id") for s in existing_sources if isinstance(s, dict)}
     clips = []
     for i, clip in enumerate(args.clips):
+        clip_id = _free_clip_id(taken_ids) if seed is not None else f"clip-{i}"
         abs_clip = os.path.abspath(clip)
         if args.symlink_clips:
             # H4: a symlinked clip is named clip-<n><ext>, never the source's own name, so a source called
@@ -736,10 +950,15 @@ def _main():
             if probe_video(abs_clip) is None:
                 fail("not_a_video",
                      f"--symlink-clips only links files that probe as video; {clip!r} does not")
-            src = copy_into_workspace(abs_clip, "clip", link=True, name=f"clip-{i}{_safe_clip_ext(abs_clip)}")
+            src = copy_into_workspace(abs_clip, "clip", link=True, name=f"{clip_id}{_safe_clip_ext(abs_clip)}")
         else:
             src = copy_into_workspace(abs_clip, "clip")
-        clips.append({"id": f"clip-{i}", "type": "video", "src": src, "start": 0.0, "end": 0.0})
+        clips.append({"id": clip_id, "type": "video", "src": src, "start": 0.0, "end": 0.0})
+    if seed is not None:
+        _CREATED["adopt"]["clips"] = clips
+    # The seed's sources, probed for the canvas, fps and colour space only; they
+    # are not normalized or proxied again.
+    existing_infos = _probe_existing_sources(existing_sources, workspace_dir) if existing_sources else []
 
     # Project resolution = output canvas size (final MP4 dimensions, Puppeteer overlay
     # design dims). Source clips are NOT scaled to match this — they remain at native
@@ -765,7 +984,7 @@ def _main():
     # project created through the CLI arrives with args.canvas False and merely an
     # empty clips list. Keying this to the flag gave those projects 30fps, which is the
     # exact case the change exists to fix.
-    has_footage = bool(args.clips) or bool(args.remote_clips)
+    has_footage = bool(args.clips) or bool(args.remote_clips) or bool(existing_infos)
     detected_fps = 30 if has_footage else 60
 
     # Cache probe results so _normalize_one below doesn't re-ffprobe each clip.
@@ -793,6 +1012,11 @@ def _main():
     # being portrait. settings.resolution must reflect the OUTPUT MP4's display
     # orientation, not the on-disk pixel orientation.
     detected_pairs = []  # [(display_w, display_h, frame_rate)] in clip order
+    for info in existing_infos:  # §631: a seed's sources come first, as in `sources`
+        w = info.get("display_width") or info.get("width")
+        h = info.get("display_height") or info.get("height")
+        if w and h:
+            detected_pairs.append((w, h, info.get("frame_rate") or info.get("r_frame_rate", "")))
     if clips:
         for clip in clips:
             _duration = _probe_duration(clip["src"])
@@ -840,6 +1064,8 @@ def _main():
     # colour must not decide the project's.
     _voice_real = {os.path.realpath(v) for v in (args.voiceover_asset or [])}
     detected_per_clip: list[ColorSpaceKey] = [
+        detect_from_transfer(info.get("color_transfer")) for info in existing_infos
+    ] + [
         detect_from_transfer(probe_cache[c["src"]].get("color_transfer"))
         for c, original in zip(clips, args.clips)
         if c["src"] in probe_cache and os.path.realpath(original) not in _voice_real
@@ -1229,6 +1455,8 @@ def _main():
             concat_out = os.path.join(workspace_dir, f"voiceover_full_{_n}.wav")
             _n += 1
         voiceover_path = concat_takes(voiceover_takes, concat_out)
+        if seed is not None:
+            _CREATED["adopt"]["files"].append(concat_out)
     else:
         voiceover_path = voiceover_takes[0] if voiceover_takes else None
 
@@ -1349,11 +1577,34 @@ def _main():
         project["storyboard"] = storyboard
 
     project_path = os.path.join(workspace_dir, "project.json")
-    _write_project_json(project_path, project)
+    if seed is not None:
+        # §631: the seed's project.json with this project laid over it: its other
+        # keys are kept, init's win, its sources stay first and verbatim, and it
+        # is no longer a seed. Its name and profile stay unless given.
+        existing = seed["project"]
+        if project.get("name") is None and existing.get("name") is not None:
+            project["name"] = existing["name"]
+        merged = {**existing, **project}
+        if args.profile and "profileSnapshot" not in project:
+            merged.pop("profileSnapshot", None)  # the old profile's, not this one's
+        merged["sources"] = existing_sources + clips
+        merged["id"] = existing.get("id") or args.project_id
+        merged.pop("seed", None)
+        before = None
+        try:
+            with open(project_path, "rb") as f:
+                before = f.read()
+        except OSError:
+            pass
+        written = _replace_project_json(project_path, merged, seed["mode"])
+        _CREATED["adopt"]["project_json"] = (project_path, before, written)
+    else:
+        _write_project_json(project_path, project)
 
     git(["add", "project.json"], cwd=workspace_dir)
     git(["commit", "-m", "init: new project"], cwd=workspace_dir)
     _CREATED.pop("dir", None)  # §627: made; a later failure never removes it
+    _CREATED.pop("adopt", None)  # §631: adopted; a later failure undoes nothing
 
     _cleanup_staged_uploads(staged_uploads)
 
@@ -1387,6 +1638,7 @@ def _remove_created() -> None:
     and the staged uploads it copied from are removed only on success. If a
     source it copied is gone, the copy may be the only one left, so the folder
     is kept as it is (Settings > Storage counts it under Other files)."""
+    _undo_adopt()
     created = _CREATED.pop("dir", None)
     if not created:
         return
@@ -1399,6 +1651,51 @@ def _remove_created() -> None:
             os.rmdir(folder)          # only if empty: never another project's folder
         except OSError:
             break
+
+
+def _undo_adopt() -> None:
+    """§631: a failed adopt leaves the seed's folder as it found it. project.json
+    goes back to the seed's bytes if this run replaced it (and nothing has
+    written it since); the files this run added are removed, never one that was
+    there before. If a source it copied is gone, the copies are kept, as
+    `_remove_created` keeps a folder. The folder itself always stays."""
+    state = _CREATED.pop("adopt", None)
+    if not state:
+        return
+    folder = state["dir"]
+    written = state.get("project_json")
+    if written:
+        path, before, ours = written
+        try:
+            with open(path, "rb") as f:
+                current = f.read()
+            if before is not None and current == ours:
+                _atomic_replace_bytes(path, before, os.stat(path).st_mode & 0o777)
+                from lib.project_versions import GIT_SAFE_FLAGS
+                subprocess.run(["git", *GIT_SAFE_FLAGS, "reset", "-q", "--", "project.json"],
+                               cwd=folder, capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            progress(f"init: could not put back the seed's project.json in {folder}")
+    if any(not os.path.exists(src) for src in _CREATED.get("copied_from") or []):
+        progress(f"init: kept the files copied into {folder}: one is no longer at its source")
+    else:
+        folder_n = _norm(folder)
+        candidates = list(state.get("files") or [])
+        for clip in state.get("clips") or []:
+            candidates += [clip.get(k) for k in ("src", "normalizedSrc", "proxySrc")]
+        for path in candidates:
+            if not isinstance(path, str):
+                continue
+            p = _norm(path)
+            if p in state["before"] or not p.startswith(folder_n + os.sep):
+                continue
+            try:
+                if os.path.islink(p) or os.path.isfile(p):
+                    os.unlink(p)
+            except OSError:
+                pass
+    if state.get("git_made"):
+        rmtree_force(os.path.join(folder, ".git"), ignore_errors=True)
 
 
 def _ref_path(raw: str) -> str | None:
