@@ -572,8 +572,15 @@ export function moveItemAcrossTracks(args: CrossTrackMoveArgs): VisualTrack[] {
     items: [movedItem],
   })
 
+  // The only clip of the base track dragged above the top row would mint a
+  // track and prune the base, taking the base track's id and its volume,
+  // muted and enabled with it. It goes back on the base track instead.
+  const aloneOnBase = tracks[0]?.items.length === 1 && tracks[0].items[0].id === item.id
+
   let placed: VisualTrack[]
-  if (bestIdx >= removed.length) {
+  if (bestIdx >= removed.length && aloneOnBase) {
+    placed = removed.map((t, i) => (i === 0 ? { ...t, items: [movedItem] } : t))
+  } else if (bestIdx >= removed.length) {
     placed = [...removed, newTrack()]
   } else if (makeSpace && hasOverlap(removed[bestIdx].items)) {
     // Ripple-insert: push every item on the target track that starts at or

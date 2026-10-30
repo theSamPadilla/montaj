@@ -376,3 +376,41 @@ describe('rows do not collapse while a drag empties one', () => {
     expect(normalizeTracks(committed).tracks!.map(t => t.id)).toEqual(['trk-0', 'trk-1', 'trk-3'])
   })
 })
+
+// ── The base track survives a drag ───────────────────────────────────────
+
+describe('the base track survives its only clip being dragged above the top row', () => {
+  it('the clip goes back on the base track, which keeps its id and settings', () => {
+    const p = {
+      id: 'p',
+      tracks: [
+        { id: 'base', volume: 0.5, muted: true, enabled: false, items: [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 5, inPoint: 0, outPoint: 5, sourceDuration: 20 }] },
+        { id: 'trk-1', items: [{ id: 'o1', type: 'overlay', start: 0, end: 2 }] },
+      ],
+    } as unknown as Project
+    const top = computeTimelineLayout(p).rows[0]
+    const { committed } = drag(p, { x: 250, y: rowMid(p, 0) }, { x: 350, y: top.y - 4 })
+    const tracks = normalizeTracks(committed).tracks!
+    expect(tracks.map(t => t.id)).toEqual(['base', 'trk-1'])
+    expect(tracks[0]).toMatchObject({ id: 'base', volume: 0.5, muted: true, enabled: false })
+    expect(tracks[0].items.map(i => [i.id, i.start])).toEqual([['c0', 1]])
+  })
+
+  it('a base track holding other clips still lets one go to a new track', () => {
+    const p = {
+      id: 'p',
+      tracks: [
+        { id: 'base', items: [
+          { id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 5, inPoint: 0, outPoint: 5, sourceDuration: 20 },
+          { id: 'c1', type: 'video', src: 'b.mp4', start: 5, end: 8, inPoint: 0, outPoint: 3, sourceDuration: 20 },
+        ] },
+      ],
+    } as unknown as Project
+    const top = computeTimelineLayout(p).rows[0]
+    const { committed } = drag(p, { x: 650, y: rowMid(p, 0) }, { x: 650, y: top.y - 4 })
+    const tracks = normalizeTracks(committed).tracks!
+    expect(tracks).toHaveLength(2)
+    expect(tracks[0].id).toBe('base')
+    expect(trackIdOf(committed, 'c1')).not.toBe('base')
+  })
+})
