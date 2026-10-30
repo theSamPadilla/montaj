@@ -29,7 +29,7 @@ from urllib.parse import quote, urlparse
 from serve.common import (
     MONTAJ_ROOT,
     resolve_workspace, find_project_dir, get_project_dir, prime_project_dir_cache, is_nested_project_json,
-    run_subprocess,
+    run_subprocess, stop_gently_uncancellable,
     not_found, bad_request, forbidden, server_error,
     validate_project_subpath, _is_under, lands_on_project_file,
 )
@@ -381,9 +381,11 @@ class _IngestJob:
     connection — a dropped request must NOT abort it. Keyed by job_id, not
     project_id: unlike captions/renders, multiple imports may legitimately run
     concurrently for the same project (e.g. importing several files at once)."""
-    __slots__ = ("status", "phase", "result", "error", "code", "needed", "free")
+    __slots__ = ("status", "phase", "result", "error", "code", "needed", "free", "project_id")
 
-    def __init__(self) -> None:
+    def __init__(self, project_id: str | None = None) -> None:
+        # The project it adds to: delete_project refuses while one runs (§631).
+        self.project_id: str | None = project_id
         self.status: str = "running"     # running | done | error
         self.phase: str = "staging"      # staging | normalizing | building proxy | done
         self.result: dict | None = None  # appended clip dict (done)
@@ -395,6 +397,17 @@ class _IngestJob:
 
 
 _ingest_jobs: dict[str, _IngestJob] = {}
+
+# How long an ingest's append waits for the project's lock: as long as an init
+# may hold it (`_run_init_subprocess`'s ceiling).
+_INGEST_LOCK_TIMEOUT = 1800
+
+
+def _ingest_running(project_id: str) -> bool:
+    """True while an ingest job for this project has not finished: its file may
+    already sit in the project's folder without being in `sources` yet."""
+    return any(job.status == "running" and job.project_id == project_id
+               for job in list(_ingest_jobs.values()))
 
 
 class _IngestRefused(Exception):
@@ -491,7 +504,10 @@ async def _run_ingest_detached(
         # Read fresh right before the append+write to minimize clobbering a
         # concurrent editor save (mirrors the caption pipeline's late read).
         project_path = Path(project_dir) / "project.json"
-        async with project_lock_async(project_path):
+        # A long wait, not the default 10 s: a background job nobody waits on,
+        # and the lock may be held for a whole init (§631: a seed adopted while
+        # this take lands). Timing out here would leave the take out of `sources`.
+        async with project_lock_async(project_path, timeout=_INGEST_LOCK_TIMEOUT):
             raw = project_path.read_text()
             project = json.loads(raw)
             clip = {"id": _next_clip_id(project), **clip}
@@ -1269,7 +1285,13 @@ async def _hold_project_lock_in_thread(project_path: Path):
     thread = threading.Thread(target=_hold_lock_until, args=(project_path, acquired, release, failure),
                               name="project-lock-holder", daemon=True)
     thread.start()
-    await asyncio.to_thread(acquired.wait)
+    try:
+        await asyncio.to_thread(acquired.wait)
+    except BaseException:
+        # Cancelled while the thread waits for (or has just taken) the lock: tell
+        # it to let go at once, or it would hold the lock until serve restarts.
+        release.set()
+        raise
     if failure:
         raise failure[0]
     try:
@@ -1277,6 +1299,10 @@ async def _hold_project_lock_in_thread(project_path: Path):
     finally:
         release.set()
         await asyncio.shield(asyncio.to_thread(thread.join))
+
+
+# §631: seconds an adopting init gets, after SIGTERM, to undo its work and exit.
+_INIT_STOP_GRACE = 5.0
 
 
 async def _run_init_subprocess(
@@ -1314,6 +1340,11 @@ async def _run_init_subprocess(
     """
     debug_log = os.environ.get("MONTAJ_DEBUG") == "1"
     spawn_started = time.perf_counter()
+    # §631: with the lock held (an adopt), init is stopped with SIGTERM and a
+    # few seconds to undo its work, on the timeout and on a cancel alike, and the
+    # lock is released only once it has exited. Otherwise unchanged: the timeout
+    # kills it, and a cancel leaves it running.
+    stop_grace = _INIT_STOP_GRACE if hold_lock is not None else None
 
     async with (_hold_project_lock_in_thread(hold_lock) if hold_lock is not None else contextlib.nullcontext()):
         try:
@@ -1359,14 +1390,22 @@ async def _run_init_subprocess(
                     stderr = b"".join(stderr_chunks).decode()
                     returncode = proc.returncode
                 except asyncio.TimeoutError:
-                    proc.kill()
-                    await proc.wait()
+                    if stop_grace is None:
+                        proc.kill()
+                        await proc.wait()
+                    else:
+                        await stop_gently_uncancellable(proc, stop_grace)
                     raise HTTPException(504, detail={"error": "timeout", "message": f"Project init exceeded {timeout}s"})
+                except asyncio.CancelledError:
+                    if stop_grace is not None:
+                        await stop_gently_uncancellable(proc, stop_grace)
+                    raise
             else:
                 stdout, stderr, returncode = await run_subprocess(
                     cmd,
                     timeout=timeout,
                     cwd=str(Path.cwd()),
+                    **({"stop_grace": stop_grace} if stop_grace is not None else {}),
                 )
         except FileNotFoundError as e:
             raise server_error("init_failed", str(e))
@@ -1807,6 +1846,11 @@ async def run_project(request: Request, response: Response, body: dict = Body(..
     elif youtube is not None:
         # The link counts as footage; the clip lands when the download does.
         cmd.append("--canvas")
+    elif adopt_seed:
+        # §631: the seed's sources (its takes) are the footage. Not --canvas
+        # (init's canvas, fps and colour space come from them) and never refused
+        # for want of clips: a footage template is exactly what a take wants.
+        pass
     elif not remote_clips:
         # No local clips and no remote clips — check workflow's requires_clips to decide how to proceed
         requires_clips = True  # conservative default
@@ -3725,6 +3769,14 @@ async def delete_project(
     them (`_rescue_dependents`), or nothing is deleted (409).
     """
     from fastapi.responses import Response
+    # §631: a take being ingested may already sit in this folder without being
+    # in `sources` (an untouched seed looks empty): deleting now could take the
+    # only copy of it. Refused until the job ends.
+    if _ingest_running(project_id):
+        raise HTTPException(409, detail={
+            "error": "ingest_running",
+            "message": "A file is still being added to this project. Try again when it finishes.",
+        })
     broadcaster = getattr(getattr(getattr(request, "app", None), "state", None), "broadcaster", None)
     # §482: the project itself, and every other project the rescue would patch, against open Studio sync clashes.
     headers = getattr(request, "headers", None)
@@ -5374,7 +5426,7 @@ async def ingest_project_source(
         raise bad_request("no_color_space", "Project has no settings.colorSpace")
 
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
-    job = _IngestJob()
+    job = _IngestJob(project_id)
     job_id = uuid.uuid4().hex
     _ingest_jobs[job_id] = job
     task = asyncio.create_task(

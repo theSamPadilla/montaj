@@ -313,13 +313,53 @@ def get_project_dir(project_id: str) -> Path:
     return project_dir
 
 
+async def stop_gently(proc, grace: float) -> None:
+    """Ask *proc* to stop (`terminate`: SIGTERM, so a child that undoes its own
+    work on that signal gets to; TerminateProcess on Windows), wait up to *grace*
+    seconds, then kill it. Returns once it has exited."""
+    if proc.returncode is None:
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            pass
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=grace)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+
+
+async def stop_gently_uncancellable(proc, grace: float) -> None:
+    """`stop_gently`, run to the end even if the awaiting task is cancelled again
+    meanwhile (bounded: *grace* seconds, then a kill). Used on the way out of a
+    cancel, so whatever the caller holds is released only after the child is gone."""
+    stopper = asyncio.ensure_future(stop_gently(proc, grace))
+    while not stopper.done():
+        try:
+            await asyncio.shield(stopper)
+        except asyncio.CancelledError:
+            continue
+    stopper.result()
+
+
 async def run_subprocess(
     cmd: list[str],
     *,
     timeout: int,
     cwd: str | None = None,
     env: dict | None = None,
+    stop_grace: float | None = None,
 ) -> tuple[str, str, int]:
+    """Run *cmd*, return (stdout, stderr, returncode); a 504 after *timeout* s.
+
+    `stop_grace` (opt in; §631's adopt): on the timeout the child is terminated
+    and given that many seconds to exit (and undo its work) before a kill, and a
+    cancel of the awaiting task stops the child the same way, waiting for it to
+    exit, before the cancel propagates. Without it the timeout kills at once
+    and a cancel leaves the child running, as always."""
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -332,12 +372,19 @@ async def run_subprocess(
             proc.communicate(), timeout=timeout,
         )
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
+        if stop_grace is None:
+            proc.kill()
+            await proc.wait()
+        else:
+            await stop_gently_uncancellable(proc, stop_grace)
         raise HTTPException(504, detail={
             "error": "timeout",
             "message": f"Subprocess exceeded {timeout}s",
         })
+    except asyncio.CancelledError:
+        if stop_grace is not None:
+            await stop_gently_uncancellable(proc, stop_grace)
+        raise
     return stdout_b.decode(), stderr_b.decode(), proc.returncode
 
 
