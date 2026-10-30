@@ -91,12 +91,15 @@ def test_a_type_key_still_finds_its_items_after_the_editor_stamps_their_row_as_a
     assert lift.lower(lifted)["audio"]["tracks"] == p["audio"]["tracks"]
 
 
-def test_a_type_spread_over_two_lanes_is_not_guessed(tmp_path):
+def test_a_type_packed_onto_two_rows_is_still_one_source(tmp_path):
+    """Takes that overlap by a crossfade pack onto two rows; once stamped, the type key still takes them all."""
     vo = str(tmp_path / "vo.mp4")
-    a = [{"id": "v1", "type": "voiceover", "lane": 1, "src": vo, "start": 0.0, "end": 1.5},
-         {"id": "v2", "type": "voiceover", "lane": 2, "src": vo, "start": 1.5, "end": 3.0}]
-    with pytest.raises(SystemExit):
-        ss.lift(project(tmp_path, a), "audio:voiceover", str(tmp_path))
+    a = [{"id": "v1", "type": "voiceover", "lane": 1, "src": vo, "start": 0.0, "end": 1.6, "inPoint": 0.0, "outPoint": 1.6},
+         {"id": "v2", "type": "voiceover", "lane": 2, "src": vo, "start": 1.4, "end": 3.0, "inPoint": 1.4, "outPoint": 3.0}]
+    lifted, _ = ss.lift(project(tmp_path, a), "audio:voiceover", str(tmp_path))
+    assert [it["id"] for it in lifted["tracks"][-1]["items"]] == ["v1", "v2"]
+    assert ss.has_source(project(tmp_path, a), str(tmp_path), "audio:voiceover")
+    assert not ss.has_source(project(tmp_path, a), str(tmp_path), "audio:music")
 
 
 def test_choose_accepts_a_type_key_whose_row_was_stamped(tmp_path):

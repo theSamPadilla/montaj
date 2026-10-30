@@ -1386,7 +1386,7 @@ def _apply_plan(args, project_path, project_dir):
     if isinstance(marker, dict) and marker.get("planStamp") == plan_stamp and marker.get("planHash") == plan_hash:
         fail("already_applied", "This plan is already applied: there is nothing new in it to apply. "
                                 "Edit it to change the cut.")
-    if speech_source.is_lifted(track_id) and not any(k == key for k, _, _ in speech_source.candidates(disk, project_dir)):
+    if speech_source.is_lifted(track_id) and not speech_source.has_source(disk, project_dir, key):
         fail("stale_plan", "The timeline changed since this plan was made. Run cut again for a new plan.")
     disk_s, spine, left = _spine(disk, project_dir, words=True)
     if spine and track_id != disk_s["tracks"][0]["id"]:

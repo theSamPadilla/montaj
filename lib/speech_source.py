@@ -112,11 +112,8 @@ def choose(project, project_dir, asked=None):
                        if vo and kind == "audio" and any(_same_file(e["src"], vo, project_dir) for e in entries)]
             if playing:
                 return max(playing)[2]      # the voiceover is already on the timeline: cut it there
-        if isinstance(asked, str) and asked.startswith("audio:"):
-            match = _key_matcher(_audio(project), asked)
-            if any(isinstance(e, dict) and isinstance(e.get("src"), str) and e["src"] and match(e)
-                   for e in _audio(project)):
-                return asked                # a type key whose row the editor has since stamped as a lane
+        if has_source(project, project_dir, asked):
+            return asked                    # a type key whose row the editor has since stamped as a lane
         fail("invalid_params", f"speech must be auto or one of: {', '.join(k for k, _, _ in cands) or 'nothing'}")
     best, best_s = None, 0.0
     for key, kind, entries in cands:
@@ -234,8 +231,9 @@ def _window(e, project_dir):
 def _key_matcher(audio, key):
     """Which `audio.tracks` entries `key` names. An "audio:<type>" key also finds its items once the editor has
     written their packed row down as a lane: the editor gives lane-less audio a row per kind and stamps it as `lane`
-    on the person's next edit, so a cut planned before that edit still applies after it. Only when every item of
-    that type sits on ONE lane; a type spread over several rows is several sources and needs its audio:lane-<n>."""
+    on the person's next edit, so a cut planned before that edit still applies after it. Every item of that type
+    is taken, on however many rows packing gave it (narration whose takes overlap by a crossfade packs onto two);
+    lift's own overlap check still refuses two voices at once."""
     def plain(e):
         return audio_key(e) == key
     if not key.startswith("audio:") or key.startswith("audio:lane-"):
@@ -244,10 +242,17 @@ def _key_matcher(audio, key):
     usable = [e for e in audio if isinstance(e, dict) and isinstance(e.get("src"), str) and e["src"]]
     if any(plain(e) for e in usable):
         return plain
-    lanes = {audio_key(e) for e in usable if (e.get("type") or "audio") == kind}
-    if len(lanes) != 1:
-        return plain
-    return lambda e: (e.get("type") or "audio") == kind and audio_key(e) in lanes
+    return lambda e: (e.get("type") or "audio") == kind
+
+
+def has_source(project, project_dir, key):
+    """Whether `key` still names something on the project: a candidate, or a type key whose row was stamped."""
+    if any(k == key for k, _, _ in candidates(project, project_dir)):
+        return True
+    if not (isinstance(key, str) and key.startswith("audio:")):
+        return False
+    match = _key_matcher(_audio(project), key)
+    return any(isinstance(e, dict) and isinstance(e.get("src"), str) and e["src"] and match(e) for e in _audio(project))
 
 
 def lift(project, key, project_dir):

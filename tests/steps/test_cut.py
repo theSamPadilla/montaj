@@ -2309,3 +2309,24 @@ def test_a_plan_applied_at_another_silence_threshold_is_refused_as_stale(tmp_pat
     assert (d / "project.json").read_bytes() == before
     applied, _ = run(d, "--plan", plan["plan"], "--silence-threshold", "-42", monkeypatch=monkeypatch)
     assert applied["mode"] == "applied"
+
+
+def test_a_plan_on_lane_less_narration_applies_after_the_editor_stamps_its_row(tmp_path, monkeypatch):
+    """The editor writes each lane-less clip's packed row down as `lane` on the person's next edit. A cut planned
+    before that ("audio:voiceover") must still apply after it, not be refused as stale."""
+    d = audio_project(tmp_path)
+    p = json.loads((d / "project.json").read_text())
+    for a in p["audio"]["tracks"]:
+        a.pop("lane", None)
+    (d / "project.json").write_text(json.dumps(p, indent=2))
+    git(d, "commit", "-qam", "lane-less")
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    p = json.loads((d / "project.json").read_text())
+    for a in p["audio"]["tracks"]:
+        a["lane"] = 0 if a["type"] == "voiceover" else 1          # what the editor's stamp writes
+    (d / "project.json").write_text(json.dumps(p, indent=2))
+    git(d, "commit", "-qam", "stamped")
+    applied, _ = run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    assert applied["mode"] == "applied"
+    vo = narration(json.loads((d / "project.json").read_text()))
+    assert len(vo) > 1 and all(a["lane"] == 0 for a in vo)
