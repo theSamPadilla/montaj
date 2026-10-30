@@ -25,7 +25,7 @@ import { isCaptionTranslation } from './captionTranslation'
 import { mergeCaptionProfileDefaults } from './captionProfileDefaults'
 import Timeline, { type TimelineActions, type TimelineMode } from './timeline/Timeline'
 import { geometryAt, visualDuration } from '@bycrux/timeline-core'
-import { audioEnd, computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, effectiveItemAudio, enabledTrackItems, enabledTracks, mapTrackItems, normalizeAudioTracks, trackItems, withEnabledItemTracks } from './timeline/timeline-model'
+import { audioEnd, computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, effectiveItemAudio, enabledTrackItems, enabledTracks, mapTrackItems, normalizeAudioTracks, stampAudioLanes, trackItems, withEnabledItemTracks } from './timeline/timeline-model'
 import { makeCaptionEdit, makeCaptionEditAll, makeCaptionEditMany, type CaptionEditAllPatch, type CaptionEditPatch } from './timeline/makeCaptionEdit'
 import PreviewPlayer, { type TransportHandle, type ScrubHandle } from './preview/PreviewPlayer'
 import { fitBoxStyle } from './preview/fitBox'
@@ -1682,7 +1682,14 @@ function ReviewSurface<P extends Project>({
     // disjoint parts of the project (`audio.tracks` vs `tracks`), so the order
     // is not load-bearing, but chaining them means one commit carries both
     // rather than the second silently dropping the first's work.
-    const withAudio  = computeAutoCrossfade(p) ?? p
+    //
+    // Audio lanes are stamped first (`stampAudioLanes`), so the crossfade pass
+    // reads the rows as drawn and a save carries explicit lanes from here on.
+    // The gestures that move audio stamp at their own start, from the project
+    // before the edit; this catches every other caller, and is a no-op (same
+    // object) once every track has a lane.
+    const stamped    = stampAudioLanes(p)
+    const withAudio  = computeAutoCrossfade(stamped) ?? stamped
     const withVisual = computeVisualCrossfade(withAudio) ?? withAudio
     sync.mutateTransient(() => withVisual as P)
     void sync.commit()
@@ -1797,10 +1804,17 @@ function ReviewSurface<P extends Project>({
     commitClipChange()
   }
 
+  // Stamped first (`stampAudioLanes`), from the project before the edit, and the
+  // edited track keeps the lane it was drawn on: an inspector change to its
+  // timing must not move it, or anything else, to another row.
   function replaceAudioTrack(p: P, nextTrack: AudioTrack): P {
+    const stamped = stampAudioLanes(p)
     return {
-      ...p,
-      audio: { ...p.audio, tracks: (p.audio?.tracks ?? []).map(t => (t.id === nextTrack.id ? nextTrack : t)) },
+      ...stamped,
+      audio: {
+        ...stamped.audio,
+        tracks: (stamped.audio?.tracks ?? []).map(t => (t.id === nextTrack.id ? { ...nextTrack, lane: nextTrack.lane ?? t.lane } : t)),
+      },
     } as P
   }
   function previewAudioChange(nextTrack: AudioTrack) {

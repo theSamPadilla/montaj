@@ -28,7 +28,7 @@
 
 import type { Project } from '../types'
 import type { VisualItem, AudioTrack, VisualTrack } from '../schema'
-import { mapTrackItems, normalizeTracks, updateAudioTrack } from './timeline/timeline-model'
+import { mapTrackItems, normalizeTracks, stampAudioLanes, updateAudioTrack } from './timeline/timeline-model'
 import { newClipId } from './cuts'
 
 /**
@@ -36,19 +36,11 @@ import { newClipId } from './cuts'
  * (timeline/timeline-model.ts) — audio tracks are PARALLEL rows, not one
  * shared timeline, so only same-lane tracks can ever collide.
  *
- * `groupAudioLanes` assigns every lane-less track a lane strictly above the
- * highest EXPLICIT lane in the whole array (a first pass finds that max, a
- * second pass hands out `nextAutoLane++` to each lane-less track in order).
- * Two consequences that make the direct comparison below exactly equivalent
- * to running the real algorithm, without needing this module to carry a
- * `contentDuration` to call it:
- *   - a lane-less track's auto-assigned lane is never shared with anything
- *     else, regardless of how many other lane-less tracks exist or their
- *     array order — so `lane == null` means "my own lane" unconditionally;
- *   - two EXPLICIT lanes collide iff their numbers are equal, which is just
- *     `===`.
- * So "same lane" reduces to: both tracks declare a lane, and it's the same
- * number.
+ * Callers stamp the project first (`stampAudioLanes`), so every track already
+ * in it carries the lane it is drawn on and two of them share a row iff their
+ * numbers are equal. A pasted track that still has no lane lands on a row of
+ * its own above them (`packAudioLanes` packs lane-less tracks above every
+ * explicit lane), so it collides with nothing already there.
  */
 function sameAudioLane(a: AudioTrack, b: AudioTrack): boolean {
   return a.lane != null && a.lane === b.lane
@@ -162,8 +154,11 @@ function earliestFittingGap(
  * Returns the same project reference when the payload is `null` or captured
  * nothing.
  */
-export function pasteAt<P extends Project>(project: P, payload: ClipboardPayload | null, atTime: number): P {
-  if (!payload || (payload.items.length === 0 && payload.audioTracks.length === 0)) return project
+export function pasteAt<P extends Project>(input: P, payload: ClipboardPayload | null, atTime: number): P {
+  if (!payload || (payload.items.length === 0 && payload.audioTracks.length === 0)) return input
+  // Rows pinned before anything is added (see `stampAudioLanes`); a visual-only
+  // paste leaves `audio` exactly as it was.
+  const project = payload.audioTracks.length > 0 ? stampAudioLanes(input) : input
 
   const tracks = (normalizeTracks(project).tracks ?? []) as VisualTrack[]
 
@@ -189,7 +184,11 @@ export function pasteAt<P extends Project>(project: P, payload: ClipboardPayload
   const newTracks = mapTrackItems(project, (items, i) => byTrackId.get(tracks[i].id) ?? items)
 
   let audioTracks = project.audio?.tracks ?? []
-  for (const track of payload.audioTracks) {
+  for (const copied of payload.audioTracks) {
+    // A copy taken before its source was stamped has no lane: it goes back on
+    // the row its source is drawn on, when the source is still here.
+    const lane = copied.lane ?? audioTracks.find(t => t.id === copied.id)?.lane
+    const track = lane == null ? copied : { ...copied, lane }
     const duration = track.end - track.start
     // Gap-resolve against SAME-LANE tracks only — see `sameAudioLane` — so a
     // longer clip in a different lane (e.g. a music bed under a voiceover)
@@ -228,9 +227,13 @@ export function pasteAt<P extends Project>(project: P, payload: ClipboardPayload
  * Returns the same project reference when nothing in `selectedIds` names a
  * real visual item or audio track.
  */
-export function duplicateSelection<P extends Project>(project: P, selectedIds: readonly string[]): P {
+export function duplicateSelection<P extends Project>(input: P, selectedIds: readonly string[]): P {
   const targets = new Set(selectedIds)
-  if (targets.size === 0) return project
+  if (targets.size === 0) return input
+  // Rows pinned first (see `stampAudioLanes`), so a duplicate copies the lane
+  // its original is drawn on and lands in the same row. Only when an audio
+  // track is selected: a visual-only duplicate leaves `audio` as it was.
+  const project = (input.audio?.tracks ?? []).some(t => targets.has(t.id)) ? stampAudioLanes(input) : input
 
   const tracks = (normalizeTracks(project).tracks ?? []) as VisualTrack[]
   const byTrackId = new Map<string, VisualItem[]>(tracks.map(t => [t.id, t.items]))
@@ -262,7 +265,7 @@ export function duplicateSelection<P extends Project>(project: P, selectedIds: r
     changed = true
   }
 
-  if (!changed) return project
+  if (!changed) return input
   return {
     ...project,
     tracks: newTracks,

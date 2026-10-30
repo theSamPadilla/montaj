@@ -24,8 +24,8 @@ export const VISUAL_ROW_HEIGHT_PX = 24
  *  magnet, and the volume gear share one vertical column (TrackGutter's
  *  RailCell), and three 14px buttons plus their gaps need ~58px — at the old
  *  40px the third control (the volume gear) was clipped below the fold once the
- *  magnet was added. Doubles as the lane-index drag divisor, so drag travel and
- *  rendered height stay coincident for audio lanes. */
+ *  magnet was added. With `ROW_GAP_PX` it is also the audio drag's row stride,
+ *  so drag travel and the drawn rows stay coincident. */
 export const AUDIO_LANE_HEIGHT_PX = 64
 
 /** Rendered height of a non-base visual track row — 40px. Held at that height
@@ -148,12 +148,64 @@ export function audioEnd(project: Project): number {
     .reduce((m, t) => Math.max(m, resolveAudioWindow(t).end), 0)
 }
 
+/** Two windows closer than this count as touching, not overlapping, when lane-less audio is packed into rows. */
+const AUDIO_PACK_EPSILON = 1e-6
+
 /**
- * Group audio tracks into rendered lanes, in ascending lane order. Tracks
- * carrying an explicit `lane` keep it; the rest are auto-assigned lanes above
- * the highest explicit one, in array order. Lifted out of Timeline's inline
- * IIFE so the DOM rows and the canvas painter can't drift on which track lands
- * in which row.
+ * The lane each audio track is drawn on, index for index with `tracks`.
+ *
+ * A track carrying an explicit `lane` keeps it. The rest are PACKED into rows
+ * above the highest explicit lane, so a project written without lanes (an AI
+ * that cut a voiceover into fourteen back-to-back segments, plus a music bed and
+ * one sfx) reads as three rows, not sixteen:
+ *
+ * - by kind first (`type`, absent meaning `audio`): music and sfx never share a
+ *   row with voice. Each kind's rows come in the order that kind first appears
+ *   in the array;
+ * - within a kind, clips in start order (stable), each into the first of that
+ *   kind's rows it does not overlap. Back-to-back clips share a row; only a real
+ *   overlap opens a new one.
+ *
+ * Windows come from `resolveAudioWindow`, so a track without `start`/`end` packs
+ * where it is drawn.
+ */
+export function packAudioLanes(tracks: readonly AudioTrack[], contentDuration = 0): number[] {
+  const lanes: number[] = new Array(tracks.length)
+  let nextLane = 0
+  const byKind = new Map<string, number[]>()
+  tracks.forEach((t, i) => {
+    if (t.lane != null) {
+      lanes[i] = t.lane
+      if (t.lane >= nextLane) nextLane = t.lane + 1
+      return
+    }
+    const kind = t.type ?? 'audio'
+    if (!byKind.has(kind)) byKind.set(kind, [])
+    byKind.get(kind)!.push(i)
+  })
+  for (const indices of byKind.values()) {
+    const windows = indices
+      .map(i => ({ i, ...resolveAudioWindow(tracks[i], contentDuration) }))
+      .sort((a, b) => a.start - b.start)  // stable: equal starts keep array order
+    const rows: Array<{ lane: number; end: number }> = []
+    for (const w of windows) {
+      let row = rows.find(r => r.end <= w.start + AUDIO_PACK_EPSILON)
+      if (!row) {
+        row = { lane: nextLane++, end: -Infinity }
+        rows.push(row)
+      }
+      row.end = Math.max(row.end, w.end)
+      lanes[w.i] = row.lane
+    }
+  }
+  return lanes
+}
+
+/**
+ * Group audio tracks into rendered lanes, in ascending lane order, each lane's
+ * tracks in array order. Which lane a track lands on is `packAudioLanes`. Lifted
+ * out of Timeline's inline IIFE so the DOM rows and the canvas painter can't
+ * drift on which track lands in which row.
  *
  * Also resolves each track's timeline window (see `resolveAudioWindow`). A track
  * whose `start` and `end` are both already finite is returned as the SAME
@@ -164,20 +216,44 @@ export function audioEnd(project: Project): number {
  * right track and writes it a concrete window in passing.
  */
 export function groupAudioLanes(tracks: AudioTrack[], contentDuration = 0): AudioLane[] {
+  const packed = packAudioLanes(tracks, contentDuration)
   const laneMap = new Map<number, AudioTrack[]>()
-  let nextAutoLane = 0
-  for (const t of tracks) {
-    if (t.lane != null && t.lane >= nextAutoLane) nextAutoLane = t.lane + 1
-  }
-  for (const t of tracks) {
-    const lane = t.lane ?? nextAutoLane++
+  tracks.forEach((t, i) => {
+    const lane = packed[i]
     if (!laneMap.has(lane)) laneMap.set(lane, [])
     const { start, end } = resolveAudioWindow(t, contentDuration)
     laneMap.get(lane)!.push(start === t.start && end === t.end ? t : { ...t, start, end })
-  }
+  })
   return [...laneMap.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([laneIndex, laneTracks]) => ({ laneIndex, tracks: laneTracks }))
+}
+
+/**
+ * Write each lane-less audio track's packed lane (`packAudioLanes`) onto it as an
+ * explicit `lane`, so the rows it is drawn on can no longer renumber.
+ *
+ * A row must not move because of an edit made somewhere else. With lanes left
+ * implicit it does: an explicit `lane` written on ONE track (a drag to the row
+ * above) re-packs every lane-less track above it, so the dragged clip lands on
+ * the top row. Stamping first, from the project as it stood BEFORE the edit,
+ * pins every row where it is drawn. Editing paths call this on their input;
+ * opening a project never does, so an old project is fixed when it is next
+ * edited and saved.
+ *
+ * Layout only: it adds `lane` and nothing else, and nothing the render plays
+ * reads `lane`. Returns `project` itself, by reference, when no track is
+ * lane-less, so stamping is idempotent and a no-op edit stays a no-op.
+ * `contentDuration` defaults to the one the painter lays lanes out with.
+ */
+export function stampAudioLanes<T extends Project>(project: T, contentDuration?: number): T {
+  const tracks = project.audio?.tracks
+  if (!tracks || !tracks.some(t => t.lane == null)) return project
+  const packed = packAudioLanes(tracks, contentDuration ?? computeDerivedTiming(project).contentDuration)
+  return {
+    ...project,
+    audio: { ...project.audio, tracks: tracks.map((t, i) => (t.lane == null ? { ...t, lane: packed[i] } : t)) },
+  }
 }
 
 // ── Item labels ──────────────────────────────────────────────────────────
@@ -278,6 +354,12 @@ export interface CrossTrackMoveArgs {
   sourceTrackIdx: number
   /** Vertical travel of the drag in raw pixels (positive = downward). */
   dy: number
+  /** The track the pointer is over, when the caller knows it from the drawn
+   *  rows. Replaces the `dy / VISUAL_ROW_HEIGHT_PX` estimate, which counts
+   *  rows of a fixed 24px while the canvas draws them 44px and 124px tall, so
+   *  one row of travel read as two or five. Past the end of `tracks` means
+   *  above the top row: a drop there mints a new track. */
+  targetTrackIdx?: number
   /** Magnet/ripple mode (`ctx.rippleMode`). When true, a colliding target
    *  track is no longer disqualifying — the drop RIPPLE-INSERTS on it instead
    *  of fanning out to a different track. See the "ripple-insert" section of
@@ -345,15 +427,16 @@ export function coarseItemKind(type?: string): 'video' | 'overlay' {
  * neighbours on it.
  */
 export function resolveTargetTrackIdx(
-  { tracks, item, start, end, sourceTrackIdx, dy, makeSpace = false }: CrossTrackMoveArgs,
+  { tracks, item, start, end, sourceTrackIdx, dy, targetTrackIdx, makeSpace = false }: CrossTrackMoveArgs,
   { kindOnly = false }: ResolveTargetTrackOptions = {},
 ): number {
-  const trackDelta = Math.round(dy / VISUAL_ROW_HEIGHT_PX)
-  const targetIdx = Math.max(0, sourceTrackIdx - trackDelta)
+  const targetIdx = targetTrackIdx !== undefined
+    ? Math.max(0, targetTrackIdx)
+    : Math.max(0, sourceTrackIdx - Math.round(dy / VISUAL_ROW_HEIGHT_PX))
   // No vertical intent: the pointer has not left its own track's band, so an
   // overlap on that track is what the drag is asking for, not a reason to move
   // it to another. See "No vertical intent" in `moveItemAcrossTracks`' doc.
-  const stayPut = !hasVerticalIntent(dy)
+  const stayPut = targetTrackIdx !== undefined ? targetIdx === sourceTrackIdx : !hasVerticalIntent(dy)
   const duration = end - start
   const overlapMin = duration * 0.3
 
@@ -573,12 +656,12 @@ export function computeDerivedTiming(project: Project): DerivedTiming {
 // ── Auto-crossfade ───────────────────────────────────────────────────────
 
 /**
- * Whether two audio tracks are candidates for a crossfade: the same row (an explicit `lane`, or both without one,
- * which is how the projects an AI wrote read) and the same kind (`type`, absent meaning plain `audio`). A track on its
- * own row, or of another kind, is layered with the others, never faded into them.
+ * Whether two audio tracks are candidates for a crossfade: the same drawn row (`packAudioLanes`, so two lane-less
+ * tracks share one only when packing put them there) and the same kind (`type`, absent meaning plain `audio`). A
+ * track on its own row, or of another kind, is layered with the others, never faded into them.
  */
-function sameRowAndKind(a: AudioTrack, b: AudioTrack): boolean {
-  return (a.lane ?? null) === (b.lane ?? null) && (a.type ?? 'audio') === (b.type ?? 'audio')
+function sameRowAndKind(a: AudioTrack, b: AudioTrack, laneOf: ReadonlyMap<string, number>): boolean {
+  return laneOf.get(a.id) === laneOf.get(b.id) && (a.type ?? 'audio') === (b.type ?? 'audio')
 }
 
 /**
@@ -610,6 +693,8 @@ export function computeAutoCrossfade(project: Project): Project | null {
   const audioTracks = withIds.audio?.tracks ?? []
   if (!audioTracks.length) return null
 
+  const packed = packAudioLanes(audioTracks, computeDerivedTiming(withIds).contentDuration)
+  const laneOf = new Map(audioTracks.map((t, i) => [t.id, packed[i]]))
   const sorted = [...audioTracks].sort((a, b) => a.start - b.start)
   let changed = false
   const updated = sorted.map(t => ({ ...t }))
@@ -637,7 +722,7 @@ export function computeAutoCrossfade(project: Project): Project | null {
       // A crossfade is between clips of ONE row and ONE kind (§234). A voiceover that a split music bed passes
       // under was getting a fade-in the length of the overlap, so the user heard their own voice swell in.
       // `continue`, not `break`: a later track may still be this one's partner.
-      if (!sameRowAndKind(a, b)) continue
+      if (!sameRowAndKind(a, b, laneOf)) continue
       // Round ONCE and compare against the rounded value; comparing the raw
       // overlap was non-idempotent whenever it was not a multiple of 0.1s
       // (stored 0.4 never equalled 0.37), so merely opening such a project

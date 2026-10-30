@@ -76,8 +76,8 @@ describe('computeAutoCrossfade', () => {
     const p = project({
       audio: {
         tracks: [
-          track({ id: 'a', start: 0, end: 2, fadeOut: 1 }),
-          track({ id: 'b', start: 2, end: 4, fadeIn: 1 }),
+          track({ lane: 0, id: 'a', start: 0, end: 2, fadeOut: 1 }),
+          track({ lane: 0, id: 'b', start: 2, end: 4, fadeIn: 1 }),
         ],
       },
     })
@@ -86,7 +86,7 @@ describe('computeAutoCrossfade', () => {
 
   it('adds fade-out/fade-in on overlapping tracks, sized to the overlap', () => {
     const p = project({
-      audio: { tracks: [track({ id: 'a', start: 0, end: 3 }), track({ id: 'b', start: 2, end: 5 })] },
+      audio: { tracks: [track({ lane: 0, id: 'a', start: 0, end: 3 }), track({ lane: 0, id: 'b', start: 2, end: 5 })] },
     })
     const next = computeAutoCrossfade(p)
     expect(next).not.toBeNull()
@@ -99,8 +99,8 @@ describe('computeAutoCrossfade', () => {
     const p = project({
       audio: {
         tracks: [
-          track({ id: 'a', start: 0, end: 3, fadeOut: 2 }),
-          track({ id: 'b', start: 2.5, end: 5, fadeIn: 2 }),
+          track({ lane: 0, id: 'a', start: 0, end: 3, fadeOut: 2 }),
+          track({ lane: 0, id: 'b', start: 2.5, end: 5, fadeIn: 2 }),
         ],
       },
     })
@@ -166,11 +166,18 @@ describe('computeAutoCrossfade', () => {
       expect(computeAutoCrossfade(p)).toBeNull()
     })
 
-    it('an explicit row and an unset one are not the same row; two unset ones still are', () => {
+    it('an explicit row and an unset one are not the same row', () => {
       const laned = project({ audio: { tracks: [track({ id: 'a', lane: 0, start: 0, end: 3 }), track({ id: 'b', start: 2, end: 5 })] } })
       expect(computeAutoCrossfade(laned)).toBeNull()
-      const unset = project({ audio: { tracks: [track({ id: 'a', start: 0, end: 3 }), track({ id: 'b', start: 2, end: 5 })] } })
-      expect(fadesOf(computeAutoCrossfade(unset), 'a')).toEqual({ in: 0, out: 1 })
+    })
+
+    it('two unset tracks share a row only where packing draws them in one (groupAudioLanes)', () => {
+      // Overlapping: packed into two rows, so layered, never faded.
+      const overlapping = project({ audio: { tracks: [track({ id: 'a', start: 0, end: 3 }), track({ id: 'b', start: 2, end: 5 })] } })
+      expect(computeAutoCrossfade(overlapping)).toBeNull()
+      // Stamped (the drawn rows written as lanes), a later drag that overlaps them in one row does fade.
+      const stamped = project({ audio: { tracks: [track({ id: 'a', lane: 3, start: 0, end: 3 }), track({ id: 'b', lane: 3, start: 2, end: 5 })] } })
+      expect(fadesOf(computeAutoCrossfade(stamped), 'a')).toEqual({ in: 0, out: 1 })
     })
 
     it('a pair behind an ineligible track is still found (continue, not break), and a second pass is a no-op', () => {
@@ -195,8 +202,8 @@ describe('computeAutoCrossfade', () => {
     const p = project({
       audio: {
         tracks: [
-          track({ id: 'a', start: 0, end: 3, fadeOut: 1 }),
-          track({ id: 'b', start: 2, end: 5, fadeIn: 1 }),
+          track({ lane: 0, id: 'a', start: 0, end: 3, fadeOut: 1 }),
+          track({ lane: 0, id: 'b', start: 2, end: 5, fadeIn: 1 }),
         ],
       },
     })
@@ -211,7 +218,7 @@ describe('computeAutoCrossfade', () => {
     // already-processed project reported a change (and, via Timeline.tsx's
     // effect, wrote to disk and pushed a no-op undo entry) forever.
     const p = project({
-      audio: { tracks: [track({ id: 'a', start: 0, end: 3.37 }), track({ id: 'b', start: 3, end: 6 })] },
+      audio: { tracks: [track({ lane: 0, id: 'a', start: 0, end: 3.37 }), track({ lane: 0, id: 'b', start: 3, end: 6 })] },
     })
     const first = computeAutoCrossfade(p)
     expect(first).not.toBeNull()
@@ -230,21 +237,21 @@ describe('computeAutoCrossfade', () => {
 
   it('does not fade a bed and sfx with identical full-length spans', () => {
     const p = project({
-      audio: { tracks: [track({ id: 'bed', start: 0, end: 75.43 }), track({ id: 'sfx', start: 0, end: 75.43 })] },
+      audio: { tracks: [track({ lane: 0, id: 'bed', start: 0, end: 75.43 }), track({ lane: 0, id: 'sfx', start: 0, end: 75.43 })] },
     })
     expect(computeAutoCrossfade(p)).toBeNull()
   })
 
   it('does not fade a track contained inside another', () => {
     const p = project({
-      audio: { tracks: [track({ id: 'music', start: 0, end: 75 }), track({ id: 'sfx', start: 10, end: 20 })] },
+      audio: { tracks: [track({ lane: 0, id: 'music', start: 0, end: 75 }), track({ lane: 0, id: 'sfx', start: 10, end: 20 })] },
     })
     expect(computeAutoCrossfade(p)).toBeNull()
   })
 
   it('still crossfades a real sequential pair (0..30 then 28..60 gets 2s each)', () => {
     const p = project({
-      audio: { tracks: [track({ id: 'a', start: 0, end: 30 }), track({ id: 'b', start: 28, end: 60 })] },
+      audio: { tracks: [track({ lane: 0, id: 'a', start: 0, end: 30 }), track({ lane: 0, id: 'b', start: 28, end: 60 })] },
     })
     const next = computeAutoCrossfade(p)!
     expect(fades(next, p)).toEqual([['a', 0, 2], ['b', 2, 0]])
@@ -254,10 +261,10 @@ describe('computeAutoCrossfade', () => {
     const p = project({
       audio: {
         tracks: [
-          track({ id: 'bed', start: 0, end: 75 }),
-          track({ id: 'sfx', start: 0, end: 75 }),
-          track({ id: 'a', start: 10, end: 40 }),
-          track({ id: 'b', start: 38, end: 70 }),
+          track({ lane: 0, id: 'bed', start: 0, end: 75 }),
+          track({ lane: 0, id: 'sfx', start: 0, end: 75 }),
+          track({ lane: 0, id: 'a', start: 10, end: 40 }),
+          track({ lane: 0, id: 'b', start: 38, end: 70 }),
         ],
       },
     })
@@ -269,9 +276,9 @@ describe('computeAutoCrossfade', () => {
     const p = project({
       audio: {
         tracks: [
-          track({ id: 'a', start: 10, end: 40 }),
-          track({ id: 'sfx', start: 12, end: 30 }), // inside a, sorts between a and b
-          track({ id: 'b', start: 38, end: 70 }),
+          track({ lane: 0, id: 'a', start: 10, end: 40 }),
+          track({ lane: 0, id: 'sfx', start: 12, end: 30 }), // inside a, sorts between a and b
+          track({ lane: 0, id: 'b', start: 38, end: 70 }),
         ],
       },
     })
@@ -283,11 +290,11 @@ describe('computeAutoCrossfade', () => {
     const p = project({
       audio: {
         tracks: [
-          track({ id: 'bed', start: 0, end: 75 }),
-          track({ id: 'a', start: 10, end: 40 }),
-          track({ id: 'sfx', start: 12, end: 30 }),
-          track({ id: 'b', start: 38, end: 70 }),
-          track({ id: 'c', start: 39, end: 80 }),
+          track({ lane: 0, id: 'bed', start: 0, end: 75 }),
+          track({ lane: 0, id: 'a', start: 10, end: 40 }),
+          track({ lane: 0, id: 'sfx', start: 12, end: 30 }),
+          track({ lane: 0, id: 'b', start: 38, end: 70 }),
+          track({ lane: 0, id: 'c', start: 39, end: 80 }),
         ],
       },
     })
@@ -300,9 +307,9 @@ describe('computeAutoCrossfade', () => {
     const p = project({
       audio: {
         tracks: [
-          track({ id: 'bed', start: 0, end: 75 }),
-          track({ id: 'a', start: 10, end: 40, fadeOut: 2 }),
-          track({ id: 'b', start: 38, end: 70, fadeIn: 2 }),
+          track({ lane: 0, id: 'bed', start: 0, end: 75 }),
+          track({ lane: 0, id: 'a', start: 10, end: 40, fadeOut: 2 }),
+          track({ lane: 0, id: 'b', start: 38, end: 70, fadeIn: 2 }),
         ],
       },
     })
@@ -313,8 +320,8 @@ describe('computeAutoCrossfade', () => {
     const p = project({
       audio: {
         tracks: [
-          track({ id: 'bed', start: 0, end: 75.43, fadeOut: 75.4 }),
-          track({ id: 'sfx', start: 0, end: 75.43, fadeIn: 75.4 }),
+          track({ lane: 0, id: 'bed', start: 0, end: 75.43, fadeOut: 75.4 }),
+          track({ lane: 0, id: 'sfx', start: 0, end: 75.43, fadeIn: 75.4 }),
         ],
       },
     })
@@ -325,8 +332,8 @@ describe('computeAutoCrossfade', () => {
     const p = project({
       audio: {
         tracks: [
-          track({ id: 'a', start: 0, end: 3, muted: true }),
-          track({ id: 'b', start: 2, end: 5 }),
+          track({ lane: 0, id: 'a', start: 0, end: 3, muted: true }),
+          track({ lane: 0, id: 'b', start: 2, end: 5 }),
         ],
       },
     })
@@ -337,9 +344,9 @@ describe('computeAutoCrossfade', () => {
     const p = project({
       audio: {
         tracks: [
-          track({ id: 'solo', start: 20, end: 22 }),
-          track({ id: 'a', start: 0, end: 3 }),
-          track({ id: 'b', start: 2, end: 5 }),
+          track({ lane: 0, id: 'solo', start: 20, end: 22 }),
+          track({ lane: 0, id: 'a', start: 0, end: 3 }),
+          track({ lane: 0, id: 'b', start: 2, end: 5 }),
         ],
       },
     })
@@ -362,8 +369,8 @@ describe('computeAutoCrossfade', () => {
     const p = project({
       audio: {
         tracks: [
-          { src: 'music-a.mp3', start: 0, end: 3 } as AudioTrack,
-          { src: 'music-b.mp3', start: 2, end: 5 } as AudioTrack,
+          { src: 'music-a.mp3', start: 0, end: 3, lane: 0 } as AudioTrack,
+          { src: 'music-b.mp3', start: 2, end: 5, lane: 0 } as AudioTrack,
         ],
       },
     })

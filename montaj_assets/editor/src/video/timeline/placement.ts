@@ -15,7 +15,7 @@
 import type { Project, AudioDropPayload } from '../../types'
 import type { AudioTrack, VisualTrack } from '../../schema'
 import { insertClipAt, overlapsAny, type NewClipInput } from '../cuts'
-import { normalizeTracks, nextVisualTrackId, normalizeAudioTracks, groupAudioLanes, computeDerivedTiming } from './timeline-model'
+import { normalizeTracks, nextVisualTrackId, normalizeAudioTracks, groupAudioLanes, stampAudioLanes, computeDerivedTiming } from './timeline-model'
 
 /** What a drop needs to tell `placeDroppedClip` about ITSELF — the pointer's
  *  drop time, which row (if any) it released over, and the magnet/snap state
@@ -316,11 +316,10 @@ export function placeDroppedAudio<P extends Project>(project: P, placement: Drop
 
   const dropAt = Math.max(0, resolveDropPoint(placement))
   const end = dropAt + audio.sourceDuration
-  const withIds = normalizeAudioTracks(project)
+  // Every track stamped with the lane it is drawn on first (`stampAudioLanes`).
+  const withIds = stampAudioLanes(normalizeAudioTracks(project))
   const existing = withIds.audio?.tracks ?? []
   const lanes = groupAudioLanes(existing, computeDerivedTiming(withIds).contentDuration)
-  const laneOfId = new Map<string, number>()
-  for (const lane of lanes) for (const t of lane.tracks) laneOfId.set(t.id, lane.laneIndex)
 
   const target = lanes.find(l => l.laneIndex === preferredLane)
   const fits = !!target && !target.tracks.some(t => dropAt < t.end - EPSILON && end > t.start + EPSILON)
@@ -336,6 +335,5 @@ export function placeDroppedAudio<P extends Project>(project: P, placement: Drop
     lane,
     ...(audio.name ? { label: audio.name } : {}),
   }
-  const stamped = existing.map(t => (t.lane == null ? { ...t, lane: laneOfId.get(t.id) } : t))
-  return { ...withIds, audio: { ...withIds.audio, tracks: [...stamped, track] } } as P
+  return { ...withIds, audio: { ...withIds.audio, tracks: [...existing, track] } } as P
 }

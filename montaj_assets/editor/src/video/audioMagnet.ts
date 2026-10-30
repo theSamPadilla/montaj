@@ -1,5 +1,5 @@
 import type { Project } from '../types'
-import { computeDerivedTiming, groupAudioLanes } from './timeline/timeline-model'
+import { computeDerivedTiming, groupAudioLanes, stampAudioLanes } from './timeline/timeline-model'
 
 /**
  * Collapse every MAGNETIC audio lane to gapless, non-overlapping clips.
@@ -28,10 +28,14 @@ import { computeDerivedTiming, groupAudioLanes } from './timeline/timeline-model
  * reference to decide whether something changed.
  */
 export function reflowMagneticLanes<P extends Project>(project: P): P {
-  const tracks = project.audio?.tracks
-  if (!tracks || tracks.length === 0) return project
+  if (!project.audio?.tracks?.length) return project
 
-  const lanes = groupAudioLanes(tracks, computeDerivedTiming(project).contentDuration)
+  // Lanes resolved ONCE, from the project as it stands, and written onto the
+  // result when it changes (`stampAudioLanes`): butting clips together must not
+  // re-pack a lane-less track onto another row.
+  const contentDuration = computeDerivedTiming(project).contentDuration
+  const tracks = stampAudioLanes(project, contentDuration).audio!.tracks
+  const lanes = groupAudioLanes(tracks, contentDuration)
   const updates = new Map<string, { start: number; end: number }>()
 
   for (const lane of lanes) {
