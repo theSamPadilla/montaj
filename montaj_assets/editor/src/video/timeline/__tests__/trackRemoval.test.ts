@@ -64,6 +64,32 @@ describe('visual tracks', () => {
     expect(visualTrackItemCount(legacy, 1)).toBe(1)
   })
 
+  it('removing the base moves the first empty track to the front', () => {
+    const next = removeVisualTrack(p, 0)
+    expect((next.tracks as Array<{ id: string }>).map(t => t.id)).toEqual(['t2', 't1'])
+  })
+
+  it('refuses a removal that would leave overlays as the base', () => {
+    const noSpare = proj([
+      { id: 't0', items: [v('v0')] },
+      { id: 't1', items: [o('o0')] },
+      { id: 't2', items: [v('v1')] },
+    ])
+    // Removing either video leaves a video base, so allowed...
+    expect(canRemoveVisualTrack(noSpare, 0)).toBe(true)
+    // ...but a lone video base over overlays and no empty track is not.
+    const stuck = proj([{ id: 't0', items: [v('v0'), v('v1')] }, { id: 't1', items: [o('o0')] }, { id: 't2', items: [o('o1')] }])
+    expect(canRemoveVisualTrack(stuck, 0)).toBe(false)
+    expect(removeVisualTrack(stuck, 0)).toBe(stuck)
+  })
+
+  it('a base holding only images is not always removable', () => {
+    const img = (id: string) => ({ id, type: 'image', src: 'i.png', start: 0, end: 2 })
+    const imgBase = proj([{ id: 't0', items: [img('i0')] }, { id: 't1', items: [o('o0')] }])
+    // Removing the image track leaves an overlay base and no spare empty track.
+    expect(canRemoveVisualTrack(imgBase, 0)).toBe(false)
+  })
+
   it('re-asserts video-before-overlay order', () => {
     const mixed = proj([
       { id: 't0', items: [v('v0')] },

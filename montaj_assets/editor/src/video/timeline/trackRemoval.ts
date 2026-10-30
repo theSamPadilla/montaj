@@ -19,19 +19,36 @@ export function visualTrackItemCount(project: Project, trackIdx: number): number
   return trackItems(project)[trackIdx]?.length ?? 0
 }
 
+/** The base track (index 0) may hold only video and images. */
+function baseIsValid(items: readonly { type?: string }[] | undefined): boolean {
+  return !items || items.every(i => i.type === 'video' || i.type === 'image')
+}
+
+/** The tracks left after removing `trackIdx`: canonical order, and when the
+ *  new base holds anything but video and images, the first empty track moved
+ *  to the front. `null` when no valid base can be made. */
+function tracksAfterRemoval(project: Project, trackIdx: number): Array<{ items: { type?: string }[] }> | null {
+  const normalized = normalizeTrackOrder(normalizeTracks(project))
+  const kept = ((normalized.tracks ?? []) as Array<{ items: { type?: string }[] }>).filter((_, i) => i !== trackIdx)
+  if (baseIsValid(kept[0]?.items)) return kept
+  const empty = kept.findIndex(t => t.items.length === 0)
+  if (empty < 0) return null
+  return [kept[empty], ...kept.filter((_, i) => i !== empty)]
+}
+
 export function canRemoveVisualTrack(project: Project, trackIdx: number): boolean {
   const tracks = trackItems(project)
   const items = tracks[trackIdx]
   if (!items) return false
-  if (!isVideoTrack(items)) return true
-  return tracks.filter(isVideoTrack).length > 1
+  if (isVideoTrack(items) && tracks.filter(isVideoTrack).length <= 1) return false
+  return tracksAfterRemoval(project, trackIdx) !== null
 }
 
 export function removeVisualTrack(project: Project, trackIdx: number): Project {
   if (!canRemoveVisualTrack(project, trackIdx)) return project
-  const normalized = normalizeTracks(project)
-  const tracks = (normalized.tracks ?? []).filter((_, i) => i !== trackIdx)
-  return normalizeTrackOrder({ ...normalized, tracks })
+  const tracks = tracksAfterRemoval(project, trackIdx)
+  if (!tracks) return project
+  return { ...normalizeTracks(project), tracks: tracks as unknown as Project['tracks'] }
 }
 
 function laneTrackIds(project: Project, laneIndex: number): string[] {
