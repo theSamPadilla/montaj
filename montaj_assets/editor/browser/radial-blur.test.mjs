@@ -58,7 +58,7 @@ before(async () => {
     logLevel: 'error',
   })
   writeFileSync(join(workDir, 'index.html'),
-    '<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0"><div id="surface"></div><div id="video"></div><script src="page.js"></script></body></html>')
+    '<!doctype html><html><head><meta charset="utf-8"><style>.absolute{position:absolute}.inset-0{inset:0}.w-full{width:100%}.h-full{height:100%}.pointer-events-none{pointer-events:none}</style></head><body style="margin:0"><div id="surface"></div><div id="video"></div><div id="spec"></div><script src="page.js"></script></body></html>')
   url = pathToFileURL(join(workDir, 'index.html')).href
   browser = await puppeteer.launch({
     headless: 'new',
@@ -266,6 +266,93 @@ test('preview (WebGL) against export (ffmpeg): within a few codes inside the pic
       assert.ok(mean < 2, `${label}: mean ${mean.toFixed(2)} codes`)
     }
     t.diagnostic(`preview against export, all cases: worst ${worstAll}, largest mean ${meanMax.toFixed(2)} codes`)
+    assert.deepEqual(errors, [])
+  } finally { await page.close() }
+})
+
+// ── The real mapping ────────────────────────────────────────────────────────
+//
+// radialBlurSpec (itemBlur.tsx) decides which part of the source fills which
+// part of the box: an image's cover, fill or contain fit and its crop, the
+// engine canvas's picture rect, a per-axis box. Each case mounts the media
+// sharp as the preview does (CroppedImage; the engine canvas with black
+// bars), screenshots what the browser shows, and blurs that screenshot with
+// the reference over the spec's picture rect; the pass drawn from the same
+// element with the spec's rects must match it. A wrong rect would put the
+// blurred picture where the screenshot has another part of it, or the page.
+
+/** A PNG's RGBA bytes (ffmpeg decodes it; screenshots carry no colour profile, so no conversion). */
+function decodePng(png) {
+  const probe = spawnSync(FFMPEG, ['-v', 'error', '-f', 'png_pipe', '-i', '-', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-'],
+    { input: Buffer.from(png), maxBuffer: 1 << 26 })
+  assert.equal(probe.status, 0, String(probe.stderr))
+  // Width and height from the IHDR chunk.
+  const b = Buffer.from(png)
+  return { data: probe.stdout, width: b.readUInt32BE(16), height: b.readUInt32BE(20) }
+}
+
+const SPEC = [
+  ['image fill, stretched', { kind: 'image', fit: 'fill', natural: { w: 200, h: 100 } }],
+  ['image fill, cropped', { kind: 'image', fit: 'fill', natural: { w: 320, h: 160 }, crop: { x: 0.25, y: 0.1, w: 0.5, h: 0.8 } }],
+  ['image cover, wide', { kind: 'image', fit: 'cover', natural: { w: 320, h: 120 } }],
+  ['image cover, tall', { kind: 'image', fit: 'cover', natural: { w: 120, h: 300 } }],
+  ['image cover, cropped', { kind: 'image', fit: 'cover', natural: { w: 400, h: 200 }, crop: { x: 0.1, y: 0.2, w: 0.6, h: 0.5 } }],
+  ['image contain', { kind: 'image', fit: 'contain', natural: { w: 320, h: 180 } }],
+  ['image contain, cropped', { kind: 'image', fit: 'contain', natural: { w: 640, h: 360 }, crop: { x: 0.25, y: 0.25, w: 0.5, h: 0.5 } }],
+  ['image contain, per-axis box', { kind: 'image', fit: 'contain', natural: { w: 320, h: 320 }, scaleX: 1.5, scaleY: 1 }],
+  ['image cover, per-axis box', { kind: 'image', fit: 'cover', natural: { w: 300, h: 300 }, scaleX: 1, scaleY: 0.75 }],
+  ['engine canvas, landscape footage', { kind: 'engine', natural: { w: 320, h: 180 } }],
+  // Footage whose fitted edges land on whole pixels: at a fractional edge the
+  // engine canvas antialiases a row into its black bar, which the pass's fit
+  // reads and the blur spreads inward (measured: 13 codes at 320x180 in this
+  // box), a property of reading the canvas, not of the mapping.
+  ['engine canvas, per-axis box', { kind: 'engine', natural: { w: 320, h: 192 }, scaleX: 1.25, scaleY: 1 }],
+]
+
+test('the real mapping: radialBlurSpec\'s rects put the blur where the browser shows the media', { timeout: 120_000 }, async (t) => {
+  const { page, errors } = await open()
+  try {
+    if (await noWebgl2(page, t)) return
+    await page.setViewport({ width: 600, height: 600, deviceScaleFactor: 1 })
+    for (const [label, base] of SPEC) {
+      for (const [type, amount, cx, cy] of [['spin', 20, 0.4, 0.55], ['zoom', 30, 0.6, 0.35]]) {
+        const c = { canvas: 160, scaleX: 1, scaleY: 1, ...base, type, amount, center: { x: cx, y: cy } }
+        const { box } = await page.evaluate((c) => window.__specMount(c), c)
+        const el = await page.$('#spec')
+        const png = await el.screenshot({ type: 'png' })
+        const shot = decodePng(png)
+        assert.deepEqual([shot.width, shot.height], [box.w, box.h], `${label}: screenshot size`)
+        const p = await page.evaluate((c) => window.__specDraw(c), c)
+        assert.equal(p.res, 'drawn', `${label}: ${p.res}`)
+        const r = p.pictureRect
+        const rx = Math.round(r.x * box.w)
+        const ry = Math.round(r.y * box.h)
+        const pw = Math.round((r.x + r.w) * box.w) - rx
+        const ph = Math.round((r.y + r.h) * box.h) - ry
+        const center = [p.center.x * box.w - rx, p.center.y * box.h - ry]
+        const plan = radialBlurPlan({ type, amount, center, rect: { w: pw, h: ph } })
+        const ref = radialBlurReference({ data: shot.data, width: box.w, height: box.h },
+          { type, plan, center, rect: { x: rx, y: ry, w: pw, h: ph } })
+        let worst = 0
+        let sum = 0
+        let n = 0
+        // One pixel in from the picture's edges: the browser antialiases a fitted image's edge rows.
+        for (let j = 1; j < ph - 1; j++) for (let i = 1; i < pw - 1; i++) {
+          const g = ((j + ry) * box.w + (i + rx)) * 4
+          const q = (j * pw + i) * 4
+          for (let ch = 0; ch < 3; ch++) {
+            const d = Math.abs(p.got[g + ch] - Math.round(ref.data[q + ch] * 255))
+            worst = Math.max(worst, d)
+            sum += d
+            n++
+          }
+        }
+        const mean = sum / n
+        t.diagnostic(`${label}, ${type} ${amount}: picture ${pw}x${ph} at ${rx},${ry}: worst ${worst}, mean ${mean.toFixed(2)}`)
+        assert.ok(worst <= 8, `${label}, ${type}: worst ${worst} codes`)
+        assert.ok(mean < 1.5, `${label}, ${type}: mean ${mean.toFixed(2)} codes`)
+      }
+    }
     assert.deepEqual(errors, [])
   } finally { await page.close() }
 })
