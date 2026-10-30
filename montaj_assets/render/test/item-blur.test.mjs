@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { blurFilterStep, BLUR_STEPS, VIDEO_BLUR_FORMAT, IMAGE_BLUR_FORMAT } from '../item-blur.js'
 import { encodeSegment, buildVideoItemFilterParts, buildImageItemFilterParts } from '../encode-segment.js'
+import { radialBlurPlan, radialTapInverse, pictureRectInBox } from '@bycrux/timeline-core'
 import { FFMPEG } from '../ffmpeg-bin.js'
 
 // ── The step ────────────────────────────────────────────────────────────────
@@ -208,19 +209,126 @@ test('video: a mask comes after the blur', () => {
   assert.ok(g.indexOf('gblur=') < g.indexOf('alphaextract'), g)
 })
 
-// PLACEHOLDER: spin and zoom are not drawn yet (item-blur.js, "SPIN AND ZOOM
-// PLUG IN HERE"): a uniform blur of sigma 0, so the graph is the sharp one.
-// Replace with their own tests when they are built.
-test('spin and zoom are not drawn yet: no step, and the video and image graphs are the unblurred ones', () => {
-  for (const blurType of ['spin', 'zoom']) {
-    assert.equal(blurFilterStep({ blur: 40, blurType, blurX: 0.3, blurY: 0.6 }, O), '')
-    const v = (over) => graphOf(buildVideoItemFilterParts(video({ scale: 3.2, probedWidth: 960, probedHeight: 540, ...over }),
-      1080, 1920, 1, '[canvas]', vOpts))
-    assert.equal(v({ blur: 40, blurType }), v({}))
-    assert.equal(graphOf(buildVideoItemFilterParts(video({ blur: 40, blurType }), 1080, 1920, 1, '[canvas]', vOpts)),
-      graphOf(buildVideoItemFilterParts(video(), 1080, 1920, 1, '[canvas]', vOpts)))
-    assert.equal(graphOf(buildImageItemFilterParts(image({ blur: 90, blurType }), 1080, 1920, 1, '[canvas]', 2, 0)),
-      graphOf(buildImageItemFilterParts(image(), 1080, 1920, 1, '[canvas]', 2, 0)))
+// ── Spin and zoom ───────────────────────────────────────────────────────────
+// Per pass of radialBlurPlan: split into N copies, each moved about the centre
+// by perspective (in 8 bits: it takes nothing deeper), back to 16 bits, mixed
+// with the plan's weights; then unpremultiplied, and where every tap fell
+// outside the picture the source shows (maskedmerge on the colour planes, so
+// the alpha is the clip's own). Real-ffmpeg parity against the reference
+// sampler is test/item-blur-radial.test.mjs.
+
+const radial = (blurType, over = {}) => ({ blur: blurType === 'spin' ? 30 : 40, blurType, blurX: 0.5, blurY: 0.4, ...over })
+const PIC = { picture: { w: 1080, h: 1920, exact: true }, box: { w: 1080, h: 1920 } }
+const perspectives = (step) => [...step.matchAll(/perspective=([^,\[]*)/g)].map((m) =>
+  Object.fromEntries(m[1].split(':').map((kv) => kv.split('='))))
+
+test('spin and zoom: no amount is no step; uniform and linear are untouched by blurX and blurY', () => {
+  for (const t of ['spin', 'zoom']) assert.equal(blurFilterStep(radial(t, { blur: 0 }), { ...O, ...PIC }), '')
+  assert.equal(blurFilterStep({ blur: 40, blurX: 0.1, blurY: 0.9 }, O), blurFilterStep({ blur: 40 }, O))
+  assert.equal(blurFilterStep(lin(30, { blurX: 0.1 }), O), blurFilterStep(lin(30), O))
+})
+
+test('spin and zoom: per pass, split, perspective in 8 bits, back to 16, mix with the plan\'s weights; then unpremultiply and the fallback', () => {
+  for (const t of ['spin', 'zoom']) {
+    const step = blurFilterStep(radial(t), { ...O, format: 'yuva444p16le', ...PIC })
+    const plan = radialBlurPlan({ type: t, amount: radial(t).blur, center: [540, 768], rect: { w: 1080, h: 1920 } })
+    assert.ok(plan.passes.length >= 2, `${t}: ${plan.passes.length} passes`)
+    assert.ok(step.startsWith('format=yuva444p16le,split=2[bl3s][bl3w];[bl3w]premultiply=inplace=1,setparams=alpha_mode=straight,'
+      + 'pad=w=iw+4:h=ih+4:x=2:y=2:color=black@0,format=yuva444p,split='), step.slice(0, 300))
+    assert.equal(perspectives(step).length, plan.passes.reduce((n, p) => n + p.taps.length, 0))
+    const mixes = [...step.matchAll(/mix=inputs=(\d+):weights='([^']*)'/g)]
+    assert.equal(mixes.length, plan.passes.length)
+    mixes.forEach((m, k) => {
+      assert.equal(Number(m[1]), plan.passes[k].taps.length)
+      m[2].split(' ').forEach((w, j) => assert.ok(Math.abs(Number(w) - plan.passes[k].taps[j].weight) < 1e-6, `${t} pass ${k} tap ${j}`))
+    })
+    // Every copy back to 16 bits before the mix; the margin cleared between passes.
+    assert.equal((step.match(/,format=yuva444p16le\[bl3r/g) ?? []).length, perspectives(step).length)
+    assert.equal((step.match(/crop=w=iw-4:h=ih-4:x=2:y=2,pad=w=iw\+4/g) ?? []).length, plan.passes.length - 1)
+    assert.ok(step.endsWith('setparams=alpha_mode=premultiplied,unpremultiply=inplace=1,crop=w=iw-4:h=ih-4:x=2:y=2[bl3u];'
+      + "[bl3u]split=2[bl3k][bl3m];[bl3m]lut=c3='min(val*16,maxval)',"
+      + 'mergeplanes=map0s=0:map0p=3:map1s=0:map1p=3:map2s=0:map2p=3:map3s=0:map3p=3:format=yuva444p16le[bl3n];[bl3s][bl3k][bl3n]maskedmerge=planes=7,'
+      + 'format=yuv444p16le'), step.slice(-600))
+    // With alpha: the maskedmerge's alpha is the source's, so nothing follows it.
+    const a = blurFilterStep(radial(t), { ...O, format: IMAGE_BLUR_FORMAT, alpha: true, ...PIC })
+    assert.ok(a.endsWith('[bl3s][bl3k][bl3n]maskedmerge=planes=7') && a.includes(',format=gbrap,split='), a.slice(-200))
+  }
+})
+
+test('spin and zoom: each tap\'s corners are its inverse map about the centre, in perspective\'s pixel-index coordinates', () => {
+  // A 100x60 picture (104x64 with its margin), centre (0.25, 0.5) of the box:
+  // (25, 30) in picture pixels, (26.5, 31.5) in the margin's index coordinates.
+  const o = { ...O, picture: { w: 100, h: 60, exact: true }, box: { w: 100, h: 60 } }
+  for (const t of ['spin', 'zoom']) {
+    const item = radial(t, { blur: t === 'spin' ? 4 : 4, blurX: 0.25, blurY: 0.5 })
+    const plan = radialBlurPlan({ type: t, amount: item.blur, center: [25, 30], rect: { w: 100, h: 60 } })
+    const ps = perspectives(blurFilterStep(item, o))
+    plan.passes.flatMap((p) => p.taps).forEach((tap, i) => {
+      const [a, b] = radialTapInverse(t, tap.offset)
+      const [cx, cy] = [26.5, 31.5]
+      ;[[0, 0], [104, 0], [0, 64], [104, 64]].forEach(([qx, qy], k) => {
+        const x = cx + a * (qx - cx) - b * (qy - cy)
+        const y = cy + b * (qx - cx) + a * (qy - cy)
+        assert.ok(Math.abs(Number(ps[i][`x${k}`]) - x) < 1e-5 && Math.abs(Number(ps[i][`y${k}`]) - y) < 1e-5,
+          `${t} tap ${i} corner ${k}: ${ps[i][`x${k}`]},${ps[i][`y${k}`]} vs ${x},${y}`)
+      })
+    })
+  }
+})
+
+test('spin and zoom: a picture only known by its box is planned on the box and placed by W and H', () => {
+  const step = blurFilterStep(radial('zoom'), { ...O, picture: { w: 1080, h: 1920 }, box: { w: 1080, h: 1920 } })
+  const p = perspectives(step)[0]
+  for (const k of ['x0', 'y0', 'x3', 'y3']) assert.match(p[k], /W|H/, `${k}=${p[k]}`)
+  // The centre's place from the box's middle: W/2 + (0.5 - 0.5) * 1080 - 0.5 across, H/2 + (0.4 - 0.5) * 1920 - 0.5 down.
+  const at = (e, W, H) => Function('W', 'H', `return ${e}`)(W, H)
+  const [s] = radialBlurPlan({ type: 'zoom', amount: 40, center: [540, 768], rect: { w: 1080, h: 1920 } }).passes[0].taps.map((t) => t.offset)
+  for (const [W, H] of [[1084, 1924], [1084, 612]]) {
+    const cx = W / 2 - 0.5
+    const cy = H / 2 - 192 - 0.5
+    assert.ok(Math.abs(at(p.x0, W, H) - (cx - cx / s)) < 1e-3 && Math.abs(at(p.y3, W, H) - (cy + (H - cy) / s)) < 1e-3, `${W}x${H}`)
+  }
+  // The same centre and plan as an exact picture of the box's own size.
+  assert.equal(perspectives(blurFilterStep(radial('zoom'), { ...O, ...PIC })).length, perspectives(step).length)
+})
+
+test('spin and zoom: an animated box needs nothing per frame (degrees and percent do not change with its size)', () => {
+  const item = radial('spin', { keyframes: [{ prop: 'scale', points: [{ t: 0, value: 0.5 }, { t: 1, value: 1 }] }] })
+  const step = blurFilterStep(item, { ...O, ...PIC, animated: { kind: 'image', peakW: 1080, peakH: 1920, offset: 0, duration: 1, fps: 10 } })
+  assert.equal(step, blurFilterStep(radial('spin'), { ...O, ...PIC }))
+  assert.ok(!step.includes('sendcmd'))
+})
+
+test('spin and zoom on video: before an upscale of known footage, in footage pixels with fewer taps; else after the scale', () => {
+  const g = (over) => graphOf(buildVideoItemFilterParts(video({ scale: 3.2, ...over }), 1080, 1920, 1, '[canvas]', vOpts))
+  for (const t of ['spin', 'zoom']) {
+    const pre = g({ ...radial(t), probedWidth: 960, probedHeight: 540 })
+    assert.ok(pre.includes('setpts=PTS-STARTPTS,format=yuva444p16le,split=2[bl1s][bl1w];'), t)
+    assert.ok(pre.includes('maskedmerge=planes=7,format=yuv444p16le,scale=3456:6144:'), t)
+    // Without the size: after the scale, planned on the box and placed by W and H.
+    const post = g(radial(t))
+    assert.ok(post.includes('decrease,format=yuva444p16le,split=2[bl1s][bl1w];') && /perspective=x0=[^:]*W/.test(post), t)
+    assert.ok(perspectives(pre).length < perspectives(post).length, `${t}: ${perspectives(pre).length} vs ${perspectives(post).length}`)
+    // The pre-scale plan: the footage, 960x540, in a 3456x6144 box, the centre at (0.5, 0.4) of the box.
+    const rect = pictureRectInBox(3456, 6144, 960, 540)
+    const plan = radialBlurPlan({ type: t, amount: radial(t).blur,
+      center: [(0.5 - rect.x) / rect.w * 960, (0.4 - rect.y) / rect.h * 540], rect: { w: 960, h: 540 } })
+    assert.equal(perspectives(pre).length, plan.passes.reduce((n, p) => n + p.taps.length, 0), t)
+    // A tiny amount still runs before the scale (no sigma threshold for these).
+    assert.ok(g({ ...radial(t, { blur: 1 }), probedWidth: 960, probedHeight: 540 }).includes('setpts=PTS-STARTPTS,format=yuva444p16le,split=2[bl1s]'), t)
+  }
+  // Without spin or zoom the graphs are what they were (the uniform blur's pre-scale threshold holds).
+  assert.ok(g({ blur: 4, probedWidth: 960, probedHeight: 540, blurX: 0.1 }).includes('decrease,format=yuva444p16le,pad=w='))
+})
+
+test('spin and zoom on a still image: blurred once and looped; an image\'s alpha is its own', () => {
+  for (const fit of ['cover', 'contain']) {
+    const g = graphOf(buildImageItemFilterParts(image({ fit, ...radial('zoom') }), 1080, 1920, 1, '[canvas]', 2, 0))
+    assert.ok(g.startsWith('[1:v]trim=end_frame=1,scale='), g.slice(0, 80))
+    assert.ok(g.indexOf('maskedmerge=planes=7,format=rgba') < g.indexOf(ONCE), fit)
+    assert.ok(g.includes(',format=gbrap16le,split=2[bl1s][bl1w];'), fit)
+    // cover: the box is the picture (numbers); contain: placed by W and H.
+    assert.equal(/perspective=x0=[^:]*W/.test(g), fit === 'contain', fit)
   }
 })
 
@@ -454,6 +562,48 @@ test('real ffmpeg: a linear blur streaks along its angle, clockwise from x, and 
       assert.ok(off < 2, `${angle}: streak at ${theta.toFixed(1)} degrees`)
       assert.ok(Math.sqrt(along / m) > 6 && Math.sqrt(across / m) < 2.5,
         `${angle}: spread ${Math.sqrt(along / m).toFixed(1)} along, ${Math.sqrt(across / m).toFixed(1)} across`)
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ── Real ffmpeg: spin and zoom ──────────────────────────────────────────────
+
+test('real ffmpeg: spin and zoom keep a full-frame clip opaque to every edge (pre- and post-scale, animated, centre outside)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'blur-'))
+  try {
+    const clip = makeSolid(dir, 'red', '96x54', 'mp4')
+    const base = { type: 'video', src: clip, start: 0, end: 0.4, inPoint: 0, trackIdx: 0, offsetX: 0, offsetY: 0,
+      opacity: 1, muted: true, scale: 3.4 }
+    const cases = {
+      spinPost: { ...base, blur: 90, blurType: 'spin', blurX: 0.3, blurY: 0.2 },
+      spinPre: { ...base, blur: 60, blurType: 'spin', probedWidth: 96, probedHeight: 54 },
+      zoomPost: { ...base, blur: 150, blurType: 'zoom', blurX: 0.8, blurY: 0.5 },
+      zoomPre: { ...base, blur: 80, blurType: 'zoom', probedWidth: 96, probedHeight: 54, blurX: -0.4, blurY: 1.3 },
+      animated: { ...base, blur: 45, blurType: 'spin', keyframes: [{ prop: 'scale', points: [{ t: 0, value: 3.4 }, { t: 0.4, value: 3.8 }] }] },
+    }
+    // 10 codes: a 90 degree spin about an off-centre point leaves the far
+    // corners thinly covered, where the 8-bit copies' rounding shows (measured 8).
+    for (const [name, item] of Object.entries(cases)) {
+      const f = await render(dir, [item], name)
+      for (const [x, y] of [[0, 0], [W - 1, 0], [0, H - 1], [W - 1, H - 1], [W / 2, 0], [W / 2, H - 1], [0, H / 2], [W / 2, H / 2]]) {
+        assert.ok(near(px(f, x, y), RED, 10), `${name} (${x},${y}): ${px(f, x, y)}`)
+      }
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('real ffmpeg: transparent white under a clip\'s alpha does not halo through a spin or zoom blur', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'blur-'))
+  try {
+    const png = join(dir, 'white.png')
+    const vf = `format=rgba,geq=r='if(gte(X,${W / 2}),255,192)':g='if(gte(X,${W / 2}),255,64)':b='if(gte(X,${W / 2}),255,32)':a='if(gte(X,${W / 2}),0,255)'`
+    const g = spawnSync(FFMPEG, ['-y', '-v', 'error', '-f', 'lavfi', '-i', `color=c=0xc04020:s=${W}x${H}`, '-vf', vf, '-frames:v', '1', png])
+    assert.equal(g.status, 0, String(g.stderr))
+    for (const [blurType, blur] of [['spin', 60], ['zoom', 100]]) {
+      const f = await render(dir, [{ type: 'image', src: png, start: 0, end: 0.4, trackIdx: 1, scale: 1, offsetX: 0, offsetY: 0,
+        opacity: 1, blur, blurType, blurX: 0.5, blurY: 0.5 }], `white-${blurType}`)
+      assert.ok(near(px(f, W / 2 - 3, H / 2 - 30), RED, 12), `${blurType}: opaque side at the edge stays red: ${px(f, W / 2 - 3, H / 2 - 30)}`)
+      assert.ok(near(px(f, W / 2 + 3, H / 2 - 30), [0, 0, 0], 8), `${blurType}: the transparent side stays clear: ${px(f, W / 2 + 3, H / 2 - 30)}`)
     }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

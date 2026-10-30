@@ -155,3 +155,31 @@ test('a linear blur is drawn along its angle in the still', { skip: !hasFfmpeg, 
     near(px(slant, 269, 479), [0, 0, 255], 6, 'bottom-right corner')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+// Spin and zoom show in the still: a vertical seam through the centre. A spin
+// about the centre mixes it far from the centre (the turn crosses the seam)
+// and leaves it sharp near the centre; a zoom about a point left of the seam
+// streaks across it on the centre's row, and a zoom about a point on the seam
+// streaks along it, leaving it sharp.
+test('spin and zoom blurs are drawn about their centre in the still', { skip: !hasFfmpeg, timeout: 200_000 }, () => {
+  const { dir } = setup()
+  try {
+    const split = join(dir, 'split.png')
+    const r = spawnSync(FFMPEG, ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=0xc80000:size=270x480',
+      '-f', 'lavfi', '-i', 'color=c=0x0000ff:size=135x480', '-filter_complex', '[0][1]overlay=x=135',
+      '-frames:v', '1', '-pix_fmt', 'rgb24', split])
+    assert.equal(r.status, 0, `${r.stderr}`)
+    const at = (extra, name) => sample(dir, projectOf([img('a', split, { blur: 40, ...extra })]), 1, name)
+    const spin = at({ blurType: 'spin', blurX: 0.5, blurY: 0.5 }, 'spin')
+    near(px(spin, 127, 240), [200, 0, 0], 6, 'spin: left of the seam at the centre stays red')
+    const far = px(spin, 132, 20)
+    assert.ok(far[0] < 190 && far[2] > 20, `spin: mixed at the seam far from the centre: ${far}`)
+    near(px(spin, 0, 0), [200, 0, 0], 8, 'spin: top-left corner')
+    const across = at({ blurType: 'zoom', blurX: 0.25, blurY: 0.5 }, 'zoom-across')
+    const a = px(across, 132, 240)
+    assert.ok(a[0] < 190 && a[2] > 20, `zoom about a point left of the seam: mixed across it: ${a}`)
+    const along = at({ blurType: 'zoom', blurX: 0.5, blurY: 0.5 }, 'zoom-along')
+    near(px(along, 131, 60), [200, 0, 0], 8, 'zoom about a point on the seam: streaks along it, left stays red')
+    near(px(along, 139, 60), [0, 0, 255], 8, 'zoom about a point on the seam: right stays blue')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

@@ -55,7 +55,7 @@ import { pMap } from './p-map.js'
 import {
   geometryFor, geometryAt, toRotatedPixelBox, toPixelBox, compileTrackExprInfo,
   transitionProgress, hasCropKeyframes, imageFitFor, isFullFrameCrop, CROP_KEYFRAME_PROPS, blendModeOf,
-  blurSigmaPx,
+  blurSigmaPx, blurTypeOf,
 } from '@bycrux/timeline-core'
 
 // Stall limit for an encode: silence (no stderr progress) this long kills it.
@@ -1293,6 +1293,8 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
     // A linear blur's picture: the box itself after a cover or fill fit (and a
     // keyframed crop's chain), anything the box holds after a contain fit.
     picture: { w: fitW, h: fitH, exact: fit !== 'contain' || Boolean(cropAnim?.chain) },
+    // Spin and zoom's centre is a fraction of this box.
+    box: { w: fitW, h: fitH },
     animated: anim?.needsAnimatedChain
       ? { kind: 'image', peakW: anim.peakW, peakH: anim.peakH, offset: imgOffset, duration, fps: opts?.fps ?? 30 }
       : undefined,
@@ -1763,14 +1765,21 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     // A linear blur's picture (item-blur.js sizes its turned canvas by it):
     // the footage before the scale; after it, the fitted size when the footage
     // is known, else anything the box holds.
-    if (fitted && unitX < 1 && unitY < 1 && blurSigmaPx(item, vw, vh) * Math.max(unitX, unitY) >= PRE_SCALE_BLUR_MIN_SIGMA) {
+    // Spin and zoom's centre is a fraction of the box (padW x padH), and
+    // their plan sizes its taps by the picture's pixels, so on the footage
+    // before an upscale it simply takes fewer: they always run there when
+    // they can (their sweep is in degrees and percent, the same at any size).
+    const radial = blurTypeOf(item) === 'spin' || blurTypeOf(item) === 'zoom'
+    const box = { w: padW, h: padH }
+    if (fitted && unitX < 1 && unitY < 1
+      && (radial || blurSigmaPx(item, vw, vh) * Math.max(unitX, unitY) >= PRE_SCALE_BLUR_MIN_SIGMA)) {
       const picture = { w: footageW, h: footageH, exact: true }
-      const step = blurFilterStep(item, { vw, vh, format, alpha, name, unitX, unitY, animated, picture })
+      const step = blurFilterStep(item, { vw, vh, format, alpha, name, unitX, unitY, animated, picture, box })
       preBlur = step ? `${step},` : ''
     } else {
       const fit = footageW && footageH ? decreaseFitSize(footageW, footageH, padW, padH, divisibleBy ? 2 : 1) : null
       const picture = fit ? { w: fit.width, h: fit.height, exact: true } : { w: padW, h: padH, exact: false }
-      const step = blurFilterStep(item, { vw, vh, format, alpha, name, animated, picture })
+      const step = blurFilterStep(item, { vw, vh, format, alpha, name, animated, picture, box })
       postBlur = step ? `${step},` : ''
     }
   }

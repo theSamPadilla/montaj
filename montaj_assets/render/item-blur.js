@@ -77,11 +77,48 @@
 // direction: the angle and sigma on the footage are the canvas's mapped
 // through it, which is exact for an axis-aligned scale.
 //
+// SPIN AND ZOOM (`blurType` 'spin' | 'zoom', timeline-core src/radialBlur.js):
+// the average of copies of the picture turned (spin) or scaled (zoom) about
+// the centre `blurX`, `blurY` (fractions of the clip's BOX, mapped into the
+// picture's pixels), with the taps and weights of timeline-core's shared
+// plan (radialBlurPlan), which the editor's WebGL pass draws too; the CPU
+// reference (radialBlurReference) is what both meet. Per pass of the plan:
+// the premultiplied picture in a 2 px transparent margin is `split` into N
+// copies, each moved by `perspective` (four corners map a turn or a scale
+// about any point exactly; sense source: each output corner names the source
+// point it reads, so the corners are the tap's inverse map; its bilinear read
+// clamps to the frame's edge, hence the margin), mixed with the plan's
+// weights, and cropped back to the picture, which drops what a pass moved
+// outside it before the next (the reference's rule). After the last pass,
+// `unpremultiply` (the renormalisation, as above), and the clip's alpha is
+// its own (maskedmerge takes it from the source). Where under 1/16 of the
+// average fell on the picture, the source pixel fades in instead
+// (radialBlurStep).
+//   - perspective takes 8-bit formats only (yuva444p, gbrap; measured on
+//     8.1.2: a 16-bit input gets a scaler in front). Each copy goes back to
+//     16 bits before the mix, so the average itself keeps 16 bits; the
+//     copies' 8-bit rounding is why the export lands a few codes off the
+//     reference (test/item-blur-radial.test.mjs: RGB worst 5, YUV worst 8).
+//   - The premultiply is explicit (premultiply, then setparams relabels the
+//     frames straight so perspective and mix, which take straight alpha only,
+//     get no conversion; relabelled premultiplied before unpremultiply).
+//     Left to ffmpeg, the premultiply landed AFTER the mix (measured on 8.1.2:
+//     a flat clip's edges 10% dark).
+//   - The sweep is degrees or percent, the same at any size, so an animated
+//     box needs nothing per frame, and before an upscale of known footage the
+//     plan simply takes fewer taps (encode-segment.js runs it there always).
+//   - A picture of unknown size (a contain fit with no probe) is planned on
+//     its whole box, which needs at least the taps any picture in it does, and
+//     placed by perspective's own W and H.
+//
 // A box whose SIZE animates is fitted at its peak and resized after
 // (encode-segment.js `animatedGeometry`), so a blur on the peak box would
 // shrink with the box. Its sigma is sampled per frame, scaled by peak / box,
 // and sent with `sendcmd`, as a keyframed opacity is (item-opacity.js).
-import { blurAngleOf, blurSigmaCapPx, blurSigmaPx, blurTypeOf, geometryAt, toPixelBox } from '@bycrux/timeline-core'
+import {
+  blurAngleOf, blurCenterOf, blurOf, blurSigmaCapPx, blurSigmaPx, blurTypeOf, geometryAt, pictureRectInBox,
+  radialBlurPlan, radialTapInverse, toPixelBox,
+} from '@bycrux/timeline-core'
 
 /** gblur's passes. See the header. */
 export const BLUR_STEPS = 3
@@ -120,13 +157,11 @@ function withoutAlpha(format) {
  *   The canvas (vw x vh, times the units) when absent.
  * @returns {string}
  */
-export function blurFilterStep(item, { vw, vh, format, alpha = false, name, unitX = 1, unitY = 1, animated, picture } = {}) {
+export function blurFilterStep(item, { vw, vh, format, alpha = false, name, unitX = 1, unitY = 1, animated, picture, box } = {}) {
   const type = blurTypeOf(item)
-  // SPIN AND ZOOM PLUG IN HERE. They are not drawn yet: until they are, a
-  // spin or zoom clip renders as a uniform blur of sigma 0, i.e. sharp, and
-  // the graph is the unblurred one (callers splice nothing for ''). Pinned by
-  // test/item-blur.test.mjs "spin and zoom are not drawn yet".
-  if (type === 'spin' || type === 'zoom') return ''
+  if (type === 'spin' || type === 'zoom') {
+    return radialBlurStep(item, type, { vw, vh, format, alpha, name, unitX, unitY, picture, box })
+  }
   const sigma = blurSigmaPx(item, vw, vh)
   if (!(sigma > 0)) return ''
   if (type === 'linear') {
@@ -302,3 +337,124 @@ export const VIDEO_BLUR_FORMAT = 'yuva444p16le'
 
 /** The format an image item's blur runs in (planar RGB: the image chain is RGBA). */
 export const IMAGE_BLUR_FORMAT = 'gbrap16le'
+
+// ── Spin and zoom ───────────────────────────────────────────────────────────
+
+/** The transparent margin a spin or zoom pass works in (perspective clamps reads to the frame's edge). */
+export const RADIAL_MARGIN = 2
+
+/** 1 / the summed alpha below which a spin or zoom pixel fades to the source (see radialBlurStep). */
+export const RADIAL_THIN_INVERSE = 16
+
+/** The 8-bit format `perspective` runs in for each blur format (it takes no 16-bit format). */
+const PERSPECTIVE_FORMATS = { yuva444p16le: 'yuva444p', yuva444p10le: 'yuva444p', gbrap16le: 'gbrap', yuva444p: 'yuva444p', gbrap: 'gbrap' }
+
+/** A number for the graph: 6 decimals, no trailing zeros, no '-0'. */
+function num(v) {
+  const s = (Math.round(v * 1e6) / 1e6).toFixed(6).replace(/\.?0+$/, '')
+  return s === '-0' ? '0' : s
+}
+
+/** `kw * W + kh * H + k0` as a perspective expression ('W', 'H' its input's size). */
+function linExpr(kw, kh, k0) {
+  let out = ''
+  const term = (k, v) => {
+    if (Math.abs(k) < 5e-7) return
+    const t = v ? (Math.abs(Math.abs(k) - 1) < 5e-7 ? v : `${num(Math.abs(k))}*${v}`) : num(Math.abs(k))
+    out += out ? (k < 0 ? `-${t}` : `+${t}`) : (k < 0 ? `-${t}` : t)
+  }
+  term(kw, 'W')
+  term(kh, 'H')
+  term(k0, '')
+  return out || '0'
+}
+
+/**
+ * A spin or zoom blur (see the header): `blurFilterStep` for `blurType`
+ * 'spin' | 'zoom'.
+ *
+ * @param {object} item
+ * @param {'spin' | 'zoom'} type
+ * @param {object} o blurFilterStep's options.
+ * @returns {string}
+ */
+function radialBlurStep(item, type, { vw, vh, format, alpha, name, unitX, unitY, picture, box }) {
+  const amount = blurOf(item)
+  if (!(amount > 0)) return ''
+  const center = blurCenterOf(item)
+  const pw = picture?.w > 0 ? picture.w : vw * unitX
+  const ph = picture?.h > 0 ? picture.h : vh * unitY
+  // The picture's rect in its box. A picture of known size is contain-fitted
+  // in the box (pictureRectInBox: the whole box for a cover or fill fit); one
+  // of unknown size is planned on the whole box (its corners are the farthest
+  // any picture in it can reach, so the taps are enough for any) and placed
+  // by the expressions below from perspective's own W and H.
+  const exact = Boolean(picture?.exact)
+  const rect = exact && box?.w > 0 && box?.h > 0 ? pictureRectInBox(box.w, box.h, pw, ph) : { x: 0, y: 0, w: 1, h: 1 }
+  // The box in the blur's pixels, and the centre from the box's middle.
+  const bw = pw / rect.w
+  const bh = ph / rect.h
+  const cx = ((center.x - rect.x) / rect.w) * pw
+  const cy = ((center.y - rect.y) / rect.h) * ph
+  const plan = radialBlurPlan({ type, amount, center: [cx, cy], rect: { w: pw, h: ph } })
+  if (!plan.passes.length) return ''
+
+  // perspective (sense source) maps each corner of its output, in pixel-index
+  // coordinates (pixel i spans [i, i + 1), corners at 0 and W), to the source
+  // point it reads; its bilinear read clamps to the frame's edge, so the
+  // picture works inside a transparent margin. In those coordinates the
+  // centre is at W/2 + dx (the picture centred in its box, the margin even,
+  // and -0.5 from a pixel's centre to its index); a tap's inverse map
+  // (radialTapInverse: c + [[a, -b], [b, a]] (p - c)) of a corner is linear
+  // in W and H.
+  const m = RADIAL_MARGIN
+  const dx = (center.x - 0.5) * bw - 0.5
+  const dy = (center.y - 0.5) * bh - 0.5
+  const W = pw + 2 * m
+  const H = ph + 2 * m
+  const corner = (a, b, sx, sy) => {
+    const xw = (1 - a) / 2 + a * sx
+    const xh = b / 2 - b * sy
+    const x0 = (1 - a) * dx + b * dy
+    const yw = -b / 2 + b * sx
+    const yh = (1 - a) / 2 + a * sy
+    const y0 = (1 - a) * dy - b * dx
+    return exact
+      ? [num(xw * W + xh * H + x0), num(yw * W + yh * H + y0)]
+      : [linExpr(xw, xh, x0), linExpr(yw, yh, y0)]
+  }
+  const pfmt = PERSPECTIVE_FORMATS[format] ?? 'yuva444p'
+  const padM = `pad=w=iw+${2 * m}:h=ih+${2 * m}:x=${m}:y=${m}:color=black@0`
+  const cropM = `crop=w=iw-${2 * m}:h=ih-${2 * m}:x=${m}:y=${m}`
+  let core = 'premultiply=inplace=1,setparams=alpha_mode=straight,'
+  plan.passes.forEach((pass, k) => {
+    const lab = (s, j) => `[${name}r${k}${s}${j}]`
+    const moved = pass.taps.map((t, j) => {
+      const [a, b] = radialTapInverse(type, t.offset)
+      const c = [corner(a, b, 0, 0), corner(a, b, 1, 0), corner(a, b, 0, 1), corner(a, b, 1, 1)]
+      return `${lab('s', j)}perspective=x0=${c[0][0]}:y0=${c[0][1]}:x1=${c[1][0]}:y1=${c[1][1]}`
+        + `:x2=${c[2][0]}:y2=${c[2][1]}:x3=${c[3][0]}:y3=${c[3][1]},format=${format}${lab('t', j)}`
+    }).join(';')
+    const weights = pass.taps.map((t) => num(t.weight)).join(' ')
+    core += `${k ? `${cropM},` : ''}${padM},format=${pfmt},split=${pass.taps.length}${pass.taps.map((_, j) => lab('s', j)).join('')};`
+      + `${moved};${pass.taps.map((_, j) => lab('t', j)).join('')}mix=inputs=${pass.taps.length}:weights='${weights}',`
+  })
+  core += `setparams=alpha_mode=premultiplied,unpremultiply=inplace=1,${cropM}`
+
+  // Where little of the average fell on the picture (the summed alpha, the
+  // reference's `coverage`, under 1/16: the far corners of a wide spin, a
+  // centre outside the picture), the 8-bit copies' rounding divided by that
+  // alpha is most of the colour, and at 0 unpremultiply leaves black. There
+  // the source pixel shows instead (the reference's own fallback at 0),
+  // ramping in linearly as the summed alpha falls from 1/16 to 0. The ramp is
+  // made on the alpha plane (lut clips a YUV format's colour planes to the
+  // limited range, measured: a mask of 6 to 92%, not 0 to 100%) and copied to
+  // the others. maskedmerge on the colour planes only takes its alpha from
+  // the source: the clip's own.
+  const [src, work, blurred, keep, toMask, mask] = ['s', 'w', 'u', 'k', 'm', 'n'].map((t) => `[${name}${t}]`)
+  const ramp = `'min(val*${RADIAL_THIN_INVERSE},maxval)'`
+  const out = `format=${format},split=2${src}${work};${work}${core}${blurred};${blurred}split=2${keep}${toMask};`
+    + `${toMask}lut=c3=${ramp},mergeplanes=map0s=0:map0p=3:map1s=0:map1p=3:map2s=0:map2p=3:map3s=0:map3p=3:format=${format}`
+    + `${mask};${src}${keep}${mask}maskedmerge=planes=7`
+  return alpha ? out : `${out},format=${withoutAlpha(format)}`
+}
