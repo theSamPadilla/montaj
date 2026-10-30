@@ -11,8 +11,7 @@
 import type { VisualItem, AudioTrack, CaptionSegment, Captions } from '../../schema'
 import type { Project } from '../../types'
 import { laneOf } from '../captionLanes'
-import { overlapsAny } from '../cuts'
-import { coarseItemKind, mapTrackItems, nextVisualTrackId, normalizeTrackOrder, normalizeTracks, trackItems } from './timeline-model'
+import { coarseItemKind, mapTrackItems, nextVisualTrackId, normalizeTrackOrder, normalizeTracks, stampAudioLanes, trackItems } from './timeline-model'
 import { computeResizedItem, resizeWindowedItem, type Draggable } from './useItemDragDrop'
 
 
@@ -227,35 +226,30 @@ export function applyMoveDeltaToSelection(
 }
 
 /**
- * The vertical half of a group drag: every selected VISUAL clip lands on the
- * track at `targetTrackIdx`, at the start/end it already has (the caller
- * applies the horizontal half first, with `applyMoveDeltaToSelection`, and
- * hands the result in). `targetTrackIdx` indexes the NORMALIZED track order
- * (`normalizeTracks(project).tracks`); one at or past the end mints a new
- * track, the same as a single-item move dragged past the top of the stack.
+ * The vertical half of a group drag: every selected VISUAL clip of the target
+ * track's kind lands on the track at `targetTrackIdx`, at the start/end it
+ * already has (the caller applies the horizontal half first, with
+ * `applyMoveDeltaToSelection`, and hands the result in). `targetTrackIdx`
+ * indexes the NORMALIZED track order (`normalizeTracks(project).tracks`); one
+ * at or past the end mints ONE new track for them, the same as a single-item
+ * move dragged past the top of the stack.
  *
- * Audio tracks and caption segments in the selection are never touched: only
- * clips change tracks. A selection with no clip off the target track (none at
- * all, or every one already on it) returns `project` itself.
+ * The kind gate a single-item move applies (`coarseItemKind`) decides WHICH
+ * clips go: those sharing the target's coarse kind (the kind of what is
+ * already on it; for a new or empty track `preferKind`, else the first moving
+ * clip's). A clip of the other kind stays on its own track, moved horizontally
+ * only, so a video clip never lands on an overlay track or the reverse. Audio
+ * tracks and caption segments are never touched here. A selection with no clip
+ * to move returns `project` itself.
  *
- * REFUSED, returning null, when the move cannot land whole:
- * - a moving clip would overlap a clip already on the target (`overlapsAny`,
- *   cuts.ts, the EPSILON test the drop placement uses);
- * - two moving clips from DIFFERENT source tracks would overlap each other on
- *   it. Two from the SAME source track keep the relationship they already had
- *   there (a group move shifts them by one delta), so an overlap between them
- *   was legal before the move and stays so;
- * - the kind gate a single-item move applies (`coarseItemKind`) would refuse
- *   one of them: every clip that ends up on the target must share one coarse
- *   kind, so a video clip never lands on an overlay track or the reverse, and
- *   a group mixing the two kinds cannot consolidate onto one track at all.
- * - the target track, as it stands AFTER the prune and re-grouping, would break
- *   a rule `engine/validate.py` enforces: containment on any track but
- *   tracks[0], or three clips live at once on any track (`landsLegally`).
- *   This is what catches a pair that was legally nested on tracks[0] being
- *   carried onto a track where nesting is not allowed.
- * There is no fan-out to another track, unlike `moveItemAcrossTracks`: a group
- * goes where it was pointed or nowhere.
+ * An overlap where the clips land is the person's placement, kept exactly as
+ * dropped: a clip overlapping one already on the target, or two moving clips
+ * overlapping each other, is a transition, not a reason to refuse or to fan
+ * out. The one refusal (null) is a shape `engine/validate.py` rejects on save,
+ * judged on the target track as it stands AFTER the prune and re-grouping:
+ * containment on any track but tracks[0], or three clips live at once on any
+ * track (`landsLegally`). That also catches a pair legally nested on tracks[0]
+ * being carried onto a track where nesting is not allowed.
  *
  * Tracks left empty are pruned and the stack is re-grouped into the canonical
  * video-block/overlay-block order (`normalizeTrackOrder`), exactly as
@@ -268,6 +262,7 @@ export function moveSelectionToTrack(
   project: Project,
   selectedIds: readonly string[],
   targetTrackIdx: number,
+  preferKind?: 'video' | 'overlay',
 ): Project | null {
   const targets = new Set(selectedIds)
   if (targets.size === 0) return project
@@ -276,28 +271,24 @@ export function moveSelectionToTrack(
   const idx = Math.max(0, targetTrackIdx)
   const target = idx < tracks.length ? tracks[idx] : undefined
 
-  // The clips that change track, each with the index of the track it leaves.
-  const moving: Array<{ item: VisualItem; from: number }> = []
-  tracks.forEach((track, i) => {
-    if (track === target) return
-    for (const item of track.items) if (targets.has(item.id)) moving.push({ item, from: i })
-  })
-  if (moving.length === 0) return project
+  // The selected clips off the target track.
+  const candidates: VisualItem[] = []
+  for (const track of tracks) {
+    if (track === target) continue
+    for (const item of track.items) if (targets.has(item.id)) candidates.push(item)
+  }
+  if (candidates.length === 0) return project
 
   const staying = target?.items ?? []
-  const kind = coarseItemKind(moving[0].item.type)
-  if (moving.some(m => coarseItemKind(m.item.type) !== kind)) return null
-  if (staying.some(other => coarseItemKind(other.type) !== kind)) return null
-  if (moving.some(m => overlapsAny(m.item.start, m.item.end, staying))) return null
-  for (let i = 0; i < moving.length; i++) {
-    for (let j = i + 1; j < moving.length; j++) {
-      const a = moving[i], b = moving[j]
-      if (a.from !== b.from && overlapsAny(a.item.start, a.item.end, [b.item])) return null
-    }
-  }
+  const stayingKinds = new Set(staying.map(other => coarseItemKind(other.type)))
+  // A track already holding both kinds takes neither.
+  if (stayingKinds.size > 1) return project
+  const kind = stayingKinds.size === 1 ? [...stayingKinds][0] : (preferKind ?? coarseItemKind(candidates[0].type))
+  const moving = candidates.filter(item => coarseItemKind(item.type) === kind)
+  if (moving.length === 0) return project
 
-  const movingIds = new Set(moving.map(m => m.item.id))
-  const arrived = moving.map(m => m.item)
+  const movingIds = new Set(moving.map(item => item.id))
+  const arrived = moving
   const stripped = tracks.map(track =>
     track !== target && track.items.some(item => movingIds.has(item.id))
       ? { ...track, items: track.items.filter(item => !movingIds.has(item.id)) }
@@ -326,6 +317,37 @@ export function moveSelectionToTrack(
   if (!landsLegally(finalTracks[landedIdx].items, movingIds, landedIdx === 0)) return null
 
   return { ...normalized, tracks: finalTracks }
+}
+
+/**
+ * The audio half of a group drag: every selected AUDIO track lands in `lane`,
+ * at the start/end it already has (the horizontal half is applied first, as
+ * for `moveSelectionToTrack`). Lanes are stamped first (`stampAudioLanes`), so
+ * no row the drag did not point at moves. An overlap in that row is the
+ * person's placement, kept as dropped; the same-row crossfade
+ * (`computeAutoCrossfade`) makes the fade. Clips and captions are never
+ * touched here.
+ *
+ * A track arriving from another row adopts the row's magnet state, as a single
+ * dragged clip does (`applyAudioMove`), when the row already holds unselected
+ * tracks. Returns `project` itself when no selected track changes row.
+ */
+export function moveSelectionToLane(project: Project, selectedIds: readonly string[], lane: number): Project {
+  const targets = new Set(selectedIds)
+  const stamped = stampAudioLanes(project)
+  const tracks = stamped.audio?.tracks ?? []
+  if (!tracks.some(t => targets.has(t.id) && t.lane !== lane)) return project
+  const residents = tracks.filter(t => !targets.has(t.id) && t.lane === lane)
+  const magnetic = residents.length > 0 ? residents.every(t => t.magnetic === true) : undefined
+  return {
+    ...stamped,
+    audio: {
+      ...stamped.audio,
+      tracks: tracks.map(t => (targets.has(t.id) && t.lane !== lane
+        ? { ...t, lane, ...(magnetic === undefined ? {} : { magnetic }) }
+        : t)),
+    },
+  }
 }
 
 /**

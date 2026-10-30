@@ -497,18 +497,34 @@ describe('moveSelectionToTrack', () => {
     expect(minted.items.map(i => i.id).sort()).toEqual(['o1', 'o2', 'o3'])
   })
 
-  it('refuses when any clip would overlap a clip already on the target', () => {
-    // o4 2.5-3.5 overlaps o2 (3-5) only; the whole move is refused.
-    expect(moveSelectionToTrack(threeSources([ov('o4', 2.5, 3.5)]), ['o1', 'o2', 'o3'], 4)).toBeNull()
+  it('keeps a clip overlapping one already on the target as dropped (a transition, not a refusal)', () => {
+    // o4 2.5-3.5 overlaps o2 (3-5) only.
+    const next = moveSelectionToTrack(threeSources([ov('o4', 2.5, 3.5)]), ['o1', 'o2', 'o3'], 4)!
+    expect(next).not.toBeNull()
+    expect(next.tracks!.map(t => t.id)).toEqual(['trk-0', 'trk-4'])
+    expect(next.tracks![1].items.map(i => [i.id, i.start, i.end]).sort()).toEqual([
+      ['o1', 0, 2], ['o2', 3, 5], ['o3', 6, 8], ['o4', 2.5, 3.5],
+    ])
   })
 
-  it('refuses when two clips from different source tracks would overlap each other', () => {
+  it('keeps two clips from different source tracks overlapping each other as dropped', () => {
     const p = tp([
       { id: 'trk-0', items: [vid('v0', 0, 5)] },
       { id: 'trk-1', items: [ov('o1', 0, 2)] },
       { id: 'trk-2', items: [ov('o2', 1, 3)] },
     ])
-    expect(moveSelectionToTrack(p, ['o1', 'o2'], 3)).toBeNull()
+    const next = moveSelectionToTrack(p, ['o1', 'o2'], 3)!
+    expect(next.tracks).toHaveLength(2)
+    expect(next.tracks![1].items.map(i => [i.id, i.start, i.end])).toEqual([['o1', 0, 2], ['o2', 1, 3]])
+  })
+
+  it('still refuses an overlap the validator rejects: containment off tracks[0]', () => {
+    const p = tp([
+      { id: 'trk-0', items: [vid('v0', 0, 5)] },
+      { id: 'trk-1', items: [ov('o1', 0, 4)] },
+      { id: 'trk-2', items: [ov('o2', 1, 3)] },
+    ])
+    expect(moveSelectionToTrack(p, ['o2'], 1)).toBeNull()
   })
 
   it('keeps an overlap two selected clips already had on one source track', () => {
@@ -523,22 +539,37 @@ describe('moveSelectionToTrack', () => {
     expect(trackOf(next, 'o2')).toBe('trk-2')
   })
 
-  it('refuses a video clip onto an overlay track, as the single-item kind gate does', () => {
+  it('never moves a video clip onto an overlay track, as the single-item kind gate does: it stays where it is', () => {
     const p = tp([
       { id: 'trk-0', items: [vid('v0', 0, 5)] },
       { id: 'trk-1', items: [vid('v1', 6, 8)] },
       { id: 'trk-2', items: [ov('o1', 10, 12)] },
     ])
-    expect(moveSelectionToTrack(p, ['v1'], 2)).toBeNull()
+    expect(moveSelectionToTrack(p, ['v1'], 2)).toBe(p)
   })
 
-  it('refuses a group that mixes video and overlay clips onto one track', () => {
+  it('moves only the clips of the target track\'s kind out of a mixed group', () => {
+    const p = tp([
+      { id: 'trk-0', items: [vid('v0', 0, 5)] },
+      { id: 'trk-1', items: [vid('v1', 6, 8)] },
+      { id: 'trk-2', items: [ov('o1', 10, 12)] },
+      { id: 'trk-3', items: [ov('o2', 0, 2)] },
+    ])
+    // Onto the overlay track trk-3: o1 joins it, v1 stays on its video track.
+    const next = moveSelectionToTrack(p, ['v1', 'o1'], 3)!
+    expect(trackOf(next, 'o1')).toBe('trk-3')
+    expect(trackOf(next, 'v1')).toBe('trk-1')
+  })
+
+  it('a NEW track takes the preferred kind out of a mixed group', () => {
     const p = tp([
       { id: 'trk-0', items: [vid('v0', 0, 5)] },
       { id: 'trk-1', items: [vid('v1', 6, 8)] },
       { id: 'trk-2', items: [ov('o1', 10, 12)] },
     ])
-    expect(moveSelectionToTrack(p, ['v1', 'o1'], 3)).toBeNull()
+    const next = moveSelectionToTrack(p, ['v1', 'o1'], 3, 'overlay')!
+    expect(trackOf(next, 'v1')).toBe('trk-1')
+    expect(trackOf(next, 'o1')).not.toMatch(/^trk-[0-2]$/)
   })
 
   it('moves video clips onto another video track and keeps the video block below the overlays', () => {

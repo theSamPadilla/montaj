@@ -2685,19 +2685,19 @@ describe('multi-select move across tracks', () => {
     expect(trackIdOf(preview, 'o3')).toBe('trk-4')
   })
 
-  it('refuses when any clip would overlap a clip on the target: snaps back and commits nothing', () => {
-    // o4 at 4-6 overlaps o2 (3-5).
+  it('keeps a clip overlapping one on the target as dropped, and commits it', () => {
+    // o4 at 4-6 overlaps o2 (3.5-5.5 after the drag): a transition, the person's placement.
     const ctx = groupCtx({ project: groupProject({ start: 4, end: 6 }) })
     const d = new Driver(ctx)
     d.down(O1_X, rowMidYFor(ctx, 1))
-    // A legal horizontal preview first, so the snap back is observable.
-    expect(visual(lastProjectChange(d.move(O1_X + 50, rowMidYFor(ctx, 1))), 'o1').start).toBeCloseTo(0.5)
-    const back = lastProjectChange(d.move(O1_X + 50, rowMidYFor(ctx, 4)))
-    expect(back).toBe(ctx.project)
-    expect(of(d.up(O1_X + 50, rowMidYFor(ctx, 4)), 'commit')).toEqual([])
+    const preview = lastProjectChange(d.move(O1_X + 50, rowMidYFor(ctx, 4)))
+    expect(trackIdOf(preview, 'o2')).toBe('trk-4')
+    expect(visual(preview, 'o2')).toMatchObject({ start: 3.5, end: 5.5 })
+    expect(visual(preview, 'o4')).toMatchObject({ start: 4, end: 6 })
+    expect(of(d.up(O1_X + 50, rowMidYFor(ctx, 4)), 'commit')).toHaveLength(1)
   })
 
-  it('refuses when the moved clips would overlap each other on the target', () => {
+  it('keeps the moved clips overlapping each other on the target as dropped', () => {
     const project = groupProject()
     // o2 moved to 1-3: it overlaps o1 (0-2) once both share one track.
     ;(project.tracks![2] as { items: Array<{ start: number; end: number }> }).items[0].start = 1
@@ -2705,9 +2705,10 @@ describe('multi-select move across tracks', () => {
     const ctx = groupCtx({ project })
     const d = new Driver(ctx)
     d.down(O1_X, rowMidYFor(ctx, 1))
-    const eff = d.move(O1_X, aboveTopY(ctx))
-    expect(of(eff, 'projectChange')).toEqual([])
-    expect(of(d.up(O1_X, aboveTopY(ctx)), 'commit')).toEqual([])
+    const preview = lastProjectChange(d.move(O1_X, aboveTopY(ctx)))
+    expect(trackIdOf(preview, 'o2')).toBe(trackIdOf(preview, 'o1'))
+    expect(visual(preview, 'o2')).toMatchObject({ start: 1, end: 3 })
+    expect(of(d.up(O1_X, aboveTopY(ctx)), 'commit')).toHaveLength(1)
   })
 
   it('keeps audio and captions in a mixed selection on their own lanes', () => {

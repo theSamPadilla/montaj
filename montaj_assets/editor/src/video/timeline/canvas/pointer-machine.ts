@@ -63,8 +63,8 @@ import { playheadInside } from '../../captionSeek'
 import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
 import { canKeyframe, enableKeyframing, moveKeyframe, setKeyframe, transformProps, valueAt } from '../../keyframeOps'
 import { moveMarker } from '../markers'
-import { applyMoveDeltaToSelection, applyResizeDeltaToSelection, moveSelectionToTrack } from '../multiSelectOps'
-import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, ROW_GAP_PX, computeDerivedTiming, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, resolveTargetTrackIdx, stampAudioLanes, trackItems, updateAudioTrack } from '../timeline-model'
+import { applyMoveDeltaToSelection, applyResizeDeltaToSelection, moveSelectionToLane, moveSelectionToTrack } from '../multiSelectOps'
+import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, ROW_GAP_PX, coarseItemKind, computeDerivedTiming, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, resolveTargetTrackIdx, stampAudioLanes, trackItems, updateAudioTrack } from '../timeline-model'
 import { DRAG_THRESHOLD_PX, computeResizedItem, resizeWindowedItem, type Draggable } from '../useItemDragDrop'
 import type { TimelineLayout } from './draw'
 import { keyframeUnionTimes } from './keyframe-strip'
@@ -897,6 +897,12 @@ function directSnapGuide(snapped: SnapResult): SnapGuide | null {
  *  audio bars and captions, so the group moves the same way whichever kind the
  *  drag started on.
  *
+ *  `target` is the row the group lands on (`groupTarget`), or undefined for a
+ *  horizontal-only move. A visual track takes every selected clip of its kind
+ *  (`moveSelectionToTrack`); an audio lane takes every selected audio track
+ *  (`moveSelectionToLane`), and is highlighted as the drop target. What the row
+ *  does not take moves horizontally only, and captions always do.
+ *
  *  `selection` is a parameter rather than a read of `ctx.selectedIds` because
  *  it is not always that: a freshly grabbed caption is not in the host's
  *  selection yet on the first move of its own drag. See `applyCaptionMove`. */
@@ -909,7 +915,8 @@ function applyGroupMove(
   escaped: boolean,
   dragged: { id: string; start: number; end: number },
   selection: readonly string[],
-  toTrackIdx?: number,
+  target?: GroupRow,
+  preferKind?: 'video' | 'overlay',
 ): Applied {
   const duration = dragged.end - dragged.start
   const dt = dragDeltaSeconds(ctx, press, point)
@@ -918,15 +925,62 @@ function applyGroupMove(
   const snapped = applySnap(dragged.start + dt, points, ctx.viewport, snap, ctx.snapConfig)
   const next = applyMoveDeltaToSelection(press.baseProject, selection, snapped.time - dragged.start, ctx.totalDuration)
   const guide = spanSnapGuide(snapped, duration, boundaries)
-  if (toTrackIdx === undefined) return change(next, lastProject, snapped.state, guide)
-  // The vertical half, applied to the horizontal result so the overlap test
-  // sees the clips at their FINAL times. Refused means the whole selection
+  if (target === undefined) return change(next, lastProject, snapped.state, guide)
+  if (target.kind === 'lane') {
+    // `baseProject` is stamped at the press, so the lane numbers are the rows
+    // drawn and nothing the drag did not point at renumbers.
+    const moved = moveSelectionToLane(next, selection, target.lane)
+    return { ...change(moved, lastProject, snapped.state, guide), dropLane: moved !== next ? target.lane : null }
+  }
+  // The vertical half, applied to the horizontal result so the validator rules
+  // see the clips at their FINAL times. Refused means the whole selection
   // snaps back to where the press found it: the preview shows the press-time
   // project, and since that is `baseProject` itself, a release there commits
   // nothing (`pointerUp` commits only a project that differs from it).
-  const moved = moveSelectionToTrack(next, selection, toTrackIdx)
+  const moved = moveSelectionToTrack(next, selection, target.idx, preferKind)
   if (moved === null) return change(press.baseProject, lastProject, snapped.state, null)
   return change(moved, lastProject, snapped.state, guide)
+}
+
+/** Where a group drag lands: a visual track (an index in normalized order, one
+ *  past the end being a new track) or an audio lane (one past the last drawn
+ *  lane being a new row). */
+type GroupRow = { kind: 'track'; idx: number } | { kind: 'lane'; lane: number }
+
+function sameGroupRow(a: GroupRow, b: GroupRow): boolean {
+  return a.kind === 'track' ? b.kind === 'track' && a.idx === b.idx : b.kind === 'lane' && a.lane === b.lane
+}
+
+/** The row under the pointer, read off the press-time layout: an audio lane
+ *  from the top of the first lane down (a lane owns the gap below it, and below
+ *  the last one is ONE new row), else the visual track `rowUnder` finds. */
+function groupRowUnder(press: Press, point: Point): GroupRow | undefined {
+  const lanes = press.layout.lanes
+  if (lanes.length > 0 && point.y >= lanes[0].y) {
+    for (const lane of lanes) if (point.y < lane.y + lane.height + ROW_GAP_PX) return { kind: 'lane', lane: lane.laneIndex }
+    return { kind: 'lane', lane: lanes[lanes.length - 1].laneIndex + 1 }
+  }
+  const idx = rowUnder(press, point)
+  return idx === undefined ? undefined : { kind: 'track', idx }
+}
+
+/** The row the press landed on, for a clip or an audio bar. */
+function pressedGroupRow(press: Press): GroupRow | undefined {
+  if (press.hit.trackIdx !== undefined) return { kind: 'track', idx: press.hit.trackIdx }
+  if (press.hit.laneIdx !== undefined) return { kind: 'lane', lane: press.hit.laneIdx }
+  return undefined
+}
+
+/** A group drag's destination: the row under the pointer, or undefined (a
+ *  horizontal-only move) while the pointer is still over the pressed row and
+ *  has not left it once in this gesture (`leftPressedRow`). After it has, the
+ *  pressed row gathers like any other. */
+function groupTarget(press: Press, point: Point, leftPressedRow: boolean): GroupRow | undefined {
+  const under = groupRowUnder(press, point)
+  const pressed = pressedGroupRow(press)
+  if (under === undefined) return undefined
+  if (!leftPressedRow && pressed !== undefined && sameGroupRow(under, pressed)) return undefined
+  return under
 }
 
 /**
@@ -961,12 +1015,14 @@ function rowUnder(press: Press, point: Point): number | undefined {
   return trackIdxUnder(press.layout, point.y, trackCount)
 }
 
-/** Is a `move` gesture's pointer over a visual row other than the pressed one?
- *  Feeds the `leftPressedRow` latch on the dragging state. */
+/** Is a `move` or `audio-move` gesture's pointer over a row other than the
+ *  pressed one (`groupRowUnder`)? Feeds the `leftPressedRow` latch on the
+ *  dragging state. */
 function pressedRowLeft(gesture: GestureKind, press: Press, point: Point): boolean {
-  if (gesture !== 'move' || press.hit.trackIdx === undefined) return false
-  const under = rowUnder(press, point)
-  return under !== undefined && under !== press.hit.trackIdx
+  if (gesture !== 'move' && gesture !== 'audio-move') return false
+  const pressed = pressedGroupRow(press)
+  const under = groupRowUnder(press, point)
+  return pressed !== undefined && under !== undefined && !sameGroupRow(under, pressed)
 }
 
 function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean, leftPressedRow = false): Applied {
@@ -975,18 +1031,15 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
 
   // Multi-select move: the pressed item belongs to a selection of more than
   // one, so the whole selection travels together by the same delta and keeps
-  // its shape. When the pointer is over a different visual row than the one
-  // pressed, every selected CLIP also moves onto that row
-  // (`moveSelectionToTrack`), or the move is refused and snaps back. Over the
-  // pressed row it is the horizontal-only move, unchanged, until the pointer
-  // has left that row once in this gesture (`leftPressedRow`); after that the
-  // pressed row gathers like any other. Only a drag that
-  // starts on a clip changes tracks: one that starts on an audio bar or a
-  // caption has no visual row to measure from and stays horizontal.
+  // its shape, and lands on the row under the pointer (`groupTarget`): every
+  // selected clip of that track's kind onto it, or every selected audio track
+  // into that lane, at their dragged times. Overlaps there are kept as dropped.
+  // Over the pressed row it is the horizontal-only move until the pointer has
+  // left that row once in this gesture (`leftPressedRow`). A drag that starts
+  // on a caption stays horizontal (`applyCaptionMove`).
   if (ctx.selectedIds.length > 1 && ctx.selectedIds.includes(item.id)) {
-    const under = rowUnder(press, point)
-    const toTrackIdx = under !== undefined && (leftPressedRow || under !== press.hit.trackIdx) ? under : undefined
-    return applyGroupMove(ctx, press, point, snap, lastProject, escaped, item, ctx.selectedIds, toTrackIdx)
+    return applyGroupMove(ctx, press, point, snap, lastProject, escaped, item, ctx.selectedIds,
+      groupTarget(press, point, leftPressedRow), coarseItemKind(item.type))
   }
 
   const duration = item.end - item.start
@@ -1252,15 +1305,16 @@ function applySlide(ctx: PointerContext, press: Press, point: Point, snap: SnapS
   return change(slid, lastProject, snapped.state, directSnapGuide(snapped))
 }
 
-function applyAudioMove(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean): Applied {
+function applyAudioMove(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean, leftPressedRow = false): Applied {
   const track = press.hit.track
   if (!track || press.hit.laneIdx === undefined) return noChange(snap, lastProject)
 
   // Multi-select move: the whole selection (clips and bars alike) travels as
-  // one — same rule as the visual side. A lone audio bar keeps its lane-change
-  // behaviour, below.
+  // one and lands on the row under the pointer — same rule as the visual side
+  // (see `applyMove`). A lone audio bar keeps its lane-change behaviour, below.
   if (ctx.selectedIds.length > 1 && ctx.selectedIds.includes(track.id)) {
-    return applyGroupMove(ctx, press, point, snap, lastProject, escaped, track, ctx.selectedIds)
+    return applyGroupMove(ctx, press, point, snap, lastProject, escaped, track, ctx.selectedIds,
+      groupTarget(press, point, leftPressedRow))
   }
 
   const duration = track.end - track.start
@@ -1505,10 +1559,13 @@ function applyKeyframeMove(
  * in a multi-selection group-moves with everything else, a freshly grabbed one
  * takes the single-caption path below.
  *
- * **Group drags never change lanes.** `applyMoveDeltaToSelection` is
- * horizontal-only — it shifts times and re-spreads word timings, and `lane`
- * rides its spread untouched — so a multi-selection travels along the timeline
- * however far the pointer moves vertically. This is the one place where "drag
+ * **A group drag started on a caption never changes rows.** It is
+ * `applyMoveDeltaToSelection` alone, horizontal-only — it shifts times and
+ * re-spreads word timings, and `lane` rides its spread untouched — so the
+ * selection travels along the timeline however far the pointer moves
+ * vertically. (A group drag started on a clip or an audio bar lands its clips
+ * or audio on the row under the pointer, `groupTarget`; its captions still
+ * only move in time.) This is the one place where "drag
  * any member and the whole selection follows" meets "drag up a row to change
  * rows", and horizontal-only wins: a group has no single source lane to
  * measure a lane delta from, and moving every member by the same lane delta
@@ -1773,7 +1830,7 @@ function applyGesture(
     case 'roll':        return applyRoll(ctx, press, point, snap, lastProject, escaped)
     case 'slip':        return applySlip(ctx, press, point, snap, lastProject)
     case 'slide':       return applySlide(ctx, press, point, snap, lastProject, escaped)
-    case 'audio-move':  return applyAudioMove(ctx, press, point, snap, lastProject, escaped)
+    case 'audio-move':  return applyAudioMove(ctx, press, point, snap, lastProject, escaped, leftPressedRow)
     case 'audio-trim':  return applyAudioTrim(ctx, press, point, snap, lastProject, escaped)
     case 'audio-fade':  return applyAudioFade(ctx, press, point, snap, lastProject)
     case 'keyframe-move': return applyKeyframeMove(ctx, press, point, snap, lastProject, escaped)
