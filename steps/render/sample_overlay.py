@@ -43,9 +43,13 @@ def main():
                         help="PL89g: measure several overlays in one call instead: a JSON file of [{component, props, frame, "
                              "fps, width, height, googleFonts, duration, out}]. Prints {results, browsers}.")
     parser.add_argument("--lanes",        type=int, default=3, help="With --jobs: browsers side by side (default 3)")
+    parser.add_argument("--no-measure",   action="store_true",
+                        help="With --jobs: render each job's PNG only (no measurements), a page per overlay kept open "
+                             "across its frames. Prints {results: [{pngPath} | {error, message}], browsers}.")
     args = parser.parse_args()
     if args.jobs:
-        _run_node(["node", SAMPLE_FRAME_JS, "--mode", "measure", "--jobs", args.jobs, "--lanes", str(args.lanes)])
+        _run_node(["node", SAMPLE_FRAME_JS, "--mode", "overlays" if args.no_measure else "measure", "--jobs", args.jobs,
+                   "--lanes", str(args.lanes)])
     if not args.overlay or not args.out:
         parser.error("--overlay and --out are required (or --jobs)")
 

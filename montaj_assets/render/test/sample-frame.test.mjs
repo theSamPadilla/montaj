@@ -1862,6 +1862,30 @@ test('(pl89g) measureOverlays: several overlays in one call share one browser, a
   }
 })
 
+// caption_ink renders one overlay at many frames: measureOverlays with measure: false (--mode overlays) renders each
+// job's PNG only, one browser per lane and one page per overlay kept open across its frames, each PNG its own frame.
+test('measureOverlays with measure: false: many frames of one overlay in one browser, each its own frame', { timeout: 120_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-frames-'))
+  try {
+    // white from the top down to frame * 40 px: frame 10 paints rows 0..399, frame 30 rows 0..1199
+    writeFileSync(join(dir, 'grow.jsx'), "export default function T() { return <div style={{ position: 'absolute', left: 0, top: 0, width: 1080, " +
+      "height: frame * 40, background: 'white' }} /> }\n")
+    writeFileSync(join(dir, 'bad.jsx'), 'export default function T() { return <div>{undefinedThing.x}</div> }\n')
+    const job = (name, frame) => ({ componentPath: join(dir, `${name}.jsx`), frame, fps: 30, width: 1080, height: 1920, durationFrames: 60, outPath: join(dir, `${name}-${frame}.png`) })
+    const { results, browsers } = await measureOverlays([job('grow', 10), job('grow', 30), job('bad', 0), job('grow', 50)], { lanes: 1, measure: false })
+    assert.equal(results.length, 4)
+    assert.equal(results[0].pngPath, join(dir, 'grow-10.png'))
+    assert.ok(results[2].error, `the broken one says why: ${JSON.stringify(results[2])}`)
+    assert.ok(results[3].pngPath && !results[3].measurements, JSON.stringify(results[3]))
+    assert.equal(readPixelRgba(join(dir, 'grow-10.png'), 500, 800).a, 0, 'frame 10 has not reached row 800')
+    assert.equal(readPixelRgba(join(dir, 'grow-30.png'), 500, 800).a, 255, 'frame 30 has')
+    assert.equal(readPixelRgba(join(dir, 'grow-50.png'), 500, 1900).a, 255, 'frame 50 paints row 1900')
+    assert.equal(browsers, 1, 'one browser for the four')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // PL89g: look reads a text's fill against the picture behind it, so the measure gives each text its `color`, and
 // `plate`: the colour of an opaque background behind it inside the overlay (it is read against that, not the picture).
 test('(pl89g) sampleOverlay --measure: each text has its color, and its plate when it sits on one', { timeout: 60_000 }, async () => {

@@ -56,3 +56,16 @@ def test_a_json_array_string_reaches_node_untouched(fake_node_env, tmp_path):
 
 def test_no_google_fonts_passes_no_flag(fake_node_env, tmp_path):
     assert _run(fake_node_env, tmp_path) == []
+
+
+# caption_ink renders many frames of an overlay in one call: --jobs with --no-measure runs sample-frame.js's
+# --mode overlays (PNG only, a page per overlay kept open); --jobs alone is still look's --mode measure.
+@pytest.mark.parametrize("extra, mode", [((), "measure"), (("--no-measure",), "overlays")])
+def test_jobs_pick_the_mode(fake_node_env, tmp_path, extra, mode):
+    jobs = tmp_path / "jobs.json"
+    jobs.write_text("[]")
+    proc = run_step_env(STEP, fake_node_env, "--jobs", str(jobs), "--lanes", "2", *extra)
+    assert proc.returncode == 0, proc.stderr
+    argv = json.loads(proc.stdout)
+    assert argv[argv.index("--mode") + 1] == mode
+    assert argv[argv.index("--jobs") + 1] == str(jobs) and argv[argv.index("--lanes") + 1] == "2"

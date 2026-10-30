@@ -347,7 +347,7 @@ if (isMain) {
       '    --out <path>   one 3D alone; --scene \'\' is the project\'s own\n' +
       '  sample-frame.js --mode frame --project <path> --at <seconds> --no-captions --out <path>\n' +
       '  sample-frame.js --mode frame --project <path> --at <s> --at <s> ... --frames-dir <dir>\n' +
-      '  sample-frame.js --mode measure --jobs <file.json> [--lanes N]\n' +
+      '  sample-frame.js --mode measure|overlays --jobs <file.json> [--lanes N]\n' +
       '  sample-frame.js --mode overlay-strip --component <path|engine:scene3d> --times \'[0,1,2]\' --duration <frames> [--project-dir <dir>]\n' +
       '    [--fps N] [--width W] [--height H] [--props \'...\'] [--google-fonts f1,f2] [--deadline-ms N]\n' +
       '    --tile-width N --out-dir <dir>   one browser, one small PNG per time (t_0000.png...)\n'
@@ -423,7 +423,7 @@ if (isMain) {
   if (!mode) fail('missing_argument', '--mode overlay|frame|measure is required')
   const manyTimes = mode === 'frame' && atArgs.length > 1
   if (manyTimes && !framesDirArg) fail('missing_argument', '--frames-dir <dir> is required with several --at')
-  if (!outArg && !manyTimes && mode !== 'measure' && mode !== 'overlay-strip') fail('missing_argument', '--out <path> is required')
+  if (!outArg && !manyTimes && mode !== 'measure' && mode !== 'overlays' && mode !== 'overlay-strip') fail('missing_argument', '--out <path> is required')
 
   // Validate against the manifest here rather than letting look.js throw deep
   // inside the extract: a typo'd curve id should be a clean CLI error, not a
@@ -546,24 +546,25 @@ if (isMain) {
       process.stderr.write(JSON.stringify({ error: err.sampleError || 'sample_failed', message: err.message }) + '\n')
       process.exit(1)
     })
-  } else if (mode === 'measure') {
+  } else if (mode === 'measure' || mode === 'overlays') {
     // PL89g: look's pass, every overlay in one call. --jobs: a JSON file of [{component, props, frame, fps, width, height,
-    // googleFonts, duration, out}]; stdout: {results, browsers}.
-    if (!jobsArg) fail('missing_argument', '--jobs <file> is required for --mode measure')
+    // googleFonts, duration, out}]; stdout: {results, browsers}. --mode overlays renders each job's PNG only, a page per
+    // overlay kept open across its frames (caption_ink).
+    if (!jobsArg) fail('missing_argument', `--jobs <file> is required for --mode ${mode}`)
     let jobs
     try { jobs = JSON.parse(readFileSync(resolve(jobsArg), 'utf8')) } catch { fail('invalid_jobs', '--jobs is not a readable JSON list') }
     if (!Array.isArray(jobs)) fail('invalid_jobs', '--jobs is a JSON list of overlays to measure')
     measureOverlays(jobs.map((j) => ({
       componentPath: resolve(j.component), props: j.props || {}, frame: j.frame || 0, fps: j.fps || 30, width: j.width || 1080,
       height: j.height || 1920, googleFonts: j.googleFonts || [], durationFrames: j.duration ?? null, outPath: resolve(j.out),
-    })), { lanes: lanesArg || 3 }).then((out) => {
+    })), { lanes: lanesArg || 3, measure: mode === 'measure' }).then((out) => {
       process.stdout.write(JSON.stringify(out) + '\n')
     }).catch((err) => {
       process.stderr.write(JSON.stringify({ error: 'sample_failed', message: err.message }) + '\n')
       process.exit(1)
     })
   } else {
-    fail('invalid_mode', `--mode must be 'overlay', 'frame', 'measure' or 'overlay-strip', got '${mode}'`)
+    fail('invalid_mode', `--mode must be 'overlay', 'frame', 'measure', 'overlays' or 'overlay-strip', got '${mode}'`)
   }
 }
 
@@ -579,8 +580,11 @@ if (isMain) {
  * At most `maxPages` stay open (each 3D page holds a WebGL context, and Chromium drops the oldest past about 16, which
  * blanks later frames): opening one more closes the least recently used once its uses finish.
  * close() closes every page and browser and removes the bundles.
+ * A page's errors are cleared before each capture; with `keepLoadErrors` not before its first, so an overlay that throws
+ * while it mounts fails its first capture as it does alone (React unmounts a tree that threw, so later frames would
+ * capture a blank page as a success).
  */
-export function createSampleSession({ maxPages = SESSION_MAX_PAGES, closeCapMs = SESSION_CLOSE_CAP_MS } = {}) {
+export function createSampleSession({ maxPages = SESSION_MAX_PAGES, closeCapMs = SESSION_CLOSE_CAP_MS, keepLoadErrors = false } = {}) {
   const browsers = new Map()
   // PL89f: once closed or aborted, a session opens nothing more: a capture stuck past the frame limit runs on and
   // would otherwise launch a browser into a session nobody closes again, holding the process open.
@@ -634,7 +638,8 @@ export function createSampleSession({ maxPages = SESSION_MAX_PAGES, closeCapMs =
         // sampled several at once, and only one page of a browser is in front: captures take turns, each in front.
         const turn = captures.then(async () => {
           await ctx.page.bringToFront()
-          ctx.pageErrors.length = 0
+          if (!keepLoadErrors || held.captured) ctx.pageErrors.length = 0
+          held.captured = true
           return { ctx, shot: await capture(ctx) }
         })
         captures = turn.catch(() => {})
@@ -1084,8 +1089,11 @@ async function captureOverlay({ page, guard, pageErrors, fontFailures, component
  * that fails or takes over `jobTimeoutMs` answers {error, message} alone (a stuck one's browser is dropped and the run
  * goes on in a new one); the rest are measured. Answers {results: [{measurements, warnings?} | {error, message}],
  * browsers: how many were started}.
+ * With `measure: false` (--mode overlays, caption_ink's frames) each job is only rendered to its PNG, and a lane keeps one
+ * page per overlay (component and props) open across its frames, setting each frame and capturing it: many frames of
+ * one overlay cost one bundle and one page load per lane. Results are then [{pngPath} | {error, message}].
  */
-export async function measureOverlays(jobs, { lanes = 3, jobTimeoutMs = MEASURE_JOB_TIMEOUT_MS, newSession = () => createSampleSession() } = {}) {
+export async function measureOverlays(jobs, { lanes = 3, jobTimeoutMs = MEASURE_JOB_TIMEOUT_MS, measure = true, newSession = () => createSampleSession({ keepLoadErrors: !measure }) } = {}) {
   const results = new Array(jobs.length)
   const n = Math.max(1, Math.min(lanes, jobs.length))
   const size = Math.ceil(jobs.length / n)
@@ -1097,8 +1105,10 @@ export async function measureOverlays(jobs, { lanes = 3, jobTimeoutMs = MEASURE_
         let timer
         const stuck = new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error(`measure took over ${jobTimeoutMs / 1000} s`), { sampleError: 'timeout' })), jobTimeoutMs) })
         try {
-          const r = await Promise.race([sampleOverlay({ ...jobs[k], measure: true, session }), stuck])
-          results[k] = { measurements: r.measurements || {}, ...(r.warnings?.length ? { warnings: r.warnings } : {}) }
+          const r = await Promise.race([sampleOverlay({ ...jobs[k], measure, session }), stuck])
+          results[k] = measure
+            ? { measurements: r.measurements || {}, ...(r.warnings?.length ? { warnings: r.warnings } : {}) }
+            : { pngPath: r.pngPath }
         } catch (err) {
           results[k] = { error: err.sampleError || 'sample_failed', message: String(err.message || err).slice(0, 300) }
           if (err.sampleError === 'timeout') {
