@@ -1621,6 +1621,18 @@ function ReviewSurface<P extends Project>({
       : selectedAudioTrackItem
         ? { kind: 'audio', track: selectedAudioTrackItem }
         : null
+  // More than one clip, audio track or overlay selected: the panel shows how
+  // many, never one of them as if it were the selection (it edits one item, so
+  // its fields would read as the selection's). Captions are not counted; they
+  // have their own panel.
+  const selectedClipCount = selectedIds.filter(id =>
+    !captionIdSet.has(id) && (allVisualItems.some(i => i.id === id) || !!selectedAudioTrack(project, id)),
+  ).length
+  const multiSelectionState = selectedClipCount > 1 ? (
+    <div className="flex-1 flex items-center justify-center px-6 py-6 text-center">
+      <p className="text-xs font-medium text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">{`${selectedClipCount} clips`}</p>
+    </div>
+  ) : null
 
   // Edits coming from the timeline (drag/move/track changes): route through the
   // sync core — one undo step + queued save + rollback-on-failure.
@@ -2887,7 +2899,7 @@ function ReviewSurface<P extends Project>({
    * bare tab strip over an empty pane — the classic rail renders this
    * unconditionally and relied on exactly that empty state before.
    */
-  const overlayPropertiesPanel = selectedOverlayItem ? (
+  const overlayPropertiesPanel = multiSelectionState ?? (selectedOverlayItem ? (
     <>
       <TabNav
         tabs={OVERLAY_PANEL_TABS}
@@ -2925,7 +2937,7 @@ function ReviewSurface<P extends Project>({
       onChange={applyOverlayInspectorChange}
       onSeek={seekTo}
     />
-  )
+  ))
 
   // Right rail — CLASSIC LAYOUTS ONLY (Hub / LP). The media-panel layout replaces it
   // with the properties-only `propertiesPanel` below and moves this rail's
@@ -3125,7 +3137,7 @@ function ReviewSurface<P extends Project>({
             audio track's fades/ducking groups (or a tall generationSlot) run
             past the bottom of a short window. */}
         <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
-          {clipSelection ? (
+          {multiSelectionState ?? (clipSelection ? (
             <ClipPropertiesPanel
               selection={clipSelection}
               onPreviewClip={previewClipChange}
@@ -3249,7 +3261,7 @@ function ReviewSurface<P extends Project>({
                 <p className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)]">Choose a clip, overlay, or track to edit its properties.</p>
               </div>
             )
-          )}
+          ))}
         </div>
       </div>
     </>

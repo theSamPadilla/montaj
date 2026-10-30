@@ -673,6 +673,76 @@ describe('VideoEditor — right properties panel (media-panel layout)', () => {
   })
 })
 
+describe('VideoEditor — right properties panel, several clips selected', () => {
+  it('two audio tracks: shows the count, not one track as if it were the selection', async () => {
+    onTestFinished(installCanvasHarness())
+    const project = makeProject({
+      audio: { tracks: [{ id: 'a0', src: 'vo.wav', start: 0, end: 4, lane: 0 }, { id: 'a1', src: 'vo2.wav', start: 5, end: 8, lane: 1 }] },
+    } as unknown as Partial<Project>)
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project))
+    await waitFor(() => screen.getByLabelText('Resize sidebar'))
+
+    selectCanvasItem(container, project, { id: 'a0' })
+    expect(await screen.findByLabelText('Track label')).toBeTruthy()
+    selectCanvasItem(container, project, { id: 'a1' }, { shiftKey: true })
+
+    expect(await screen.findByText('2 clips')).toBeTruthy()
+    expect(screen.queryByLabelText('Track label')).toBeNull()
+    expect(screen.queryByText('Select an element')).toBeNull()
+  })
+
+  it('two video clips: shows the count, not the clip tabs', async () => {
+    onTestFinished(installCanvasHarness())
+    const project = makeProject()
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project))
+    await waitFor(() => screen.getByLabelText('Resize sidebar'))
+
+    selectCanvasItem(container, project, { id: 'clip-0' })
+    await screen.findByRole('group', { name: 'Clip panel view' })
+    selectCanvasItem(container, project, { id: 'clip-1' }, { shiftKey: true })
+
+    expect(await screen.findByText('2 clips')).toBeTruthy()
+    expect(screen.queryByRole('group', { name: 'Clip panel view' })).toBeNull()
+  })
+
+  it('two overlays: shows the count, not one overlay\'s Content/Transform panel', async () => {
+    onTestFinished(installCanvasHarness())
+    const project = makeProject({
+      tracks: [
+        [{ id: 'clip-0', type: 'video', src: 'a.mp4', start: 0, end: 10, inPoint: 0, outPoint: 10 }],
+        [
+          { id: 'ov-0', type: 'overlay', src: 'overlays/a.jsx', start: 0, end: 3 },
+          { id: 'ov-1', type: 'overlay', src: 'overlays/b.jsx', start: 5, end: 8 },
+        ],
+      ],
+    } as unknown as Partial<Project>)
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project))
+    await waitFor(() => screen.getByLabelText('Resize sidebar'))
+
+    selectCanvasItem(container, project, { id: 'ov-0' })
+    await screen.findByRole('group', { name: 'Overlay panel view' })
+    selectCanvasItem(container, project, { id: 'ov-1' }, { shiftKey: true })
+
+    expect(await screen.findByText('2 clips')).toBeTruthy()
+    expect(screen.queryByRole('group', { name: 'Overlay panel view' })).toBeNull()
+  })
+
+  it('a mixed selection counts every kind', async () => {
+    onTestFinished(installCanvasHarness())
+    const project = makeProject({
+      audio: { tracks: [{ id: 'a0', src: 'vo.wav', start: 0, end: 4, lane: 0 }] },
+    } as unknown as Partial<Project>)
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project))
+    await waitFor(() => screen.getByLabelText('Resize sidebar'))
+
+    selectCanvasItem(container, project, { id: 'clip-0' })
+    selectCanvasItem(container, project, { id: 'clip-1' }, { shiftKey: true })
+    selectCanvasItem(container, project, { id: 'a0' }, { shiftKey: true })
+
+    expect(await screen.findByText('3 clips')).toBeTruthy()
+  })
+})
+
 describe('VideoEditor — the Crop tab and tool key a video crop (PV55 phase 2)', () => {
   type Kf = { prop: string; points: { t: number; value: number }[] }[]
   type Saved = { sourceCrop?: unknown; sourceWidth?: number; sourceHeight?: number; keyframes?: Kf }
