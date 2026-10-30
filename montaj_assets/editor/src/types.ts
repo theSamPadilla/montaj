@@ -386,6 +386,12 @@ export interface FilmstripIndex {
   tileWidth: number
   /** Pixel height every tile was rendered at; set by overlay strips. */
   tileHeight?: number
+  /** Overlay strips: the mean share of each frame the overlay covers (alpha
+   *  above 0.1), and whether that is enough to draw it as a strip. An overlay
+   *  that is not `visual` (tiny text, a mask that is all hole) draws as the
+   *  plain box. Absent → visual. */
+  coverage?: number
+  visual?: boolean
 }
 
 /**

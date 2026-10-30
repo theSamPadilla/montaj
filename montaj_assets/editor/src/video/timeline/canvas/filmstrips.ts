@@ -299,6 +299,17 @@ export interface FilmstripQueryContext {
   /** True while a timeline gesture (trim, move) is running; an overlay strip is
    *  not requested then. Absent → the settle delay alone applies. */
   gestureActive?: () => boolean
+  /** The base track's items (tracks[0]): an overlay's tiles are composed over
+   *  the base footage's frame at the same timeline time. Absent → over the
+   *  overlay's own fill. */
+  baseItems?: readonly VisualItem[]
+}
+
+/** A caption template's overlay is never drawn as a strip. */
+const CAPTION_TEMPLATE = /(^|[\\/])templates[\\/]captions[\\/]/
+
+export function isCaptionOverlay(item: VisualItem): boolean {
+  return item.type === 'overlay' && typeof item.src === 'string' && CAPTION_TEMPLATE.test(item.src)
 }
 
 /** Overlay strips are costly to render, so a failed request waits this long
@@ -379,7 +390,7 @@ export class FilmstripStore {
     const videoSrc = item.type === 'video' ? (item.proxySrc ?? item.src) : undefined
     const isVideo = !!videoSrc && !!ctx.getFilmstrip
     const isImage = item.type === 'image' && !!item.src
-    const isOverlay = item.type === 'overlay' && !!item.src && !!ctx.getFilmstrip
+    const isOverlay = item.type === 'overlay' && !!item.src && !!ctx.getFilmstrip && !isCaptionOverlay(item)
     if ((!isVideo && !isImage && !isOverlay) || !ctx.fileUrl) return null
     if (rect.width <= 0 || rect.height <= 0) return null
     const range = visibleRange(ctx.viewport)
@@ -394,6 +405,9 @@ export class FilmstripStore {
     const resolved = isVideo ? this.resolveIndex(videoSrc!, ctx)
       : isOverlay ? this.resolveOverlayIndex(item, ctx) : null
     if ((isVideo || isOverlay) && (!resolved || resolved.tiles.length === 0)) return null
+    // An overlay that covers too little of its frame to read (the engine's
+    // `visual: false`) draws as the plain box.
+    if (isOverlay && resolved!.data.visual === false) return null
 
     // An image's one photo, decoded once and reused for every cell below.
     const stillImage = isImage ? this.resolveSheetImage(item.src!, ctx) : null
@@ -447,9 +461,41 @@ export class FilmstripStore {
       if (!img) continue // sheet not decoded yet — this cell just stays blank until onReady fires
 
       const src = centerCropTo(tileSourceRect(sheet, tile, img.width, img.height), dest.width / dest.height)
+      // An overlay's tile keeps its transparency: the base footage's frame at
+      // this time goes under it, so a mask or a card reads as it renders.
+      if (isOverlay) {
+        const under = this.baseTileAt(cellCenterTime, dest, ctx)
+        if (under) out.push(under)
+      }
       out.push({ image: img.image, sx: src.sx, sy: src.sy, sw: src.sw, sh: src.sh, rect: dest })
     }
     return out.length > 0 ? out : null
+  }
+
+  /** The base track's frame at timeline time `t`, cropped into `dest`: the
+   *  video (or image) clip on tracks[0] covering `t`, its strip read the way
+   *  its own clip reads it (`proxySrc ?? src`, mapped to source time). Null
+   *  when nothing is under `t` or its frames are not loaded yet. */
+  private baseTileAt(t: number, dest: Rect, ctx: FilmstripQueryContext): FilmstripTileDraw | null {
+    const base = ctx.baseItems?.find(i => (i.type === 'video' || i.type === 'image') && i.start <= t && t < i.end)
+    if (!base) return null
+    if (base.type === 'image') {
+      const img = base.src ? this.resolveSheetImage(base.src, ctx) : null
+      if (!img) return null
+      const src = centerCropTo({ sx: 0, sy: 0, sw: img.width, sh: img.height }, dest.width / dest.height)
+      return { image: img.image, sx: src.sx, sy: src.sy, sw: src.sw, sh: src.sh, rect: dest }
+    }
+    const path = base.proxySrc ?? base.src
+    if (!path || !ctx.getFilmstrip) return null
+    const resolved = this.resolveIndex(path, ctx)
+    if (!resolved) return null
+    const tile = nearestTile(resolved.tiles, clipTimeToSourceTime(base, t))
+    if (!tile) return null
+    const sheet = resolved.data.sheets[tile.sheetIdx]
+    const img = this.resolveSheetImage(sheet.path, ctx)
+    if (!img) return null
+    const src = centerCropTo(tileSourceRect(sheet, tile, img.width, img.height), dest.width / dest.height)
+    return { image: img.image, sx: src.sx, sy: src.sy, sw: src.sw, sh: src.sh, rect: dest }
   }
 
 

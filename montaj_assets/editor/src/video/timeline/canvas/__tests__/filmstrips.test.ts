@@ -19,6 +19,7 @@ import {
   nearestTile,
   OVERLAY_RETRY_COOLDOWN_MS,
   OVERLAY_SETTLE_MS,
+  isCaptionOverlay,
   scene3dRequestProps,
   stableJson,
   tileSourceRect,
@@ -907,6 +908,68 @@ describe('FilmstripStore overlay strips', () => {
     expect(getFilmstrip).toHaveBeenCalledTimes(2)
     expect(getFilmstrip.mock.calls[1][0].overlay.props).toEqual({ scene: 'walk', inPoint: 0 })
     expect(scene3dRequestProps({ scene: 'a', sceneFile: 'x', sceneJson: 'y' })).toEqual({ scene: 'a' })
+  })
+
+  it('an overlay whose strip is not visual draws the plain box', async () => {
+    const store = new FilmstripStore()
+    const getFilmstrip = vi.fn().mockResolvedValue(filmstripIndexFixture({ visual: false, coverage: 0.02 }))
+    const ctx = () => queryCtx({ getFilmstrip, viewport: zoomedIn })
+    store.clipTiles(overlay(), r, ctx())
+    settle()
+    store.clipTiles(overlay(), r, ctx())
+    await flush(); store.clipTiles(overlay(), r, ctx()); await flush()
+    expect(getFilmstrip).toHaveBeenCalledTimes(1)
+    expect(store.clipTiles(overlay(), r, ctx())).toBeNull()
+  })
+
+  it('composes each overlay tile over the base video frame at the same time', async () => {
+    const store = new FilmstripStore()
+    const videoImg = { image: { name: 'video' } as unknown as CanvasImageSource, width: 800, height: 320 }
+    const overlayImg = { image: { name: 'overlay' } as unknown as CanvasImageSource, width: 800, height: 320 }
+    const loader = vi.fn((url: string) => Promise.resolve(url.includes('ovl') ? overlayImg : videoImg))
+    const getFilmstrip = vi.fn((args: { src: string; overlay?: unknown }) => Promise.resolve(args.overlay
+      ? filmstripIndexFixture({ visual: true, sheets: [{ ...filmstripIndexFixture().sheets[0], path: 'ovl.png' }] })
+      : filmstripIndexFixture()))
+    // The base clip starts 1 s before the overlay and sits 3 s into its source.
+    const base = clip({ id: 'b0', src: 'flat.mp4', proxySrc: 'proxy.mp4', start: 1, end: 10, inPoint: 3 } as Partial<VisualItem>)
+    const ctx = () => queryCtx({ getFilmstrip: getFilmstrip as never, loader, viewport: zoomedIn, baseItems: [base] })
+    const draw = async () => { store.clipTiles(overlay(), r, ctx()); await flush() }
+    // settle, the overlay's index, its sheet, then the base clip's index and sheet
+    await draw(); settle(); for (let i = 0; i < 5; i++) await draw()
+    const tiles = store.clipTiles(overlay(), r, ctx())!
+    expect(getFilmstrip.mock.calls.map(c => c[0].src)).toEqual(expect.arrayContaining(['overlays\\title.jsx', 'proxy.mp4']))
+    // Pairs: the base footage first, then the overlay tile on top, in the same cell.
+    expect(tiles.length % 2).toBe(0)
+    for (let i = 0; i < tiles.length; i += 2) {
+      expect(tiles[i].image).toBe(videoImg.image)
+      expect(tiles[i + 1].image).toBe(overlayImg.image)
+      expect(tiles[i].rect).toEqual(tiles[i + 1].rect)
+    }
+  })
+
+  it('an overlay with no footage under it draws its tile alone, over its own fill', async () => {
+    const store = new FilmstripStore()
+    const ctx = () => queryCtx({ viewport: zoomedIn, baseItems: [clip({ start: 20, end: 30 })] })
+    store.clipTiles(overlay(), r, ctx())
+    settle()
+    store.clipTiles(overlay(), r, ctx())
+    await flush(); store.clipTiles(overlay(), r, ctx()); await flush()
+    const tiles = store.clipTiles(overlay(), r, ctx())!
+    expect(tiles.length).toBeGreaterThan(0)
+    expect(new Set(tiles.map(t => `${t.rect.x}`)).size).toBe(tiles.length) // one tile per cell
+  })
+
+  it('never requests a strip for a caption template overlay', () => {
+    const store = new FilmstripStore()
+    const getFilmstrip = vi.fn().mockResolvedValue(filmstripIndexFixture())
+    for (const src of ['templates/captions/karaoke.jsx', 'C:\\ws\\templates\\captions\\pop.jsx']) {
+      const cap = overlay({ src })
+      store.clipTiles(cap, r, queryCtx({ getFilmstrip, viewport: zoomedIn }))
+      settle()
+      expect(store.clipTiles(cap, r, queryCtx({ getFilmstrip, viewport: zoomedIn }))).toBeNull()
+    }
+    expect(getFilmstrip).not.toHaveBeenCalled()
+    expect(isCaptionOverlay(overlay({ src: 'overlays/title.jsx' }))).toBe(false)
   })
 
   it('draws image tiles for an overlay with tiles and the plain box without', async () => {

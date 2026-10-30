@@ -632,6 +632,7 @@ export default function TimelineCanvas({
         // T7 — filmstrip data is shared with the overlay layer's hover thumb
         // (see filmstrips.ts's `FilmstripQueryContext.onReady` doc), so
         // whichever call resolves a fetch invalidates BOTH layers.
+        const baseItems = scene.layout.rows.find(r => r.trackIdx === 0)?.items
         const filmstrips: FilmstripSceneLookup | undefined = (getFilmstrip && resolveFilePath)
           ? {
               clipTiles: (item, rect) => filmstripStoreRef.current!.clipTiles(item, rect, {
@@ -642,6 +643,7 @@ export default function TimelineCanvas({
                 resolution: scene.project.settings?.resolution,
                 watchFile,
                 gestureActive: () => releaseGestureRef.current !== null,
+                baseItems,
                 viewport,
                 onReady: () => requestRedraw('all'),
               }),
