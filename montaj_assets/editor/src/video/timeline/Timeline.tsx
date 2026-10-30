@@ -12,7 +12,7 @@ import { TimelineContext, type TimelineContextValue } from './TimelineContext'
 import type { PlaybackClock } from '../playback-clock'
 import Scrubber from './Scrubber'
 import TrackGutter from './TrackGutter'
-import { computeTimelineLayout, timelinePalette, type TimelineLayout, type TimelineMode } from './canvas/draw'
+import { computeTimelineLayout, timelinePalette, type LayoutHold, type TimelineLayout, type TimelineMode } from './canvas/draw'
 import { DEFAULT_FADE_CURVE, fadeCurveIconPoints, type FadeCurve } from './canvas/fade-curve'
 import { VISUAL_EDGE_TOLERANCE_PX } from './canvas/hit-test'
 import { keyframeUnionTimes } from './canvas/keyframe-strip'
@@ -947,10 +947,10 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
 
   // Same layout the canvas paints from, so the rail's rows line up with the
   // clips exactly rather than by two independent calculations agreeing.
-  // `holdLanes`: the lanes a live move keeps drawn (TimelineCanvas reports
-  // them), so the rail and the canvas stay row for row mid-drag.
-  const [holdLanes, setHoldLanes] = useState<number[] | null>(null)
-  const canvasLayout = useMemo(() => computeTimelineLayout(project, [], holdLanes ?? []), [project.tracks, project.audio, project.captions, holdLanes])
+  // `holdLayout`: what a live move holds still (TimelineCanvas reports it), so
+  // the rail and the canvas stay row for row mid-drag.
+  const [holdLayout, setHoldLayout] = useState<LayoutHold | null>(null)
+  const canvasLayout = useMemo(() => computeTimelineLayout(project, [], holdLayout ?? {}), [project.tracks, project.audio, project.captions, holdLayout])
 
   const ctx = useMemo<TimelineContextValue>(() => ({
     contentDuration, clock,
@@ -1108,7 +1108,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
               onProjectChange={onProjectChange}
               onOverlayEdit={onOverlayEdit}
               onGestureActiveChange={setGestureActive}
-              onHoldLanesChange={setHoldLanes}
+              onHoldLayoutChange={setHoldLayout}
               onInspectClip={onInspectClip}
               onInspectAudio={onInspectAudio}
               onEditCaption={onEditCaption}

@@ -818,10 +818,20 @@ export interface TimelineLayout {
  * T5's hit-testing should derive its rows from here rather than re-deriving
  * geometry — one layout, two readers.
  */
-/** `holdLanes`: audio lanes to draw even when no track is on them (empty), so
- *  a drag that empties a row does not slide every row under it up a row while
- *  the pointer is still moving. The pointer machine's `holdLanes` effect. */
-export function computeTimelineLayout(project: Project, pins: readonly TimelinePin[] = [], holdLanes: readonly number[] = []): TimelineLayout {
+/** What a live drag holds still in the layout (the pointer machine's
+ *  `holdLayout` effect), so a drag that empties a row does not move every row
+ *  around it while the pointer is still moving. */
+export interface LayoutHold {
+  /** Audio lanes drawn even when no track is on them (empty). */
+  lanes?: readonly number[]
+  /** Visual track ids drawn at the tall video height even when empty, so an
+   *  emptied video track does not shrink to an overlay row. */
+  tallTracks?: readonly string[]
+}
+
+export function computeTimelineLayout(project: Project, pins: readonly TimelinePin[] = [], hold: LayoutHold = {}): TimelineLayout {
+  const holdLanes = hold.lanes ?? []
+  const tallTracks = new Set(hold.tallTracks ?? [])
   // Order-normalized (Part B): `trackItems` funnels through `normalizeTracks`,
   // which now groups tracks into the canonical video-block/overlay-block
   // stack (`normalizeTrackOrder`) before returning — so `allTracks` here is
@@ -905,7 +915,7 @@ export function computeTimelineLayout(project: Project, pins: readonly TimelineP
     // for ANY video-kind track — a second video track carries the same
     // filmstrip+waveform content as the base and is cramped without the
     // room. Overlay/image tracks keep the short row.
-    const height = (trackIdx === 0 || allTracks[trackIdx][0]?.type === 'video')
+    const height = (trackIdx === 0 || allTracks[trackIdx][0]?.type === 'video' || tallTracks.has(trackSettings[trackIdx]?.id))
       ? BASE_VISUAL_ROW_RENDER_HEIGHT_PX
       : VISUAL_ROW_RENDER_HEIGHT_PX
     rows.push({

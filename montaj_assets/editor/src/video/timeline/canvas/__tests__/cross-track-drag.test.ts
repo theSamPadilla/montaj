@@ -336,7 +336,7 @@ describe('rows do not collapse while a drag empties one', () => {
     return effects.filter((e): e is Extract<PointerEffect, { type: 'projectChange' }> => e.type === 'projectChange').map(e => e.project)
   }
 
-  it('audio: the emptied lane stays drawn (holdLanes), so the row under the pointer does not slide up', () => {
+  it('audio: the emptied lane stays drawn (holdLayout), so the row under the pointer does not slide up', () => {
     const p = audioProject([
       { id: 'a', src: 'a.mp3', start: 0, end: 2, lane: 0 },
       { id: 'b', src: 'b.mp3', start: 4, end: 6, lane: 1 },
@@ -344,14 +344,14 @@ describe('rows do not collapse while a drag empties one', () => {
     ] as AudioTrack[])
     const pressLanes = computeTimelineLayout(p).lanes
     const { effects } = drag(p, { x: 500, y: laneMid(p, 1) }, { x: 500, y: laneMid(p, 2) })
-    const holds = effects.filter((e): e is Extract<PointerEffect, { type: 'holdLanes' }> => e.type === 'holdLanes')
-    expect(holds.map(h => h.lanes)).toEqual([[0, 1, 2], null])
+    const holds = effects.filter((e): e is Extract<PointerEffect, { type: 'holdLayout' }> => e.type === 'holdLayout')
+    expect(holds.map(h => h.hold?.lanes ?? null)).toEqual([[0, 1, 2], null])
     // The last transient frame has b in lane 2 and nothing in lane 1.
     const all = frames(effects)
     const last = all[all.length - 1]
     expect(computeTimelineLayout(last).lanes.map(l => l.laneIndex)).toEqual([0, 2])
     // Laid out with the held lanes, every lane is where the press drew it.
-    const held = computeTimelineLayout(last, [], [0, 1, 2]).lanes
+    const held = computeTimelineLayout(last, [], { lanes: [0, 1, 2] }).lanes
     expect(held.map(l => [l.laneIndex, l.y])).toEqual(pressLanes.map(l => [l.laneIndex, l.y]))
     expect(held[1].tracks).toEqual([])
   })
@@ -470,5 +470,31 @@ describe('the visual row a drag will drop on is highlighted, a new row included'
     drawTimelineContent(ctx, { project: p, viewport: VIEWPORT, layout, selectedIds: [], surfaceWidth: 1000, surfaceHeight: layout.height, dropTargetItem: 'o2' })
     const outlines = calls.filter(c => c.method === 'strokeRect' && c.args[1] === row.y + 0.5).map(c => c.strokeStyle)
     expect(outlines).toEqual([DARK_TIMELINE_PALETTE.colors.rowDivider, DARK_TIMELINE_PALETTE.colors.snapGuide])
+  })
+})
+
+describe('an emptied video track keeps its height mid-drag', () => {
+  it('held tall, so the rows above it stay where the press drew them; the drop prunes it', () => {
+    const clip = (id: string, start: number, end: number) =>
+      ({ id, type: 'video', src: `${id}.mp4`, start, end, inPoint: 0, outPoint: end - start, sourceDuration: 20 })
+    const p = {
+      id: 'p',
+      tracks: [
+        { id: 'trk-0', items: [clip('c0', 0, 4)] },
+        { id: 'trk-1', items: [clip('v1', 6, 9)] },
+        { id: 'trk-2', items: [{ id: 'o1', type: 'overlay', start: 0, end: 2 }] },
+      ],
+    } as unknown as Project
+    const pressRows = computeTimelineLayout(p).rows.map(r => [r.trackIdx, r.y, r.height])
+    const { committed, effects } = drag(p, { x: 750, y: rowMid(p, 1) }, { x: 750, y: rowMid(p, 0) })
+    const holds = effects.filter((e): e is Extract<PointerEffect, { type: 'holdLayout' }> => e.type === 'holdLayout')
+    expect(holds.map(h => h.hold?.tallTracks ?? null)).toEqual([['trk-1'], null])
+    const frames = effects.filter((e): e is Extract<PointerEffect, { type: 'projectChange' }> => e.type === 'projectChange')
+    const last = frames[frames.length - 1].project
+    expect(normalizeTracks(last).tracks![1]).toMatchObject({ id: 'trk-1', items: [] })
+    // Unheld, the empty track would draw as a short overlay row and move the row above it.
+    expect(computeTimelineLayout(last).rows.map(r => [r.trackIdx, r.y, r.height])).not.toEqual(pressRows)
+    expect(computeTimelineLayout(last, [], holds[0].hold!).rows.map(r => [r.trackIdx, r.y, r.height])).toEqual(pressRows)
+    expect(normalizeTracks(committed).tracks!.map(t => t.id)).toEqual(['trk-0', 'trk-2'])
   })
 })
