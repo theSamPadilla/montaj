@@ -94,6 +94,9 @@ const MIN_CELL_PX = 4
  * it could find, or repeating themselves on a sped-up one.
  */
 export function clipTimeToSourceTime(item: VisualItem, timelineTime: number): number {
+  // An overlay strip is rendered from the overlay itself, so its tiles sit on
+  // the item's own clock (0 = its start), not on a source in-point.
+  if (item.type === 'overlay') return timelineTime - item.start
   const inPoint = item.inPoint ?? 0
   return inPoint + (item.speed ?? 1) * (timelineTime - item.start)
 }
@@ -286,6 +289,27 @@ export interface FilmstripQueryContext {
   maxTiles?: number
   minInterval?: number
   tileWidth?: number
+  /** Project frame rate, sent with an overlay strip request. Default 30. */
+  fps?: number
+  /** The adapter's `watchFile`; a change to an overlay's src bumps its strip
+   *  revision so the next paint requests fresh frames. Absent → never bumps. */
+  watchFile?: (path: string, onChange: () => void, projectId?: string) => () => void
+}
+
+/** Overlay strips are costly to render, so a failed request waits this long
+ *  before the next paint may ask again (a host without overlay support
+ *  rejects every time). A new key (props, fonts, duration, revision) is
+ *  requested at once. */
+export const OVERLAY_RETRY_COOLDOWN_MS = 60_000
+
+/** JSON with object keys sorted, so equal props always make equal keys. */
+export function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    const o = value as Record<string, unknown>
+    return `{${Object.keys(o).sort().filter(k => o[k] !== undefined).map(k => `${JSON.stringify(k)}:${stableJson(o[k])}`).join(',')}}`
+  }
+  return JSON.stringify(value) ?? 'null'
 }
 
 /** What `drawTimelineContent` (draw.ts) needs from T7, kept as an interface
@@ -298,6 +322,15 @@ export interface FilmstripSceneLookup {
 export class FilmstripStore {
   private indexEntries = new Map<string, IndexEntry>()
   private imageEntries = new Map<string, ImageEntry>()
+  /** Per overlay src: bumped when the host reports the file changed. */
+  private revisions = new Map<string, number>()
+  private unwatchers = new Map<string, () => void>()
+
+  /** Stop every overlay file watch. Call on unmount. */
+  dispose(): void {
+    for (const off of this.unwatchers.values()) off()
+    this.unwatchers.clear()
+  }
 
   /**
    * Background tile strip for a clip's rect. `null` whenever there's nothing
@@ -319,7 +352,8 @@ export class FilmstripStore {
   clipTiles(item: VisualItem, rect: Rect, ctx: FilmstripQueryContext): FilmstripTileDraw[] | null {
     const isVideo = item.type === 'video' && !!item.proxySrc && !!ctx.getFilmstrip
     const isImage = item.type === 'image' && !!item.src
-    if ((!isVideo && !isImage) || !ctx.fileUrl) return null
+    const isOverlay = item.type === 'overlay' && !!item.src && !!ctx.getFilmstrip
+    if ((!isVideo && !isImage && !isOverlay) || !ctx.fileUrl) return null
     if (rect.width <= 0 || rect.height <= 0) return null
     const range = visibleRange(ctx.viewport)
     if (item.end < range.start || item.start > range.end) return null
@@ -329,8 +363,9 @@ export class FilmstripStore {
 
     // For a video, no sheet index yet means nothing to draw at all — bail
     // before doing any cell-grid work. An image has no index to wait on.
-    const resolved = isVideo ? this.resolveIndex(item.proxySrc!, ctx) : null
-    if (isVideo && (!resolved || resolved.tiles.length === 0)) return null
+    const resolved = isVideo ? this.resolveIndex(item.proxySrc!, ctx)
+      : isOverlay ? this.resolveOverlayIndex(item, ctx) : null
+    if ((isVideo || isOverlay) && (!resolved || resolved.tiles.length === 0)) return null
 
     // An image's one photo, decoded once and reused for every cell below.
     const stillImage = isImage ? this.resolveSheetImage(item.src!, ctx) : null
@@ -421,6 +456,47 @@ export class FilmstripStore {
       }
     }
     return null
+  }
+
+  /** Index for an overlay item's strip. Key = src + props + fonts + duration
+   *  + fps + the src's revision; one request in flight per key, a rejection is
+   *  not retried until the cooldown or a new key. */
+  private resolveOverlayIndex(item: VisualItem, ctx: FilmstripQueryContext): { data: FilmstripIndex; tiles: FlatTile[] } | null {
+    const src = item.src!
+    this.watchOverlay(src, ctx)
+    const fps = ctx.fps ?? 30
+    const durationSec = item.end - item.start
+    const key = `ovl|${ctx.projectId}|${src}|${stableJson(item.props ?? {})}|${stableJson(item.googleFonts ?? [])}|${durationSec}|${fps}|${this.revisions.get(src) ?? 0}|${ctx.tileWidth ?? ''}`
+    const entry = this.indexEntries.get(key)
+    if (entry?.status === 'ready' && entry.data) return { data: entry.data, tiles: entry.tiles }
+    const inCooldown = entry?.status === 'error'
+      && Date.now() - (entry.erroredAt ?? 0) < OVERLAY_RETRY_COOLDOWN_MS
+    if (entry?.status !== 'loading' && !inCooldown && ctx.getFilmstrip) {
+      this.indexEntries.set(key, { status: 'loading', data: null, tiles: [] })
+      ctx.getFilmstrip({
+        projectId: ctx.projectId,
+        src,
+        tileWidth: ctx.tileWidth,
+        overlay: { props: item.props, googleFonts: item.googleFonts, fps, durationSec },
+      })
+        .then(data => {
+          this.indexEntries.set(key, { status: 'ready', data, tiles: flattenTiles(data) })
+          ctx.onReady()
+        })
+        .catch(() => {
+          this.indexEntries.set(key, { status: 'error', data: null, tiles: [], erroredAt: Date.now() })
+        })
+    }
+    return null
+  }
+
+  private watchOverlay(src: string, ctx: FilmstripQueryContext): void {
+    if (!ctx.watchFile || this.unwatchers.has(src)) return
+    const onReady = ctx.onReady
+    this.unwatchers.set(src, ctx.watchFile(src, () => {
+      this.revisions.set(src, (this.revisions.get(src) ?? 0) + 1)
+      onReady()
+    }, ctx.projectId))
   }
 
   /** Look up a decoded sheet image by its host path, kicking off a load when

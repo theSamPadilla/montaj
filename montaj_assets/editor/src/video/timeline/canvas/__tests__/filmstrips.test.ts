@@ -17,6 +17,8 @@ import {
   drawFilmstripTiles,
   flattenTiles,
   nearestTile,
+  OVERLAY_RETRY_COOLDOWN_MS,
+  stableJson,
   tileSourceRect,
   type FilmstripQueryContext,
   type FilmstripTileDraw,
@@ -680,5 +682,117 @@ describe('drawTimelineContent filmstrip + waveform composition', () => {
     }))
     expect(withScene.calls.length).toBe(withoutFilmstripsKey.calls.length)
     expect(withScene.of('drawImage')).toHaveLength(0)
+  })
+})
+
+
+describe('FilmstripStore overlay strips', () => {
+  const zoomedIn: Viewport = { pxPerSecond: 200, scrollSeconds: 0, widthPx: 1000 }
+  function overlay(over: Partial<VisualItem> = {}): VisualItem {
+    return { id: 'o0', type: 'overlay', src: 'overlays\\title.jsx', start: 2, end: 6, props: { text: 'hi', size: 3 }, ...over } as VisualItem
+  }
+  const r = rect({ x: 400, width: 800, height: 48 })
+
+  it('requests once per key and passes the overlay args (src as given, backslashes kept)', async () => {
+    const store = new FilmstripStore()
+    const getFilmstrip = vi.fn().mockResolvedValue(filmstripIndexFixture())
+    const ctx = () => queryCtx({ getFilmstrip, viewport: zoomedIn, fps: 24 })
+    store.clipTiles(overlay({ googleFonts: ['Syne:wght@800'] }), r, ctx())
+    store.clipTiles(overlay({ googleFonts: ['Syne:wght@800'] }), r, ctx())
+    await flush()
+    store.clipTiles(overlay({ googleFonts: ['Syne:wght@800'] }), r, ctx())
+    expect(getFilmstrip).toHaveBeenCalledTimes(1)
+    expect(getFilmstrip.mock.calls[0][0]).toMatchObject({
+      projectId: 'p1',
+      src: 'overlays\\title.jsx',
+      overlay: { props: { text: 'hi', size: 3 }, googleFonts: ['Syne:wght@800'], fps: 24, durationSec: 4 },
+    })
+  })
+
+  it('a prop key order change keeps the key; changed props make a new request', async () => {
+    const store = new FilmstripStore()
+    const getFilmstrip = vi.fn().mockResolvedValue(filmstripIndexFixture())
+    const ctx = () => queryCtx({ getFilmstrip, viewport: zoomedIn })
+    store.clipTiles(overlay(), r, ctx())
+    store.clipTiles(overlay({ props: { size: 3, text: 'hi' } }), r, ctx())
+    expect(getFilmstrip).toHaveBeenCalledTimes(1)
+    store.clipTiles(overlay({ props: { text: 'bye', size: 3 } }), r, ctx())
+    expect(getFilmstrip).toHaveBeenCalledTimes(2)
+    expect(stableJson({ b: 1, a: [2, { d: 1, c: undefined }] })).toBe('{"a":[2,{"d":1}],"b":1}')
+  })
+
+  it('a watchFile change bumps the revision, redraws, and requests again', async () => {
+    const store = new FilmstripStore()
+    const getFilmstrip = vi.fn().mockResolvedValue(filmstripIndexFixture())
+    let fire = () => {}
+    const unwatch = vi.fn()
+    const watchFile = vi.fn((_p: string, cb: () => void) => { fire = cb; return unwatch })
+    const onReady = vi.fn()
+    const ctx = () => queryCtx({ getFilmstrip, watchFile, onReady, viewport: zoomedIn })
+    store.clipTiles(overlay(), r, ctx())
+    store.clipTiles(overlay(), r, ctx())
+    expect(watchFile).toHaveBeenCalledTimes(1)
+    expect(watchFile.mock.calls[0][0]).toBe('overlays\\title.jsx')
+    await flush()
+    onReady.mockClear()
+    fire()
+    expect(onReady).toHaveBeenCalled()
+    store.clipTiles(overlay(), r, ctx())
+    expect(getFilmstrip).toHaveBeenCalledTimes(2)
+    store.dispose()
+    expect(unwatch).toHaveBeenCalledTimes(1)
+  })
+
+  it('a rejected request leaves no tiles and is not retried on every frame', async () => {
+    const store = new FilmstripStore()
+    const getFilmstrip = vi.fn().mockRejectedValue(new Error('no overlay support'))
+    const ctx = () => queryCtx({ getFilmstrip, viewport: zoomedIn })
+    expect(store.clipTiles(overlay(), r, ctx())).toBeNull()
+    await flush()
+    for (let i = 0; i < 5; i++) expect(store.clipTiles(overlay(), r, ctx())).toBeNull()
+    expect(getFilmstrip).toHaveBeenCalledTimes(1)
+    const now = Date.now()
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(now + OVERLAY_RETRY_COOLDOWN_MS + 1)
+    store.clipTiles(overlay(), r, ctx())
+    spy.mockRestore()
+    expect(getFilmstrip).toHaveBeenCalledTimes(2)
+  })
+
+  it('maps tiles by item-local time, not a source in-point', async () => {
+    const store = new FilmstripStore()
+    const item = overlay({ inPoint: 50 } as Partial<VisualItem>)
+    expect(clipTimeToSourceTime(item, 2)).toBe(0)
+    expect(clipTimeToSourceTime(item, 5)).toBe(3)
+    const ctx = () => queryCtx({ viewport: zoomedIn })
+    store.clipTiles(item, r, ctx())
+    await flush()
+    store.clipTiles(item, r, ctx())
+    await flush()
+    const tiles = store.clipTiles(item, r, ctx())!
+    // First cell sits at the item's start (local t = 0) => tile 0 (col 0, row 0).
+    expect(tiles[0].sx).toBeCloseTo(0, 5)
+    expect(tiles[0].sy).toBeGreaterThanOrEqual(0)
+  })
+
+  it('draws image tiles for an overlay with tiles and the plain box without', async () => {
+    const store = new FilmstripStore()
+    const item = overlay({ start: 0, end: 4 })
+    const p = project({ tracks: [{ id: 'trk-0', items: [item] }] })
+    const makeScene = () => scene({
+      project: p,
+      layout: computeTimelineLayout(p),
+      filmstrips: { clipTiles: (it: VisualItem, rc: Rect) => store.clipTiles(it, rc, queryCtx({ viewport: viewport() })) },
+      waveforms: { clipColumns: () => null, audioColumns: () => null },
+    })
+    const before = recordingContext()
+    drawTimelineContent(before.ctx, makeScene())
+    expect(before.of('drawImage')).toHaveLength(0)
+    expect(before.of('fillRect').length).toBeGreaterThan(0) // the plain box still paints
+    await flush(); drawTimelineContent(recordingContext().ctx, makeScene())
+    await flush(); drawTimelineContent(recordingContext().ctx, makeScene())
+    await flush()
+    const after = recordingContext()
+    drawTimelineContent(after.ctx, makeScene())
+    expect(after.of('drawImage').length).toBeGreaterThan(0)
   })
 })

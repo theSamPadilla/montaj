@@ -2406,8 +2406,8 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
         dimmed,
         drawContent,
         missing: itemMissing,
-        video: item.type === 'video',
-        topShade: item.type === 'video' && !!filmstripTiles,
+        video: item.type === 'video' || (item.type === 'overlay' && !!filmstripTiles),
+        topShade: (item.type === 'video' || item.type === 'overlay') && !!filmstripTiles,
       }, themePalette)
       // The keyframe strip (SP9b T3.3): selected, keyframed overlays only —
       // see `drawKeyframeStrip`'s own doc for why this is gated here rather

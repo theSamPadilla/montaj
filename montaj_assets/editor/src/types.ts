@@ -400,6 +400,16 @@ export interface GetFilmstripArgs {
   maxTiles?: number
   minInterval?: number
   tileWidth?: number
+  /** Set for an overlay item: `src` is then the overlay's jsx src as the item
+   *  stores it, and the host renders the overlay itself at each tile time
+   *  (item-local seconds, 0 = the item's start). A host without overlay
+   *  support may reject; the editor then keeps the plain box. */
+  overlay?: {
+    props?: Record<string, unknown>
+    googleFonts?: string[]
+    fps: number
+    durationSec: number
+  }
 }
 
 // ── Audio polish (optional capability) ────────────────────────────────────────

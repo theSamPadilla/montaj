@@ -181,6 +181,9 @@ export interface TimelineCanvasProps {
    *  SAME mechanism `WaveformChunk.path` uses for the DOM waveform PNGs
    *  (`adapter.fileUrl`). Threaded from Timeline's own `resolveFilePath`. */
   resolveFilePath?: ResolveFilePath
+  /** The adapter's `watchFile`, so an overlay's filmstrip refreshes when its
+   *  jsx changes. Absent → overlay strips never refresh. */
+  watchFile?: (path: string, onChange: () => void, projectId?: string) => () => void
   /** Which ground the painter draws on, resolved from the host theme by
    *  `VideoEditor` (see `isLightTheme`) and threaded through Timeline. The
    *  canvas cannot read a CSS variable, so this is how a theme flip reaches
@@ -473,6 +476,7 @@ export default function TimelineCanvas({
   getWaveformPeaks,
   getFilmstrip,
   resolveFilePath,
+  watchFile,
   mode = 'dark',
   onImportFilesToTimeline,
   pendingDrops = NO_PENDING_DROPS,
@@ -493,6 +497,10 @@ export default function TimelineCanvas({
   // decoded sheet images.
   const filmstripStoreRef = useRef<FilmstripStore | null>(null)
   if (filmstripStoreRef.current === null) filmstripStoreRef.current = new FilmstripStore()
+  useEffect(() => {
+    const store = filmstripStoreRef.current
+    return () => store?.dispose()
+  }, [])
 
 
   // `project.captions` is in here because the caption band is part of the
@@ -630,6 +638,8 @@ export default function TimelineCanvas({
                 projectId: scene.project.id,
                 getFilmstrip,
                 fileUrl: resolveFilePath,
+                fps: scene.project.settings?.fps ?? 30,
+                watchFile,
                 viewport,
                 onReady: () => requestRedraw('all'),
               }),

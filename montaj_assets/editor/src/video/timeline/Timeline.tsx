@@ -91,6 +91,9 @@ interface TimelineProps {
    *  to `TimelineCanvas`. Absent → no filmstrips or thumbs anywhere
    *  (graceful). */
   getFilmstrip?: (args: GetFilmstripArgs) => Promise<FilmstripIndex>
+  /** The adapter's `watchFile`, passed to `TimelineCanvas` so an overlay's
+   *  filmstrip refreshes when its jsx changes. */
+  watchFile?: (path: string, onChange: () => void, projectId?: string) => () => void
   /** Host-computed gate for the per-clip subcut-regenerate affordance (Montaj:
    *  ai_video projects). The package never reads `projectType`. */
   regenEnabled?: boolean
@@ -354,7 +357,7 @@ const EASING_LABELS: Record<EasingName, string> = {
   hold: 'Hold',
 }
 
-export default function Timeline({ project, clock, onProjectChange, onOverlayEdit, selectedIds = [], onSelectIds, onInspectClip, onInspectAudio, onEditCaption, rippleMode = false, previewAxis = false, onHoverScrub, onScrubDrag, resolveFilePath, getWaveformPeaks, getFilmstrip, regenEnabled, isClipQueued, renderSubcutRegen, modalOpen = false, onOpenGoToTime, actionsRef, mode = 'dark', onImportFilesToTimeline, pendingDrops, pins, onPinClick }: TimelineProps) {
+export default function Timeline({ project, clock, onProjectChange, onOverlayEdit, selectedIds = [], onSelectIds, onInspectClip, onInspectAudio, onEditCaption, rippleMode = false, previewAxis = false, onHoverScrub, onScrubDrag, resolveFilePath, getWaveformPeaks, getFilmstrip, watchFile, regenEnabled, isClipQueued, renderSubcutRegen, modalOpen = false, onOpenGoToTime, actionsRef, mode = 'dark', onImportFilesToTimeline, pendingDrops, pins, onPinClick }: TimelineProps) {
 
   // What the rail and keymap edits (delete, lane mute, volume, magnet, fade
   // shape) start from: the project with its drawn audio rows written down
@@ -1144,6 +1147,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
               onKeyframeMenu={setKeyframeMenu}
               getWaveformPeaks={getWaveformPeaks}
               getFilmstrip={getFilmstrip}
+              watchFile={watchFile}
               resolveFilePath={resolveFilePath}
               mode={mode}
               onImportFilesToTimeline={onImportFilesToTimeline}
