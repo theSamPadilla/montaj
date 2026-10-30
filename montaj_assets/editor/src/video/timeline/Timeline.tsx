@@ -19,7 +19,8 @@ import { keyframeUnionTimes } from './canvas/keyframe-strip'
 import { mapTrackItems, normalizeTracks, stampAudioLanes, updateAudioTrack } from './timeline-model'
 import { deleteSelection, toggleSelection } from './multiSelectOps'
 import { removeMarkers } from './markers'
-import { computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, trackItems } from './timeline-model'
+import { computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, groupAudioLanes, trackItems } from './timeline-model'
+import { removeAudioLane, removeVisualTrack } from './trackRemoval'
 import TimelineCanvas, { useCanvasZoomControls, type ZoomControls } from './canvas/TimelineCanvas'
 import type { KeyframeSelection } from './canvas/pointer-machine'
 import { revealAtEdge, timeToX, useViewportStore, useViewportValue, xToTime, type ViewportStore } from './canvas/viewport'
@@ -467,6 +468,26 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
     for (const id of trackIds) next = updateAudioTrack(next, id, { volume })
     onProjectChange(next)
     if (commit) onOverlayEdit?.(next)
+  }
+
+  /** Right-click remove: one edit through the normal path, so one undo step.
+   *  A selection that lived on the removed track is dropped with it. */
+  function commitRemoval(next: Project, removedIds: string[]) {
+    if (next === project || !onProjectChange) return
+    onProjectChange(next)
+    onOverlayEdit?.(next)
+    const gone = new Set(removedIds)
+    if (selectedIds.some(id => gone.has(id))) onSelectIds?.(selectedIds.filter(id => !gone.has(id)))
+  }
+
+  function handleRemoveTrack(trackIdx: number) {
+    const ids = (trackItems(project)[trackIdx] ?? []).map(i => i.id)
+    commitRemoval(removeVisualTrack(project, trackIdx), ids)
+  }
+
+  function handleRemoveAudioLane(laneIndex: number) {
+    const lane = groupAudioLanes(project.audio?.tracks ?? []).find(l => l.laneIndex === laneIndex)
+    commitRemoval(removeAudioLane(project, laneIndex), (lane?.tracks ?? []).map(t => t.id))
   }
 
   function handleSetLaneMuted(trackIds: string[], muted: boolean) {
@@ -1082,6 +1103,8 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
               onSetLaneVolume={handleSetLaneVolume}
               onSetLaneMuted={handleSetLaneMuted}
               onSetLaneMagnet={handleSetLaneMagnet}
+              onRemoveTrack={handleRemoveTrack}
+              onRemoveAudioLane={handleRemoveAudioLane}
             />
             {/* `relative` makes this column the positioning context for the
                 per-clip HTML chrome below — see `CanvasClipChrome`. It holds

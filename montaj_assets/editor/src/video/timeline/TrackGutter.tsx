@@ -1,6 +1,9 @@
 import { useRef, useState, type RefObject } from 'react'
 import { AudioLines, Box, Captions, Eye, EyeOff, Film, Layers, Magnet, MoveHorizontal, Settings2, Volume2, VolumeX, ZoomIn, ZoomOut } from 'lucide-react'
 import { Tooltip } from '../../ui/Tooltip'
+import ConfirmDialog from '../../ui/ConfirmDialog'
+import TrackContextMenu from './TrackContextMenu'
+import { audioLaneItemCount, canRemoveAudioLane, canRemoveVisualTrack, visualTrackItemCount } from './trackRemoval'
 import type { Project } from '../../types'
 import type { VisualItem } from '../../schema'
 import { computeTimelineLayout, timelinePalette, type TimelineLayout, type TimelineMode, type TrackPalette, type VisualRowLayout, type AudioLaneLayout } from './canvas/draw'
@@ -348,6 +351,7 @@ function VisualTrackRailRow({
   onSetTrackVolume,
   onSetTrackMuted,
   onApplySpeed,
+  onContextMenu,
 }: {
   row: VisualRowLayout
   palette: TrackPalette
@@ -362,6 +366,7 @@ function VisualTrackRailRow({
   onSetTrackVolume?: (trackIdx: number, volume: number, commit: boolean) => void
   onSetTrackMuted?: (trackIdx: number, muted: boolean) => void
   onApplySpeed?: (trackIdx: number, speed: number) => void
+  onContextMenu?: (e: React.MouseEvent) => void
 }) {
   const [open, setOpen] = useState(false)
   const buttonRef = useRef<HTMLButtonElement>(null)
@@ -382,7 +387,7 @@ function VisualTrackRailRow({
   const trackLabel = label.toLowerCase()
 
   return (
-    <div className="absolute inset-x-0" style={{ top: row.y, height: row.height }}>
+    <div className="absolute inset-x-0" style={{ top: row.y, height: row.height }} onContextMenu={onContextMenu}>
       <RailCell
         height={row.height}
         accent={palette.border}
@@ -448,6 +453,7 @@ function AudioLaneRailRow({
   onSetLaneVolume,
   onSetLaneMuted,
   onSetLaneMagnet,
+  onContextMenu,
 }: {
   lane: AudioLaneLayout
   /** The emerald edge, handed down rather than hardcoded here: it is the audio
@@ -458,6 +464,7 @@ function AudioLaneRailRow({
   onSetLaneVolume?: (trackIds: string[], volume: number, commit: boolean) => void
   onSetLaneMuted?: (trackIds: string[], muted: boolean) => void
   onSetLaneMagnet?: (trackIds: string[], magnetic: boolean) => void
+  onContextMenu?: (e: React.MouseEvent) => void
 }) {
   const [open, setOpen] = useState(false)
   const buttonRef = useRef<HTMLButtonElement>(null)
@@ -476,7 +483,7 @@ function AudioLaneRailRow({
   const trackIds = lane.tracks.map(t => t.id)
 
   return (
-    <div className="absolute inset-x-0" style={{ top: lane.y, height: lane.height }}>
+    <div className="absolute inset-x-0" style={{ top: lane.y, height: lane.height }} onContextMenu={onContextMenu}>
       <RailCell
         height={AUDIO_LANE_HEIGHT_PX}
         accent={accent}
@@ -563,6 +570,11 @@ export interface TrackGutterProps {
    *  and the clips beside it stop matching. Threaded from Timeline (never
    *  looked up here) for exactly that reason. Defaults to `'dark'`. */
   mode?: TimelineMode
+  /** Remove a visual track and its items, from the header's right-click menu.
+   *  Absent → the menu offers hide only. */
+  onRemoveTrack?: (trackIdx: number) => void
+  /** Remove every `AudioTrack` in a lane, same menu. */
+  onRemoveAudioLane?: (laneIndex: number) => void
   /** Zoom out / zoom in / fit, drawn as icons in the rail's ruler corner
    *  (look B, dark only — light keeps Timeline's own "− + fit" row). Absent →
    *  the corner stays empty. */
@@ -613,6 +625,8 @@ export default function TrackGutter({
   onSetLaneVolume,
   onSetLaneMuted,
   onSetLaneMagnet,
+  onRemoveTrack,
+  onRemoveAudioLane,
   zoom,
 }: TrackGutterProps) {
   const resolved = layout ?? computeTimelineLayout(project)
@@ -622,6 +636,32 @@ export default function TrackGutter({
   // gives items only, and a legacy-shaped project has no settings at all
   // (every track enabled, unity volume, unmuted).
   const trackSettings = normalizeTracks(project).tracks ?? []
+
+  // Right-click on a header opens the menu; a non-empty track confirms first.
+  type Target = { kind: 'visual' | 'audio'; index: number }
+  const [menu, setMenu] = useState<(Target & { x: number; y: number }) | null>(null)
+  const [confirm, setConfirm] = useState<(Target & { count: number }) | null>(null)
+  const openMenu = (target: Target) => (e: React.MouseEvent) => {
+    e.preventDefault()
+    setMenu({ ...target, x: e.clientX, y: e.clientY })
+  }
+  const laneOf = (index: number) => resolved.lanes.find(l => l.laneIndex === index)
+  const applyRemove = (t: Target) => {
+    if (t.kind === 'visual') onRemoveTrack?.(t.index)
+    else onRemoveAudioLane?.(t.index)
+  }
+  const menuHidden = menu
+    ? menu.kind === 'visual'
+      ? trackSettings[menu.index]?.enabled === false
+      : (() => { const l = laneOf(menu.index); return !!l && l.tracks.length > 0 && l.tracks.every(t => t.muted) })()
+    : false
+  const menuCanHide = menu
+    ? menu.kind === 'visual' ? !!onToggleTrackEnabled : !!onSetLaneMuted
+    : false
+  const menuCanRemove = !menu ? false
+    : menu.kind === 'visual'
+      ? !!onRemoveTrack && canRemoveVisualTrack(project, menu.index)
+      : !!onRemoveAudioLane && canRemoveAudioLane(project, menu.index)
 
   return (
     <div className="flex shrink-0 flex-col" style={{ width: GUTTER_WIDTH_PX }}>
@@ -652,6 +692,7 @@ export default function TrackGutter({
               onSetTrackVolume={onSetTrackVolume}
               onSetTrackMuted={onSetTrackMuted}
               onApplySpeed={onApplySpeed}
+              onContextMenu={openMenu({ kind: 'visual', index: row.trackIdx })}
             />
           )
         })}
@@ -664,6 +705,7 @@ export default function TrackGutter({
             onSetLaneVolume={onSetLaneVolume}
             onSetLaneMuted={onSetLaneMuted}
             onSetLaneMagnet={onSetLaneMagnet}
+            onContextMenu={openMenu({ kind: 'audio', index: lane.laneIndex })}
           />
         ))}
         {/* Same absolute-positioned wrapper every other row uses, keyed off
@@ -687,6 +729,45 @@ export default function TrackGutter({
           </div>
         ))}
       </div>
+      {menu && (
+        <TrackContextMenu
+          x={menu.x}
+          y={menu.y}
+          mode={mode}
+          hidden={menuHidden}
+          hideLabel={menu.kind === 'audio' ? (menuHidden ? 'Unmute track' : 'Mute track') : undefined}
+          removeDisabled={!menuCanRemove}
+          onClose={() => setMenu(null)}
+          onHide={() => {
+            if (!menuCanHide) return
+            if (menu.kind === 'visual') onToggleTrackEnabled!(menu.index, menuHidden)
+            else {
+              const l = laneOf(menu.index)
+              if (l) onSetLaneMuted!(l.tracks.map(t => t.id), !menuHidden)
+            }
+          }}
+          onRemove={() => {
+            const target = { kind: menu.kind, index: menu.index }
+            const count = menu.kind === 'visual'
+              ? visualTrackItemCount(project, menu.index)
+              : audioLaneItemCount(project, menu.index)
+            if (count === 0) applyRemove(target)
+            else setConfirm({ ...target, count })
+          }}
+        />
+      )}
+      <ConfirmDialog
+        open={!!confirm}
+        mode={mode}
+        tone="danger"
+        title={confirm ? `Remove track and ${confirm.count} ${confirm.count === 1 ? 'clip' : 'clips'}?` : ''}
+        confirmLabel="Remove"
+        onCancel={() => setConfirm(null)}
+        onConfirm={() => {
+          if (confirm) applyRemove(confirm)
+          setConfirm(null)
+        }}
+      />
     </div>
   )
 }

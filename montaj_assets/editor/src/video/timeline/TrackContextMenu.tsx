@@ -13,11 +13,13 @@ export interface TrackContextMenuProps {
   onRemove: () => void
   removeDisabled?: boolean
   hidden?: boolean
+  /** Overrides the hide item's text (audio lanes say Mute/Unmute). */
+  hideLabel?: string
   mode?: 'dark' | 'light'
 }
 
 export default function TrackContextMenu({
-  x, y, onClose, onHide, onRemove, removeDisabled, hidden, mode = 'dark',
+  x, y, onClose, onHide, onRemove, removeDisabled, hidden, hideLabel, mode = 'dark',
 }: TrackContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState({ left: x, top: y })
@@ -84,7 +86,7 @@ export default function TrackContextMenu({
         boxShadow: dark ? '0 18px 40px rgba(0,8,16,0.55)' : '0 12px 30px rgba(15,23,42,0.18)',
       }}
     >
-      {item(hidden ? 'Show track' : 'Hide track', hidden ? <Eye size={14} /> : <EyeOff size={14} />, onHide)}
+      {item(hideLabel ?? (hidden ? 'Show track' : 'Hide track'), hidden ? <Eye size={14} /> : <EyeOff size={14} />, onHide)}
       <div role="separator" style={{ height: 1, margin: '4px 2px', background: dark ? '#2B3E52' : 'var(--editor-border)' }} />
       {item('Remove track', <Trash2 size={14} />, onRemove, { disabled: removeDisabled, color: dark ? '#F7A3BD' : '#BE185D' })}
     </div>
