@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../types'
 import type { AudioTrack } from '../../../schema'
-import { computeDerivedTiming, groupAudioLanes, packAudioLanes, stampAudioLanes } from '../timeline-model'
+import { AUDIO_PACK_TOLERANCE_S, computeAutoCrossfade, computeDerivedTiming, groupAudioLanes, packAudioLanes, stampAudioLanes } from '../timeline-model'
 import { reflowMagneticLanes } from '../../audioMagnet'
 import { duplicateSelection, pasteAt } from '../../clipboard-ops'
 
@@ -56,12 +56,32 @@ describe('packAudioLanes', () => {
     expect(rows(p)).toEqual([['a', 'c'], ['b']])
   })
 
-  it('treats clips within 1e-6 s as back to back, not overlapping', () => {
+  it('ignores an overlap under 50 ms: a 30 ms overlap shares a row', () => {
+    expect(AUDIO_PACK_TOLERANCE_S).toBe(0.05)
     const p = project([
-      track({ id: 'a', start: 0, end: 1.0000005 }),
+      track({ id: 'a', start: 0, end: 1.03 }),
       track({ id: 'b', start: 1, end: 2 }),
     ])
     expect(rows(p)).toEqual([['a', 'b']])
+  })
+
+  it('a 60 ms overlap splits', () => {
+    const p = project([
+      track({ id: 'a', start: 0, end: 1.06 }),
+      track({ id: 'b', start: 1, end: 2 }),
+    ])
+    expect(rows(p)).toEqual([['a'], ['b']])
+  })
+
+  it('a 30 ms overlap stamped into one row gets no fade, and keeps any fade it had', () => {
+    // Rounded to 0.1 s the overlap is 0: not a crossfade, so nothing is written.
+    const p = project([
+      track({ id: 'a', start: 0, end: 1.03, fadeOut: 0.5 }),
+      track({ id: 'b', start: 1, end: 2 }),
+    ])
+    const stamped = stampAudioLanes(p)
+    expect(stamped.audio!.tracks.map(t => t.lane)).toEqual([0, 0])
+    expect(computeAutoCrossfade(stamped)).toBeNull()
   })
 
   it('never puts music or sfx in a row with voice, even with no overlap', () => {
@@ -103,6 +123,57 @@ describe('packAudioLanes', () => {
     const p = project([bare, track({ id: 'm2', type: 'music', start: 1, end: 2 })])
     // The bed's fallback window covers 0..5, so the second music clip overlaps it.
     expect(rows(p)).toEqual([['bed'], ['m2']])
+  })
+})
+
+describe('a lane-less clip added after the rows were stamped joins its kind\'s row', () => {
+  const stampedRows = () => [
+    track({ id: 'vo1', type: 'voiceover', lane: 0, start: 0, end: 4 }),
+    track({ id: 'vo2', type: 'voiceover', lane: 0, start: 4, end: 8 }),
+    track({ id: 'music', type: 'music', lane: 1, start: 0, end: 10 }),
+    track({ id: 'hit', type: 'sfx', lane: 2, start: 2, end: 3 }),
+  ]
+
+  it('a new sfx joins the stamped sfx row when it fits there', () => {
+    const p = project([...stampedRows(), track({ id: 'whoosh', type: 'sfx', start: 6, end: 7 })])
+    expect(packAudioLanes(p.audio!.tracks)[4]).toBe(2)
+    expect(rows(p)).toEqual([['vo1', 'vo2'], ['music'], ['hit', 'whoosh']])
+  })
+
+  it('and gets a new row when it overlaps there', () => {
+    const p = project([...stampedRows(), track({ id: 'whoosh', type: 'sfx', start: 2.5, end: 3.5 })])
+    expect(rows(p)).toEqual([['vo1', 'vo2'], ['music'], ['hit'], ['whoosh']])
+  })
+
+  it('a new voice clip joins the stamped voice row', () => {
+    const p = project([...stampedRows(), track({ id: 'vo3', type: 'voiceover', start: 8, end: 9 })])
+    expect(rows(p)).toEqual([['vo1', 'vo2', 'vo3'], ['music'], ['hit']])
+  })
+
+  it('tries the kind\'s rows in drawn order', () => {
+    const p = project([
+      track({ id: 'm1', type: 'music', lane: 4, start: 0, end: 5 }),
+      track({ id: 'm2', type: 'music', lane: 1, start: 0, end: 2 }),
+      track({ id: 'm3', type: 'music', start: 3, end: 4 }),
+    ])
+    expect(packAudioLanes(p.audio!.tracks)).toEqual([4, 1, 1])
+  })
+
+  it('never joins a lane holding more than one kind', () => {
+    const p = project([
+      track({ id: 'vo1', type: 'voiceover', lane: 0, start: 0, end: 2 }),
+      track({ id: 'sfx1', type: 'sfx', lane: 0, start: 5, end: 6 }),
+      track({ id: 'vo2', type: 'voiceover', start: 3, end: 4 }),
+    ])
+    expect(packAudioLanes(p.audio!.tracks)).toEqual([0, 0, 1])
+  })
+
+  it('never moves an explicit clip, and stamping writes the same rows it draws', () => {
+    const p = project([...stampedRows(), track({ id: 'whoosh', type: 'sfx', start: 6, end: 7 })])
+    const stamped = stampAudioLanes(p)
+    expect(stamped.audio!.tracks.slice(0, 4)).toEqual(p.audio!.tracks.slice(0, 4))
+    expect(rows(stamped)).toEqual(rows(p))
+    expect(stamped.audio!.tracks[4].lane).toBe(2)
   })
 })
 

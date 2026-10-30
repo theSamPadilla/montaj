@@ -148,23 +148,37 @@ export function audioEnd(project: Project): number {
     .reduce((m, t) => Math.max(m, resolveAudioWindow(t).end), 0)
 }
 
-/** Two windows closer than this count as touching, not overlapping, when lane-less audio is packed into rows. */
-const AUDIO_PACK_EPSILON = 1e-6
+/** Two clips overlapping by less than this (seconds) still share a row when
+ *  lane-less audio is packed (`packAudioLanes`): an AI's back-to-back segments
+ *  are rarely cut to the sample. Person-made placements never go through it. */
+export const AUDIO_PACK_TOLERANCE_S = 0.05
+
+/** Whether two windows overlap by at least `AUDIO_PACK_TOLERANCE_S`. */
+function packConflict(a: { start: number; end: number }, b: { start: number; end: number }): boolean {
+  return Math.min(a.end, b.end) - Math.max(a.start, b.start) >= AUDIO_PACK_TOLERANCE_S
+}
 
 /**
- * The lane each audio track is drawn on, index for index with `tracks`.
+ * The lane each audio track is drawn on, index for index with `tracks`. The one
+ * packing rule: the painter (`groupAudioLanes`), the writer (`stampAudioLanes`)
+ * and the hit-test and drags (which read the painter's layout) all get their
+ * rows from here.
  *
- * A track carrying an explicit `lane` keeps it. The rest are PACKED into rows
- * above the highest explicit lane, so a project written without lanes (an AI
- * that cut a voiceover into fourteen back-to-back segments, plus a music bed and
- * one sfx) reads as three rows, not sixteen:
+ * A track carrying an explicit `lane` keeps it, and is never moved. The rest
+ * are PACKED, so a project written without lanes (an AI that cut a voiceover
+ * into fourteen back-to-back segments, plus a music bed and one sfx) reads as
+ * three rows, not sixteen:
  *
- * - by kind first (`type`, absent meaning `audio`): music and sfx never share a
- *   row with voice. Each kind's rows come in the order that kind first appears
- *   in the array;
- * - within a kind, clips in start order (stable), each into the first of that
- *   kind's rows it does not overlap. Back-to-back clips share a row; only a real
- *   overlap opens a new one.
+ * - by kind (`type`, absent meaning `audio`): music and sfx never share a row
+ *   with voice;
+ * - within a kind, clips in start order (stable), each into the first row of
+ *   that kind it fits, where fitting means overlapping no clip there by
+ *   `AUDIO_PACK_TOLERANCE_S` or more (back-to-back clips share a row). A row of
+ *   that kind is first an explicit lane whose clips are all of that kind, in
+ *   drawn order, so a clip added after the rows were stamped (an AI adding an
+ *   sfx after the person's first edit) joins its kind's row; then the rows
+ *   packed so far. Only when none fits does a new row open, above the highest
+ *   explicit lane, in the order each kind first appears in the array.
  *
  * Windows come from `resolveAudioWindow`, so a track without `start`/`end` packs
  * where it is drawn.
@@ -173,28 +187,37 @@ export function packAudioLanes(tracks: readonly AudioTrack[], contentDuration = 
   const lanes: number[] = new Array(tracks.length)
   let nextLane = 0
   const byKind = new Map<string, number[]>()
+  const explicit = new Map<number, { kinds: Set<string>; spans: Array<{ start: number; end: number }> }>()
   tracks.forEach((t, i) => {
+    const kind = t.type ?? 'audio'
     if (t.lane != null) {
       lanes[i] = t.lane
       if (t.lane >= nextLane) nextLane = t.lane + 1
+      if (!explicit.has(t.lane)) explicit.set(t.lane, { kinds: new Set(), spans: [] })
+      const row = explicit.get(t.lane)!
+      row.kinds.add(kind)
+      row.spans.push(resolveAudioWindow(t, contentDuration))
       return
     }
-    const kind = t.type ?? 'audio'
     if (!byKind.has(kind)) byKind.set(kind, [])
     byKind.get(kind)!.push(i)
   })
-  for (const indices of byKind.values()) {
+  for (const [kind, indices] of byKind) {
     const windows = indices
       .map(i => ({ i, ...resolveAudioWindow(tracks[i], contentDuration) }))
       .sort((a, b) => a.start - b.start)  // stable: equal starts keep array order
-    const rows: Array<{ lane: number; end: number }> = []
+    // This kind's explicit rows (a mixed-kind lane is never joined), in drawn order.
+    const rows = [...explicit.entries()]
+      .filter(([, row]) => row.kinds.size === 1 && row.kinds.has(kind))
+      .sort((a, b) => a[0] - b[0])
+      .map(([lane, row]) => ({ lane, spans: [...row.spans] }))
     for (const w of windows) {
-      let row = rows.find(r => r.end <= w.start + AUDIO_PACK_EPSILON)
+      let row = rows.find(r => !r.spans.some(s => packConflict(s, w)))
       if (!row) {
-        row = { lane: nextLane++, end: -Infinity }
+        row = { lane: nextLane++, spans: [] }
         rows.push(row)
       }
-      row.end = Math.max(row.end, w.end)
+      row.spans.push(w)
       lanes[w.i] = row.lane
     }
   }
@@ -760,6 +783,9 @@ export function computeAutoCrossfade(project: Project): Project | null {
       // (stored 0.4 never equalled 0.37), so merely opening such a project
       // wrote to disk and pushed a no-op undo entry.
       const rounded = Math.round((a.end - b.start) * 10) / 10  // round to 0.1s
+      // An overlap that rounds to nothing (under 50 ms, which packing puts on
+      // one row) is not a crossfade: writing 0 would wipe a fade the clip has.
+      if (rounded <= 0) continue
       outTarget.set(i, Math.max(outTarget.get(i) ?? 0, rounded))
       inTarget.set(j, Math.max(inTarget.get(j) ?? 0, rounded))
     }

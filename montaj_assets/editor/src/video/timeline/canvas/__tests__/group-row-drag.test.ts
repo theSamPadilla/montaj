@@ -122,10 +122,11 @@ describe('audio: a group dragged onto one row', () => {
   })
 })
 
-describe("audio: Sam's repro, stray clips on sparse explicit lanes onto a packed voice row", () => {
-  // The bottom voice row is lane-less (an AI wrote it): back-to-back segments
-  // ending at 45 s, packed into one row above every explicit lane. Four stray
-  // voice clips sit each on its own sparse explicit lane at 47-58 s.
+describe("audio: Sam's repro, stray clips on sparse explicit lanes onto the voice row", () => {
+  // The voice row is lane-less (an AI wrote it): back-to-back segments ending
+  // at 45 s. Four stray voice clips sit each on its own sparse explicit lane at
+  // 47-58 s. The segments fit beside stray-0, so packing joins them to its
+  // all-voice row, lane 13 (a lane-less clip joins its kind's row).
   const repro = () => {
     const segs = Array.from({ length: 9 }, (_, i) =>
       ({ id: `vo-seg-${i}`, type: 'voiceover', src: `seg${i}.wav`, start: i * 5, end: (i + 1) * 5 }))
@@ -139,23 +140,23 @@ describe("audio: Sam's repro, stray clips on sparse explicit lanes onto a packed
   }
   const STRAYS = ['stray-0', 'stray-1', 'stray-2', 'stray-3']
 
-  it('the voice row is the bottom row, packed above every explicit lane', () => {
+  it('the voice segments draw in the first all-voice row they fit, lane 13', () => {
     const lanes = computeTimelineLayout(repro()).lanes
-    expect(lanes.map(l => l.laneIndex)).toEqual([13, 19, 38, 49, 59, 60])
-    expect(lanes[5].tracks).toHaveLength(9)
+    expect(lanes.map(l => l.laneIndex)).toEqual([13, 19, 38, 49, 59])
+    expect(lanes[0].tracks).toHaveLength(10)
   })
 
   it('dragging the 4 selected strays onto it lands them all in that row, times unchanged', () => {
     const p = repro()
     // Pressed on stray-2 (lane 38, 53-55 s), dropped on the voice row, no horizontal travel.
-    const { committed } = groupDrag(p, STRAYS, { x: 5400, y: laneMid(p, 38) }, { x: 5400, y: laneMid(p, 60) })
+    const { committed } = groupDrag(p, STRAYS, { x: 5400, y: laneMid(p, 38) }, { x: 5400, y: laneMid(p, 13) })
     for (const [id, start] of [['stray-0', 47], ['stray-1', 50], ['stray-2', 53], ['stray-3', 56]] as const) {
-      expect(audioOf(committed, id)).toMatchObject({ lane: 60, start })
+      expect(audioOf(committed, id)).toMatchObject({ lane: 13, start })
     }
     const rows = audioRows(committed)
-    expect(rows).toHaveLength(2)                     // music, and the voice row with all 13 clips
-    expect(rows[1]).toHaveLength(13)
-    expect(audioOf(committed, 'vo-seg-0').lane).toBe(60)   // stamped at the press
+    expect(rows).toHaveLength(2)                     // the voice row with all 13 clips, and music
+    expect(rows[0]).toHaveLength(13)
+    expect(audioOf(committed, 'vo-seg-0').lane).toBe(13)   // stamped at the press
     expect(audioOf(committed, 'music').lane).toBe(59)
   })
 })
