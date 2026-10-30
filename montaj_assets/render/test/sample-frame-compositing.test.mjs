@@ -130,3 +130,28 @@ test('a blurred video clip filling the frame keeps opaque edges in the still', {
     }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+// A linear blur shows in the still too: a vertical seam blurred along y stays
+// sharp, along x it mixes, at 30 degrees it mixes less than along x.
+test('a linear blur is drawn along its angle in the still', { skip: !hasFfmpeg, timeout: 200_000 }, () => {
+  const { dir } = setup()
+  try {
+    const split = join(dir, 'split.png')
+    const r = spawnSync(FFMPEG, ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=0xc80000:size=270x480',
+      '-f', 'lavfi', '-i', 'color=c=0x0000ff:size=135x480', '-filter_complex', '[0][1]overlay=x=135',
+      '-frames:v', '1', '-pix_fmt', 'rgb24', split])
+    assert.equal(r.status, 0, `${r.stderr}`)
+    const at = (blurAngle, name) => sample(dir, projectOf([img('a', split, { blur: 40, blurType: 'linear', blurAngle })]), 1, name)
+    const down = at(90, 'down')
+    near(px(down, 133, 240), [200, 0, 0], 4, 'along y: just left of the seam stays red')
+    near(px(down, 137, 240), [0, 0, 255], 4, 'along y: just right of the seam stays blue')
+    const across = at(0, 'across')
+    const slant = at(30, 'slant')
+    const a = px(across, 133, 240)
+    const s = px(slant, 133, 240)
+    assert.ok(a[0] < 190 && a[2] > 20, `along x: mixed at the seam: ${a}`)
+    assert.ok(s[2] > 10 && s[2] < a[2], `at 30 degrees: mixed, less than along x: ${s} vs ${a}`)
+    near(px(slant, 0, 0), [200, 0, 0], 6, 'top-left corner')
+    near(px(slant, 269, 479), [0, 0, 255], 6, 'bottom-right corner')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

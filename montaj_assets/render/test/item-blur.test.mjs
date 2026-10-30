@@ -73,6 +73,76 @@ test('a pop-in from a tiny box: the sigma is capped at a third of the longer sid
   for (const v of step.matchAll(/sigma(?:V)? ([\d.]+)/g)) assert.ok(Number(v[1]) <= 639.67, v[0])
 })
 
+// ── Linear ──────────────────────────────────────────────────────────────────
+
+const lin = (angle, over = {}) => ({ blur: 40, blurType: 'linear', blurAngle: angle, ...over })
+
+test('uniform, or a blurType that is not linear, is the even blur, byte for byte', () => {
+  const even = blurFilterStep({ blur: 40 }, O)
+  assert.equal(blurFilterStep({ blur: 40, blurType: 'uniform', blurAngle: 30 }, O), even)
+  assert.equal(blurFilterStep({ blur: 40, blurType: 'Linear', blurAngle: 30 }, O), even)
+  assert.equal(blurFilterStep({ blur: 0, blurType: 'linear', blurAngle: 30 }, O), '')
+})
+
+test('linear at 0 and 90: gblur on its own axis, the margin along it only, no turn', () => {
+  assert.equal(blurFilterStep(lin(0), O), 'format=yuva444p,pad=w=iw+242:h=ih:x=121:y=0:color=black@0,'
+    + 'gblur=sigma=40.0000:sigmaV=0:steps=3,unpremultiply=inplace=1,crop=w=iw-242:h=ih:x=121:y=0,format=yuv444p')
+  assert.equal(blurFilterStep(lin(180), O), blurFilterStep(lin(0), O))
+  assert.equal(blurFilterStep(lin(90), O), 'format=yuva444p,pad=w=iw:h=ih+242:x=0:y=121:color=black@0,'
+    + 'gblur=sigma=0:sigmaV=40.0000:steps=3,unpremultiply=inplace=1,crop=w=iw:h=ih-242:x=0:y=121,format=yuv444p')
+  assert.equal(blurFilterStep(lin(-90), O), blurFilterStep(lin(90), O))
+})
+
+test('linear at an angle: turned by -angle into a larger transparent canvas, blurred along x, turned back onto its own size', () => {
+  // A 1080x1920 picture at 30 degrees spans 1895 x 2203 turned: +2 slack, +121 margin across.
+  const step = blurFilterStep(lin(30), { ...O, format: 'yuva444p16le', picture: { w: 1080, h: 1920, exact: true } })
+  assert.equal(step, 'format=yuva444p16le,rotate=a=-0.523598776:ow=iw+1062:oh=ih+288:c=black@0,'
+    + 'gblur=sigma=40.0000:sigmaV=0:steps=3,rotate=a=0.523598776:ow=iw-1062:oh=ih-288:c=black@0,'
+    + 'unpremultiply=inplace=1,format=yuv444p16le')
+  // -30 is 150: turned the other way.
+  assert.match(blurFilterStep(lin(-30), { ...O, format: 'yuva444p16le' }), /rotate=a=-2\.617993878:.*rotate=a=2\.617993878:/)
+})
+
+test('linear: a picture only known by its box gets the canvas any picture in it needs', () => {
+  // Contain-fitted in 1080x1920: as thin as you like one way, so 1920 sin across and 1080 sin down.
+  const step = blurFilterStep(lin(30), { ...O, format: 'yuva444p16le', picture: { w: 1080, h: 1920 } })
+  assert.match(step, /rotate=a=-0\.523598776:ow=iw\+1206:oh=ih\+544:/)
+  assert.match(step, /rotate=a=0\.523598776:ow=iw-1206:oh=ih-544:/)
+})
+
+test('linear: an image format rotate cannot take blurs in yuva444p16le, alpha put back the same way', () => {
+  const step = blurFilterStep(lin(30), { ...O, format: IMAGE_BLUR_FORMAT, alpha: true, picture: { w: 1080, h: 1920, exact: true } })
+  assert.ok(step.startsWith('format=yuva444p16le,split=2[bl3a][bl3b];[bl3b]rotate=a=-0.523598776:'), step)
+  assert.ok(step.endsWith('[bl3c][bl3a]mergeplanes=map0s=0:map0p=0:map1s=0:map1p=1:map2s=0:map2p=2:map3s=1:map3p=3:format=yuva444p16le'), step)
+  // At 0 there is no turn, so the image keeps its own format.
+  assert.ok(blurFilterStep(lin(0), { ...O, format: IMAGE_BLUR_FORMAT, alpha: true }).startsWith('format=gbrap16le,split=2'))
+})
+
+test('linear before an upscale: the direction and sigma are the canvas\'s mapped onto the footage', () => {
+  // Footage at a quarter across and half down: 45 degrees on the canvas is
+  // atan(0.5 / 0.25) on the footage, the sigma 40 * |(0.25, 0.5)| / sqrt 2.
+  const step = blurFilterStep(lin(45), { ...O, format: 'yuva444p16le', unitX: 0.25, unitY: 0.5, picture: { w: 270, h: 960, exact: true } })
+  const a = Math.atan2(0.5, 0.25).toFixed(9)
+  assert.ok(step.includes(`rotate=a=-${a}:`), step)
+  assert.ok(step.includes(`gblur=sigma=${(40 * Math.hypot(0.25, 0.5) / Math.SQRT2).toFixed(4)}:sigmaV=0:steps=3`), step)
+  // Even units keep the angle; 0 and 90 stay on their axis.
+  assert.ok(blurFilterStep(lin(30), { ...O, unitX: 0.5, unitY: 0.5 }).includes('rotate=a=-0.523598776:'))
+  assert.ok(blurFilterStep(lin(90), { ...O, unitX: 0.25, unitY: 0.5 }).includes('gblur=sigma=0:sigmaV=20.0000:steps=3'))
+})
+
+test('linear on an animated box: the sigma along the blur follows peak / box through sendcmd', () => {
+  const item = lin(30, { blur: 10, keyframes: [{ prop: 'scale', points: [{ t: 0, value: 0.5 }, { t: 1, value: 1 }] }] })
+  const step = blurFilterStep(item, { ...O, format: 'yuva444p16le', picture: { w: 1080, h: 1920, exact: true },
+    animated: { kind: 'image', peakW: 1080, peakH: 1920, offset: 0, duration: 1, fps: 10 } })
+  assert.match(step, /rotate=a=-0\.523598776:ow=iw\+\d+:oh=ih\+\d+:c=black@0,sendcmd=c='0\.100000 gblur@bl3 sigma [\d.]+;/)
+  assert.match(step, /,gblur@bl3=sigma=20\.0000:sigmaV=0:steps=3,rotate=a=0\.523598776:/)
+  assert.match(step, /1\.000000 gblur@bl3 sigma 10\.0000'/)
+  assert.ok(!step.includes('sigmaV 1'), step)
+  const v = blurFilterStep(lin(90, { blur: 10, keyframes: item.keyframes }), { ...O,
+    animated: { kind: 'image', peakW: 1080, peakH: 1920, offset: 0, duration: 1, fps: 10 } })
+  assert.match(v, /1\.000000 gblur@bl3 sigmaV 10\.0000'/)
+})
+
 // ── Placement in the export graph ───────────────────────────────────────────
 
 const video = (over = {}) => ({ type: 'video', src: '/clip.mp4', start: 0, end: 2, inPoint: 0, trackIdx: 0,
@@ -288,6 +358,85 @@ test('real ffmpeg: transparent white under a clip\'s alpha does not halo the opa
       assert.ok(near(px(f, W / 2 - 3, H / 2), RED, 12), `${name}: opaque side at the edge stays red: ${px(f, W / 2 - 3, H / 2)}`)
       assert.ok(near(px(f, W / 2 + 3, H / 2), [0, 0, 0], 8), `${name}: the transparent side stays clear: ${px(f, W / 2 + 3, H / 2)}`)
       assert.ok(near(px(f, 0, H / 2), RED, 12), `${name}: far side: ${px(f, 0, H / 2)}`)
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ── Real ffmpeg: linear ─────────────────────────────────────────────────────
+
+test('real ffmpeg: a linear blur at an angle keeps a full-frame clip opaque to every edge (pre- and post-scale, animated)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'blur-'))
+  try {
+    const clip = makeSolid(dir, 'red', '96x54', 'mp4')
+    const base = { type: 'video', src: clip, start: 0, end: 0.4, inPoint: 0, trackIdx: 0, offsetX: 0, offsetY: 0,
+      opacity: 1, muted: true, scale: 3.4, blur: 120, blurType: 'linear', blurAngle: 30 }
+    const cases = {
+      post: base,
+      pre: { ...base, probedWidth: 96, probedHeight: 54, blurAngle: 135 },
+      animated: { ...base, keyframes: [{ prop: 'scale', points: [{ t: 0, value: 3.4 }, { t: 0.4, value: 3.8 }] }] },
+      axis: { ...base, blurAngle: 90 },
+    }
+    for (const [name, item] of Object.entries(cases)) {
+      const f = await render(dir, [item], name)
+      for (const [x, y] of [[0, 0], [W - 1, 0], [0, H - 1], [W - 1, H - 1], [W / 2, 0], [W / 2, H - 1], [0, H / 2], [W / 2, H / 2]]) {
+        assert.ok(near(px(f, x, y), RED, 6), `${name} (${x},${y}): ${px(f, x, y)}`)
+      }
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('real ffmpeg: transparent white under a clip\'s alpha does not halo through a linear blur either', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'blur-'))
+  try {
+    const png = join(dir, 'white.png')
+    const vf = `format=rgba,geq=r='if(gte(X,${W / 2}),255,192)':g='if(gte(X,${W / 2}),255,64)':b='if(gte(X,${W / 2}),255,32)':a='if(gte(X,${W / 2}),0,255)'`
+    const g = spawnSync(FFMPEG, ['-y', '-v', 'error', '-f', 'lavfi', '-i', `color=c=0xc04020:s=${W}x${H}`, '-vf', vf, '-frames:v', '1', png])
+    assert.equal(g.status, 0, String(g.stderr))
+    for (const angle of [0, 30]) {
+      const f = await render(dir, [{ type: 'image', src: png, start: 0, end: 0.4, trackIdx: 1, scale: 1, offsetX: 0, offsetY: 0,
+        opacity: 1, blur: 120, blurType: 'linear', blurAngle: angle }], `white${angle}`)
+      assert.ok(near(px(f, W / 2 - 3, H / 2), RED, 12), `${angle}: opaque side at the edge stays red: ${px(f, W / 2 - 3, H / 2)}`)
+      assert.ok(near(px(f, W / 2 + 3, H / 2), [0, 0, 0], 8), `${angle}: the transparent side stays clear: ${px(f, W / 2 + 3, H / 2)}`)
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// The streak's direction: a small white square on grey, blurred, spreads along
+// the angle (clockwise from x on screen, y down) and not across it. Read from
+// the second moments of what the blur moved.
+test('real ffmpeg: a linear blur streaks along its angle, clockwise from x, and not across it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'blur-'))
+  try {
+    const S = 160
+    const pic = join(dir, 'dot.png')
+    const g = spawnSync(FFMPEG, ['-y', '-v', 'error', '-f', 'lavfi', '-i', `color=c=0x808080:s=${S}x${S}`, '-vf',
+      `format=rgb24,geq=r='if(lt(abs(X-${S / 2}+0.5),3)*lt(abs(Y-${S / 2}+0.5),3),255,128)':g='if(lt(abs(X-${S / 2}+0.5),3)*lt(abs(Y-${S / 2}+0.5),3),255,128)':b='if(lt(abs(X-${S / 2}+0.5),3)*lt(abs(Y-${S / 2}+0.5),3),255,128)'`,
+      '-frames:v', '1', pic])
+    assert.equal(g.status, 0, String(g.stderr))
+    for (const angle of [0, 30, 90, 135]) {
+      // blur 54 on a 160x160 canvas: sigma 8 px.
+      const item = { type: 'image', src: pic, start: 0, end: 1, scale: 1, offsetX: 0, offsetY: 0, opacity: 1,
+        blur: 54, blurType: 'linear', blurAngle: angle }
+      const chain = buildImageItemFilterParts(item, S, S, 0, '[canvas]', 1, 0).filterParts[0]
+      const out = spawnSync(FFMPEG, ['-v', 'error', '-i', pic, '-filter_complex', chain, '-map', '[img0]', '-frames:v', '1',
+        '-pix_fmt', 'gray', '-f', 'rawvideo', '-'], { maxBuffer: 1 << 24 })
+      assert.equal(out.status, 0, String(out.stderr))
+      let m = 0, mx = 0, my = 0
+      const w = []
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const v = Math.max(0, out.stdout[y * S + x] - 128)
+        if (v) { w.push([x, y, v]); m += v; mx += v * x; my += v * y }
+      }
+      mx /= m; my /= m
+      let xx = 0, yy = 0, xy = 0
+      for (const [x, y, v] of w) { xx += v * (x - mx) ** 2; yy += v * (y - my) ** 2; xy += v * (x - mx) * (y - my) }
+      const theta = ((0.5 * Math.atan2(2 * xy, xx - yy) * 180) / Math.PI + 180) % 180
+      const along = (xx + yy) / 2 + Math.sqrt(((xx - yy) / 2) ** 2 + xy * xy)
+      const across = (xx + yy) / 2 - Math.sqrt(((xx - yy) / 2) ** 2 + xy * xy)
+      const off = Math.min(Math.abs(theta - angle), 180 - Math.abs(theta - angle))
+      assert.ok(off < 2, `${angle}: streak at ${theta.toFixed(1)} degrees`)
+      assert.ok(Math.sqrt(along / m) > 6 && Math.sqrt(across / m) < 2.5,
+        `${angle}: spread ${Math.sqrt(along / m).toFixed(1)} along, ${Math.sqrt(across / m).toFixed(1)} across`)
     }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

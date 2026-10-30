@@ -60,11 +60,28 @@
 // preview's (6 is within 1 and 6, at twice the cost: 75 ms against 140 ms a
 // frame at 3456x1944 4:4:4, 12 cores, loaded).
 //
+// LINEAR (`blurType: 'linear'`, timeline-core blurAngleOf): a Gaussian along
+// one direction only. gblur blurs along x alone with `sigmaV=0` (measured on
+// 8.1: no vertical change at all), so the picture is turned by -angle
+// (`rotate`, into a larger canvas filled transparent), blurred along x with
+// the same transparent margin, turned back by +angle onto its own size, and
+// then unpremultiplied. Every step is linear on premultiplied pixels (rotate
+// takes any alpha mode, so ffmpeg premultiplies once at the head, as above),
+// so the division still gives the average over the picture's own pixels. The
+// canvas is sized from the picture's size where the caller knows it (o.picture
+// `exact`), else from the largest picture its box can hold; turning back by
+// the same amounts gives the input size exactly, so a loose canvas only costs
+// time. At 0 and 90 degrees there is no turn: gblur's own axis, padded along
+// it. rotate takes no gbrap16le (ffmpeg would convert around it), so a turned
+// image blurs in yuva444p16le. A pre-scale (o.unitX, o.unitY) stretches the
+// direction: the angle and sigma on the footage are the canvas's mapped
+// through it, which is exact for an axis-aligned scale.
+//
 // A box whose SIZE animates is fitted at its peak and resized after
 // (encode-segment.js `animatedGeometry`), so a blur on the peak box would
 // shrink with the box. Its sigma is sampled per frame, scaled by peak / box,
 // and sent with `sendcmd`, as a keyframed opacity is (item-opacity.js).
-import { blurSigmaCapPx, blurSigmaPx, geometryAt, toPixelBox } from '@bycrux/timeline-core'
+import { blurAngleOf, blurSigmaCapPx, blurSigmaPx, blurTypeOf, geometryAt, toPixelBox } from '@bycrux/timeline-core'
 
 /** gblur's passes. See the header. */
 export const BLUR_STEPS = 3
@@ -98,11 +115,17 @@ function withoutAlpha(format) {
  * @param {{ kind: 'video' | 'image', peakW: number, peakH: number, offset: number, duration: number,
  *   fps: number }} [o.animated] The box's size animates: the blur runs at the peak box, and its sigma follows
  *   the box frame by frame. `offset` is item-relative seconds at the graph's t = 0.
+ * @param {{ w: number, h: number, exact?: boolean }} [o.picture] A linear blur's picture, in the pixels the
+ *   blur runs in: its size (`exact`), or the box it is contain-fitted in. Sizes the turned canvas only.
+ *   The canvas (vw x vh, times the units) when absent.
  * @returns {string}
  */
-export function blurFilterStep(item, { vw, vh, format, alpha = false, name, unitX = 1, unitY = 1, animated } = {}) {
+export function blurFilterStep(item, { vw, vh, format, alpha = false, name, unitX = 1, unitY = 1, animated, picture } = {}) {
   const sigma = blurSigmaPx(item, vw, vh)
   if (!(sigma > 0)) return ''
+  if (blurTypeOf(item) === 'linear') {
+    return linearBlurStep(item, sigma, { vw, vh, format, alpha, name, unitX, unitY, animated, picture })
+  }
 
   // An animated box scales the sigma by peak / box, which blows up on a box
   // near 0 (a pop-in from scale 0.01): the margin below is 3 sigma, so an
@@ -151,10 +174,113 @@ export function blurFilterStep(item, { vw, vh, format, alpha = false, name, unit
   const m = Math.ceil(3 * maxSigma) + 1
   const core = `pad=w=iw+${2 * m}:h=ih+${2 * m}:x=${m}:y=${m}:color=black@0,${blur},`
     + `unpremultiply=inplace=1,crop=w=iw-${2 * m}:h=ih-${2 * m}:x=${m}:y=${m}`
+  return wrapCore(core, format, alpha, name)
+}
+
+/** The blur `core` in `format`, with the stream's own alpha put back (`alpha`) or dropped. */
+function wrapCore(core, format, alpha, name) {
   if (!alpha) return `format=${format},${core},format=${withoutAlpha(format)}`
   const [orig, work, done] = [`[${name}a]`, `[${name}b]`, `[${name}c]`]
   return `format=${format},split=2${orig}${work};${work}${core}${done};`
     + `${done}${orig}mergeplanes=map0s=0:map0p=0:map1s=0:map1p=1:map2s=0:map2p=2:map3s=1:map3p=3:format=${format}`
+}
+
+/** The pixel formats rotate takes among the blur's (it takes no gbrap16le). */
+const ROTATE_FORMATS = new Set(['yuva444p16le', 'yuva444p10le', 'yuva444p'])
+/** What a turned linear blur runs in when `format` is not one rotate takes. */
+const LINEAR_TURN_FORMAT = 'yuva444p16le'
+
+/**
+ * A linear blur (see the header): `blurFilterStep` for `blurType: 'linear'`.
+ *
+ * @param {object} item
+ * @param {number} sigma The canvas sigma (blurSigmaPx).
+ * @param {object} o blurFilterStep's options.
+ * @returns {string}
+ */
+function linearBlurStep(item, sigma, { vw, vh, format, alpha, name, unitX, unitY, animated, picture }) {
+  // The direction on the canvas, then in the pixels the blur runs in: a
+  // pre-scale's units map it (and stretch the sigma by its length).
+  const deg = blurAngleOf(item)
+  const rad = (deg * Math.PI) / 180
+  const dx = Math.cos(rad) * unitX
+  const dy = Math.sin(rad) * unitY
+  const stretch = Math.hypot(dx, dy)
+  // The angle in the blur's pixels, in [0, 180), on a 1e-9 degree grid so 0 and 90 stay exact.
+  let a = Math.round(((Math.atan2(dy, dx) * 180) / Math.PI) * 1e9) / 1e9
+  if (a < 0) a += 180
+  if (a >= 180) a -= 180
+  const axis = a === 0 ? 'x' : a === 90 ? 'y' : null
+
+  const cap = blurSigmaCapPx(vw, vh) * stretch
+  const fmt = (s) => clampSigma(s, cap).toFixed(4)
+  // gblur's own two sigmas: the direction's on its axis, 0 across it.
+  const opt = axis === 'y' ? 'sigmaV' : 'sigma'
+  const gb = (s) => axis === 'y' ? `sigma=0:sigmaV=${s}` : `sigma=${s}:sigmaV=0`
+  let blur
+  let maxSigma
+  if (!animated) {
+    maxSigma = clampSigma(sigma * stretch, cap)
+    blur = `gblur=${gb(fmt(sigma * stretch))}:steps=${BLUR_STEPS}`
+  } else {
+    // The box keeps the canvas's aspect as it animates (encode-segment.js
+    // animatedGeometry), so the peak / box factor is one number and the
+    // direction holds; the factor along it is used all the same.
+    const { kind, peakW, peakH, offset, duration, fps } = animated
+    const target = `gblur@${name}`
+    const at = (k) => {
+      const b = toPixelBox(geometryAt(item, kind, offset + k / fps), vw, vh)
+      const fx = b.width > 0 ? peakW / b.width : 1
+      const fy = b.height > 0 ? peakH / b.height : 1
+      const v = clampSigma(sigma * Math.hypot(dx * fx, dy * fy), cap)
+      return { v, s: v.toFixed(4) }
+    }
+    const first = at(0)
+    maxSigma = first.v
+    const cmds = []
+    let last = first
+    const frames = Math.max(0, Math.round(duration * fps))
+    for (let k = 1; k <= frames; k++) {
+      const v = at(k)
+      maxSigma = Math.max(maxSigma, v.v)
+      if (v.s === last.s) continue
+      cmds.push(`${(k / fps).toFixed(6)} ${target} ${opt} ${v.s}`)
+      last = v
+    }
+    const head = cmds.length ? `sendcmd=c='${cmds.join(';')}',` : ''
+    blur = `${head}${target}=${gb(first.s)}:steps=${BLUR_STEPS}`
+  }
+
+  // The transparent margin, along the blur only.
+  const m = Math.ceil(3 * maxSigma) + 1
+  if (axis === 'x') {
+    return wrapCore(`pad=w=iw+${2 * m}:h=ih:x=${m}:y=0:color=black@0,${blur},`
+      + `unpremultiply=inplace=1,crop=w=iw-${2 * m}:h=ih:x=${m}:y=0`, format, alpha, name)
+  }
+  if (axis === 'y') {
+    return wrapCore(`pad=w=iw:h=ih+${2 * m}:x=0:y=${m}:color=black@0,${blur},`
+      + `unpremultiply=inplace=1,crop=w=iw:h=ih-${2 * m}:x=0:y=${m}`, format, alpha, name)
+  }
+
+  // Turned. The canvas grows by 2 dw across and 2 dh down, enough to hold the
+  // picture turned by -a, plus the margin across; turning back shrinks it by
+  // the same, which is the input size whatever the picture's size was.
+  const r = (a * Math.PI) / 180
+  const c = Math.abs(Math.cos(r))
+  const sn = Math.abs(Math.sin(r))
+  const pw = picture?.w > 0 ? picture.w : vw * unitX
+  const ph = picture?.h > 0 ? picture.h : vh * unitY
+  // A picture of known size needs its own turned bounds. One contain-fitted in
+  // a pw x ph box spans the box one way and anything up to it the other, and
+  // the thinnest such picture turned needs ph sin across and pw sin down.
+  const growW = picture?.exact ? pw * c + ph * sn - pw : ph * sn
+  const growH = picture?.exact ? pw * sn + ph * c - ph : pw * sn
+  const dw = Math.max(0, Math.ceil(growW / 2)) + 2 + m
+  const dh = Math.max(0, Math.ceil(growH / 2)) + 2
+  const ang = r.toFixed(9)
+  const turnFormat = ROTATE_FORMATS.has(format) ? format : LINEAR_TURN_FORMAT
+  return wrapCore(`rotate=a=-${ang}:ow=iw+${2 * dw}:oh=ih+${2 * dh}:c=black@0,${blur},`
+    + `rotate=a=${ang}:ow=iw-${2 * dw}:oh=ih-${2 * dh}:c=black@0,unpremultiply=inplace=1`, turnFormat, alpha, name)
 }
 
 /** The format a video item's blur runs in. See the header. */

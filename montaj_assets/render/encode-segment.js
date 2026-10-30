@@ -1290,6 +1290,9 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   // per-frame sigma. '' (and every string below unchanged) without one.
   const blurCore = blurFilterStep(item, {
     vw, vh, format: IMAGE_BLUR_FORMAT, alpha: true, name: 'bl' + idx,
+    // A linear blur's picture: the box itself after a cover or fill fit (and a
+    // keyframed crop's chain), anything the box holds after a contain fit.
+    picture: { w: fitW, h: fitH, exact: fit !== 'contain' || Boolean(cropAnim?.chain) },
     animated: anim?.needsAnimatedChain
       ? { kind: 'image', peakW: anim.peakW, peakH: anim.peakH, offset: imgOffset, duration, fps: opts?.fps ?? 30 }
       : undefined,
@@ -1757,10 +1760,16 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
       ? decreaseFitSize(footageW, footageH, padW, padH, 1) : null
     const unitX = fitted ? footageW / fitted.width : 1
     const unitY = fitted ? footageH / fitted.height : 1
+    // A linear blur's picture (item-blur.js sizes its turned canvas by it):
+    // the footage before the scale; after it, the fitted size when the footage
+    // is known, else anything the box holds.
     if (fitted && unitX < 1 && unitY < 1 && blurSigmaPx(item, vw, vh) * Math.max(unitX, unitY) >= PRE_SCALE_BLUR_MIN_SIGMA) {
-      preBlur = `${blurFilterStep(item, { vw, vh, format, alpha, name, unitX, unitY, animated })},`
+      const picture = { w: footageW, h: footageH, exact: true }
+      preBlur = `${blurFilterStep(item, { vw, vh, format, alpha, name, unitX, unitY, animated, picture })},`
     } else {
-      postBlur = `${blurFilterStep(item, { vw, vh, format, alpha, name, animated })},`
+      const fit = footageW && footageH ? decreaseFitSize(footageW, footageH, padW, padH, divisibleBy ? 2 : 1) : null
+      const picture = fit ? { w: fit.width, h: fit.height, exact: true } : { w: padW, h: padH, exact: false }
+      postBlur = `${blurFilterStep(item, { vw, vh, format, alpha, name, animated, picture })},`
     }
   }
   const padStep = transparentPad
