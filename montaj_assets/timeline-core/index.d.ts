@@ -1251,7 +1251,7 @@ export declare function radialCenterInPicture(
 export declare function radialBlurReference(
   image: { data: ArrayLike<number>; width: number; height: number },
   options: { type: 'spin' | 'zoom'; plan: RadialPlan; center: [number, number]; rect?: { x: number; y: number; w: number; h: number } },
-): { data: Float32Array; width: number; height: number }
+): { data: Float32Array; width: number; height: number; coverage: Float32Array }
 
 // §616 — compositing: masks and blend modes (src/mask.js)
 //

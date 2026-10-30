@@ -88,7 +88,10 @@
 //      renormalisation: an average over the picture's own pixels, so its
 //      edges stay opaque and keep their colour) and the alpha is the source
 //      pixel's own. Where the summed alpha is 0 (every tap fell outside),
-//      the source pixel's colour.
+//      the source pixel's colour. The summed alpha itself is returned as
+//      `coverage` (how much of the average fell on the picture), so a
+//      renderer that cannot carry tiny sums (the export's 8-bit transforms)
+//      can be measured where they are meaningful.
 //
 // Pure like the rest of the package: no DOM, no I/O, no dependency.
 
@@ -250,12 +253,13 @@ export function radialCenterInPicture(center, rect, picW, picH) {
  * ImageData, or any byte array); `rect` the picture within it, integer pixels
  * (the whole image by default); `center` in picture pixels (relative to
  * `rect`'s top-left). Returns the picture only, RGBA straight alpha as floats
- * in [0, 1] (multiply by 255 and round for codes).
+ * in [0, 1] (multiply by 255 and round for codes), and `coverage`, the
+ * summed alpha after the last pass, a pixel each.
  *
  * @param {{ data: ArrayLike<number>, width: number, height: number }} image
  * @param {{ type: 'spin' | 'zoom', plan: RadialPlan, center: [number, number],
  *   rect?: { x: number, y: number, w: number, h: number } }} options
- * @returns {{ data: Float32Array, width: number, height: number }}
+ * @returns {{ data: Float32Array, width: number, height: number, coverage: Float32Array }}
  */
 export function radialBlurReference(image, { type, plan, center, rect }) {
   const r = rect ?? { x: 0, y: 0, w: image.width, h: image.height }
@@ -292,15 +296,17 @@ export function radialBlurReference(image, { type, plan, center, rect }) {
     cur = next
   }
   const out = new Float32Array(n * 4)
+  const coverage = new Float32Array(n)
   for (let o = 0; o < n * 4; o += 4) {
     const sa = src[o + 3]
     const A = cur[o + 3]
+    coverage[o >> 2] = A
     for (let c = 0; c < 3; c++) {
       out[o + c] = A > 1e-7 ? Math.min(1, cur[o + c] / A) : sa > 0 ? src[o + c] / sa : 0
     }
     out[o + 3] = sa
   }
-  return { data: out, width: w, height: h }
+  return { data: out, width: w, height: h, coverage }
 }
 
 /**

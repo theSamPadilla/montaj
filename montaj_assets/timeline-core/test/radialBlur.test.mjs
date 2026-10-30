@@ -309,3 +309,18 @@ test('reference: passes compose; multi-pass lands near one pass of every effecti
     assert.ok(worst < 16 && mean < 2, `${type}: multi-pass against one pass, worst ${worst.toFixed(1)}, mean ${mean.toFixed(2)} codes`)
   }
 })
+
+test('reference: coverage is the summed alpha, 1 where every tap lands on an opaque picture, falling off past its edges', () => {
+  const W = 40
+  const img = image(W, W, () => [200, 100, 50, 255])
+  const mid = radialBlurReference(img, { type: 'spin', center: [20, 20],
+    plan: radialBlurPlan({ type: 'spin', amount: 90, center: [20, 20], rect: { w: W, h: W } }) })
+  assert.equal(mid.coverage.length, W * W)
+  // Near the centre the turned copies stay on the picture: all of it lands.
+  assert.ok(Math.abs(mid.coverage[20 * W + 20] - 1) < 1e-4, `${mid.coverage[20 * W + 20]}`)
+  // About a corner, the far corner turns off the picture both ways: almost nothing lands.
+  const corner = radialBlurReference(img, { type: 'spin', center: [0, 0],
+    plan: radialBlurPlan({ type: 'spin', amount: 90, center: [0, 0], rect: { w: W, h: W } }) })
+  assert.ok(corner.coverage[W * W - 1] < 1 / 16, `${corner.coverage[W * W - 1]}`)
+  for (const v of [...mid.coverage, ...corner.coverage]) assert.ok(v >= 0 && v <= 1 + 1e-5)
+})
