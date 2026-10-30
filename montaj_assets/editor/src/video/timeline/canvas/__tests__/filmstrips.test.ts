@@ -696,7 +696,7 @@ describe('FilmstripStore overlay strips', () => {
   it('requests once per key and passes the overlay args (src as given, backslashes kept)', async () => {
     const store = new FilmstripStore()
     const getFilmstrip = vi.fn().mockResolvedValue(filmstripIndexFixture())
-    const ctx = () => queryCtx({ getFilmstrip, viewport: zoomedIn, fps: 24 })
+    const ctx = () => queryCtx({ getFilmstrip, viewport: zoomedIn, fps: 24, resolution: [1920, 1080] })
     store.clipTiles(overlay({ googleFonts: ['Syne:wght@800'] }), r, ctx())
     store.clipTiles(overlay({ googleFonts: ['Syne:wght@800'] }), r, ctx())
     await flush()
@@ -705,7 +705,7 @@ describe('FilmstripStore overlay strips', () => {
     expect(getFilmstrip.mock.calls[0][0]).toMatchObject({
       projectId: 'p1',
       src: 'overlays\\title.jsx',
-      overlay: { props: { text: 'hi', size: 3 }, googleFonts: ['Syne:wght@800'], fps: 24, durationSec: 4 },
+      overlay: { props: { text: 'hi', size: 3 }, googleFonts: ['Syne:wght@800'], fps: 24, durationSec: 4, width: 1920, height: 1080 },
     })
   })
 
@@ -719,6 +719,15 @@ describe('FilmstripStore overlay strips', () => {
     store.clipTiles(overlay({ props: { text: 'bye', size: 3 } }), r, ctx())
     expect(getFilmstrip).toHaveBeenCalledTimes(2)
     expect(stableJson({ b: 1, a: [2, { d: 1, c: undefined }] })).toBe('{"a":[2,{"d":1}],"b":1}')
+  })
+
+  it('a canvas size change makes a new key', () => {
+    const store = new FilmstripStore()
+    const getFilmstrip = vi.fn().mockResolvedValue(filmstripIndexFixture())
+    store.clipTiles(overlay(), r, queryCtx({ getFilmstrip, viewport: zoomedIn }))
+    expect(getFilmstrip.mock.calls[0][0].overlay).toMatchObject({ width: 1080, height: 1920 })
+    store.clipTiles(overlay(), r, queryCtx({ getFilmstrip, viewport: zoomedIn, resolution: [1080, 1080] }))
+    expect(getFilmstrip).toHaveBeenCalledTimes(2)
   })
 
   it('a watchFile change bumps the revision, redraws, and requests again', async () => {

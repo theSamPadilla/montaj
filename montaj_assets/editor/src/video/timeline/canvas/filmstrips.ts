@@ -291,6 +291,8 @@ export interface FilmstripQueryContext {
   tileWidth?: number
   /** Project frame rate, sent with an overlay strip request. Default 30. */
   fps?: number
+  /** Project canvas [width, height]; default 1080x1920. */
+  resolution?: [number, number]
   /** The adapter's `watchFile`; a change to an overlay's src bumps its strip
    *  revision so the next paint requests fresh frames. Absent → never bumps. */
   watchFile?: (path: string, onChange: () => void, projectId?: string) => () => void
@@ -466,7 +468,8 @@ export class FilmstripStore {
     this.watchOverlay(src, ctx)
     const fps = ctx.fps ?? 30
     const durationSec = item.end - item.start
-    const key = `ovl|${ctx.projectId}|${src}|${stableJson(item.props ?? {})}|${stableJson(item.googleFonts ?? [])}|${durationSec}|${fps}|${this.revisions.get(src) ?? 0}|${ctx.tileWidth ?? ''}`
+    const [width, height] = ctx.resolution ?? [1080, 1920]
+    const key = `ovl|${ctx.projectId}|${src}|${width}x${height}|${stableJson(item.props ?? {})}|${stableJson(item.googleFonts ?? [])}|${durationSec}|${fps}|${this.revisions.get(src) ?? 0}|${ctx.tileWidth ?? ''}`
     const entry = this.indexEntries.get(key)
     if (entry?.status === 'ready' && entry.data) return { data: entry.data, tiles: entry.tiles }
     const inCooldown = entry?.status === 'error'
@@ -477,7 +480,7 @@ export class FilmstripStore {
         projectId: ctx.projectId,
         src,
         tileWidth: ctx.tileWidth,
-        overlay: { props: item.props, googleFonts: item.googleFonts, fps, durationSec },
+        overlay: { props: item.props, googleFonts: item.googleFonts, fps, durationSec, width, height },
       })
         .then(data => {
           this.indexEntries.set(key, { status: 'ready', data, tiles: flattenTiles(data) })

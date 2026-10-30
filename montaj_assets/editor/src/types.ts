@@ -384,6 +384,8 @@ export interface FilmstripIndex {
   sheets: FilmstripSheet[]
   interval: number
   tileWidth: number
+  /** Pixel height every tile was rendered at; set by overlay strips. */
+  tileHeight?: number
 }
 
 /**
@@ -409,6 +411,9 @@ export interface GetFilmstripArgs {
     googleFonts?: string[]
     fps: number
     durationSec: number
+    /** The project canvas, so the host can size each tile to its aspect. */
+    width: number
+    height: number
   }
 }
 

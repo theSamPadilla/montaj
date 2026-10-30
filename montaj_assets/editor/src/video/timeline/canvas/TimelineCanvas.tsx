@@ -639,6 +639,7 @@ export default function TimelineCanvas({
                 getFilmstrip,
                 fileUrl: resolveFilePath,
                 fps: scene.project.settings?.fps ?? 30,
+                resolution: scene.project.settings?.resolution,
                 watchFile,
                 viewport,
                 onReady: () => requestRedraw('all'),
