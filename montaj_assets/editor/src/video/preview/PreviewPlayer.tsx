@@ -22,6 +22,7 @@ import { usePlaybackTime, type PlaybackClock } from '../playback-clock'
 import { gateTimeSink, handOverToHover, useHoverScrubTime, type HoverScrub } from '../hover-scrub'
 import { sourceCropVideoStyle } from './sourceCropStyle'
 import { compositeParts } from './itemComposite'
+import { useItemBlur } from './itemBlur'
 import MaskGizmo from './MaskGizmo'
 import { clientToBox, type MaskChanges } from './maskGizmoMath'
 import { FIT_PARENT_STYLE, fitBoxStyle } from './fitBox'
@@ -732,7 +733,17 @@ function PreviewSurface({
     ...(baseComp && baseComp.opacity !== 1 ? { opacity: baseComp.opacity } : null),
     ...baseComp?.blend,
   }
-  const mediaBox = { ...mediaBoxStyle(xf), ...baseComp?.mask }
+  // The base clip's blur (itemBlur.tsx), on the media box with its mask: the
+  // filter runs before the mask, as the export blurs before it masks. Its
+  // picture is the clip's footage, contain-fitted in the box.
+  const baseBlur = useItemBlur(baseShown && !isCanvasProject ? {
+    item: baseShown,
+    src: fileUrl(baseShown.src ?? ''),
+    crop: cropKeyed ? geometryAt(baseShown, 'video', localTimeOf(baseShown, currentTime)).sourceCrop : baseShown.sourceCrop,
+    renderScale, canvasW: RENDER_W, canvasH: RENDER_H, scaleX: baseSx, scaleY: baseSy,
+    knownSize: videoDims,
+  } : null)
+  const mediaBox = { ...mediaBoxStyle(xf), ...baseComp?.mask, ...baseBlur.style }
   const xfBox = videoTransformBoxPct(xf)
   // A zoom commits the per-axis fields too when the clip carries them: `scale`
   // alone would lose to the stale scaleX/scaleY (see `zoomTo`).
@@ -878,6 +889,7 @@ function PreviewSurface({
                 />
               </>
             )}
+            {baseBlur.defs}
           </div>
         </div>
       )}

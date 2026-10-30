@@ -4,6 +4,7 @@ import { isProxyUsable, markProxyFailed } from './proxySupport'
 import { mediaBoxStyle, perAxisRatio } from './transformStyle'
 import { sourceCropVideoStyle } from './sourceCropStyle'
 import { compositeParts, type MaskStyle } from './itemComposite'
+import { useItemBlur, type ItemBlurInput } from './itemBlur'
 import CroppedImage from './CroppedImage'
 import type { EditorProject as Project, VisualItem, VisualTrack } from '../../schema'
 import type { OverlayFactory } from '../../types'
@@ -137,10 +138,18 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlayi
 //
 // It also carries a clip's MASK (§616, `itemComposite.ts`): its CSS box is the
 // clip's own box, the one the mask's fractions and feather are relative to.
-function MediaBox({ scaleX, scaleY, mask, children }: { scaleX: number; scaleY: number; mask?: MaskStyle; children: React.ReactNode }) {
+// And its BLUR (`itemBlur.tsx`), filtered before the mask as the export blurs
+// before it masks; the filter's SVG renders after the media, so the media
+// keeps its place among the children and a blur turning on never remounts it.
+function MediaBox({ scaleX, scaleY, mask, blur, children }: {
+  scaleX: number; scaleY: number; mask?: MaskStyle; blur?: ItemBlurInput | null; children: React.ReactNode
+}) {
+  const filter = useItemBlur(blur ?? null)
+  const box = mediaBoxStyle({ scaleX, scaleY })
   return (
-    <div className="pointer-events-none" style={mask ? { ...mediaBoxStyle({ scaleX, scaleY }), ...mask } : mediaBoxStyle({ scaleX, scaleY })}>
+    <div className="pointer-events-none" style={mask || filter.defs ? { ...box, ...mask, ...filter.style } : box}>
       {children}
+      {filter.defs}
     </div>
   )
 }
@@ -739,7 +748,8 @@ export default function OverlayItemsLayer({
         )
         return (
           <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
-            <MediaBox scaleX={scaleX} scaleY={scaleY} mask={comp.mask}>
+            <MediaBox scaleX={scaleX} scaleY={scaleY} mask={comp.mask}
+              blur={{ item, src: fileUrl(item.src), crop: g.sourceCrop, fit, renderScale, canvasW: RENDER_W, canvasH: RENDER_H, scaleX, scaleY }}>
               <CroppedImage
                 src={fileUrl(item.src)}
                 crop={g.sourceCrop}
@@ -918,7 +928,8 @@ export default function OverlayItemsLayer({
           if (item.type === 'image' && item.src) {
             return (
               <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
-                <MediaBox scaleX={scaleX} scaleY={scaleY} mask={comp?.mask}>
+                <MediaBox scaleX={scaleX} scaleY={scaleY} mask={comp?.mask}
+                  blur={{ item, src: fileUrl(item.src), crop: g.sourceCrop, fit, renderScale, canvasW: RENDER_W, canvasH: RENDER_H, scaleX, scaleY }}>
                   <CroppedImage
                     src={fileUrl(item.src)}
                     crop={g.sourceCrop}
@@ -956,7 +967,10 @@ export default function OverlayItemsLayer({
               : null
             return (
               <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
-                <MediaBox scaleX={scaleX} scaleY={scaleY} mask={comp?.mask}>
+                <MediaBox scaleX={scaleX} scaleY={scaleY} mask={comp?.mask}
+                  blur={{ item, src: fileUrl(item.nobg_preview_src
+                    ?? (isProxyUsable(item.proxySrc) ? item.proxySrc : undefined)
+                    ?? item.src), crop: g.sourceCrop, renderScale, canvasW: RENDER_W, canvasH: RENDER_H, scaleX, scaleY }}>
                   <OverlayVideo
                     // This is a THIRD src-precedence chain, deliberately not
                     // @bycrux/timeline-core's `playbackSrcFor` (see

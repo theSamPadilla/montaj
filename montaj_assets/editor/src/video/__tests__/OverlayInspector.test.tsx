@@ -1531,6 +1531,38 @@ describe('OverlayInspector — blend and mask (clips, §616)', () => {
     expect('blendMode' in (onChange.mock.calls[0][0] as VisualItem)).toBe(false)
   })
 
+  it('shows a Blur row on a clip (0 when absent), none on an overlay', () => {
+    const { unmount } = renderInspector(clip(), 5)
+    expect(screen.getByLabelText('Blur')).toHaveValue(0)
+    unmount()
+    renderInspector(clip({ blur: 40 }), 5)
+    expect(screen.getByLabelText('Blur')).toHaveValue(40)
+  })
+
+  it('no Blur row on an overlay', () => {
+    renderInspector(overlayItem(), 5)
+    expect(screen.queryByLabelText('Blur')).toBeNull()
+  })
+
+  it('typing a blur previews the static field, held to 0..200; 0 removes the key', () => {
+    const { onPreview } = renderInspector(clip(), 5)
+    const last = () => onPreview.mock.calls[onPreview.mock.calls.length - 1][0] as VisualItem
+    fireEvent.change(screen.getByLabelText('Blur'), { target: { value: '40' } })
+    expect(last().blur).toBe(40)
+    expect(hasKeyframes(last(), 'blur' as KeyframeProp)).toBe(false)
+    fireEvent.change(screen.getByLabelText('Blur'), { target: { value: '500' } })
+    expect(last().blur).toBe(200)
+    fireEvent.change(screen.getByLabelText('Blur'), { target: { value: '0' } })
+    expect('blur' in last()).toBe(false)
+  })
+
+  it('the Blur stepper is one discrete edit', () => {
+    const { onChange } = renderInspector(clip({ blur: 40 }), 5)
+    fireEvent.click(screen.getByRole('button', { name: 'Increase Blur' }))
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect((onChange.mock.calls[0][0] as VisualItem).blur).toBe(41)
+  })
+
   it('the switch on a clip with no mask writes a default ellipse', () => {
     const { onChange } = renderInspector(clip(), 5)
 

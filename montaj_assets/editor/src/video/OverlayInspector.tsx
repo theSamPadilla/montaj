@@ -15,7 +15,7 @@ import {
   RectangleHorizontal,
   RotateCcw,
 } from 'lucide-react'
-import { BLEND_MODES, MASK_FIELD_OF, MASK_POINTS_PROP, MASK_SHAPES, blendModeOf, maskAt } from '@bycrux/timeline-core'
+import { BLEND_MODES, BLUR_MAX, MASK_FIELD_OF, MASK_POINTS_PROP, MASK_SHAPES, blendModeOf, blurOf, maskAt } from '@bycrux/timeline-core'
 import type { BlendMode, ItemMask, KeyframeProp, MaskKeyframeProp, TransformKeyframeProp, VisualItem } from '../schema'
 import {
   KEYFRAME_TIME_EPSILON,
@@ -66,9 +66,11 @@ import { NumberField, Slider, cn, inspectorInputClass, stepValue } from '../ui'
  * deletes the animation; see keyframeOps' `removeKeyframeAt` for what removing
  * the last keyframe leaves behind.
  *
- * Clips (video and image) get two more controls, §616: a Blend row (the
- * `blendMode` the clip composites with) and a collapsible Mask section (the
- * `mask` it shows through: shape, position, size, rotation, feather, invert).
+ * Clips (video and image) get three more controls: a Blend row (§616, the
+ * `blendMode` the clip composites with), a Blur row (the `blur` over its
+ * picture, in pixels of the 1080 canvas; static, so no keyframe unit) and a
+ * collapsible Mask section (§616, the `mask` it shows through: shape,
+ * position, size, rotation, feather, invert).
  * Mask values are shown in percent of the clip's box and stored as fractions;
  * every one goes through the same {@link writeProp} rule, so a keyframed mask
  * prop is keyed at the playhead. Overlays take neither.
@@ -155,6 +157,10 @@ const MASK_ROWS: Record<MaskKeyframeProp, MaskRowSpec> = {
   maskRotation: { prop: 'maskRotation', name: 'Mask rotation', step: 1, factor: 1 },
   maskFeather:  { prop: 'maskFeather',  name: 'Mask feather',  step: 1, min: 0, max: 100, factor: 100 },
 }
+
+/** The Blur row: pixels of the 1080-short-edge canvas, 0 to BLUR_MAX (what
+ *  save accepts). Not keyframable, so it writes the static field. */
+const BLUR_ROW: CellSpec = { name: 'Blur', step: 1, min: 0, max: BLUR_MAX }
 
 /** The shape buttons, in timeline-core's picker order. lucide has no ellipse
  *  glyph, so the ellipse is its circle. */
@@ -832,6 +838,16 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   // or it is switched off. What the switch and every Mask row read.
   const mask = isClip ? maskAt(target, localT) : null
 
+  /** The clip with its blur set, held to the row's bounds. 0 is the default,
+   *  so it removes the key rather than storing it. */
+  function withBlur(value: number): VisualItem {
+    const v = Math.min(BLUR_MAX, Math.max(0, value))
+    const next = { ...target }
+    if (v > 0) next.blur = v
+    else delete next.blur
+    return next
+  }
+
   /** Normal is the default, so it removes the key rather than storing it. */
   function handleBlend(mode: BlendMode) {
     const next = { ...target }
@@ -1130,6 +1146,22 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
                 <option key={mode} value={mode}>{mode[0].toUpperCase() + mode.slice(1)}</option>
               ))}
             </select>
+          </div>
+        )}
+
+        {/* ── Blur (clips) ─────────────────────────────────────────────────
+            Not keyframable, so no unit. Typing previews and commits like
+            the other boxes; a step is one discrete edit. */}
+        {isClip && (
+          <div className="flex items-center gap-2">
+            <span className={ROW_LABEL_CLASS}>Blur</span>
+            <NumberCell
+              row={BLUR_ROW}
+              value={blurOf(target)}
+              onPreview={v => onPreview(withBlur(v))}
+              onCommit={onCommit}
+              onStep={d => onChange(withBlur(stepValue(blurOf(target), d, BLUR_ROW)))}
+            />
           </div>
         )}
 

@@ -290,6 +290,7 @@ export interface VisualItem {
   opacity?: number        // 0.0–1.0. Keyframable (prop "opacity") on overlays and, since §616, on clips too.
   blendMode?: BlendMode   // video and image only (§616): how the clip composites over what is beneath. Absent = normal.
   mask?: ItemMask         // video and image only (§616): the shape the clip shows through. Keyframed by maskX/maskY/maskW/maskH/maskRotation/maskFeather.
+  blur?: number           // video and image only: a Gaussian blur over the clip's picture, its sigma in pixels of the 1080-short-edge design canvas, 0 to 200. Static (not keyframable). Absent or 0 = sharp.
   fit?: 'cover' | 'contain' | 'fill'  // image type only — how the source fills its box. Default 'cover' (AR-preserving fill+crop). 'contain' letterboxes; 'fill' is legacy stretch (no AR).
   volume?: number         // video audio level 0.0–2.0, default 1.0 (ignored for images)
   rotation?: number       // degrees, clockwise
