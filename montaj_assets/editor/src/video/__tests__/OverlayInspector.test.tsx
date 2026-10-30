@@ -1,5 +1,5 @@
 /// <reference types="vitest/globals" />
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, within } from '@testing-library/react'
 import type { KeyframeProp, VisualItem } from '../../schema'
 import { createPlaybackClock } from '../playback-clock'
 import { hasKeyframes, trackFor, valueAt } from '../keyframeOps'
@@ -1586,6 +1586,80 @@ describe('OverlayInspector — blend and mask (clips, §616)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Increase Blur amount' }))
     expect(onChange).toHaveBeenCalledTimes(1)
     expect((onChange.mock.calls[0][0] as VisualItem).blur).toBe(41)
+  })
+
+  const blurTypeButton = (name: string) => within(screen.getByRole('group', { name: 'Blur type' })).getByRole('button', { name })
+  const lastChange = (fn: ReturnType<typeof vi.fn>) => fn.mock.calls[fn.mock.calls.length - 1][0] as VisualItem
+
+  it('the Type row offers Uniform, Linear, Spin and Zoom, the current one pressed (uniform when absent)', () => {
+    const { unmount } = renderInspector(clip({ blur: 40 }), 5)
+    const names = within(screen.getByRole('group', { name: 'Blur type' })).getAllByRole('button').map(b => b.textContent)
+    expect(names).toEqual(['Uniform', 'Linear', 'Spin', 'Zoom'])
+    expect(blurTypeButton('Uniform')).toHaveAttribute('aria-pressed', 'true')
+    expect(blurTypeButton('Linear')).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.queryByLabelText('Blur angle')).toBeNull()
+    expect(screen.queryByLabelText('Blur center X')).toBeNull()
+    unmount()
+    renderInspector(clip({ blur: 40, blurType: 'zoom' }), 5)
+    expect(blurTypeButton('Zoom')).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('switching type keeps the amount and writes only that type\'s fields', () => {
+    const { onChange } = renderInspector(clip({ blur: 40 }), 5)
+    fireEvent.click(blurTypeButton('Linear'))
+    expect(lastChange(onChange)).toMatchObject({ blur: 40, blurType: 'linear', blurAngle: 0 })
+    expect('blurX' in lastChange(onChange)).toBe(false)
+    fireEvent.click(blurTypeButton('Spin'))
+    const spin = lastChange(onChange)
+    expect(spin).toMatchObject({ blur: 40, blurType: 'spin', blurX: 0.5, blurY: 0.5 })
+    expect('blurAngle' in spin).toBe(false)
+  })
+
+  it('from linear: uniform removes every extra field, spin drops the angle and keeps a centre it had', () => {
+    const linear = clip({ blur: 190, blurType: 'linear', blurAngle: 30, blurX: 0.2, blurY: 0.7 })
+    const { onChange } = renderInspector(linear, 5)
+    fireEvent.click(blurTypeButton('Uniform'))
+    const uniform = lastChange(onChange)
+    expect(uniform.blur).toBe(190)
+    for (const k of ['blurType', 'blurAngle', 'blurX', 'blurY']) expect(k in uniform).toBe(false)
+    // Spin's ceiling is 180 degrees: the amount is held to it.
+    fireEvent.click(blurTypeButton('Spin'))
+    expect(lastChange(onChange)).toMatchObject({ blur: 180, blurType: 'spin', blurX: 0.2, blurY: 0.7 })
+    expect('blurAngle' in lastChange(onChange)).toBe(false)
+  })
+
+  it('the amount\'s unit and ceiling follow the type: px to 200, degrees to 180, percent to 200', () => {
+    for (const [type, unit, max] of [['uniform', 'px', 200], ['linear', 'px', 200], ['spin', '°', 180], ['zoom', '%', 200]] as const) {
+      const { onPreview, container, unmount } = renderInspector(clip({ blur: 10, blurType: type === 'uniform' ? undefined : type }), 5)
+      expect(container.textContent).toContain(unit)
+      fireEvent.change(blurAmount(), { target: { value: '500' } })
+      expect(lastChange(onPreview).blur).toBe(max)
+      unmount()
+    }
+  })
+
+  it('linear: an Angle box and dial; typing previews the angle mod 180, the dial reads the streak', () => {
+    const { onPreview, onChange } = renderInspector(clip({ blur: 40, blurType: 'linear', blurAngle: 30 }), 5)
+    const angle = screen.getByLabelText('Blur angle')
+    expect(angle).toHaveValue(30)
+    fireEvent.change(angle, { target: { value: '200' } })
+    expect(lastChange(onPreview).blurAngle).toBe(20)
+    const dial = screen.getByRole('slider', { name: 'Blur angle dial' })
+    // 30 degrees from horizontal is 120 on a dial whose 0 points up.
+    expect(dial).toHaveAttribute('aria-valuenow', '120')
+    fireEvent.keyDown(dial, { key: 'ArrowRight' })
+    expect(lastChange(onChange).blurAngle).toBe(31)
+  })
+
+  it('spin and zoom: a Center row in percent of the box, written as fractions', () => {
+    const { onPreview, onChange } = renderInspector(clip({ blur: 40, blurType: 'zoom' }), 5)
+    expect(screen.getByLabelText('Blur center X')).toHaveValue(50)
+    expect(screen.getByLabelText('Blur center Y')).toHaveValue(50)
+    fireEvent.change(screen.getByLabelText('Blur center X'), { target: { value: '25' } })
+    expect(lastChange(onPreview)).toMatchObject({ blurX: 0.25, blurY: 0.5 })
+    fireEvent.click(screen.getByRole('button', { name: 'Increase Blur center Y' }))
+    expect(lastChange(onChange)).toMatchObject({ blurX: 0.5, blurY: 0.51 })
+    expect(screen.queryByLabelText('Blur angle')).toBeNull()
   })
 
   it('the switch on a clip with no mask writes a default ellipse', () => {

@@ -364,6 +364,18 @@ describe('pasteAttributes', () => {
     expect(items.find(i => i.id === 'o')!.blur).toBeUndefined()
   })
 
+  it('pastes the blur\'s type, angle and centre with it, never onto an overlay', () => {
+    const source: VisualItem = { id: 's', type: 'video', start: 0, end: 5, blur: 40, blurType: 'zoom', blurAngle: 30, blurX: 0.2, blurY: 0.8 }
+    const image: VisualItem = { id: 'i', type: 'image', start: 16, end: 18 }
+    const overlay: VisualItem = { id: 'o', type: 'overlay', start: 20, end: 25 }
+    const p = makeProject({ tracks: vtracks([source, image, overlay]) })
+    const out = pasteAttributes(p, copySelection(p, ['s'])!, ['i', 'o'])
+    const items = out.tracks![0].items
+    expect(items.find(i => i.id === 'i')).toMatchObject({ blurType: 'zoom', blurAngle: 30, blurX: 0.2, blurY: 0.8 })
+    const o = items.find(i => i.id === 'o')!
+    for (const k of ['blurType', 'blurAngle', 'blurX', 'blurY']) expect(k in o).toBe(false)
+  })
+
   it('never lands image-only `fit` on a video target', () => {
     const source: VisualItem = { id: 's', type: 'image', start: 0, end: 5, fit: 'contain' }
     const target: VisualItem = { id: 't', type: 'video', start: 10, end: 15 }

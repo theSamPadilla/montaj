@@ -15,8 +15,8 @@ import {
   RectangleHorizontal,
   RotateCcw,
 } from 'lucide-react'
-import { BLEND_MODES, BLUR_MAX, MASK_FIELD_OF, MASK_POINTS_PROP, MASK_SHAPES, blendModeOf, blurOf, maskAt } from '@bycrux/timeline-core'
-import type { BlendMode, ItemMask, KeyframeProp, MaskKeyframeProp, TransformKeyframeProp, VisualItem } from '../schema'
+import { BLEND_MODES, BLUR_TYPES, MASK_FIELD_OF, MASK_POINTS_PROP, MASK_SHAPES, blendModeOf, blurAngleOf, blurCenterOf, blurMaxOf, blurOf, blurTypeOf, maskAt } from '@bycrux/timeline-core'
+import type { BlendMode, BlurType, ItemMask, KeyframeProp, MaskKeyframeProp, TransformKeyframeProp, VisualItem } from '../schema'
 import {
   KEYFRAME_TIME_EPSILON,
   addKeyframeAt,
@@ -69,8 +69,9 @@ import { NumberField, Slider, cn, inspectorInputClass, stepValue } from '../ui'
  * Clips (video and image) get three more controls: a Blend row (§616, the
  * `blendMode` the clip composites with), a collapsible Mask section (§616, the
  * `mask` it shows through: shape, position, size, rotation, feather, invert)
- * and under it a collapsible Blur section (the `blur` over its picture, in
- * pixels of the 1080 canvas; static, so no keyframe unit).
+ * and under it a collapsible Blur section (the `blur` over its picture:
+ * its type, uniform, linear, spin or zoom; its amount in the type's unit; a
+ * linear blur's angle, spin and zoom's centre; all static, so no keyframe unit).
  * Mask values are shown in percent of the clip's box and stored as fractions;
  * every one goes through the same {@link writeProp} rule, so a keyframed mask
  * prop is keyed at the playhead. Overlays take neither.
@@ -158,9 +159,22 @@ const MASK_ROWS: Record<MaskKeyframeProp, MaskRowSpec> = {
   maskFeather:  { prop: 'maskFeather',  name: 'Mask feather',  step: 1, min: 0, max: 100, factor: 100 },
 }
 
-/** The Blur section's amount: pixels of the 1080-short-edge canvas, 0 to
- *  BLUR_MAX (what save accepts). Not keyframable, so it writes the static field. */
-const BLUR_ROW: CellSpec = { name: 'Blur amount', step: 1, min: 0, max: BLUR_MAX }
+/** The Blur section's amount, in its type's unit, 0 to its type's ceiling
+ *  (blurMaxOf, what save accepts). Not keyframable, so it writes the static field. */
+function blurRow(type: BlurType): CellSpec {
+  return { name: 'Blur amount', step: 1, min: 0, max: blurMaxOf(type) }
+}
+/** The amount's unit by type: design pixels, a sweep in degrees, percent. */
+const BLUR_UNIT: Record<BlurType, string> = { uniform: 'px', linear: 'px', spin: '°', zoom: '%' }
+/** The Type row's labels, in timeline-core's order. */
+const BLUR_TYPE_LABEL: Record<BlurType, string> = { uniform: 'Uniform', linear: 'Linear', spin: 'Spin', zoom: 'Zoom' }
+/** A linear blur's angle box, in degrees (stored mod 180). */
+const BLUR_ANGLE_ROW: CellSpec = { name: 'Blur angle', step: 1 }
+/** Spin and zoom's centre boxes, in percent of the clip's box (stored as fractions, like the mask's). */
+const BLUR_CENTER_ROWS: { x: CellSpec; y: CellSpec } = {
+  x: { name: 'Blur center X', step: 1 },
+  y: { name: 'Blur center Y', step: 1 },
+}
 /** What the Blur switch turns on at when the panel has no earlier amount. */
 const BLUR_DEFAULT = 20
 
@@ -296,6 +310,26 @@ function IconButton({
       className={cn(ICON_BUTTON_CLASS, pressed && 'bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] text-[var(--editor-text)]')}
     >
       {children}
+    </button>
+  )
+}
+
+/** One choice of a set shown by name (the Blur section's types): `aria-pressed`
+ *  and the accent wash on the current one, as {@link IconButton}'s `pressed`. */
+function ChoiceButton({ label, pressed, onClick }: { label: string; pressed: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={pressed}
+      onClick={onClick}
+      className={cn(
+        'h-5 shrink-0 rounded px-1.5 text-[11px] transition-colors hover:bg-[var(--editor-surface)] hover:text-[var(--editor-text)]',
+        pressed
+          ? 'bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] text-[var(--editor-text)]'
+          : 'text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]',
+      )}
+    >
+      {label}
     </button>
   )
 }
@@ -518,6 +552,8 @@ function RotationDial({
 
 interface NumberCellProps {
   row: CellSpec
+  /** A unit shown after the value (the Blur amount's px, degrees or percent). */
+  unit?: string
   /** Accessible-name override for the second box of a paired row (Scale Y). */
   name?: string
   /** Visible axis prefix. Purely decorative — the accessible name already
@@ -541,12 +577,13 @@ interface NumberCellProps {
  *  not dead code to prune: it is a stable, predictable hook for a future
  *  bound label, an automation script, or an external test harness to latch
  *  onto by row name, laid down now so it doesn't need inventing later. */
-function NumberCell({ row, name = row.name, prefix, value, onPreview, onCommit, onStep }: NumberCellProps) {
+function NumberCell({ row, unit, name = row.name, prefix, value, onPreview, onCommit, onStep }: NumberCellProps) {
   return (
     <NumberField
       id={`overlay-inspector-${name.replace(/\s+/g, '-').toLowerCase()}`}
       name={name}
       prefix={prefix}
+      unit={unit}
       step={row.step}
       min={row.min}
       max={row.max}
@@ -845,18 +882,21 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   // or it is switched off. What the switch and every Mask row read.
   const mask = isClip ? maskAt(target, localT) : null
 
-  /** The clip with its blur set, held to the row's bounds. 0 is the default,
-   *  so it removes the key rather than storing it. */
+  const blurType = blurTypeOf(target)
+
+  /** The clip with its blur amount set, held to its type's bounds. 0 is the
+   *  default, so it removes the key rather than storing it. */
   function withBlur(value: number): VisualItem {
-    const v = Math.min(BLUR_MAX, Math.max(0, value))
+    const v = Math.min(blurMaxOf(blurType), Math.max(0, value))
     const next = { ...target }
     if (v > 0) next.blur = v
     else delete next.blur
     return next
   }
 
-  /** The Blur switch: off removes the blur and remembers it; on restores the
-   *  last amount (BLUR_DEFAULT the first time). One discrete edit. */
+  /** The Blur switch: off removes the amount and remembers it (the type and
+   *  its fields stay); on restores the last amount (BLUR_DEFAULT the first
+   *  time). One discrete edit. */
   function handleBlurSwitch() {
     const now = blurOf(target)
     if (now > 0) {
@@ -865,6 +905,46 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
     } else {
       onChange(withBlur(lastBlur.current > 0 ? lastBlur.current : BLUR_DEFAULT))
     }
+  }
+
+  /** The Type row: the amount is kept, held to the new type's ceiling, and
+   *  each type writes only its own fields. Uniform is the default and writes
+   *  none; linear keeps `blurAngle` (0 when it had none); spin and zoom keep
+   *  `blurX` and `blurY` (the box's centre when they had none). */
+  function handleBlurType(type: BlurType) {
+    if (type === blurType) return
+    const next = { ...target }
+    delete next.blurType
+    delete next.blurAngle
+    delete next.blurX
+    delete next.blurY
+    const amount = Math.min(blurOf(target), blurMaxOf(type))
+    if (amount > 0) next.blur = amount
+    else delete next.blur
+    if (type === 'linear') {
+      next.blurType = type
+      next.blurAngle = blurAngleOf(target)
+    } else if (type !== 'uniform') {
+      const c = blurCenterOf(target)
+      next.blurType = type
+      next.blurX = c.x
+      next.blurY = c.y
+    }
+    onChange(next)
+  }
+
+  /** The clip with its linear blur's angle set, in degrees mod 180. */
+  function withBlurAngle(deg: number): VisualItem {
+    if (!Number.isFinite(deg)) return target
+    return { ...target, blurAngle: blurAngleOf({ blurAngle: Math.round(deg * 100) / 100 }) }
+  }
+
+  /** The clip with spin or zoom's centre moved on one axis, from a box in percent. */
+  function withBlurCenter(axis: 'x' | 'y', percent: number): VisualItem {
+    if (!Number.isFinite(percent)) return target
+    const c = blurCenterOf(target)
+    const v = percent / 100
+    return { ...target, blurX: axis === 'x' ? v : c.x, blurY: axis === 'y' ? v : c.y }
   }
 
   /** Normal is the default, so it removes the key rather than storing it. */
@@ -1321,25 +1401,77 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
           {blurOpen && blurOf(target) > 0 && (
             <div className="flex flex-col gap-2 p-2">
               <div className="flex items-center gap-2">
+                <span className={ROW_LABEL_CLASS}>Type</span>
+                <div role="group" aria-label="Blur type" className="flex flex-wrap items-center gap-0.5">
+                  {BLUR_TYPES.map(type => (
+                    <ChoiceButton key={type} label={BLUR_TYPE_LABEL[type]} pressed={blurType === type} onClick={() => handleBlurType(type)} />
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
                 <span className={ROW_LABEL_CLASS}>Amount</span>
                 <Slider
                   aria-label="Blur amount slider"
                   value={blurOf(target)}
                   min={1}
-                  max={BLUR_MAX}
+                  max={blurMaxOf(blurType)}
                   step={1}
                   onChange={v => onPreview(withBlur(v))}
                   onCommit={onCommit}
                   className="min-w-0 flex-1"
                 />
                 <NumberCell
-                  row={BLUR_ROW}
+                  row={blurRow(blurType)}
+                  unit={BLUR_UNIT[blurType]}
                   value={blurOf(target)}
                   onPreview={v => onPreview(withBlur(v))}
                   onCommit={onCommit}
-                  onStep={d => onChange(withBlur(stepValue(blurOf(target), d, BLUR_ROW)))}
+                  onStep={d => onChange(withBlur(stepValue(blurOf(target), d, blurRow(blurType))))}
                 />
               </div>
+
+              {/* Linear: the direction. The dial's line is the streak (0 is
+                  horizontal), so it reads a quarter turn on from the stored angle. */}
+              {blurType === 'linear' && (
+                <div className="flex items-center gap-2">
+                  <span className={ROW_LABEL_CLASS}>Angle</span>
+                  <NumberCell
+                    row={BLUR_ANGLE_ROW}
+                    unit="°"
+                    value={blurAngleOf(target)}
+                    onPreview={v => onPreview(withBlurAngle(v))}
+                    onCommit={onCommit}
+                    onStep={d => onChange(withBlurAngle(blurAngleOf(target) + d * BLUR_ANGLE_ROW.step))}
+                  />
+                  <RotationDial
+                    rotation={blurAngleOf(target) + 90}
+                    label="Blur angle dial"
+                    onPreview={deg => onPreview(withBlurAngle(deg - 90))}
+                    onCommit={onCommit}
+                    onChange={deg => onChange(withBlurAngle(deg - 90))}
+                  />
+                </div>
+              )}
+
+              {/* Spin and zoom: the centre, in percent of the clip's box, laid
+                  out like the Mask's Position row. */}
+              {(blurType === 'spin' || blurType === 'zoom') && (
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className={ROW_LABEL_CLASS}>Center</span>
+                  {(['x', 'y'] as const).map(axis => (
+                    <NumberCell
+                      key={axis}
+                      row={BLUR_CENTER_ROWS[axis]}
+                      prefix={axis.toUpperCase()}
+                      value={blurCenterOf(target)[axis] * 100}
+                      onPreview={v => onPreview(withBlurCenter(axis, v))}
+                      onCommit={onCommit}
+                      onStep={d => onChange(withBlurCenter(axis, stepValue(blurCenterOf(target)[axis] * 100, d, BLUR_CENTER_ROWS[axis])))}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </>

@@ -239,6 +239,9 @@ export interface KeyframeTrack {
  *  `mix-blend-mode` (`add` is `plus-lighter`); the export to its own blend. */
 export type BlendMode = 'normal' | 'screen' | 'multiply' | 'add' | 'lighten' | 'darken' | 'overlay'
 
+/** A clip's blur type (timeline-core BLUR_TYPES). Absent is `uniform`. */
+export type BlurType = 'uniform' | 'linear' | 'spin' | 'zoom'
+
 /** A clip's mask (§616), over the clip's own box before rotation (an image's
  *  fitted box, a video's padded box). Every fraction and the feather are
  *  relative to that box, so the mask follows the clip. Mirrors timeline-core's
@@ -290,7 +293,11 @@ export interface VisualItem {
   opacity?: number        // 0.0–1.0. Keyframable (prop "opacity") on overlays and, since §616, on clips too.
   blendMode?: BlendMode   // video and image only (§616): how the clip composites over what is beneath. Absent = normal.
   mask?: ItemMask         // video and image only (§616): the shape the clip shows through. Keyframed by maskX/maskY/maskW/maskH/maskRotation/maskFeather.
-  blur?: number           // video and image only: a Gaussian blur over the clip's picture, its sigma in pixels of the 1080-short-edge design canvas, 0 to 200. Static (not keyframable). Absent or 0 = sharp.
+  blur?: number           // video and image only: a blur over the clip's picture. Its amount by `blurType`: uniform and linear, a Gaussian sigma in pixels of the 1080-short-edge design canvas, 0 to 200; spin, the sweep in degrees, 0 to 180; zoom, percent, 0 to 200. Static (not keyframable). Absent or 0 = sharp.
+  blurType?: BlurType     // video and image only: 'uniform' (absent, the default) blurs every way; 'linear' along `blurAngle`; 'spin' about and 'zoom' out from (`blurX`, `blurY`). Static.
+  blurAngle?: number      // a linear blur's direction in degrees: 0 = horizontal streaks, positive turns it clockwise on screen (as `rotation`), taken mod 180. On the clip's own picture, so it turns with the clip. Static.
+  blurX?: number          // spin and zoom's centre, a fraction of the clip's box width as a mask's `x` (0 = left edge, 0.5 = centre, the default). Static.
+  blurY?: number          // the same, a fraction of the box height (0 = top edge). Static.
   fit?: 'cover' | 'contain' | 'fill'  // image type only — how the source fills its box. Default 'cover' (AR-preserving fill+crop). 'contain' letterboxes; 'fill' is legacy stretch (no AR).
   volume?: number         // video audio level 0.0–2.0, default 1.0 (ignored for images)
   rotation?: number       // degrees, clockwise

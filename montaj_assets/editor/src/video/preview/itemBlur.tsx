@@ -41,7 +41,7 @@
 // it masks too.
 
 import { useId, type CSSProperties, type ReactNode } from 'react'
-import { blurOf, pictureRectInBox } from '@bycrux/timeline-core'
+import { blurOf, blurTypeOf, pictureRectInBox } from '@bycrux/timeline-core'
 import type { VisualItem } from '../../schema'
 import { useVideoNaturalSize } from '../useVideoNaturalSize'
 import { useImageNaturalSize } from '../useImageNaturalSize'
@@ -100,12 +100,26 @@ export function pictureSizeFor(item: VisualItem, crop: Crop | undefined, fit: It
 }
 
 /**
+ * Whether the preview draws the clip's blur at all.
+ *
+ * SPIN AND ZOOM PLUG IN HERE. They are not drawn yet: until they are, a spin
+ * or zoom clip shows sharp (a uniform blur of sigma 0), as the export draws it
+ * (render item-blur.js). Pinned by itemBlur.test.tsx "spin and zoom are not
+ * drawn yet".
+ */
+export function drawsBlur(item: VisualItem): boolean {
+  const type = blurTypeOf(item)
+  if (type === 'spin' || type === 'zoom') return false
+  return blurOf(item) > 0
+}
+
+/**
  * The blur's SVG filter, or null when the clip has none. Pure: the hook
  * {@link useItemBlur} renders it.
  */
 export function blurFilterSpec(input: Omit<ItemBlurInput, 'src' | 'knownSize'>, picture: Size | null): BlurFilterSpec | null {
   const b = blurOf(input.item)
-  if (b === 0 || !drawable(input.renderScale)) return null
+  if (!drawsBlur(input.item) || !drawable(input.renderScale)) return null
   const { scaleX: sx, scaleY: sy } = input
   // mediaBoxStyle: a uniform box (or one it cannot draw per axis) is the full
   // frame under the wrapper's scale(s); a per-axis one has a net scale of 1.
@@ -130,7 +144,7 @@ const fmt = (n: number) => String(Math.round(n * 10000) / 10000)
  */
 export function useItemBlur(input: ItemBlurInput | null): { style: CSSProperties; defs: ReactNode } {
   const id = 'montaj-blur-' + useId().replace(/[^A-Za-z0-9_-]/g, '')
-  const wants = !!input && blurOf(input.item) > 0
+  const wants = !!input && drawsBlur(input.item)
   const item = input?.item
   const needsVideo = wants && item?.type === 'video'
     && !(drawable(item.sourceWidth ?? 0) && drawable(item.sourceHeight ?? 0))

@@ -56,6 +56,15 @@ describe('blurFilterSpec', () => {
     expect(blurFilterSpec({ item: { ...item, blur: 0 }, renderScale: 0.25, ...CANVAS, scaleX: 1, scaleY: 1 }, null)).toBeNull()
     expect(blurFilterSpec({ item: { ...item, blur: undefined }, renderScale: 0.25, ...CANVAS, scaleX: 1, scaleY: 1 }, null)).toBeNull()
   })
+
+  // PLACEHOLDER: spin and zoom are not drawn yet (itemBlur.tsx `drawsBlur`),
+  // so they show sharp, as the export draws them. Replace with their own tests
+  // when they are built.
+  it('spin and zoom are not drawn yet: null, the clip shows sharp', () => {
+    for (const blurType of ['spin', 'zoom'] as const) {
+      expect(blurFilterSpec({ item: { ...item, blurType, blurX: 0.3 }, renderScale: 0.25, ...CANVAS, scaleX: 1, scaleY: 1 }, null)).toBeNull()
+    }
+  })
 })
 
 describe('pictureSizeFor', () => {
@@ -171,6 +180,14 @@ describe('OverlayItemsLayer — a clip\'s blur', () => {
     expect([f.getAttribute('x'), f.getAttribute('y'), f.getAttribute('width'), f.getAttribute('height')]).toEqual(['0', '0', '1', '1'])
     // Per-axis: net scale 1, the screen sigma as is.
     expect(Number(f.querySelector('feGaussianBlur')!.getAttribute('stdDeviation'))).toBeCloseTo(25 * RENDER_SCALE, 4)
+  })
+
+  it('spin and zoom (not drawn yet): no filter and no SVG, as with no blur', () => {
+    const card = { id: 'bg', type: 'video', src: 'bg.mp4', start: 0, end: 10, inPoint: 0, scale: 0.5, blur: 40, blurType: 'zoom' } as VisualItem
+    const { container } = renderLayer([card])
+    const mediaBox = (container.querySelector('video[src="bg.mp4"]') as HTMLElement).parentElement as HTMLElement
+    expect(mediaBox.style.filter).toBe('')
+    expect(container.querySelector('filter[data-montaj-blur]')).toBeNull()
   })
 
   it('no blur: no filter and no SVG (unchanged)', () => {
