@@ -22,10 +22,10 @@ The shape here is derived from the consumers, not invented:
 Lenient by design: unknown fields are allowed, and every optional field may be
 ``null`` because every consumer reads it through ``??``. Overlay items get the
 shape check above; image and video items get the compositing check (§616:
-``mask``, ``blendMode``, ``opacity`` and their keyframe tracks,
+``mask``, ``blendMode``, ``opacity`` and their keyframe tracks, and ``blur``,
 ``_visual_item_errors``). Other item types are not checked. An overlay that
-carries a ``mask`` or ``blendMode`` is refused, since overlays do not support
-them.
+carries a ``mask``, ``blendMode`` or ``blur`` is refused, since overlays do not
+support them.
 
 Only NEW or CHANGED items are checked (FQ1.1 final review). A save that
 carries `tracks` used to re-validate every overlay item on every PUT, so an
@@ -62,6 +62,9 @@ VISUAL_TYPES = ("image", "video")
 ITEM_TYPES = ("overlay",) + VISUAL_TYPES
 # A mask's feather is the soft band's width over the box's shorter side.
 MASK_FEATHER_MAX = 1.0
+# A clip's blur, in design-canvas pixels (1080 on the short edge). Mirrors
+# montaj_assets/timeline-core/src/blur.js BLUR_MAX.
+BLUR_MAX = 200
 
 REQUIRED_STRING = ("src",)
 REQUIRED_NUMBER = ("start", "end")
@@ -132,9 +135,9 @@ def _item_errors(item: dict) -> list[tuple[str, str]]:
     ):
         err("keyframes", "must be an array of objects")
 
-    for field in ("mask", "blendMode"):
+    for field in ("mask", "blendMode", "blur"):
         if item.get(field) is not None:
-            err(field, "is not supported on overlay items (only image and video items take a mask or blend mode)")
+            err(field, "is not supported on overlay items (only image and video items take a mask, blend mode or blur)")
 
     return errors
 
@@ -155,7 +158,7 @@ def _point_list_ok(value: Any, lo: int = 3, hi: int = MASK_POINTS_MAX) -> bool:
 
 def _visual_item_errors(item: dict, strict: bool = True) -> list[tuple[str, str]]:
     """``(field, problem)`` pairs for the compositing fields of an image or
-    video item: ``mask``, ``blendMode``, ``opacity`` and ``keyframes``.
+    video item: ``mask``, ``blendMode``, ``opacity``, ``blur`` and ``keyframes``.
 
     Fields may be dotted (``mask.shape``, ``keyframes[0].prop``); the
     changed-fields rule compares their root key. Lenient: unknown fields and
@@ -174,6 +177,10 @@ def _visual_item_errors(item: dict, strict: bool = True) -> list[tuple[str, str]
     blend = item.get("blendMode")
     if blend is not None and blend not in BLEND_MODES:
         err("blendMode", "must be one of " + ", ".join(BLEND_MODES))
+
+    blur = item.get("blur")
+    if blur is not None and not (_finite(blur) and 0 <= blur <= BLUR_MAX):
+        err("blur", f"must be a number from 0 to {BLUR_MAX} (pixels on the 1080 canvas)")
 
     mask = item.get("mask")
     if mask is not None:

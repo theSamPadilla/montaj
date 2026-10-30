@@ -85,10 +85,25 @@ def test_nulls_and_unknown_fields_are_lenient():
 
 
 def test_overlay_with_mask_or_blend_is_refused():
-    ov = {"id": "o", "type": "overlay", "src": "/a.jsx", "start": 0, "end": 1, "mask": {"shape": "rect"}, "blendMode": "screen"}
+    ov = {"id": "o", "type": "overlay", "src": "/a.jsx", "start": 0, "end": 1, "mask": {"shape": "rect"}, "blendMode": "screen",
+          "blur": 10}
     errors = _errs(ov)
     assert any(e.startswith("tracks[0].items[0].mask is not supported on overlay") for e in errors)
     assert any(".blendMode is not supported on overlay" in e for e in errors)
+    assert any(".blur is not supported on overlay" in e for e in errors)
+
+
+@pytest.mark.parametrize("make", [_img, _vid])
+@pytest.mark.parametrize("blur", [0, 12.5, 200, None])
+def test_a_blur_from_0_to_200_passes(make, blur):
+    assert _errs(make(blur=blur)) == []
+
+
+@pytest.mark.parametrize("make", [_img, _vid])
+@pytest.mark.parametrize("blur", [-1, 200.5, "40", True, float("nan"), float("inf"), [40]])
+def test_a_bad_blur_is_refused_naming_the_prop(make, blur):
+    errors = _errs(make(blur=blur))
+    assert len(errors) == 1 and ".blur must be a number from 0 to 200" in errors[0], errors
 
 
 def test_unchanged_bad_item_is_not_rechecked():

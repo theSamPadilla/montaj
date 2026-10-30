@@ -12,7 +12,7 @@ from lib.item_ids import id_suffix
 
 
 CARRIED = ("generation", "sourceCrop", "scale", "scaleX", "scaleY", "offsetX", "offsetY", "rotation", "opacity",
-           "mask", "blendMode", "volume", "muted", "proxySrc", "sourceDuration", "sourceWidth", "sourceHeight", "sourceCreatedAt",
+           "mask", "blendMode", "blur", "volume", "muted", "proxySrc", "sourceDuration", "sourceWidth", "sourceHeight", "sourceCreatedAt",
            "normalizedSrc", "normalizedInPoint")
 
 

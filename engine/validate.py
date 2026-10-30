@@ -189,8 +189,8 @@ def _validate_clip_extensions(data, project_dir=None):
     items only, values in range, plus the video pairing and one-aspect rules
     (PV55, `_validate_video_crop_keyframes`).
 
-    Also checks an image or video item's `mask`, `blendMode`, `opacity` and
-    keyframe props (§616) through `lib.overlay_validation.item_problems`."""
+    Also checks an image or video item's `mask`, `blendMode`, `opacity`,
+    `blur` and keyframe props (§616) through `lib.overlay_validation.item_problems`."""
     df = data.get("derivedFrom")
     if df is not None and not isinstance(df, str):
         fail("invalid_field", "derivedFrom must be a string")
@@ -221,8 +221,9 @@ def _validate_clip_extensions(data, project_dir=None):
                 if isinstance(rotation, bool) or not isinstance(rotation, (int, float)) or not math.isfinite(rotation):
                     fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': rotation must be a finite number")
 
-            # §616: mask, blend mode, clip opacity and their keyframe tracks (the
-            # same check save_project runs; the first problem is the failure).
+            # §616: mask, blend mode, clip opacity and their keyframe tracks, and
+            # the blur (the same check save_project runs; the first problem is
+            # the failure).
             if item.get("type") in VISUAL_TYPES:
                 problems = item_problems(item, strict=False)
                 if problems:
