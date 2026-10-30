@@ -212,8 +212,9 @@ export interface EngineDeps {
   onMixerChange?: (state: MixerState) => void
   /**
    * Called after every frame painted into the canvas (a paint or a blend),
-   * the canvas already holding it: a spin or zoom blur over the canvas
-   * (video/preview/RadialBlurSurface.tsx) redraws from it here.
+   * and after every clear to black, the canvas already holding it: a spin or
+   * zoom blur over the canvas (video/preview/RadialBlurSurface.tsx) redraws
+   * from it here.
    */
   onPaint?: () => void
   /**
@@ -1515,6 +1516,13 @@ export function createEngine(project: Project, deps: EngineDeps): Engine {
         paintBlend: (from, to, p, fromPlan, toPlan) => {
           recordPaint()
           painter.paintBlend(from, to, p, fromPlan, toPlan)
+          deps.onPaint?.()
+        },
+        // A clear (the picture went black or preparing) changes the canvas too:
+        // a surface drawn from it must not keep the last frame. Not a painted
+        // frame for `stats().fps`.
+        clear: () => {
+          painter.clear()
           deps.onPaint?.()
         },
       })

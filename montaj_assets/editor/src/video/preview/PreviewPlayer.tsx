@@ -13,7 +13,7 @@ import OverlayItemsLayer from './OverlayItemsLayer'
 import LoadingCover from './LoadingCover'
 import { useVideoPlayback } from './useVideoPlayback'
 import { useEnginePlayback, type EnginePlayback } from './useEnginePlayback'
-import EngineSurface from './EngineSurface'
+import EngineSurface, { EngineChrome } from './EngineSurface'
 import { checkProjectShapeEligibility, evaluateEngineEligibility, engineRequiredReason } from '../../engine/eligibility'
 import type { AcquiredDemux, MixerScrub } from '../../engine'
 import { transportEndFor } from '../../engine/scheduler'
@@ -736,10 +736,16 @@ function PreviewSurface({
   // The base clip's blur (itemBlur.tsx), on the media box with its mask: the
   // filter runs before the mask, as the export blurs before it masks. Its
   // picture is the clip's footage, contain-fitted in the box.
-  const baseBlur = useItemBlur(baseShown && !isCanvasProject ? {
-    item: baseShown,
-    src: fileUrl(baseShown.src ?? ''),
-    crop: cropKeyed ? geometryAt(baseShown, 'video', localTimeOf(baseShown, currentTime)).sourceCrop : baseShown.sourceCrop,
+  //
+  // Only while the picture shows (`showVideo`) and the playhead is inside the
+  // clip: `activeClip` falls back to the last clip in a gap and past the end,
+  // where the slots go to opacity 0 (or the engine clears to black), but a
+  // spin or zoom surface would keep showing the last frame it drew.
+  const blurred = showVideo && !!activeClip && containsTime(activeClip.start, activeClip.end, currentTime) ? baseShown : null
+  const baseBlur = useItemBlur(blurred && !isCanvasProject ? {
+    item: blurred,
+    src: fileUrl(blurred.src ?? ''),
+    crop: cropKeyed ? geometryAt(blurred, 'video', localTimeOf(blurred, currentTime)).sourceCrop : blurred.sourceCrop,
     renderScale, canvasW: RENDER_W, canvasH: RENDER_H, scaleX: baseSx, scaleY: baseSy,
     knownSize: videoDims,
     // A spin or zoom reads the engine's canvas (the picture's rect of it) or the active <video> slot.
@@ -847,12 +853,16 @@ function PreviewSurface({
               redraw={playback.mode === 'engine' ? playback.onPaint : undefined}
               backing={playback.mode === 'engine' ? '#000' : undefined}>
             {playback.mode === 'engine' ? (
+              // The canvas alone: the Preparing placeholder and the HUD render
+              // after the wrappers (EngineChrome below), never inside the back
+              // wrapper a spin or zoom surface hides.
               <EngineSurface
                 attach={playback.attachCanvas}
                 picture={playback.status.picture}
                 reason={playback.status.reason}
                 debugHud={engine?.debugHud}
                 getStats={playback.getStats}
+                chrome={false}
               />
             ) : (
               <>
@@ -903,6 +913,14 @@ function PreviewSurface({
               </>
             )}
             </BlurWrappers>
+            {playback.mode === 'engine' && (
+              <EngineChrome
+                picture={playback.status.picture}
+                reason={playback.status.reason}
+                debugHud={engine?.debugHud}
+                getStats={playback.getStats}
+              />
+            )}
             {baseBlur.defs}
           </div>
         </div>

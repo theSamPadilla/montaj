@@ -186,6 +186,25 @@ describe('createEngine — canvas attachment', () => {
   })
 })
 
+describe('createEngine — onPaint', () => {
+  it('fires after a clear to black too, so a surface drawn from the canvas never keeps the last frame', () => {
+    const canvas = document.createElement('canvas')
+    const order: string[] = []
+    const ctx = { fillStyle: '', globalAlpha: 1, fillRect: () => order.push('fill'), drawImage: () => order.push('draw') }
+    vi.spyOn(canvas, 'getContext').mockReturnValue(ctx as unknown as CanvasRenderingContext2D)
+    const onPaint = vi.fn(() => order.push('onPaint'))
+    // A canvas project's picture is 'black': attaching re-establishes it with a clear.
+    const engine = createEngine(canvasProject(4), { fileUrl: (p) => p, nowMs: () => 0, onPaint })
+    engine.attach(canvas)
+    expect(onPaint).toHaveBeenCalled()
+    // After the canvas holds the black, not before.
+    expect(order.slice(0, 2)).toEqual(['fill', 'onPaint'])
+    // A clear is not a painted frame.
+    expect(engine.stats().fps).toBe(0)
+    engine.dispose()
+  })
+})
+
 describe('createEngine — stats()', () => {
   it('reports zeroed defaults with no active clip and no paints', () => {
     const engine = createEngine(canvasProject(4), { fileUrl: (p) => p, nowMs: () => 0 })

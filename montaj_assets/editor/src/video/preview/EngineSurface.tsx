@@ -64,9 +64,30 @@ interface EngineSurfaceProps {
   debugHud?: boolean
   /** The hook's `getStats`. Read by the HUD on its own timer; unused when `debugHud` is falsy. */
   getStats: () => EngineStats | null
+  /**
+   * false renders the canvas alone, and the host renders {@link EngineChrome}
+   * (the placeholder and the HUD) itself: PreviewPlayer keeps them outside the
+   * blur wrappers, whose back wrapper a spin or zoom surface turns to opacity 0.
+   * Default true: canvas and chrome together.
+   */
+  chrome?: boolean
 }
 
-export default function EngineSurface({ attach, picture, reason, debugHud, getStats }: EngineSurfaceProps) {
+export default function EngineSurface({ attach, picture, reason, debugHud, getStats, chrome = true }: EngineSurfaceProps) {
+  return (
+    <>
+      <canvas
+        ref={attach}
+        data-montaj-engine-canvas=""
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 1 }}
+      />
+      {chrome && <EngineChrome picture={picture} reason={reason} debugHud={debugHud} getStats={getStats} />}
+    </>
+  )
+}
+
+/** The Preparing placeholder (after its delay) and the debug HUD, over the canvas. */
+export function EngineChrome({ picture, reason, debugHud, getStats }: Omit<EngineSurfaceProps, 'attach' | 'chrome'>) {
   const [showPreparing, setShowPreparing] = useState(false)
 
   useEffect(() => {
@@ -82,11 +103,6 @@ export default function EngineSurface({ attach, picture, reason, debugHud, getSt
 
   return (
     <>
-      <canvas
-        ref={attach}
-        data-montaj-engine-canvas=""
-        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 1 }}
-      />
       {showPreparing && (
         <div
           className="montaj-engine-preparing absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/80"

@@ -146,8 +146,9 @@ export interface EnginePlayback {
   /**
    * The `showVideo` analog: `picture === 'video'`. The legacy hook uses it to
    * zero a slot's opacity through a gap; the engine paints its own black, so
-   * this is informational for the surface (and for T7's HUD) rather than
-   * load-bearing.
+   * for the canvas it is informational (and for T7's HUD), but it gates the
+   * base clip's blur (PreviewPlayer): a spin or zoom surface over a black or
+   * preparing canvas would keep its last frame.
    */
   showVideo: boolean
   /** Gesture-anchored play/pause. Resumes the shared AudioContext first. */
