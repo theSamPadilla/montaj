@@ -31,7 +31,7 @@ import type { Project } from '../../../types'
 import type { VisualTrack } from '../../../schema'
 import { createPlaybackClock } from '../../playback-clock'
 import Timeline, { CROSSFADE_COMMIT_DELAY_MS } from '../Timeline'
-import { computeAutoCrossfade, computeVisualCrossfade, normalizeTracks, VISUAL_ROW_HEIGHT_PX } from '../timeline-model'
+import { computeAutoCrossfade, computeVisualCrossfade, normalizeTracks, ROW_GAP_PX, VISUAL_ROW_HEIGHT_PX, VISUAL_ROW_RENDER_HEIGHT_PX } from '../timeline-model'
 import type { ViewportStore } from '../canvas/viewport'
 import { canvasItemPoint, canvasSurface, installCanvasHarness, SURFACE_LEFT, timeToClientX } from './_canvasSelect'
 import { overlapViolations } from './_overlapRules'
@@ -194,12 +194,13 @@ describe('Timeline — a horizontal drag into an overlap keeps the item on its t
     fireEvent.mouseDown(surface, { ...press, button: 0 })
     act(() => { document.dispatchEvent(new MouseEvent('mousemove', at(15, 0))) })
     expect(placement(latest(rec), 'a').idx).toBe(1)
-    // Upward, a full row step: the pointed-at band is past the top of the
-    // stack, so the move mints a new top track exactly as before.
-    act(() => { document.dispatchEvent(new MouseEvent('mousemove', at(15, -VISUAL_ROW_HEIGHT_PX))) })
+    // Upward, a full drawn row step: the pointed-at band is past the top of
+    // the stack, so the move mints a new top track exactly as before.
+    const rowStep = VISUAL_ROW_RENDER_HEIGHT_PX + ROW_GAP_PX
+    act(() => { document.dispatchEvent(new MouseEvent('mousemove', at(15, -rowStep))) })
     expect(placement(latest(rec), 'a')).toEqual({ idx: 2, ids: ['a'] })
 
-    act(() => { document.dispatchEvent(new MouseEvent('mouseup', at(15, -VISUAL_ROW_HEIGHT_PX))) })
+    act(() => { document.dispatchEvent(new MouseEvent('mouseup', at(15, -rowStep))) })
     expect(rec.commits).toHaveLength(1)
     expect(placement(rec.commits[0], 'a')).toEqual({ idx: 2, ids: ['a'] })
   })

@@ -315,13 +315,14 @@ describe('drop-target lane highlight', () => {
     return calls.filter(c => c.method === 'strokeRect' && c.args[1] === lane1.y + 0.5)
   }
 
-  it('outlines the target lane in the accent, on top of its usual divider', () => {
+  // Dark (look B) lanes have no divider, so the accent outline is the only one.
+  it('outlines the target lane in the accent', () => {
     const outlines = paint(1)
-    expect(outlines.map(c => c.strokeStyle)).toEqual([DARK_TIMELINE_PALETTE.colors.rowDivider, DARK_TIMELINE_PALETTE.colors.snapGuide])
+    expect(outlines.map(c => c.strokeStyle)).toEqual([DARK_TIMELINE_PALETTE.colors.snapGuide])
   })
 
   it('draws nothing extra without a target', () => {
-    expect(paint(null).map(c => c.strokeStyle)).toEqual([DARK_TIMELINE_PALETTE.colors.rowDivider])
+    expect(paint(null).map(c => c.strokeStyle)).toEqual([])
   })
 
   it('uses the light accent in light mode', () => {
@@ -469,7 +470,7 @@ describe('the visual row a drag will drop on is highlighted, a new row included'
     const { ctx, calls } = recorder()
     drawTimelineContent(ctx, { project: p, viewport: VIEWPORT, layout, selectedIds: [], surfaceWidth: 1000, surfaceHeight: layout.height, dropTargetItem: 'o2' })
     const outlines = calls.filter(c => c.method === 'strokeRect' && c.args[1] === row.y + 0.5).map(c => c.strokeStyle)
-    expect(outlines).toEqual([DARK_TIMELINE_PALETTE.colors.rowDivider, DARK_TIMELINE_PALETTE.colors.snapGuide])
+    expect(outlines).toEqual([DARK_TIMELINE_PALETTE.colors.snapGuide])
   })
 })
 
