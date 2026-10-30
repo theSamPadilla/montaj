@@ -122,6 +122,17 @@ describe('audio lanes', () => {
     expect(removeAudioLane(auto, 0).audio!.tracks.map(t => t.id)).toEqual(['a1'])
   })
 
+  it('removes the drawn row from lane-less audio, and the rest keep their rows', () => {
+    const typed = (id: string, type: string) => ({ id, type, src: `${id}.mp3`, start: 0, end: 2 })
+    const mixed = proj([], [typed('voice', 'voiceover'), typed('music', 'music'), typed('sfx', 'sfx')])
+    const drawn = groupAudioLanes(mixed.audio!.tracks).map(l => [l.laneIndex, l.tracks.map(t => t.id)])
+    expect(drawn).toEqual([[0, ['voice']], [1, ['music']], [2, ['sfx']]])
+    expect(audioLaneItemCount(mixed, 1)).toBe(1)
+    const next = removeAudioLane(mixed, 1)
+    expect(groupAudioLanes(next.audio!.tracks).map(l => [l.laneIndex, l.tracks.map(t => t.id)])).toEqual([[0, ['voice']], [2, ['sfx']]])
+    expect(next.audio!.tracks.map(t => t.lane)).toEqual([0, 2])
+  })
+
   it('refuses the last lane, an unknown lane, and no audio', () => {
     const one = proj([], [a('a0', 0), a('a1', 0)])
     expect(canRemoveAudioLane(one, 0)).toBe(false)

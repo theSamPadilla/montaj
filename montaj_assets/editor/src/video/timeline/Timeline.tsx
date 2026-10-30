@@ -19,8 +19,8 @@ import { keyframeUnionTimes } from './canvas/keyframe-strip'
 import { mapTrackItems, normalizeTracks, stampAudioLanes, updateAudioTrack } from './timeline-model'
 import { deleteSelection, toggleSelection } from './multiSelectOps'
 import { removeMarkers } from './markers'
-import { computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, groupAudioLanes, trackItems } from './timeline-model'
-import { removeAudioLane, removeVisualTrack } from './trackRemoval'
+import { computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, trackItems } from './timeline-model'
+import { audioLaneTrackIds, removeAudioLane, removeVisualTrack } from './trackRemoval'
 import TimelineCanvas, { useCanvasZoomControls, type ZoomControls } from './canvas/TimelineCanvas'
 import type { KeyframeSelection } from './canvas/pointer-machine'
 import { revealAtEdge, timeToX, useViewportStore, useViewportValue, xToTime, type ViewportStore } from './canvas/viewport'
@@ -474,9 +474,11 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
   }
 
   /** Right-click remove: one edit through the normal path, so one undo step.
-   *  A selection that lived on the removed track is dropped with it. */
+   *  A selection that lived on the removed track is dropped with it. Starts
+   *  from `editBase`, so the audio rows stay as drawn; a refused removal
+   *  returns that base and commits nothing. */
   function commitRemoval(next: Project, removedIds: string[]) {
-    if (next === project || !onProjectChange) return
+    if (next === editBase || next === project || !onProjectChange) return
     onProjectChange(next)
     onOverlayEdit?.(next)
     const gone = new Set(removedIds)
@@ -484,13 +486,12 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
   }
 
   function handleRemoveTrack(trackIdx: number) {
-    const ids = (trackItems(project)[trackIdx] ?? []).map(i => i.id)
-    commitRemoval(removeVisualTrack(project, trackIdx), ids)
+    const ids = (trackItems(editBase)[trackIdx] ?? []).map(i => i.id)
+    commitRemoval(removeVisualTrack(editBase, trackIdx), ids)
   }
 
   function handleRemoveAudioLane(laneIndex: number) {
-    const lane = groupAudioLanes(project.audio?.tracks ?? []).find(l => l.laneIndex === laneIndex)
-    commitRemoval(removeAudioLane(project, laneIndex), (lane?.tracks ?? []).map(t => t.id))
+    commitRemoval(removeAudioLane(editBase, laneIndex), audioLaneTrackIds(editBase, laneIndex))
   }
 
   function handleSetLaneMuted(trackIds: string[], muted: boolean) {
