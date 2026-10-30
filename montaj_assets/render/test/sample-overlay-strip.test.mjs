@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { scene3dStripSource, stripFrames } from '../sample-frame.js'
+import { scene3dStripSource, stripFrames, withDeadline } from '../sample-frame.js'
 
 const SCRIPT = fileURLToPath(new URL('../sample-frame.js', import.meta.url))
 const cli = (...args) => spawnSync('node', [SCRIPT, '--mode', 'overlay-strip', ...args], { encoding: 'utf8' })
@@ -51,4 +51,10 @@ test('overlay-strip answers a 3D refusal with its own code', () => {
   { encoding: 'utf8', env: { ...process.env, MONTAJ_SCENE3D_STAGE: '' } })
   assert.equal(r.status, 1)
   assert.match(r.stderr, /scene3d_stage_unavailable/)
+})
+
+test('withDeadline: past the deadline the strip rejects as a timeout; in time it resolves', async () => {
+  await assert.rejects(withDeadline(new Promise(() => {}), 20), (e) => e.sampleError === 'timeout')
+  assert.equal(await withDeadline(Promise.resolve(7), 1000), 7)
+  assert.equal(await withDeadline(Promise.resolve(8), null), 8)
 })

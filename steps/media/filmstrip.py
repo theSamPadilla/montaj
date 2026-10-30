@@ -218,14 +218,60 @@ def cached_overlay_strip(out_dir: str, base_key: str):
         return None
     if not all(os.path.isfile(s.get("path", "")) for s in index["sheets"]):
         return None
+    _touch(os.path.join(out_dir, overlay_key(base_key, imports)))  # in use: pruning keeps the newest
     return index
 
 
-def run_overlay_strip_node(cmd: list, timeout: int):
-    """Run the node strip sampler; returns its parsed stdout JSON. A seam for tests."""
-    from common import node_child_env
+def _touch(path: str):
     try:
-        r = subprocess.run(cmd, capture_output=True, env=node_child_env(), timeout=timeout)  # kills the child on timeout
+        os.utime(path, None)
+    except OSError:
+        pass
+
+
+# Strip folders kept per out-dir; older ones are pruned after each new strip.
+KEEP_STRIPS = 4
+_KEY_DIR = re.compile(r"^[0-9a-f]{64}$")
+
+
+def prune_strips(out_dir: str, keep: int = KEEP_STRIPS):
+    """Best effort, never raises: keep the `keep` newest finished strip folders (they hold an index.json; a cache
+    hit touches its folder) and stale_* folders, remove the rest, then the import lists whose strip is gone.
+    A folder with no index.json yet may be a render in progress, and dot folders are work folders: both are left."""
+    try:
+        done = []
+        for name in os.listdir(out_dir):
+            path = os.path.join(out_dir, name)
+            if not os.path.isdir(path):
+                continue
+            if name.startswith("stale_") or (_KEY_DIR.match(name) and os.path.isfile(os.path.join(path, "index.json"))):
+                done.append((os.path.getmtime(path), path))
+        done.sort(reverse=True)
+        for _, path in done[keep:]:
+            shutil.rmtree(path, ignore_errors=True)
+        for name in os.listdir(out_dir):
+            imports = _read_json(os.path.join(out_dir, name, "imports.json")) if _KEY_DIR.match(name) else None
+            if isinstance(imports, list) and not os.path.isdir(os.path.join(out_dir, overlay_key(name, imports))):
+                shutil.rmtree(os.path.join(out_dir, name), ignore_errors=True)
+    except OSError:
+        pass
+
+
+# The node sampler's own deadline sits this far inside the step's, so it closes its Chromium and exits first
+# (the only clean stop on Windows, where there is no SIGTERM for puppeteer to catch).
+NODE_DEADLINE_MARGIN_S = 15
+
+
+def node_deadline_ms(timeout: float) -> int:
+    return int(max(5.0, timeout - NODE_DEADLINE_MARGIN_S) * 1000)
+
+
+def run_overlay_strip_node(cmd: list, timeout: int):
+    """Run the node strip sampler; returns its parsed stdout JSON. A seam for tests. Past `timeout` the sampler gets
+    SIGTERM (its whole group), so the Chromium it started closes too (run_stopping)."""
+    from common import node_child_env, run_stopping
+    try:
+        r = run_stopping(cmd, timeout=timeout, env=node_child_env())
     except subprocess.TimeoutExpired:
         fail("timeout", "Overlay strip timed out")
     if r.returncode != 0:
@@ -328,14 +374,17 @@ def build_overlay(jsx, duration, out_dir, max_tiles, min_interval, cols, tile_wi
                "--component", component or jsx, "--times", json.dumps([round(t, 4) for t in timestamps]),
                "--fps", str(fps), "--duration", str(max(1, round(duration * fps))),
                "--width", str(width), "--height", str(height), "--props", json.dumps(props_obj, sort_keys=True),
-               "--tile-width", str(tile_width), "--out-dir", work]
+               "--tile-width", str(tile_width), "--out-dir", work, "--deadline-ms", str(node_deadline_ms(timeout))]
         if google_fonts:
             cmd += ["--google-fonts", google_fonts]
         cmd += list(extra_cmd)
         got = run_overlay_strip_node(cmd, timeout)
         inputs = got.get("inputs", [])
         imports = sorted({p for p, _ in inputs} | {jsx})
-        key_dir = os.path.join(out_dir, overlay_key(base, imports))
+        # An edit landed while the strip rendered: it is a fine picture of the old file, but no entry for the new
+        # key. Checked before anything moves into a key folder; its sheets go to a stale_ folder instead.
+        changed = _inputs_changed(jsx, jsx_sha, inputs, hold)
+        key_dir = tempfile.mkdtemp(prefix="stale_", dir=out_dir) if changed else os.path.join(out_dir, overlay_key(base, imports))
         os.makedirs(key_dir, exist_ok=True)
 
         coverage = [tile_coverage(png) for png in got["pngs"][:len(timestamps)]]
@@ -354,13 +403,15 @@ def build_overlay(jsx, duration, out_dir, max_tiles, min_interval, cols, tile_wi
         mean = sum(coverage) / len(coverage) if coverage else 0.0
         index = {"sheets": sheets, "interval": round(interval, 3), "tileWidth": tile_width, "tileHeight": tile_height,
                  "coverage": round(mean, 4), "visual": mean >= VISUAL_COVERAGE}
-        # An edit landed while the strip rendered: it is a fine picture of the old file, but no entry for the new key.
-        if _inputs_changed(jsx, jsx_sha, inputs, hold):
+        if changed:
+            prune_strips(out_dir)
             return index
         os.makedirs(os.path.join(out_dir, base), exist_ok=True)
         _write_json_atomic(os.path.join(out_dir, base, "imports.json"), imports, valid=lambda d: isinstance(d, list))
         # last, so a hit never sees half a strip
-        return _write_json_atomic(os.path.join(key_dir, "index.json"), index, valid=lambda d: isinstance(d, dict) and bool(d.get("sheets")))
+        written = _write_json_atomic(os.path.join(key_dir, "index.json"), index, valid=lambda d: isinstance(d, dict) and bool(d.get("sheets")))
+        prune_strips(out_dir)
+        return written
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

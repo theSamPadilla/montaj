@@ -331,6 +331,8 @@ def test_edit_during_the_render_is_not_cached(overlay, tmp_path, monkeypatch, fa
     idx = build(overlay, out)
     assert idx["sheets"] and all(__import__("os").path.isfile(s["path"]) for s in idx["sheets"])
     assert not list(out.glob("*/imports.json")) and not list(out.glob("*/index.json"))
+    # the sheets never went into a key folder: they sit in a stale_ folder of their own
+    assert all(__import__("pathlib").Path(s["path"]).parent.name.startswith("stale_") for s in idx["sheets"])
     # nothing was cached, so the next build renders again and does cache
     monkeypatch.setattr(fs, "run_overlay_strip_node", inner)
     build(overlay, out)
@@ -365,9 +367,14 @@ def test_a_stat_that_moved_is_stale(overlay, monkeypatch):
 
 
 def test_node_timeout_fails_cleanly(overlay, tmp_path, monkeypatch, capsys):
-    def boom(cmd, **kw):
+    import common
+    seen = {}
+
+    def boom(cmd, timeout, **kw):
+        seen["cmd"], seen["timeout"] = cmd, timeout
         raise subprocess.TimeoutExpired(cmd, 1)
-    monkeypatch.setattr(fs.subprocess, "run", boom)
+    # run_stopping, not subprocess.run: past the timeout the sampler's whole group gets SIGTERM, so its Chromium closes
+    monkeypatch.setattr(common, "run_stopping", boom)
     monkeypatch.setattr(fs, "_render_dir", lambda: "/render")
     out = tmp_path / "out"
     with pytest.raises(SystemExit):
@@ -375,6 +382,10 @@ def test_node_timeout_fails_cleanly(overlay, tmp_path, monkeypatch, capsys):
     err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
     assert err == {"error": "timeout", "message": "Overlay strip timed out"}
     assert not list(out.glob(".strip_*"))
+    # the sampler's own deadline sits 15 s inside the step's, so it closes Chromium and exits first
+    assert seen["timeout"] == 60
+    assert seen["cmd"][seen["cmd"].index("--deadline-ms") + 1] == "45000"
+    assert fs.node_deadline_ms(10) == 5000
 
 
 def test_work_dir_is_gone_and_sheets_sit_under_the_key(fake_node, overlay, tmp_path):
@@ -542,3 +553,30 @@ def test_index_says_whether_the_overlay_is_visual(monkeypatch, overlay, tmp_path
         assert im.mode == "RGBA"
         assert im.size == (10 * 160, 284)
         assert im.getpixel((10 * 160 - 1, 0))[3] == 0  # the empty cells of a short row stay transparent
+
+
+def test_prune_keeps_the_newest_strips(fake_node, overlay, tmp_path):
+    out = tmp_path / "out"
+    for d in range(1, 7):
+        build(overlay, out, duration=float(d))
+        time.sleep(0.02)  # distinct mtimes, so the newest is unambiguous
+    keys = [f for f in out.iterdir() if f.is_dir() and (f / "index.json").exists()]
+    assert len(keys) == fs.KEEP_STRIPS
+    # the newest build is still a hit; the oldest renders again
+    n = len(fake_node)
+    build(overlay, out, duration=6.0)
+    assert len(fake_node) == n
+    build(overlay, out, duration=1.0)
+    assert len(fake_node) == n + 1
+    # import lists whose strip was pruned are gone too
+    for f in out.iterdir():
+        if (f / "imports.json").exists():
+            imports = json.loads((f / "imports.json").read_text())
+            assert (out / fs.overlay_key(f.name, imports)).is_dir()
+    # a folder still being written (no index.json) and work folders are left alone
+    (out / ("a" * 64)).mkdir()
+    (out / ".strip_x").mkdir()
+    fs.prune_strips(str(out), keep=0)
+    assert (out / ("a" * 64)).is_dir() and (out / ".strip_x").is_dir()
+    assert not [f for f in out.iterdir() if (f / "index.json").exists()]
+    fs.prune_strips(str(tmp_path / "missing"))  # never raises

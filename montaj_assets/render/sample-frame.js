@@ -348,7 +348,7 @@ if (isMain) {
       '  sample-frame.js --mode frame --project <path> --at <s> --at <s> ... --frames-dir <dir>\n' +
       '  sample-frame.js --mode measure --jobs <file.json> [--lanes N]\n' +
       '  sample-frame.js --mode overlay-strip --component <path|engine:scene3d> --times \'[0,1,2]\' --duration <frames> [--project-dir <dir>]\n' +
-      '    [--fps N] [--width W] [--height H] [--props \'...\'] [--google-fonts f1,f2]\n' +
+      '    [--fps N] [--width W] [--height H] [--props \'...\'] [--google-fonts f1,f2] [--deadline-ms N]\n' +
       '    --tile-width N --out-dir <dir>   one browser, one small PNG per time (t_0000.png...)\n'
     )
     process.exit(1)
@@ -385,6 +385,7 @@ if (isMain) {
   let timesArg      = null
   let tileWidthArg  = null
   let outDirArg     = null
+  let deadlineMsArg = null
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -415,6 +416,7 @@ if (isMain) {
     if (a === '--times')        { try { timesArg = JSON.parse(argv[++i]) } catch { fail('invalid_times', '--times is not valid JSON') }; continue }
     if (a === '--tile-width')   { tileWidthArg  = parseInt(argv[++i], 10); continue }
     if (a === '--out-dir')      { outDirArg     = argv[++i]; continue }
+    if (a === '--deadline-ms')  { deadlineMsArg = parseInt(argv[++i], 10); continue }
   }
 
   if (!mode) fail('missing_argument', '--mode overlay|frame|measure is required')
@@ -520,7 +522,12 @@ if (isMain) {
       process.stderr.write(JSON.stringify({ error: err instanceof Scene3dError ? err.code : 'sample_failed', message: err.message }) + '\n')
       process.exit(1)
     }
+    // Past the deadline the session closes its Chromium and the process exits 1 on its own: the caller's
+    // timeout would kill it, and on Windows a killed node leaves its browser running. The backstop exit covers a
+    // close that hangs.
+    if (deadlineMsArg > 0) setTimeout(() => process.exit(1), deadlineMsArg + 10_000).unref()
     sampleOverlayStrip({
+      deadlineMs: deadlineMsArg,
       componentPath: strip.componentPath,
       props: strip.props,
       projectDir,
@@ -1265,7 +1272,25 @@ export function scene3dStripSource(props, projectDir, opts) {
  * outDir/t_0000.png... in the order of `times`; touches no sample cache. Returns { pngs, tileWidth, tileHeight, inputs }
  * where inputs are the files the overlay was built from ([[path, mtimeMs]]).
  */
-export async function sampleOverlayStrip({ componentPath, props = {}, times, fps = 30, durationFrames, width = 1080, height = 1920, googleFonts = [], tileWidth, outDir, projectDir = null }) {
+/**
+ * `work` raced against `ms` milliseconds: past it, rejects with sampleError 'timeout' (the caller's finally then
+ * closes what it opened). `ms` absent or not positive: `work` as it is.
+ */
+export async function withDeadline(work, ms) {
+  if (!(ms > 0)) return work
+  let timer
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error(`Overlay strip passed its ${ms} ms deadline`), { sampleError: 'timeout' })), ms)
+  })
+  try {
+    return await Promise.race([work, deadline])
+  } finally {
+    clearTimeout(timer)
+    work.catch(() => {})
+  }
+}
+
+export async function sampleOverlayStrip({ componentPath, props = {}, times, fps = 30, durationFrames, width = 1080, height = 1920, googleFonts = [], tileWidth, outDir, projectDir = null, deadlineMs = null }) {
   if (!componentPath) throw Object.assign(new Error('componentPath is required'), { sampleError: 'missing_argument' })
   const scale = tileWidth / width
   const frames = stripFrames(times, fps, durationFrames)
@@ -1276,17 +1301,19 @@ export async function sampleOverlayStrip({ componentPath, props = {}, times, fps
   let inputs = []
   try {
     const open = () => openOverlayPage({ componentPath, props, fps, effectiveDuration: Math.max(1, durationFrames), width, height, googleFonts, projectDir, session, deviceScaleFactor: scale })
-    for (let k = 0; k < frames.length; k++) {
-      const outPath = join(outDir, `t_${String(k).padStart(4, '0')}.png`)
-      try {
-        const got = await session.sample(key, open, (ctx) => captureOverlay({ ...ctx, componentPath, frame: frames[k], measure: false, width, height, outPath }))
-        inputs = got.ctx.recordedInputs
-      } catch (err) {
-        if (!err.sampleError && err.message) err.sampleError = isThreeFrameBlank(err) ? 'three_frame_blank' : 'overlay_eval_failed'
-        throw err
+    await withDeadline((async () => {
+      for (let k = 0; k < frames.length; k++) {
+        const outPath = join(outDir, `t_${String(k).padStart(4, '0')}.png`)
+        try {
+          const got = await session.sample(key, open, (ctx) => captureOverlay({ ...ctx, componentPath, frame: frames[k], measure: false, width, height, outPath }))
+          inputs = got.ctx.recordedInputs
+        } catch (err) {
+          if (!err.sampleError && err.message) err.sampleError = isThreeFrameBlank(err) ? 'three_frame_blank' : 'overlay_eval_failed'
+          throw err
+        }
+        pngs.push(outPath)
       }
-      pngs.push(outPath)
-    }
+    })(), deadlineMs)
   } finally {
     await session.close()
   }
