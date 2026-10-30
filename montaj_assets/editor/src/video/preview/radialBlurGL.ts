@@ -20,7 +20,10 @@
 //      on an engine canvas), resampled bilinear to the picture's size in the
 //      target's pixels. The source uploads PREMULTIPLIED
 //      (UNPACK_PREMULTIPLY_ALPHA_WEBGL), so this resample and everything after
-//      runs on premultiplied colour, as the reference does.
+//      runs on premultiplied colour, as the reference does. An <img> is
+//      uploaded once into a texture of its own while its src and size hold
+//      (an animated box redraws every frame from the same picture); a video
+//      or canvas uploads on every draw.
 //   2. BLUR, one draw per plan pass, ping-ponging two textures: for each tap,
 //      a hardware-bilinear read of the previous result at the tap's inverse
 //      map (timeline-core `radialTapInverse`) about the centre. The border is
@@ -190,6 +193,11 @@ interface GLState {
 
 let state: GLState | null = null
 let failed = false
+/** Textures of <img> sources, uploaded once each (an animated box redraws every frame from the same picture). */
+const IMAGE_TEXTURES_MAX = 8
+const imageTextures = new Map<HTMLImageElement, { tex: WebGLTexture; src: string; w: number; h: number }>()
+/** Uploads made (test hook). */
+let uploads = 0
 const restoreListeners = new Set<() => void>()
 const warned = new Set<string>()
 
@@ -264,6 +272,7 @@ function context(): GLState | null {
       warnOnce('lost', 'the WebGL2 context was lost')
     })
     canvas.addEventListener('webglcontextrestored', () => {
+      imageTextures.clear()
       try {
         state = build(canvas, gl)
       } catch {
@@ -323,6 +332,49 @@ function ensureWork(s: GLState, w: number, h: number) {
 const taps = new Float32Array(MAX_TAPS * 4)
 
 /**
+ * Binds the source's picture on TEXTURE0. A video or canvas changes under the
+ * same element, so it uploads every draw into the shared source texture; an
+ * <img> uploads once into its own texture, kept while its src and size hold
+ * (the last IMAGE_TEXTURES_MAX images).
+ */
+function bindSourceTexture(s: GLState, source: RadialBlurSource, size: { w: number; h: number }) {
+  const { gl } = s
+  const upload = () => {
+    uploads++
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, source as TexImageSource)
+  }
+  if (!(typeof HTMLImageElement !== 'undefined' && source instanceof HTMLImageElement)) {
+    gl.bindTexture(gl.TEXTURE_2D, s.srcTex)
+    upload()
+    return
+  }
+  const src = source.currentSrc || source.src
+  const hit = imageTextures.get(source)
+  if (hit && hit.src === src && hit.w === size.w && hit.h === size.h) {
+    imageTextures.delete(source)
+    imageTextures.set(source, hit)
+    gl.bindTexture(gl.TEXTURE_2D, hit.tex)
+    return
+  }
+  const tex = hit?.tex ?? texture(gl, gl.LINEAR)
+  gl.bindTexture(gl.TEXTURE_2D, tex)
+  try {
+    upload()
+  } catch (e) {
+    if (!hit) gl.deleteTexture(tex)
+    imageTextures.delete(source)
+    throw e
+  }
+  imageTextures.delete(source)
+  imageTextures.set(source, { tex, src, w: size.w, h: size.h })
+  while (imageTextures.size > IMAGE_TEXTURES_MAX) {
+    const [oldest, entry] = imageTextures.entries().next().value as [HTMLImageElement, { tex: WebGLTexture }]
+    gl.deleteTexture(entry.tex)
+    imageTextures.delete(oldest)
+  }
+}
+
+/**
  * Draws a spin or zoom blur of `job.source` into `job.target` (cleared first;
  * transparent outside the picture). See the header for what each pass does.
  */
@@ -357,12 +409,11 @@ export function drawRadialBlur(job: RadialBlurJob): RadialBlurResult {
 
   // 1. Fit.
   gl.activeTexture(gl.TEXTURE0)
-  gl.bindTexture(gl.TEXTURE_2D, s.srcTex)
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
   gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true)
   gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.BROWSER_DEFAULT_WEBGL)
   try {
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, job.source as TexImageSource)
+    bindSourceTexture(s, job.source, src)
   } catch (e) {
     // A cross-origin source without CORS (a media URL on another origin, a
     // file:// video in a page that may not read files) taints: WebGL refuses it.
@@ -458,5 +509,8 @@ export const radialBlurDebug = {
     state = null
     failed = false
     warned.clear()
+    imageTextures.clear()
   },
+  /** Source uploads so far (an <img> uploads once while its src and size hold). */
+  uploads: (): number => uploads,
 }

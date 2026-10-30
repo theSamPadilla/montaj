@@ -30,6 +30,7 @@ declare global {
     __redraw: () => void
     __specMount: typeof specMount
     __specDraw: typeof specDraw
+    __imageUploads: typeof imageUploads
   }
 }
 
@@ -362,8 +363,33 @@ function specDraw(c: SpecCase) {
   }
 }
 
+/** Uploads an <img> source costs: drawn three times, then with a new src, then a fourth draw. */
+async function imageUploads() {
+  const img = new Image()
+  const load = (src: string) => new Promise((r) => { img.onload = r; img.src = src })
+  await load(picture(120, 80, false).toDataURL('image/png'))
+  const target = document.createElement('canvas')
+  target.width = 120
+  target.height = 80
+  const job = { source: img, target, type: 'zoom' as const, amount: 30, center: { x: 0.5, y: 0.5 }, pictureRect: { x: 0, y: 0, w: 1, h: 1 } }
+  const at0 = radialBlurDebug.uploads()
+  const first = drawRadialBlur(job)
+  const a = target.getContext('2d')!.getImageData(0, 0, 120, 80).data.slice()
+  drawRadialBlur(job)
+  drawRadialBlur(job)
+  const b = target.getContext('2d')!.getImageData(0, 0, 120, 80).data
+  const sameImage = radialBlurDebug.uploads() - at0
+  let same = true
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) { same = false; break }
+  await load(picture(120, 80, true).toDataURL('image/png'))
+  drawRadialBlur(job)
+  drawRadialBlur(job)
+  return { first, sameImage, afterNewSrc: radialBlurDebug.uploads() - at0, same }
+}
+
 window.__specMount = specMount
 window.__specDraw = specDraw
+window.__imageUploads = imageUploads
 window.__compare = compare
 window.__preview = preview
 window.__videoSurface = videoSurface

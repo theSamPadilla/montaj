@@ -357,6 +357,19 @@ test('the real mapping: radialBlurSpec\'s rects put the blur where the browser s
   } finally { await page.close() }
 })
 
+test('an <img> source uploads once while its src holds (an animated box redraws from it every frame), again for a new src', { timeout: 60_000 }, async (t) => {
+  const { page, errors } = await open()
+  try {
+    if (await noWebgl2(page, t)) return
+    const r = await page.evaluate(() => window.__imageUploads())
+    assert.equal(r.first, 'drawn')
+    assert.equal(r.sameImage, 1, 'three draws of one image, one upload')
+    assert.equal(r.same, true, 'the cached texture draws the same pixels')
+    assert.equal(r.afterNewSrc, 2, 'a new src uploads once more')
+    assert.deepEqual(errors, [])
+  } finally { await page.close() }
+})
+
 test('timing at 1080x1920 (diagnostic only; the GPU this runs on)', { timeout: 120_000 }, async (t) => {
   const { page } = await open()
   try {
