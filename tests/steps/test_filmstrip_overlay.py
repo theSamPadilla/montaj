@@ -499,3 +499,46 @@ def test_3d_strip_refuses_a_bad_id_and_a_missing_project(fake_node3d, project3d,
     with pytest.raises(SystemExit):
         fs.build_scene3d(None, 3.0, str(tmp_path / "out"), 100, 1.0, 10, 160, 100, 60, props='{"scene":"hands"}')
     assert fake_node3d == []
+
+
+# ---------------------------------------------------------------------------
+# Coverage: only visual overlays get a strip
+# ---------------------------------------------------------------------------
+
+def _png(path, size=(160, 284), box=None, alpha=255):
+    """A transparent PNG, filled (or only `box` filled) with opaque red."""
+    from PIL import Image, ImageDraw
+    im = Image.new("RGBA", size, (0, 0, 0, 0))
+    ImageDraw.Draw(im).rectangle(box or (0, 0, size[0] - 1, size[1] - 1), fill=(255, 0, 0, alpha))
+    im.save(path)
+    return str(path)
+
+
+def test_coverage_reads_alpha(tmp_path):
+    assert fs.tile_coverage(_png(tmp_path / "full.png")) == pytest.approx(1.0)
+    # a line of tiny text: a strip 4 px tall across a 284 px frame
+    assert fs.tile_coverage(_png(tmp_path / "text.png", box=(20, 140, 140, 143))) < fs.VISUAL_COVERAGE
+    # alpha at or under 0.1 is not coverage
+    assert fs.tile_coverage(_png(tmp_path / "faint.png", alpha=20)) == 0.0
+
+
+@pytest.mark.parametrize("box, visual", [(None, True), ((20, 140, 140, 143), False)])
+def test_index_says_whether_the_overlay_is_visual(monkeypatch, overlay, tmp_path, box, visual):
+    def fake(cmd, timeout):
+        out = cmd[cmd.index("--out-dir") + 1]
+        n = len(json.loads(cmd[cmd.index("--times") + 1]))
+        return {"pngs": [_png(f"{out}/t_{i:04d}.png", box=box) for i in range(n)], "tileWidth": 160, "tileHeight": 284,
+                "inputs": [[str(overlay / "o.jsx"), (overlay / "o.jsx").stat().st_mtime * 1000]]}
+    monkeypatch.setattr(fs, "run_overlay_strip_node", fake)
+    monkeypatch.setattr(fs, "_render_dir", lambda: "/render")
+    idx = build(overlay, tmp_path / "out")
+    assert idx["visual"] is visual
+    assert (idx["coverage"] >= fs.VISUAL_COVERAGE) is visual
+    # the sheet keeps alpha, so the editor can lay it over the footage
+    from PIL import Image
+    path = idx["sheets"][0]["path"]
+    assert path.endswith(".png")
+    with Image.open(path) as im:
+        assert im.mode == "RGBA"
+        assert im.size == (10 * 160, 284)
+        assert im.getpixel((10 * 160 - 1, 0))[3] == 0  # the empty cells of a short row stay transparent

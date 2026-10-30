@@ -24,7 +24,12 @@ from common import ffmpeg_error_tail, fail, require_file, run, check_output, get
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 # Bump when the overlay strip's pixels or index shape change, so cached strips retire.
-OVERLAY_STRIP_VERSION = 1
+# 2: sheets are PNG with alpha (no navy ground), and the index carries coverage and visual.
+OVERLAY_STRIP_VERSION = 2
+# A pixel counts as covered above this alpha; an overlay covering less of its frame on average than
+# VISUAL_COVERAGE (tiny text, a caption, a mask whose hole is the whole frame) is not drawn as a strip.
+COVERAGE_ALPHA = 0.1
+VISUAL_COVERAGE = 0.15
 # A 3D item's reserved src, the host stage it renders through and the scene id rule (render/scene3d.js).
 SCENE3D_SRC = "engine:scene3d"
 SCENE3D_STAGE_ENV = "MONTAJ_SCENE3D_STAGE"
@@ -232,11 +237,30 @@ def run_overlay_strip_node(cmd: list, timeout: int):
         fail("unexpected_error", "Overlay strip printed no result")
 
 
-def flatten_tile(png: str, dest: str, w: int, h: int, timeout: int):
-    """A transparent overlay frame over the strip's dark ground, as the JPEG tile_sheet reads."""
-    run([ffmpeg_bin(), "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=0x101B2C:s={w}x{h}",
-         "-i", png, "-filter_complex", f"[1:v]scale={w}:{h}[o];[0:v][o]overlay=shortest=1,format=yuvj420p",
-         "-frames:v", "1", dest, "-y"], timeout=timeout)
+def tile_coverage(png: str) -> float:
+    """The share of a tile's pixels with alpha above COVERAGE_ALPHA: about 1 for a full-frame overlay, near 0
+    for tiny text on transparent or a frame that is all hole."""
+    from PIL import Image
+    with Image.open(png) as im:
+        hist = im.convert("RGBA").getchannel("A").histogram()
+    total = sum(hist)
+    cut = int(COVERAGE_ALPHA * 255) + 1  # alpha > 0.1, as 8-bit
+    return sum(hist[cut:]) / total if total else 0.0
+
+
+def png_sheet(pngs: list, cols: int, w: int, h: int, dest: str):
+    """The tiles in a cols-wide grid of w x h cells, no padding, as a PNG that keeps their alpha (the editor
+    composes it over the footage under the overlay). A short last row leaves its cells transparent."""
+    from PIL import Image
+    rows = (len(pngs) + cols - 1) // cols
+    sheet = Image.new("RGBA", (cols * w, rows * h), (0, 0, 0, 0))
+    for i, png in enumerate(pngs):
+        with Image.open(png) as im:
+            tile = im.convert("RGBA")
+            if tile.size != (w, h):
+                tile = tile.resize((w, h), Image.LANCZOS)
+            sheet.paste(tile, ((i % cols) * w, (i // cols) * h))
+    sheet.save(dest, "PNG")
     check_output(dest)
 
 
@@ -314,23 +338,22 @@ def build_overlay(jsx, duration, out_dir, max_tiles, min_interval, cols, tile_wi
         key_dir = os.path.join(out_dir, overlay_key(base, imports))
         os.makedirs(key_dir, exist_ok=True)
 
+        coverage = [tile_coverage(png) for png in got["pngs"][:len(timestamps)]]
         sheets = []
         for sheet_no, offset in enumerate(range(0, len(timestamps), tiles_per_sheet)):
             chunk = timestamps[offset:offset + tiles_per_sheet]
-            tiles_dir = os.path.join(work, f"sheet_{sheet_no}")
-            os.makedirs(tiles_dir)
-            for i in range(len(chunk)):
-                flatten_tile(got["pngs"][offset + i], os.path.join(tiles_dir, f"f_{i + 1:04d}.jpg"), tile_width, tile_height, timeout)
-            name = f"sheet_{sheet_no + 1:02d}.jpg"
+            name = f"sheet_{sheet_no + 1:02d}.png"
             built = os.path.join(work, name)
-            tile_sheet(tiles_dir, len(chunk), cols, built, timeout)
+            png_sheet(got["pngs"][offset:offset + len(chunk)], cols, tile_width, tile_height, built)
             sheet_path = os.path.join(key_dir, name)
             _move_into(built, sheet_path)
             sheets.append({
                 "path": sheet_path, "cols": cols, "rows": (len(chunk) + cols - 1) // cols,
                 "tiles": [{"t": round(t, 3), "row": i // cols, "col": i % cols} for i, t in enumerate(chunk)],
             })
-        index = {"sheets": sheets, "interval": round(interval, 3), "tileWidth": tile_width, "tileHeight": tile_height}
+        mean = sum(coverage) / len(coverage) if coverage else 0.0
+        index = {"sheets": sheets, "interval": round(interval, 3), "tileWidth": tile_width, "tileHeight": tile_height,
+                 "coverage": round(mean, 4), "visual": mean >= VISUAL_COVERAGE}
         # An edit landed while the strip rendered: it is a fine picture of the old file, but no entry for the new key.
         if _inputs_changed(jsx, jsx_sha, inputs, hold):
             return index

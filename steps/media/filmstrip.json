@@ -7,7 +7,7 @@
   },
   "output": {
     "type": "json",
-    "description": "{sheets:[{path, cols, rows, tiles:[{t, row, col}]}], interval, tileWidth}; an overlay adds tileHeight and is cached under out-dir"
+    "description": "{sheets:[{path, cols, rows, tiles:[{t, row, col}]}], interval, tileWidth}; an overlay adds tileHeight, coverage and visual, writes PNG sheets with alpha and is cached under out-dir"
   },
   "params": [
     { "name": "out-dir", "type": "string", "required": true, "description": "Directory to write sheet images into" },
