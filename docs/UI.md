@@ -676,8 +676,16 @@ spin and zoom); the amount, a slider and box in the type's unit (px to 200 for
 uniform and linear, degrees to 180 for spin, percent to 200 for zoom); for
 linear an **Angle** row (a box and the Rotate row's dial, whose line is the
 streak); for spin and zoom a **Center** row (X and Y in percent of the box).
-None is keyframable. Uniform and linear draw live in the preview
-(`preview/itemBlur.tsx`); spin and zoom show sharp until they are built. On the
+None is keyframable. Uniform and linear draw live in the preview as SVG filters
+(`preview/itemBlur.tsx`); spin and zoom draw on a WebGL2 canvas over the clip
+inside its media box, so its mask and blend apply (`preview/RadialBlurSurface.tsx`,
+`preview/radialBlurGL.ts`); the clip's own `<video>`, `<img>` or engine canvas
+stays mounted underneath at opacity 0, and shows sharp when there is no WebGL2.
+They match the export within 8 codes (mean under 1). Their export cost, a 10 s
+1080x1920 full-frame clip of known footage size: 11.7 s for spin 30 degrees and
+12.3 s for zoom 40%, against 4.6 s unblurred, 5.7 s uniform 40 and 8.6 s linear
+40 (about 25 ms a frame more); a clip whose footage size is unknown blurs after
+its upscale and is far slower (262 s for spin). On the
 preview a selected masked clip shows the mask's outline, resize squares, a
 rotate handle and dashed rings marking the feather band; dragging the outer ring
 sets the feather (`preview/MaskGizmo.tsx`). The data is in
