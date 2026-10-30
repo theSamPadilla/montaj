@@ -1866,6 +1866,10 @@ export interface TimelineScene {
    *  `TimelinePin`'s own doc. Absent/empty → no pins are drawn, which is what
    *  every caller that predates them gets. */
   pins?: readonly TimelinePin[]
+  /** The audio lane (`AudioLane.laneIndex`) a dragged audio bar will drop
+   *  into, highlighted on its background (`drawDropTargetLane`). Absent/null
+   *  → no highlight. */
+  dropTargetLane?: number | null
 }
 
 export interface DrawStats {
@@ -2352,6 +2356,9 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
 
   for (const lane of layout.lanes) {
     drawRowBackground(ctx, { x: 0, y: lane.y, width: surfaceWidth, height: lane.height }, undefined, themePalette)
+    if (scene.dropTargetLane === lane.laneIndex) {
+      drawDropTargetLane(ctx, { x: 0, y: lane.y, width: surfaceWidth, height: lane.height }, themePalette)
+    }
     const laneHandleRects: Array<{ rect: Rect; hoveredEdge: 'in' | 'out' | null }> = []
 
     for (const track of lane.tracks) {
@@ -2510,4 +2517,20 @@ export function audioLabel(track: AudioTrack): string {
   if (track.type === 'voiceover') return 'Voiceover'
   if (track.type === 'music') return 'Music'
   return track.label ?? track.src?.split('/').pop() ?? 'audio'
+}
+
+/** The lane a dragged audio bar will drop into: a faint tint and a 1px outline
+ *  in the accent, over the lane background and under its bars. The accent is
+ *  the snap guide's, so it follows the light and dark palettes with it. */
+export function drawDropTargetLane(ctx: DrawContext, rect: Rect, palette: TimelinePalette = DARK_TIMELINE_PALETTE): void {
+  ctx.save()
+  ctx.fillStyle = palette.colors.snapGuide
+  ctx.globalAlpha = 0.12
+  roundRectPath(ctx, rect.x, rect.y, rect.width, rect.height, ROW_RADIUS_PX)
+  ctx.fill()
+  ctx.globalAlpha = 1
+  ctx.strokeStyle = palette.colors.snapGuide
+  ctx.lineWidth = 1
+  ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, Math.max(0, rect.width - 1), Math.max(0, rect.height - 1))
+  ctx.restore()
 }

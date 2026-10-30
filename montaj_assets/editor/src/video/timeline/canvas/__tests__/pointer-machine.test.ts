@@ -277,6 +277,8 @@ const KEYFRAME_ZONE_Y = OVERLAY_ROW.y + OVERLAY_ROW.height - 2
 const O0_KEYFRAME_SHARED = { x: 250, y: KEYFRAME_ZONE_Y }   // t=0.5 — offsetX + opacity
 const O0_KEYFRAME_SOLO = { x: 350, y: KEYFRAME_ZONE_Y }     // t=1.5 — offsetX only
 const EMPTY = { x: 700, y: OVERLAY_Y }
+/** Above the top row: a move dropped here mints a new track. */
+const ABOVE_TOP_Y = LAYOUT.rows[0].y - 2
 /** Inside the ruler strip — the only place a scrub starts now. */
 const RULER_Y = Math.round(LAYOUT.ruler.y + LAYOUT.ruler.height / 2)
 
@@ -662,13 +664,15 @@ describe('body drag — move', () => {
     expect(visual(committed[0].project, 'c0').start).toBeCloseTo(0.7)
   })
 
-  it('accumulates across moves so the cross-track search sees its own work', () => {
+  it('stays on the row it reached while the pointer holds there', () => {
     // `sameKindProject`: track 1 must be video-kind (not overlay) for this
-    // move to land at all — see the fixture's own doc comment.
+    // move to land at all — see the fixture's own doc comment. Every frame is
+    // rebuilt from the press-time project, so a second frame at the same point
+    // lands exactly where the first did.
     const d = new Driver(makeContext({ project: sameKindProject() }))
     d.down(C1_BODY.x, SAME_KIND_BASE_Y)
-    d.move(C1_BODY.x, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX)          // up one track
-    const after = lastProjectChange(d.move(C1_BODY.x, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX))
+    d.move(C1_BODY.x, SAME_KIND_TRACK1_Y)          // up one track
+    const after = lastProjectChange(d.move(C1_BODY.x, SAME_KIND_TRACK1_Y))
     expect(trackIndexOf(after, 'c1')).toBe(1)
   })
 
@@ -735,9 +739,9 @@ describe('cross-track move', () => {
     // block the very move this test is about — see its own doc comment.
     const d = new Driver(makeContext({ project: sameKindProject() }))
     d.down(C1_BODY.x, SAME_KIND_BASE_Y)
-    // 24px of upward travel is one track; c1 (5s–10s) doesn't collide with the
+    // The pointer on track 1's row; c1 (5s–10s) doesn't collide with the
     // video o0 (2s–4s), so it lands on track 1.
-    const after = lastProjectChange(d.move(C1_BODY.x, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX))
+    const after = lastProjectChange(d.move(C1_BODY.x, SAME_KIND_TRACK1_Y))
     expect(trackIndexOf(after, 'c1')).toBe(1)
     expect(visual(after, 'c1').start).toBeCloseTo(5)
   })
@@ -747,7 +751,7 @@ describe('cross-track move', () => {
     d.down(C0_BODY.x, C0_BODY.y)
     // c0 (0s–5s) would overlap o0 (2s–4s) by 2s, past the 30%-of-duration
     // tolerance, so the outward search falls back to its own track.
-    const after = lastProjectChange(d.move(C0_BODY.x, C0_BODY.y - VISUAL_ROW_HEIGHT_PX))
+    const after = lastProjectChange(d.move(C0_BODY.x, OVERLAY_Y))
     expect(trackIndexOf(after, 'c0')).toBe(0)
   })
 
@@ -758,20 +762,20 @@ describe('cross-track move', () => {
     // tolerance this test is actually about ever gets exercised.
     const d = new Driver(makeContext({ project: sameKindProject() }))
     d.down(C1_BODY.x, SAME_KIND_BASE_Y)
-    const after = lastProjectChange(d.move(C1_BODY.x - 200, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX))
+    const after = lastProjectChange(d.move(C1_BODY.x - 200, SAME_KIND_TRACK1_Y))
     expect(visual(after, 'c1').start).toBeCloseTo(3)
     expect(trackIndexOf(after, 'c1')).toBe(1)
   })
 
   it('mints a new video track at the top of the video block, below any overlay track (Part B track grouping)', () => {
-    // Two steps up from track 0 mints a new track past the top of the
+    // Dropped above the top row, a move mints a new track past the top of the
     // existing (2-track) stack — but the result is RE-GROUPED: the new
     // track is video-kind, so it joins the video block (alongside the
     // remaining c1) ahead of the overlay track o0, rather than staying
     // "literally on top" at index 2 the way an un-grouped mint would.
     const d = new Driver(makeContext())
     d.down(C0_BODY.x, C0_BODY.y)
-    const after = lastProjectChange(d.move(C0_BODY.x, C0_BODY.y - VISUAL_ROW_HEIGHT_PX * 2))
+    const after = lastProjectChange(d.move(C0_BODY.x, ABOVE_TOP_Y))
     expect(after.tracks).toHaveLength(3)
     expect(trackIndexOf(after, 'c0')).toBe(1)
   })
@@ -783,9 +787,9 @@ describe('cross-track move', () => {
     // never get to run.
     const d = new Driver(makeContext({ project: sameKindProject() }))
     d.down(300, SAME_KIND_TRACK1_Y)                     // o0, the only item on track 1
-    // Down two tracks and out past the end of the base track's content, where
-    // nothing collides — so track 1 is left empty and disappears.
-    const after = lastProjectChange(d.move(300 + 900, SAME_KIND_TRACK1_Y + 48))
+    // Down onto track 0's row and out past the end of the base track's
+    // content, where nothing collides — so track 1 is left empty and disappears.
+    const after = lastProjectChange(d.move(300 + 900, SAME_KIND_BASE_Y))
     expect(visual(after, 'o0').start).toBeCloseTo(11)
     expect(after.tracks).toHaveLength(1)
     expect(trackIndexOf(after, 'o0')).toBe(0)
@@ -800,7 +804,7 @@ describe('cross-track move', () => {
     // just in the legacy array-of-arrays shape this test targets.
     const d = new Driver(makeContext({ project: sameKindLegacyProject() }))
     d.down(C1_BODY.x, SAME_KIND_BASE_Y)
-    const after = lastProjectChange(d.move(C1_BODY.x, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX))
+    const after = lastProjectChange(d.move(C1_BODY.x, SAME_KIND_TRACK1_Y))
     expect(trackIndexOf(after, 'c1')).toBe(1)
     expect(visual(after, 'c1').start).toBeCloseTo(5)
   })
@@ -817,7 +821,7 @@ describe('cross-track move — ripple mode (makeSpace)', () => {
     d.down(C1_BODY.x, SAME_KIND_BASE_Y)
     // c1 (5s–10s) moves up one track and 4s left, landing at 1s–6s — a 2s
     // overlap with o0 (2s–4s), past the 30%-of-5s tolerance.
-    const after = lastProjectChange(d.move(C1_BODY.x - 400, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX))
+    const after = lastProjectChange(d.move(C1_BODY.x - 400, SAME_KIND_TRACK1_Y))
     expect(trackIndexOf(after, 'c1')).toBe(1)
     expect(visual(after, 'c1')).toMatchObject({ start: 1, end: 6 })
     // o0 is pushed right by c1's own 5s duration rather than the drag
@@ -829,7 +833,7 @@ describe('cross-track move — ripple mode (makeSpace)', () => {
   it('bumps to a different track for the identical drag when magnet is off (contrast)', () => {
     const d = new Driver(makeContext({ project: sameKindProject(), rippleMode: false, snapConfig: ZERO_SNAP }))
     d.down(C1_BODY.x, SAME_KIND_BASE_Y)
-    const after = lastProjectChange(d.move(C1_BODY.x - 400, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX))
+    const after = lastProjectChange(d.move(C1_BODY.x - 400, SAME_KIND_TRACK1_Y))
     // Track 1 collides (o0) and, at this dropped position, so does track 0
     // (c0, 0s-5s, overlapped by 4s), so the outward search mints a fresh
     // track above both rather than landing on either — and o0 is left
@@ -844,7 +848,7 @@ describe('cross-track move — ripple mode (makeSpace)', () => {
     d.down(C1_BODY.x, SAME_KIND_BASE_Y)
     // Purely vertical travel: c1 keeps its own 5s–10s window, which doesn't
     // overlap o0 (2s–4s) at all.
-    const after = lastProjectChange(d.move(C1_BODY.x, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX))
+    const after = lastProjectChange(d.move(C1_BODY.x, SAME_KIND_TRACK1_Y))
     expect(trackIndexOf(after, 'c1')).toBe(1)
     expect(visual(after, 'c1')).toMatchObject({ start: 5, end: 10 })
     expect(visual(after, 'o0')).toMatchObject({ start: 2, end: 4 })
@@ -857,7 +861,7 @@ describe('cross-track move — ripple mode (makeSpace)', () => {
     d.down(C0_BODY.x, C0_BODY.y)
     // One track up targets track 1 (the overlay track); even though makeSpace
     // is on, the kind gate must still refuse it.
-    const after = lastProjectChange(d.move(C0_BODY.x, C0_BODY.y - VISUAL_ROW_HEIGHT_PX))
+    const after = lastProjectChange(d.move(C0_BODY.x, OVERLAY_Y))
     expect(trackIndexOf(after, 'c0')).toBe(0)
     expect(visual(after, 'o0')).toMatchObject({ start: 2, end: 4 })
   })
@@ -2169,7 +2173,7 @@ describe('cross-track re-tiering — a move follows the row it is currently over
     // is well inside its 20px radius.
     const crossed = new Driver(makeContext({ project: sameKindProject() }))
     crossed.down(C1_BODY.x, SAME_KIND_BASE_Y)
-    expect(of(crossed.move(658, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX), 'snapGuide')).toEqual(guide(4, 'strong'))
+    expect(of(crossed.move(658, SAME_KIND_TRACK1_Y), 'snapGuide')).toEqual(guide(4, 'strong'))
   })
 
   it('demotes the origin track\'s boundary to weak once the drag has left it', () => {
@@ -2192,7 +2196,7 @@ describe('cross-track re-tiering — a move follows the row it is currently over
     // weak, and the same 15px is now too far even for that.
     const crossed = new Driver(ctx)
     crossed.down(C1_BODY.x, SAME_KIND_BASE_Y)
-    expect(of(crossed.move(265, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX), 'snapGuide')).toEqual([])
+    expect(of(crossed.move(265, SAME_KIND_TRACK1_Y), 'snapGuide')).toEqual([])
   })
 
   it('keeps the playhead strong no matter which track the drag is currently over', () => {
@@ -2206,7 +2210,7 @@ describe('cross-track re-tiering — a move follows the row it is currently over
 
     const crossed = new Driver(ctx)
     crossed.down(C1_BODY.x, SAME_KIND_BASE_Y)
-    expect(of(crossed.move(600, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX), 'snapGuide')).toEqual(guide(3.5, 'strong'))
+    expect(of(crossed.move(600, SAME_KIND_TRACK1_Y), 'snapGuide')).toEqual(guide(3.5, 'strong'))
   })
 
   it('still excludes the dragged item\'s own edges once re-tiered onto a new track', () => {
@@ -2218,7 +2222,7 @@ describe('cross-track re-tiering — a move follows the row it is currently over
     // track 0, which it no longer occupies) the moment it crossed rows.
     const d = new Driver(makeContext({ project: sameKindProject() }))
     d.down(C1_BODY.x, SAME_KIND_BASE_Y)
-    expect(of(d.move(1250, SAME_KIND_BASE_Y - VISUAL_ROW_HEIGHT_PX), 'snapGuide')).toEqual([])
+    expect(of(d.move(1250, SAME_KIND_TRACK1_Y), 'snapGuide')).toEqual([])
   })
 
   it('leaves a within-track move exactly as it was — the current track equals the origin track throughout', () => {
@@ -2236,9 +2240,10 @@ describe('cross-track re-tiering — a move follows the row it is currently over
     //
     // The two facts that produce it, neither visible from the drag alone:
     //
-    //  - The drag divisor (VISUAL_ROW_HEIGHT_PX, 24) is roughly HALF a
+    //  - The drag divisor (VISUAL_ROW_HEIGHT_PX, 24) was roughly HALF a
     //    rendered overlay row (40 + 4 gap = 44), so one row of real travel
-    //    reads as TWO track steps. From track 2 that points at track 0.
+    //    read as TWO track steps. From track 2 that pointed at track 0. (The
+    //    pointed-at row is now the one drawn under the pointer.)
     //  - `moveItemAcrossTracks` does not honour that index: track 0 holds
     //    video, the dragged item is an overlay, so the kind gate rejects it
     //    and the outward search puts the drop back on track 1 — the row the
@@ -2808,7 +2813,7 @@ describe('multi-select move across tracks', () => {
     const preview = lastProjectChange(d.move(to.x, to.y))
     const o1 = visual(ctx.project, 'o1')
     const expected = moveItemAcrossTracks({
-      tracks: normalizeTracks(ctx.project).tracks!, item: o1, start: 0, end: 2, sourceTrackIdx: 1, dy: to.y - from.y,
+      tracks: normalizeTracks(ctx.project).tracks!, item: o1, start: 0, end: 2, sourceTrackIdx: 1, dy: to.y - from.y, targetTrackIdx: 3,
     })
     // Item for item (a minted track's id is random, so ids are not compared).
     expect(preview.tracks!.map(t => t.items)).toEqual(expected.map(t => t.items))

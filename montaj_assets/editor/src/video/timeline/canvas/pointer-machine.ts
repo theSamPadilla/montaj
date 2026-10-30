@@ -64,7 +64,7 @@ import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
 import { canKeyframe, enableKeyframing, moveKeyframe, setKeyframe, transformProps, valueAt } from '../../keyframeOps'
 import { moveMarker } from '../markers'
 import { applyMoveDeltaToSelection, applyResizeDeltaToSelection, moveSelectionToTrack } from '../multiSelectOps'
-import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, ROW_GAP_PX, computeDerivedTiming, groupAudioLanes, hasVerticalIntent, mapTrackItems, moveItemAcrossTracks, normalizeTracks, resolveTargetTrackIdx, trackItems, updateAudioTrack } from '../timeline-model'
+import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, ROW_GAP_PX, computeDerivedTiming, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, resolveTargetTrackIdx, stampAudioLanes, trackItems, updateAudioTrack } from '../timeline-model'
 import { DRAG_THRESHOLD_PX, computeResizedItem, resizeWindowedItem, type Draggable } from '../useItemDragDrop'
 import type { TimelineLayout } from './draw'
 import { keyframeUnionTimes } from './keyframe-strip'
@@ -213,6 +213,10 @@ export type PointerEffect =
    *  matching `Keyframe.t`. The host holds this selection; the machine is
    *  stateless about it, exactly as it is about item selection. */
   | { type: 'selectKeyframe'; itemId: string; t: number }
+  /** The audio lane (`AudioLane.laneIndex`) a dragged audio bar will drop into,
+   *  to highlight, or null to take the highlight down. Set only while the bar
+   *  is over a row other than its own, and emitted only when it changes. */
+  | { type: 'dropLane'; laneIndex: number | null }
 
 /** The host's record of which diamond is selected. A diamond is a time on an
  *  item — the props at that time are derived when acted on, never stored here. */
@@ -265,9 +269,13 @@ export interface Press {
   originTime: number
   modifiers: Modifiers
   hit: HitResult
-  /** The project as it stood when the press began. Trims and the three
+  /** The project as it stood when the press began, with every audio track's
+   *  drawn lane written onto it (`stampAudioLanes`). Trims and the three
    *  neighbour-aware ops recompute from here on every move, so dragging back and
-   *  forth cannot compound. */
+   *  forth cannot compound. The stamp is what keeps a gesture from moving rows
+   *  it did not touch: one explicit `lane` among lane-less tracks re-packs all
+   *  of them. It draws exactly the rows the press saw, so `hit.laneIdx` and
+   *  `layout` still describe it. */
   baseProject: Project
   /** Was the pressed item already selected? Drives the DOM's conditional seek
    *  on a plain click. */
@@ -334,6 +342,9 @@ export type MachineState =
        *  other, so a selection can be gathered onto the pressed clip's own
        *  track by leaving it and coming back. See `pressedRowLeft`. */
       leftPressedRow?: boolean
+      /** `audio-move` only: the lane highlighted as the drop target, or null.
+       *  See the `dropLane` effect. */
+      dropLane?: number | null
     }
 
 export function initialMachineState(): MachineState {
@@ -823,6 +834,9 @@ interface Applied {
    *  to the state's last known value (see the dragging state's `keyframeT`)
    *  so a settled no-op frame at release never loses it. */
   keyframeLandedT?: number
+  /** `audio-move` only: the lane to highlight as the drop target, or null.
+   *  Like `guide`, the reducer diffs it and emits a `dropLane` on a change. */
+  dropLane?: number | null
 }
 
 function noChange(snap: SnapState, lastProject: Project): Applied {
@@ -980,22 +994,20 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   const rawStart = clamp(item.start + dt, 0, Math.max(0, ctx.totalDuration - duration))
 
   // Which track the item is CURRENTLY ON. Not the POINTED-AT index
-  // (`sourceTrackIdx - dy/24`) — `moveItemAcrossTracks` treats that as a mere
+  // (the row under the pointer) — `moveItemAcrossTracks` treats that as a mere
   // starting point and searches outward from it, so a pointed-at track the
   // dragged item's KIND can never occupy is not where it goes. Tiering against
   // the pointed-at index therefore ranked the boundaries of a row the item had
   // never been placed on, which is exactly what made a cross-track drag read
   // as "snapping doesn't work over here": drag an overlay down into a
   // same-length gap one row below and the pointed-at index lands on the VIDEO
-  // track under it (the 24px drag divisor is roughly half a rendered overlay
-  // row, so one row of real travel counts as two steps), the kind gate bounces
+  // track under it (as it did under the old 24px drag divisor, roughly half a
+  // rendered overlay row, so one row of real travel counted as two steps), the kind gate bounces
   // the drop back up onto the row the cursor is actually over, and the gap's
   // own two edges stay tiered WEAK — a 6px magnet where a 20px one belongs.
   //
   // Running the drop's own search removes the second copy of that arithmetic.
-  // (The two can still differ after a mid-drag prune, which renumbers
-  // `lastProject`'s tracks under the move's `baseProject`-space `sourceTrackIdx`
-  // — pre-existing, and orthogonal to the tier.) `kindOnly` deliberately
+  // `kindOnly` deliberately
   // keeps the COLLISION half of the search out of it — see the option's doc in
   // `timeline-model.ts`; consulting it here would kill the magnet precisely
   // where it is aiming and make the tier lurch between rows mid-slide. (It
@@ -1018,14 +1030,26 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   // the drop would MINT a new track. That intentionally matches no row below,
   // so every boundary tiers weak — correct by construction for a track with
   // no neighbours yet, not a case this call site branches on explicitly.
+  //
+  // Which row the pointer points at is read off the press-time layout's drawn
+  // rows (`rowUnder`), the same way a multi-select move reads it. It used to be
+  // `dy / VISUAL_ROW_HEIGHT_PX`, 24px a row, while the canvas draws an overlay
+  // row 44px and a video row 124px tall: one row of real travel counted as two
+  // or five, so a clip dragged up one row overshot the top and minted a new
+  // track instead of joining the row it was dropped on, and one dragged down
+  // skipped a row.
   const dy = point.y - press.origin.y
+  const baseTracks = normalizeTracks(press.baseProject).tracks ?? []
+  const targetTrackIdx = rowUnder(press, point) ?? press.hit.trackIdx
+  const vertical = targetTrackIdx !== press.hit.trackIdx
   const currentTrackIdx = resolveTargetTrackIdx({
-    tracks: normalizeTracks(press.baseProject).tracks ?? [],
+    tracks: baseTracks,
     item,
     start: rawStart,
     end: rawStart + duration,
     sourceTrackIdx: press.hit.trackIdx,
     dy,
+    targetTrackIdx,
   }, { kindOnly: true })
 
   const boundaries = itemSnapPoints(ctx, press, originGuard(escaped, [item.start, item.end]), { trackIdx: currentTrackIdx })
@@ -1037,9 +1061,13 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   // Server-side shape normalization is best-effort (a project must always
   // open even if migration throws), and the SSE stream's initial frame
   // reads project.json straight off disk with no migration at all — so a
-  // legacy-shape project genuinely can reach here. Normalize defensively
-  // rather than assume `.tracks` is already `VisualTrack[]`.
-  const liveTracks = normalizeTracks(lastProject).tracks ?? []
+  // legacy-shape project genuinely can reach here, which is why `baseTracks`
+  // is normalized rather than assumed to be `VisualTrack[]`.
+  //
+  // The move is rebuilt from `baseTracks` on every frame, like every other
+  // gesture, never from the last frame's result: a frame that pruned or minted
+  // a track renumbers the rest, and `press.hit.trackIdx` and the row under the
+  // pointer are both indices into the press-time tracks.
 
   // With no vertical intent the item stays on its own track at any overlap
   // (see `resolveTargetTrackIdx`), where the 30% fan-out used to be what kept
@@ -1048,12 +1076,12 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   // shapes `engine/validate.py` rejects (`legalMoveStart`). Ripple mode is
   // left as it was — a collision there pushes the neighbours aside instead —
   // and so is a move the kind gate sends off its own track.
-  if (!ctx.rippleMode && !hasVerticalIntent(dy)) {
+  if (!ctx.rippleMode && !vertical) {
     const landing = resolveTargetTrackIdx({
-      tracks: liveTracks, item, start, end: start + duration, sourceTrackIdx: press.hit.trackIdx, dy,
+      tracks: baseTracks, item, start, end: start + duration, sourceTrackIdx: press.hit.trackIdx, dy, targetTrackIdx,
     })
-    if (landing === press.hit.trackIdx && landing < liveTracks.length) {
-      const others = liveTracks[landing].items.filter(other => other.id !== item.id)
+    if (landing === press.hit.trackIdx && landing < baseTracks.length) {
+      const others = baseTracks[landing].items.filter(other => other.id !== item.id)
       start = clamp(legalMoveStart(others, duration, item.start, start, landing === 0), 0, maxStart)
     }
   }
@@ -1065,14 +1093,15 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
     : null
 
   const next: Project = {
-    ...lastProject,
+    ...press.baseProject,
     tracks: moveItemAcrossTracks({
-      tracks: liveTracks,
+      tracks: baseTracks,
       item,
       start,
       end: start + duration,
       sourceTrackIdx: press.hit.trackIdx,
       dy,
+      targetTrackIdx,
       makeSpace: ctx.rippleMode,
     }),
   }
@@ -1238,14 +1267,22 @@ function applyAudioMove(ctx: PointerContext, press: Press, point: Point, snap: S
   const dt = dragDeltaSeconds(ctx, press, point)
   const rawStart = clamp(track.start + dt, 0, Math.max(0, ctx.totalDuration - duration))
 
-  // Positive dy is downward, which in the audio stack means a HIGHER lane index
-  // (lanes ascend downward) — the opposite of visual tracks. Computed here,
-  // ahead of the snap boundaries below, because `destLane` is simultaneously
-  // "which lane the drop will land on" and "which lane's peers should snap
-  // strong right now" — the same current-lane derivation `itemSnapPoints`
-  // needs, so one computation serves both.
-  const laneDelta = Math.round((point.y - press.origin.y) / AUDIO_LANE_HEIGHT_PX)
-  const destLane = Math.max(0, press.hit.laneIdx + laneDelta)
+  // Positive dy is downward, which in the audio stack means a LATER row
+  // (lanes ascend downward) — the opposite of visual tracks. Counted in ROWS,
+  // not lane numbers: lanes can be sparse (0 and 5 with nothing between), so a
+  // one-row drag goes to the next row drawn, and past the last one to a new row
+  // under it. Rows come from the press-time layout, which draws the same lanes
+  // `baseProject` holds (stamped at the press, so no row renumbers mid-drag).
+  // Computed here, ahead of the snap boundaries below, because `destLane` is
+  // simultaneously "which lane the drop will land on" and "which lane's peers
+  // should snap strong right now".
+  const rowLanes = press.layout.lanes.map(l => l.laneIndex)
+  const pressedRow = Math.max(0, rowLanes.indexOf(press.hit.laneIdx))
+  const rowDelta = Math.round((point.y - press.origin.y) / (AUDIO_LANE_HEIGHT_PX + ROW_GAP_PX))
+  const destRow = Math.max(0, pressedRow + rowDelta)
+  const destLane = destRow < rowLanes.length
+    ? rowLanes[destRow]
+    : (rowLanes.length ? rowLanes[rowLanes.length - 1] + 1 : press.hit.laneIdx + 1)
 
   const boundaries = itemSnapPoints(ctx, press, originGuard(escaped, [track.start, track.end]), { laneIdx: destLane })
   const points = snapPointsForSpan(boundaries, duration)
@@ -1273,7 +1310,8 @@ function applyAudioMove(ctx: PointerContext, press: Press, point: Point, snap: S
   }
 
   const next = updateAudioTrack(press.baseProject, track.id, changes)
-  return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next, guide }
+  const dropLane = destLane !== press.hit.laneIdx ? destLane : null
+  return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next, guide, dropLane }
 }
 
 function applyAudioTrim(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean): Applied {
@@ -1781,6 +1819,18 @@ function guideEffects(previous: SnapGuide | null, next: SnapGuide | null, effect
   return [...effects, { type: 'snapGuide', time: next?.time ?? null, strength: next?.strength ?? null }]
 }
 
+/** Append a `dropLane` effect when, and only when, the highlighted lane
+ *  changes. Same contract as `guideEffects`. */
+function dropLaneEffects(previous: number | null | undefined, next: number | null | undefined, effects: PointerEffect[]): PointerEffect[] {
+  if ((previous ?? null) === (next ?? null)) return effects
+  return [...effects, { type: 'dropLane', laneIndex: next ?? null }]
+}
+
+/** The drop lane the surface is currently highlighting. */
+function currentDropLane(state: MachineState): number | null {
+  return state.kind === 'dragging' ? state.dropLane ?? null : null
+}
+
 /** Append a cursor effect when, and only when, the cursor actually changes. */
 function withCursor(state: MachineState, cursor: Cursor, effects: PointerEffect[]): Transition {
   if (state.cursor === cursor) return { state, effects }
@@ -1799,7 +1849,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
     return withCursor(
       { kind: 'idle', cursor: state.cursor },
       initialMachineState().cursor,
-      guideEffects(currentGuide(state), null, cancelled),
+      dropLaneEffects(currentDropLane(state), null, guideEffects(currentGuide(state), null, cancelled)),
     )
   }
 
@@ -1823,8 +1873,9 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         lastProject: applied.lastProject,
         escaped,
         keyframeT: applied.keyframeLandedT ?? state.keyframeT,
+        dropLane: applied.dropLane ?? null,
       },
-      effects: guideEffects(state.guide, applied.guide, applied.effects),
+      effects: dropLaneEffects(state.dropLane, applied.dropLane, guideEffects(state.guide, applied.guide, applied.effects)),
     }
   }
 
@@ -1906,7 +1957,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         originTime: xToTime(point.x, ctx.viewport),
         modifiers,
         hit,
-        baseProject: ctx.project,
+        baseProject: stampAudioLanes(ctx.project),
         wasSelected: hit.itemId !== undefined && ctx.selectedIds.includes(hit.itemId),
         snapBoundaries: tieredBoundaries(ctx.project, hit.trackIdx, hit.laneIdx, hit.itemId),
         layout: ctx.layout,
@@ -1954,8 +2005,9 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         escaped,
         keyframeT: applied.keyframeLandedT,
         leftPressedRow,
+        dropLane: applied.dropLane ?? null,
       }
-      return withCursor(next, cursorForGesture(gesture), guideEffects(null, applied.guide, [...selectFirst, ...applied.effects]))
+      return withCursor(next, cursorForGesture(gesture), dropLaneEffects(null, applied.dropLane, guideEffects(null, applied.guide, [...selectFirst, ...applied.effects])))
     }
 
     case 'pointerUp': {
@@ -2097,7 +2149,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         return withCursor(
           { kind: 'idle', cursor: state.cursor },
           cursorForHit(hit),
-          guideEffects(state.guide, null, effects),
+          dropLaneEffects(state.dropLane, null, guideEffects(state.guide, null, effects)),
         )
       }
 

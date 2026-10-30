@@ -546,6 +546,9 @@ export default function TimelineCanvas({
   // a React state write per move would re-render the timeline to move a
   // rectangle.
   const marqueeRef = useRef<SurfaceRect | null>(null)
+  // The audio lane a dragged bar will drop into (the machine's `dropLane`
+  // effect), highlighted on the content layer, where lane backgrounds are drawn.
+  const dropLaneRef = useRef<number | null>(null)
 
   // The trim handle under the resting pointer, so the painter can light it up.
   // Held as a ref for the usual reason, but redrawn through `requestRedraw`
@@ -636,6 +639,7 @@ export default function TimelineCanvas({
           mode: scene.mode,
           pins: scene.pins,
           missingClips: scene.missingClips,
+          dropTargetLane: dropLaneRef.current,
         })
       }
     }
@@ -911,6 +915,10 @@ export default function TimelineCanvas({
         case 'marquee':
           marqueeRef.current = effect.rect
           requestRedraw('overlay')
+          break
+        case 'dropLane':
+          dropLaneRef.current = effect.laneIndex
+          requestRedraw('content')
           break
         case 'selectMany':
           if (p.onSelectItems) {
