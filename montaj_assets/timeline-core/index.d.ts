@@ -1196,6 +1196,63 @@ export declare function fadeShape(
 ): { from: number; to: number }
 
 // ---------------------------------------------------------------------------
+/** Travel (px) up to which a spin or zoom plan takes one pass (src/radialBlur.js). */
+export declare const RADIAL_SINGLE_PASS_TRAVEL: number
+/** The most taps a radial plan's pass takes. */
+export declare const RADIAL_MAX_TAPS: number
+/** The most passes a radial plan takes. */
+export declare const RADIAL_MAX_PASSES: number
+/** The effective spacing (px, at the farthest corner) a multi-pass radial plan keeps to. */
+export declare const RADIAL_TARGET_SPACING: number
+
+/** One copy of the picture in a radial pass: an angle in degrees (spin) or a scale (zoom), and its weight. */
+export interface RadialTap { offset: number; weight: number }
+/** One pass of a radial plan: its taps, whose weights sum to 1. */
+export interface RadialPass { taps: RadialTap[] }
+/**
+ * A spin or zoom blur's sampling plan: its passes, the travel (px) that sized
+ * them, the effective number of copies (N^passes) and their spacing at the
+ * farthest corner (px).
+ */
+export interface RadialPlan { passes: RadialPass[]; travel: number; samples: number; spacing: number }
+
+/** A zoom blur's scale range: `hi` = 1 + amount/200, `lo` = 1 / hi. */
+export declare function zoomScaleRange(amount: number): { lo: number; hi: number }
+
+/** The longest path (px) any corner of the picture moves across the sweep: an arc (spin) or a radial distance (zoom). */
+export declare function radialBlurTravel(input: {
+  type: 'spin' | 'zoom'; amount: number; center: [number, number]; rect: { w: number; h: number }
+}): number
+
+/**
+ * The shared sampling plan for a spin or zoom blur (src/radialBlur.js header):
+ * `center` and `rect` in picture pixels. Gaussian weights across the sweep
+ * (sigma a quarter of it); one pass of one tap a pixel up to 12 px of travel,
+ * else 2 or 3 passes of up to 12 taps. No passes for no amount.
+ */
+export declare function radialBlurPlan(input: {
+  type: 'spin' | 'zoom'; amount: number; center: [number, number]; rect: { w: number; h: number }
+}): RadialPlan
+
+/** A tap's inverse map `[a, b]`: the output at p reads the input at `c + [[a, -b], [b, a]] (p - c)`. */
+export declare function radialTapInverse(type: 'spin' | 'zoom', offset: number): [number, number]
+
+/** A centre given as fractions of the box (blurCenterOf), in picture pixels, given the picture's rect in the box (pictureRectInBox) and size. */
+export declare function radialCenterInPicture(
+  center: { x: number; y: number }, rect: { x: number; y: number; w: number; h: number }, picW: number, picH: number,
+): [number, number]
+
+/**
+ * The CPU reference for a spin or zoom blur: RGBA straight-alpha bytes in,
+ * the picture (`rect`, the whole image by default) out as straight-alpha
+ * floats in [0, 1]. Premultiplied passes, bilinear reads with texels outside
+ * the picture 0, then divided by the summed alpha with the source's alpha kept.
+ */
+export declare function radialBlurReference(
+  image: { data: ArrayLike<number>; width: number; height: number },
+  options: { type: 'spin' | 'zoom'; plan: RadialPlan; center: [number, number]; rect?: { x: number; y: number; w: number; h: number } },
+): { data: Float32Array; width: number; height: number }
+
 // §616 — compositing: masks and blend modes (src/mask.js)
 //
 // Conventions: the BOX is the clip's own box before rotation, in pixels (an

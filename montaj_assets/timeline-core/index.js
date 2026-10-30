@@ -91,6 +91,12 @@ export * from './src/mask.js'
 // the preview's filter region). See the src/blur.js header.
 export * from './src/blur.js'
 
+// Spin and zoom blurs: the sampling plan both renderers draw from
+// (radialBlurPlan, its travel, a tap's inverse map, the centre in picture
+// pixels) and the CPU reference sampler that pins what they compute
+// (radialBlurReference). See the src/radialBlur.js header.
+export * from './src/radialBlur.js'
+
 /**
  * Version salt for resolver-derived caches. sample-frame.js mixes this into its
  * cache key so a change in resolver semantics invalidates stale cached frames
