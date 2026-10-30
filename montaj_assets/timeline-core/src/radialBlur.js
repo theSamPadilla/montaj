@@ -87,11 +87,14 @@
 //   3. After the last pass, colour is divided by the summed alpha (the
 //      renormalisation: an average over the picture's own pixels, so its
 //      edges stay opaque and keep their colour) and the alpha is the source
-//      pixel's own. Where the summed alpha is 0 (every tap fell outside),
-//      the source pixel's colour. The summed alpha itself is returned as
-//      `coverage` (how much of the average fell on the picture), so a
-//      renderer that cannot carry tiny sums (the export's 8-bit transforms)
-//      can be measured where they are meaningful.
+//      pixel's own. Where little of the average fell on the picture (the
+//      summed alpha A under RADIAL_THIN_COVERAGE, 1/16: the far corners of a
+//      wide spin, a centre outside the picture) the source pixel fades in,
+//      linearly as A falls to 0: colour = mix(source, blurred, min(1, 16 A))
+//      in straight colour. There the division magnifies any renderer's
+//      rounding (the export's 8-bit copies, the preview's half floats) into
+//      most of the colour, and at A = 0 there is nothing to divide. The
+//      summed alpha itself is returned as `coverage`.
 //
 // Pure like the rest of the package: no DOM, no I/O, no dependency.
 
@@ -103,6 +106,8 @@ export const RADIAL_MAX_TAPS = 12
 export const RADIAL_MAX_PASSES = 3
 /** The effective spacing (px, at the farthest corner) a multi-pass plan keeps to. */
 export const RADIAL_TARGET_SPACING = 1.5
+/** The summed alpha below which the source pixel fades in (see the header, step 3). */
+export const RADIAL_THIN_COVERAGE = 1 / 16
 
 const finite = (/** @type {unknown} */ n) => typeof n === 'number' && Number.isFinite(n)
 
@@ -301,8 +306,10 @@ export function radialBlurReference(image, { type, plan, center, rect }) {
     const sa = src[o + 3]
     const A = cur[o + 3]
     coverage[o >> 2] = A
+    const k = Math.min(1, A / RADIAL_THIN_COVERAGE)
     for (let c = 0; c < 3; c++) {
-      out[o + c] = A > 1e-7 ? Math.min(1, cur[o + c] / A) : sa > 0 ? src[o + c] / sa : 0
+      const s0 = sa > 0 ? src[o + c] / sa : 0
+      out[o + c] = k > 0 ? s0 + (Math.min(1, cur[o + c] / A) - s0) * k : s0
     }
     out[o + 3] = sa
   }

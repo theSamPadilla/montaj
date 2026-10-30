@@ -29,7 +29,10 @@
 //      outside the picture, so the next reads only the picture.
 //   3. OUT: colour divided by the summed alpha (the renormalisation), times
 //      the fitted source pixel's alpha; premultiplied for the drawing buffer.
-//      Where the summed alpha is 0, the source pixel.
+//      Where the summed alpha is under 1/16 (timeline-core
+//      RADIAL_THIN_COVERAGE), the source pixel fades in, linearly to 0, as in
+//      the reference and the export: there the division would magnify the
+//      half floats' rounding (subnormal near 0) into noisy colour.
 //
 // FORMATS. The working textures are RGBA16F when the context can render to
 // them (EXT_color_buffer_float), else RGBA8: the division by the summed alpha
@@ -50,7 +53,7 @@
 // warning says so; the host shows the source unblurred. After `webglcontextrestored`
 // the programs are rebuilt and every subscriber redraws.
 
-import { radialBlurPlan, radialTapInverse } from '@bycrux/timeline-core'
+import { RADIAL_THIN_COVERAGE, radialBlurPlan, radialTapInverse } from '@bycrux/timeline-core'
 
 /** What a blurred clip's picture is read from. */
 export type RadialBlurSource = HTMLVideoElement | HTMLImageElement | HTMLCanvasElement | OffscreenCanvas | ImageBitmap
@@ -162,8 +165,8 @@ void main() {
   ivec2 t = ivec2(vec2(gl_FragCoord.x, uTop - gl_FragCoord.y)) + 1;
   vec4 acc = texelFetch(uAcc, t, 0);
   vec4 src = texelFetch(uFit, t, 0);
-  vec3 rgb = acc.a > 1e-5 ? acc.rgb / acc.a * src.a : src.rgb;
-  o = vec4(min(rgb, vec3(src.a)), src.a);
+  vec3 blurred = acc.a > 0.0 ? min(acc.rgb / acc.a, vec3(1.0)) * src.a : src.rgb;
+  o = vec4(mix(src.rgb, blurred, clamp(acc.a * ${(1 / RADIAL_THIN_COVERAGE).toFixed(1)}, 0.0, 1.0)), src.a);
 }`
 
 // ── The shared context ──────────────────────────────────────────────────────

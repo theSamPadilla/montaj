@@ -9,14 +9,14 @@
 // 1/256 px grid), and mixes them in 16 bits. So a few codes apart is the
 // expected distance. Where little of the average falls on the picture (the
 // reference's `coverage` under 1/16: the far corners of a wide spin, a centre
-// outside the picture) the 8-bit sums are mostly rounding, and the export
-// fades to the source pixel instead (item-blur.js); those pixels are counted
-// apart and must sit near the source or the reference.
+// outside the picture) both fade to the source pixel (the reference's step 3,
+// item-blur.js), so every pixel is compared, thin ones included.
 //
-// Measured (ffmpeg 8.1.2), over the pixels covered at least 1/16: the RGB
-// graph (images) worst 5 codes, mean under 0.4, in every case below; the
-// letterboxed builder worst 5, mean under 0.4; the YUV graph a video takes
-// worst 8, mean under 1.2 (its own 8-bit YUV rounding in perspective).
+// Measured (ffmpeg 8.1.2), over every pixel with any alpha: the RGB graph
+// (images) worst 5 codes, mean under 0.4, in every case below; the
+// letterboxed builder the same; the YUV graph a video takes worst 12 (in a
+// thinly covered pixel; 8 elsewhere),
+// mean under 1.2 (its own 8-bit YUV rounding in perspective).
 
 // Cases:
 //   - the image format (gbrap16le, alpha put back), the picture's size known;
@@ -65,17 +65,14 @@ function run(rgba, w, h, chain) {
   return r.stdout
 }
 
-/** Below this summed alpha (the reference's `coverage`) the export shows the source instead (item-blur.js). */
-const THIN = 1 / 16
-
 /**
  * Worst and mean colour difference (codes) between `out` (bytes; its picture
  * at `oy` rows down, `ow` wide) and the reference (floats, the picture only),
- * over the picture's pixels with any alpha whose coverage is at least THIN;
- * the worst alpha difference against `alphaOf` (the source through the same
- * format round trip: rgba to gbrap16le and back turns 128 into 129, blur or
- * not); and the thinly covered pixels, which must sit near the source or the
- * reference (the export ramps from one to the other there), never black.
+ * over the picture's pixels with any alpha, thinly covered ones included (both
+ * fade to the source there); the worst alpha difference against `alphaOf` (the
+ * source through the same format round trip: rgba to gbrap16le and back turns
+ * 128 into 129, blur or not); `thin` counts the pixels covered under 1/16 and
+ * `thinWorst` is the worst among them.
  */
 function compare(out, ow, oy, ref, src, alphaOf = src) {
   let worst = 0
@@ -89,17 +86,12 @@ function compare(out, ow, oy, ref, src, alphaOf = src) {
     const o = ((j + oy) * ow + i) * 4
     alpha = Math.max(alpha, Math.abs(out[o + 3] - alphaOf[p + 3]))
     if (src[p + 3] === 0) continue
-    if (ref.coverage[p >> 2] < THIN) {
-      thin++
-      for (let c = 0; c < 3; c++) {
-        const d = Math.min(Math.abs(out[o + c] - src[p + c]), Math.abs(out[o + c] - Math.round(ref.data[p + c] * 255)))
-        thinWorst = Math.max(thinWorst, d)
-      }
-      continue
-    }
+    const isThin = ref.coverage[p >> 2] < 1 / 16
+    if (isThin) thin++
     for (let c = 0; c < 3; c++) {
       const d = Math.abs(out[o + c] - Math.round(ref.data[p + c] * 255))
       worst = Math.max(worst, d)
+      if (isThin) thinWorst = Math.max(thinWorst, d)
       sum += d
       n++
     }
@@ -137,7 +129,6 @@ test('spin and zoom: the export graph meets radialBlurReference (picture size kn
       assert.equal(r.alpha, 0, `${label}: the alpha is the clip's own`)
       assert.ok(r.worst <= 6, `${label}: worst ${r.worst} codes`)
       assert.ok(r.mean < 1, `${label}: mean ${r.mean.toFixed(2)} codes`)
-      assert.ok(r.thinWorst <= 40, `${label}: thinly covered pixels ${r.thinWorst} codes from both the source and the reference`)
     }
   }
 })
@@ -193,7 +184,6 @@ test('spin and zoom: a letterboxed contain picture meets the reference, its size
           assert.equal(r.alpha, 0, `${label}: the alpha is the clip's own`)
           assert.ok(r.worst <= 6, `${label}: worst ${r.worst} codes`)
           assert.ok(r.mean < 1, `${label}: mean ${r.mean.toFixed(2)} codes`)
-          assert.ok(r.thinWorst <= 40, `${label}: thinly covered pixels ${r.thinWorst} codes off`)
           if (known) {
             // The letterbox stays transparent.
             for (const row of [0, top - 1, top + PH, BH - 1]) {
@@ -225,8 +215,9 @@ test('spin and zoom: the video format (yuva444p16le, opaque) meets the reference
     const r = compare(out, PW, 0, ref, src)
     t.diagnostic(`video, ${type} ${amount} at (${x}, ${y}): worst ${r.worst}, mean ${r.mean.toFixed(2)}; ${r.thin} thin px within ${r.thinWorst}`)
     assert.equal(r.alpha, 0)
-    assert.ok(r.thinWorst <= 40, `${type} ${amount} at (${x}, ${y}): thinly covered pixels ${r.thinWorst} codes off`)
-    assert.ok(r.worst <= 10, `${type} ${amount} at (${x}, ${y}): worst ${r.worst} codes`)
+    // Thinly covered pixels included: the copies' 8-bit YUV rounding over a
+    // summed alpha just above 1/16 reaches 12 there (spin 30 at (0.5, 0.4)).
+    assert.ok(r.worst <= 12, `${type} ${amount} at (${x}, ${y}): worst ${r.worst} codes`)
     assert.ok(r.mean < 1.5, `${type} ${amount} at (${x}, ${y}): mean ${r.mean.toFixed(2)} codes`)
   }
 })

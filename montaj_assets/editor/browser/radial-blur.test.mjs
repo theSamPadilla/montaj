@@ -16,7 +16,7 @@
 // WebGL2 context (`--use-angle=metal`; SwiftShader fails to create one,
 // measured on chrome-headless-shell 127); elsewhere ANGLE on SwiftShader
 // (`--use-angle=swiftshader --enable-unsafe-swiftshader`). With no WebGL2 the
-// comparisons skip and say why.
+// comparisons skip and say why, or fail with MONTAJ_REQUIRE_WEBGL=1.
 
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
@@ -92,6 +92,19 @@ async function open({ noWebgl = false, on = browser } = {}) {
   return { page, errors, warnings }
 }
 
+/**
+ * Whether the page has no WebGL2, in which case the test skips and says why;
+ * with MONTAJ_REQUIRE_WEBGL=1 in the environment it fails instead (a machine
+ * that must measure the preview, such as CI with a GPU, never passes by skipping).
+ */
+async function noWebgl2(page, t) {
+  if (await page.evaluate(() => window.__webgl2)) return false
+  const why = `no WebGL2 in this Chromium with ${GL_ARGS.join(' ')}`
+  if (process.env.MONTAJ_REQUIRE_WEBGL === '1') assert.fail(`${why}, and MONTAJ_REQUIRE_WEBGL=1 requires it`)
+  t.skip(why)
+  return true
+}
+
 const frames = (page) => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
 
 // Spin and zoom at small and large amounts; centres inside, on an edge and
@@ -122,7 +135,7 @@ const CASES = [
 test('WebGL pass against the CPU reference: within a few codes, alpha kept, nothing outside the picture', { timeout: 120_000 }, async (t) => {
   const { page, errors } = await open()
   try {
-    if (!(await page.evaluate(() => window.__webgl2))) { t.skip(`no WebGL2 in this Chromium with ${GL_ARGS.join(' ')}`); return }
+    if (await noWebgl2(page, t)) return
     let worstAll = 0
     let meanMax = 0
     for (const [label, c] of CASES) {
@@ -151,11 +164,12 @@ test('WebGL pass against the CPU reference: within a few codes, alpha kept, noth
 // contain fit, its size probed from the file), which an engine-style canvas
 // source must match too; and the
 // video graph (YUV) once. Compared inside the picture where the preview reads
-// colour back (alpha 128 or more: getImageData unpremultiplies 8 bits), and
-// away from pixels the reference covers under 1/16, where the export fades to
-// the source (render item-blur.js). Measured (headless shell 127, ANGLE Metal,
-// ffmpeg 8.1.2): RGB worst 7, mean under 0.65; the YUV graph worst 8, mean
-// under 1. Both renderers must plan on the same picture size: near the
+// colour back (alpha 128 or more: getImageData unpremultiplies 8 bits),
+// thinly covered pixels included: where under 1/16 of the average lands on
+// the picture both fade to the source alike (timeline-core
+// radialBlurReference's step 3). Measured (headless shell 127, ANGLE Metal,
+// ffmpeg 8.1.2): RGB worst 8, mean under 0.65; the YUV graph worst 12 (in a
+// thinly covered pixel), mean under 1. Both renderers must plan on the same picture size: near the
 // picture's edges a pass drops what it moves outside (deviation 2), so a plan
 // with other tap counts lands differently there (measured: the export planned
 // on the box rather than the picture, 58 codes at the worst edge pixel).
@@ -189,7 +203,7 @@ const PARITY = [
 test('preview (WebGL) against export (ffmpeg): within a few codes inside the picture', { timeout: 180_000 }, async (t) => {
   const { page, errors } = await open()
   try {
-    if (!(await page.evaluate(() => window.__webgl2))) { t.skip(`no WebGL2 in this Chromium with ${GL_ARGS.join(' ')}`); return }
+    if (await noWebgl2(page, t)) return
     let worstAll = 0
     let meanMax = 0
     for (const [label, c] of PARITY) {
@@ -220,30 +234,35 @@ test('preview (WebGL) against export (ffmpeg): within a few codes inside the pic
         ew = box.w
         ey = at.y
       }
-      // The reference's coverage, for the thin pixels the export fades to the source.
+      // The reference's coverage, to report the thinly covered pixels apart.
       const center = [c.center.x * box.w - at.x, c.center.y * box.h - at.y]
       const plan = radialBlurPlan({ type: c.type, amount: c.amount, center, rect: pic })
       const { coverage } = radialBlurReference({ data: p.picture, width: pic.w, height: pic.h }, { type: c.type, plan, center })
       let worst = 0
+      let thinWorst = 0
+      let thin = 0
       let sum = 0
       let n = 0
       for (let j = 0; j < pic.h; j++) for (let i = 0; i < pic.w; i++) {
-        if (coverage[j * pic.w + i] < 1 / 16) continue
+        const isThin = coverage[j * pic.w + i] < 1 / 16
         const g = ((j + at.y) * box.w + (i + at.x)) * 4
         const e = ((j + ey) * ew + i + (ew === box.w ? at.x : 0)) * 4
         if (p.got[g + 3] < 128) continue
+        if (isThin) thin++
         for (let ch = 0; ch < 3; ch++) {
           const d = Math.abs(p.got[g + ch] - exp[e + ch])
           worst = Math.max(worst, d)
+          if (isThin) thinWorst = Math.max(thinWorst, d)
           sum += d
           n++
         }
       }
       const mean = sum / Math.max(1, n)
-      t.diagnostic(`${label}: worst ${worst}, mean ${mean.toFixed(2)} codes`)
+      t.diagnostic(`${label}: worst ${worst}, mean ${mean.toFixed(2)} codes; ${thin} thin px within ${thinWorst}`)
       worstAll = Math.max(worstAll, worst)
       meanMax = Math.max(meanMax, mean)
-      assert.ok(worst <= 10, `${label}: worst ${worst} codes`)
+      // The video graph's 8-bit YUV copies over a summed alpha just above 1/16: 12 in a thin pixel.
+      assert.ok(worst <= (c.yuv ? 12 : 10), `${label}: worst ${worst} codes`)
       assert.ok(mean < 2, `${label}: mean ${mean.toFixed(2)} codes`)
     }
     t.diagnostic(`preview against export, all cases: worst ${worstAll}, largest mean ${meanMax.toFixed(2)} codes`)
@@ -254,7 +273,7 @@ test('preview (WebGL) against export (ffmpeg): within a few codes inside the pic
 test('timing at 1080x1920 (diagnostic only; the GPU this runs on)', { timeout: 120_000 }, async (t) => {
   const { page } = await open()
   try {
-    if (!(await page.evaluate(() => window.__webgl2))) { t.skip('no WebGL2'); return }
+    if (await noWebgl2(page, t)) return
     // spin 0.01: one pass of 2 taps, so upload, fit, out and the read back alone.
     for (const [type, amount] of [['spin', 0.01], ['spin', 10], ['spin', 30], ['spin', 90], ['zoom', 10], ['zoom', 40], ['zoom', 150]]) {
       const ms = await page.evaluate((o) => window.__timing(o), { type, amount, w: 1080, h: 1920, runs: 10 })
@@ -266,7 +285,7 @@ test('timing at 1080x1920 (diagnostic only; the GPU this runs on)', { timeout: 1
 test('RadialBlurSurface draws what the pass draws, at the box\'s size; loses its context and comes back', { timeout: 60_000 }, async (t) => {
   const { page, errors, warnings } = await open()
   try {
-    if (!(await page.evaluate(() => window.__webgl2))) { t.skip('no WebGL2'); return }
+    if (await noWebgl2(page, t)) return
     const opts = { type: 'zoom', amount: 60, w: 120, h: 80, center: { x: 0.3, y: 0.6 } }
     let s = await page.evaluate((o) => window.__surface(o), opts)
     await frames(page)
@@ -298,7 +317,7 @@ test('RadialBlurSurface draws what the pass draws, at the box\'s size; loses its
 test('a <video> source: drawn on the frame a seek lands on, and on every presented frame while it plays', { timeout: 60_000 }, async (t) => {
   const { page, errors } = await open()
   try {
-    if (!(await page.evaluate(() => window.__webgl2))) { t.skip('no WebGL2'); return }
+    if (await noWebgl2(page, t)) return
     const clip = pathToFileURL(join(HERE, 'fixtures', 'play-glyph-clip.mp4')).href
     await page.evaluate((src) => window.__videoSurface(src), clip)
     await page.waitForFunction(() => window.__videoState().draws > 0 && window.__videoState().painted > 0.99, { timeout: 10_000 })
@@ -322,7 +341,7 @@ test('a cross-origin <video> (file:// without file access): renders nothing, say
   const strict = await puppeteer.launch({ headless: 'new', args: BASE_ARGS })
   try {
     const { page, errors, warnings } = await open({ on: strict })
-    if (!(await page.evaluate(() => window.__webgl2))) { t.skip('no WebGL2'); return }
+    if (await noWebgl2(page, t)) return
     await page.evaluate((src) => window.__videoSurface(src), pathToFileURL(join(HERE, 'fixtures', 'play-glyph-clip.mp4')).href)
     await page.waitForFunction(() => window.__video().readyState >= 2, { timeout: 10_000 })
     await page.waitForFunction(() => document.querySelectorAll('#video canvas').length === 0, { timeout: 10_000 })

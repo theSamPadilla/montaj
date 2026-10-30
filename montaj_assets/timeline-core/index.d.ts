@@ -1204,6 +1204,8 @@ export declare const RADIAL_MAX_TAPS: number
 export declare const RADIAL_MAX_PASSES: number
 /** The effective spacing (px, at the farthest corner) a multi-pass radial plan keeps to. */
 export declare const RADIAL_TARGET_SPACING: number
+/** The summed alpha below which a spin or zoom pixel fades to the source pixel, linearly to 0 (src/radialBlur.js). */
+export declare const RADIAL_THIN_COVERAGE: number
 
 /** One copy of the picture in a radial pass: an angle in degrees (spin) or a scale (zoom), and its weight. */
 export interface RadialTap { offset: number; weight: number }

@@ -98,7 +98,8 @@
 //     8.1.2: a 16-bit input gets a scaler in front). Each copy goes back to
 //     16 bits before the mix, so the average itself keeps 16 bits; the
 //     copies' 8-bit rounding is why the export lands a few codes off the
-//     reference (test/item-blur-radial.test.mjs: RGB worst 5, YUV worst 8).
+//     reference (test/item-blur-radial.test.mjs: RGB worst 5, YUV worst 12
+//     in a thinly covered pixel, 8 elsewhere).
 //   - The premultiply is explicit (premultiply, then setparams relabels the
 //     frames straight so perspective and mix, which take straight alpha only,
 //     get no conversion; relabelled premultiplied before unpremultiply).
@@ -118,7 +119,7 @@
 // and sent with `sendcmd`, as a keyframed opacity is (item-opacity.js).
 import {
   blurAngleOf, blurCenterOf, blurOf, blurSigmaCapPx, blurSigmaPx, blurTypeOf, geometryAt, pictureRectInBox,
-  radialBlurPlan, radialTapInverse, toPixelBox,
+  RADIAL_THIN_COVERAGE, radialBlurPlan, radialTapInverse, toPixelBox,
 } from '@bycrux/timeline-core'
 
 /** gblur's passes. See the header. */
@@ -344,8 +345,8 @@ export const IMAGE_BLUR_FORMAT = 'gbrap16le'
 /** The transparent margin a spin or zoom pass works in (perspective clamps reads to the frame's edge). */
 export const RADIAL_MARGIN = 2
 
-/** 1 / the summed alpha below which a spin or zoom pixel fades to the source (see radialBlurStep). */
-export const RADIAL_THIN_INVERSE = 16
+/** 1 / the summed alpha below which a spin or zoom pixel fades to the source (timeline-core RADIAL_THIN_COVERAGE). */
+export const RADIAL_THIN_INVERSE = Math.round(1 / RADIAL_THIN_COVERAGE)
 
 /** The 8-bit format `perspective` runs in for each blur format (it takes no 16-bit format). */
 const PERSPECTIVE_FORMATS = { yuva444p16le: 'yuva444p', yuva444p10le: 'yuva444p', gbrap16le: 'gbrap', yuva444p: 'yuva444p', gbrap: 'gbrap' }
@@ -446,8 +447,9 @@ function radialBlurStep(item, type, { vw, vh, format, alpha, name, unitX, unitY,
   // reference's `coverage`, under 1/16: the far corners of a wide spin, a
   // centre outside the picture), the 8-bit copies' rounding divided by that
   // alpha is most of the colour, and at 0 unpremultiply leaves black. There
-  // the source pixel shows instead (the reference's own fallback at 0),
-  // ramping in linearly as the summed alpha falls from 1/16 to 0. The ramp is
+  // the source pixel shows instead, ramping in linearly as the summed alpha
+  // falls from 1/16 to 0: the reference's step 3, which the preview's OUT
+  // pass draws too. The ramp is
   // made on the alpha plane (lut clips a YUV format's colour planes to the
   // limited range, measured: a mask of 6 to 92%, not 0 to 100%) and copied to
   // the others. maskedmerge on the colour planes only takes its alpha from

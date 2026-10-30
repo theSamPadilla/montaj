@@ -73,7 +73,7 @@
 // opacity 0 once the surface draws; on failure the media shows sharp. The
 // picture's rect and the part of the source that fills it come from
 // {@link radialBlurSpec}. Measured against the export in Chromium: worst 8
-// codes, mean under 1 (editor/browser/radial-blur.test.mjs).
+// codes (12 for a video's YUV graph in a thinly covered pixel), mean under 1 (editor/browser/radial-blur.test.mjs).
 //
 // THE BASE CLIP (PreviewPlayer) blurs only while its picture shows and the
 // playhead is inside it. On the engine path the blur runs over the engine's

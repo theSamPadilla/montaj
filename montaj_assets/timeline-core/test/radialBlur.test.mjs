@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  RADIAL_MAX_PASSES, RADIAL_MAX_TAPS, radialBlurPlan, radialBlurReference, radialBlurTravel,
+  RADIAL_MAX_PASSES, RADIAL_MAX_TAPS, RADIAL_THIN_COVERAGE, radialBlurPlan, radialBlurReference, radialBlurTravel,
   radialCenterInPicture, radialTapInverse, zoomScaleRange,
 } from '../index.js'
 
@@ -323,4 +323,33 @@ test('reference: coverage is the summed alpha, 1 where every tap lands on an opa
     plan: radialBlurPlan({ type: 'spin', amount: 90, center: [0, 0], rect: { w: W, h: W } }) })
   assert.ok(corner.coverage[W * W - 1] < 1 / 16, `${corner.coverage[W * W - 1]}`)
   for (const v of [...mid.coverage, ...corner.coverage]) assert.ok(v >= 0 && v <= 1 + 1e-5)
+})
+
+test('reference: where under 1/16 of the average lands, the source pixel fades in, linearly in the summed alpha', () => {
+  assert.equal(RADIAL_THIN_COVERAGE, 1 / 16)
+  // Red above the diagonal, blue below: a wide spin about the top-left corner
+  // averages both sides of the diagonal into the thinly covered far corner.
+  const W = 40
+  const img = image(W, W, (i, j) => (i > j ? [255, 0, 0, 255] : [0, 0, 255, 255]))
+  const plan = radialBlurPlan({ type: 'spin', amount: 90, center: [0, 0], rect: { w: W, h: W } })
+  const out = radialBlurReference(img, { type: 'spin', center: [0, 0], plan })
+  let thin = 0
+  let ramped = 0
+  for (let p = 0; p < W * W; p++) {
+    const A = out.coverage[p]
+    const src = img.data.slice(p * 4, p * 4 + 3).map((v) => v / 255)
+    if (A === 0) {
+      for (let c = 0; c < 3; c++) close(out.data[p * 4 + c], src[c], 1e-6, `uncovered px ${p}`)
+    } else if (A < 1 / 16) {
+      thin++
+      const k = A * 16
+      // colour = source + (blurred - source) k, so (colour - source) / k is the blurred colour, in [0, 1].
+      for (let c = 0; c < 3; c++) {
+        const blurred = src[c] + (out.data[p * 4 + c] - src[c]) / k
+        assert.ok(blurred > -1e-4 && blurred < 1 + 1e-4, `px ${p}: ${blurred}`)
+      }
+      if (Math.abs(out.data[p * 4] - src[0]) > 1e-3) ramped++
+    }
+  }
+  assert.ok(thin > 0 && ramped > 0, `thin ${thin}, ramped ${ramped}`)
 })

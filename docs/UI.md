@@ -686,7 +686,7 @@ The base clip blurs only while its picture shows and the playhead is inside it
 Through an engine crossfade the blur is drawn over the blended canvas, so when
 the two clips' blurs differ the blend shows sharp for the overlap (the export
 blurs each clip on its own); equal blurs stay blurred.
-They match the export within 8 codes (mean under 1). Their export cost, a 10 s
+They match the export within 8 codes (12 in a video's thinly covered pixels; mean under 1), and both fade to the sharp pixel where under 1/16 of the average lands on the picture. Their export cost, a 10 s
 1080x1920 full-frame clip of known footage size: 11.7 s for spin 30 degrees and
 12.3 s for zoom 40%, against 4.6 s unblurred, 5.7 s uniform 40 and 8.6 s linear
 40 (about 25 ms a frame more); a clip whose footage size is unknown blurs after
