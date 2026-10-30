@@ -665,7 +665,9 @@ curve once per frame and sends it to the alpha filter as a runtime command, so
 the opacity keyframe diamond is live on a video or image clip, and
 double-clicking a clip to key everything keys its opacity with its geometry, as
 it does an overlay's. A clip's blend mode is the **Blend** row under Opacity in
-the Transform panel, and its mask is the **Mask** section below Align: a switch
+the Transform panel; its **Blur** row under it sets `blur` (pixels of the 1080
+canvas, 0 to 200, not keyframable, 0 removes it), drawn live in the preview
+(`preview/itemBlur.tsx`); and its mask is the **Mask** section below Align: a switch
 (off keeps the settings), the shape, position, size, rotation, feather (the soft
 band's width) and invert, each keyframable but the shape and invert. On the
 preview a selected masked clip shows the mask's outline, resize squares, a

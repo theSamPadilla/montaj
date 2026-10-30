@@ -195,6 +195,8 @@ scale-animated item. Expression arm count is free — 64 arms measured the same 
 
 **Blend modes.** A blended clip (`render/item-blend.js`) is mixed in RGB with the backdrop as the first input, then composited as a canvas-format layer carrying the item's alpha, so pixels outside the item are bit-exact. Cost at 4K is about 50 ms a frame for a blended clip, against about 6 ms for a plain one.
 
+**Blur.** A clip's `blur` (`render/item-blur.js`, sigma = `blur * min(w, h) / 1080`, timeline-core `blurSigmaPx`) runs on the fitted picture before the box's pad, in 16-bit 4:4:4 with alpha: a transparent margin of 3 sigma, `gblur` (3 passes) on every plane, `unpremultiply` to renormalise by the blurred alpha (so only the picture's own pixels count and its edges stay opaque), the margin cropped off, then the clip's own alpha put back (`mergeplanes`) or, for an opaque clip, dropped. When nothing but the scale sits between them and the scale is an upscale of known footage, a video's blur runs on the footage before the scale at the scaled-down sigma (13 times fewer pixels for a 960x540 clip blown up to a 3456x1944 card). The editor preview draws the same renormalised blur with an SVG filter; `render/test/item-blur-preview-parity.test.mjs` measures the two in Chromium (within 9 codes, mean under 2). Cost: about 75 ms a frame at 3456x1944 when blurred after the scale.
+
 ---
 
 ## Project Color Space

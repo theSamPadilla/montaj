@@ -296,6 +296,7 @@ All timed graphical elements live in `tracks[1+]`'s `items` arrays. Each track i
 | `keyframes` | array | all | Animate `offsetX`/`offsetY`/`scale`/`scaleX`/`scaleY`/`rotation`/`opacity` over the item's own lifetime. An image or a video also takes the mask props `maskX`/`maskY`/`maskW`/`maskH`/`maskRotation`/`maskFeather` (each overrides the matching `mask` field; a save refuses one on an item with no `mask`), and `maskPoints` on a `path` mask (each point's `value` is a list of `[x, y]` pairs, as many as `mask.points`, morphing point by point). An image or a video also takes `cropX`/`cropY`/`cropW`/`cropH`, its source crop: see "Crop keyframes". |
 | `mask` | object | image, video | Optional shape that hides part of the clip: `{shape, x, y, w, h, rotation, radius, feather, invert, enabled}`. `shape` is required: `ellipse`, `rect`, `wipe` or `path`. A `path` also needs `points`, 3 to 64 `[x, y]` pairs from 0 to 1 of the mask's own box (`x`, `y`, `w`, `h`, `rotation` place it), and takes `smooth: true` for a closed curve through them. `x`,`y` (default 0.5) are the centre, or for a wipe a point on the edge; `w`,`h` (default 0.5, > 0) are the diameters or sides; `rotation` is degrees clockwise (default 0); `radius` rounds a rect, 0-1 of half its shorter side; `feather` is the width of the soft band centred on the edge (half inside, half outside), 0-1 of the box's shorter side, drawn as a Gaussian blur with sigma a quarter of that width; `invert` swaps inside and outside; `enabled` (default true) set to false hides the mask and keeps its settings (its tracks do nothing while it is off). All fractions of the clip's own box before rotation (the image's fitted box, the video's padded box). A wipe shows the side where `(px-x)*cos(r)+(py-y)*sin(r) <= 0`, so the left at rotation 0. Overlays refuse it. |
 | `blendMode` | string | image, video | Optional: `normal`, `screen`, `multiply`, `add`, `lighten`, `darken`, `overlay`; absent is `normal`. Blends the clip with what is beneath it; pixels outside the clip are untouched. Overlays refuse it. |
+| `blur` | number | image, video | Optional Gaussian blur over the clip's picture: its standard deviation in pixels of the 1080-short-edge design canvas (scaled to the output, so it looks the same at 1080x1920 and 2160x3840), 0 to 200; absent or 0 is sharp. Static, not keyframable. The fitted picture is blurred before its box is padded, averaging only its own pixels, so its edges stay opaque (a blurred clip filling the frame never gets dark or see-through edges) and its own transparency is kept. E.g. a landscape clip behind a card of itself: `"scale": 3.2, "blur": 40`. Overlays refuse it. |
 | `props` | object | overlay | Arbitrary props passed to the JSX component |
 | `opaque` | boolean | overlay | When `true`, render engine skips alpha — JSX controls full frame. Only over the whole canvas (scale 1, no offset or rotation, no keyframes other than `opacity`); a scaled or moved opaque overlay leaves the footage drawn |
 | `googleFonts` | array | overlay | Google Font names to load before rendering |
@@ -357,14 +358,15 @@ computed from the pair's overlap span and never written as data.
 
 ### Masks and blend modes
 
-`mask` and `blendMode` (field table above) apply to `image` and `video` items. The
+`mask`, `blendMode` and `blur` (field table above) apply to `image` and `video` items. The
 mask geometry is shared (`timeline-core/src/mask.js`): the renderer rasterizes the
 same polygon the editor preview draws. A mask track (`maskX` and the rest) overrides
 the matching `mask` field per frame. Save names the bad field when a value is out of
-range, and refuses `mask` and `blendMode` on an overlay.
+range, and refuses `mask`, `blendMode` and `blur` on an overlay.
 
 **NLE exports carry less.** The FCPXML, XMEML and After Effects exports read the
-static `opacity` only: opacity keyframes, masks and blend modes are dropped.
+static `opacity` only: opacity keyframes, masks, blend modes and blurs are
+dropped, each with a marker on its clip and a warning.
 
 ### Crop keyframes
 
