@@ -94,12 +94,25 @@ def _seconds(entries):
     return sum(max(0.0, float(e.get("end") or 0) - float(e.get("start") or 0)) for e in entries)
 
 
+def _heard(entries):
+    """Whether any of a source's items plays its sound: not muted, volume above 0. Footage laid in with its sound off
+    (b-roll, a clip of someone else talking) is never the narration."""
+    def plays(e):
+        try:
+            vol = 1.0 if e.get("volume") is None else float(e["volume"])
+        except (TypeError, ValueError):
+            vol = 1.0
+        return not e.get("muted") and vol > 0
+    return any(plays(e) for e in entries)
+
+
 def choose(project, project_dir, asked=None):
     """The source key to cut. `asked`: None or "auto", a video track id, an audio key, or "voiceover".
 
-    auto: the source with the most seconds of transcribed media (a video track wins a tie, so a project cut before
-    sources existed picks the same track). With nothing transcribed yet: the voiceover, else the longest audio group
-    of `voiceover` items, else the first video track (as before)."""
+    auto: of the sources whose sound plays (a source whose items are all muted or at volume 0 is skipped), the one
+    with the most seconds of transcribed media (a video track wins a tie, so a project cut before sources existed
+    picks the same track). With nothing heard and transcribed: the same over every source. With nothing transcribed
+    yet: the voiceover, else the longest audio group of `voiceover` items, else the first video track (as before)."""
     cands = candidates(project, project_dir)
     if asked not in (None, "", "auto"):
         for key, kind, entries in cands:
@@ -115,13 +128,14 @@ def choose(project, project_dir, asked=None):
         if has_source(project, project_dir, asked):
             return asked                    # a type key whose row the editor has since stamped as a lane
         fail("invalid_params", f"speech must be auto or one of: {', '.join(k for k, _, _ in cands) or 'nothing'}")
-    best, best_s = None, 0.0
-    for key, kind, entries in cands:
-        s = _transcribed_seconds(entries, project_dir)
-        if s > best_s + _EPS:
-            best, best_s = key, s
-    if best is not None:
-        return best
+    for pool in ([c for c in cands if _heard(c[2])], cands):
+        best, best_s = None, 0.0
+        for key, kind, entries in pool:
+            s = _transcribed_seconds(entries, project_dir)
+            if s > best_s + _EPS:
+                best, best_s = key, s
+        if best is not None:
+            return best
     for key, kind, _ in cands:
         if kind == VOICEOVER:
             return key

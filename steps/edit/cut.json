@@ -51,7 +51,7 @@
       "type": "string",
       "required": false,
       "default": "auto",
-      "description": "Where the speech is. auto (the default): the source with the most transcribed seconds, else the voiceover. Or a video track id, audio:lane-<n> (the audio items of integer lane n), audio:<type> (audio items with no lane, of that type, e.g. audio:voiceover), or voiceover (the file at voiceover.src, or the audio that plays it). Audio is cut in place on audio.tracks; a voiceover's kept spans become voiceover items there, and voiceover.src is left as it is."
+      "description": "Where the speech is. auto (the default): of the sources heard (not muted), the one with the most transcribed seconds, else the voiceover. Or a video track id, audio:lane-<n> (the audio items of integer lane n), audio:<type> (audio items with no lane, of that type, e.g. audio:voiceover), or voiceover (the file at voiceover.src, or the audio that plays it). Audio is cut in place on audio.tracks; a voiceover's kept spans become voiceover items there."
     },
     {
       "name": "silence-threshold",

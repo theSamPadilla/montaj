@@ -42,6 +42,30 @@ def test_auto_picks_the_transcribed_source_and_a_video_track_wins_a_tie(tmp_path
     assert ss.choose(p, str(tmp_path)) == "trk-0"
 
 
+def test_auto_skips_footage_whose_sound_is_off(tmp_path):
+    """PL90: a muted clip of someone else talking has more transcribed seconds than the narration, and is not it."""
+    a = [{"id": "v1", "type": "voiceover", "lane": 0, "src": str(tmp_path / "vo.mp4"), "start": 0.0, "end": 2.0,
+          "inPoint": 0.0, "outPoint": 2.0}]
+    p = project(tmp_path, a)
+    (tmp_path / "vo.json").write_text(json.dumps({"transcription": []}))
+    clip = {"id": "c", "type": "video", "src": str(tmp_path / "vo.mp4"), "start": 0, "end": 3.0, "inPoint": 0.0,
+            "outPoint": 3.0, "muted": True, "volume": 0}
+    p["tracks"][0]["items"].append(clip)
+    assert ss.choose(p, str(tmp_path)) == "audio:lane-0"
+    clip["muted"] = False
+    assert ss.choose(p, str(tmp_path)) == "audio:lane-0"           # volume 0 alone is silent too
+    clip["volume"] = 1
+    assert ss.choose(p, str(tmp_path)) == "trk-0"                  # heard, and longer: as before
+
+
+def test_auto_with_only_silent_sources_still_picks_by_transcribed_seconds(tmp_path):
+    p = project(tmp_path)
+    (tmp_path / "vo.json").write_text(json.dumps({"transcription": []}))
+    p["tracks"][0]["items"].append({"id": "c", "type": "video", "src": str(tmp_path / "vo.mp4"), "start": 0,
+                                    "end": 3.0, "inPoint": 0.0, "outPoint": 3.0, "muted": True})
+    assert ss.choose(p, str(tmp_path)) == "trk-0"
+
+
 def test_a_pending_projects_placeholder_clips_count_their_whole_file(tmp_path):
     """A placeholder (end at its start) plays its whole file: a 5 s music item on the same file never outweighs it."""
     a = [{"id": "music", "src": str(tmp_path / "vo.mp4"), "start": 0.0, "end": 5.0, "inPoint": 0.0, "outPoint": 5.0}]
