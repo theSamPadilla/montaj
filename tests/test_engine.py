@@ -346,7 +346,7 @@ def test_validate_project_rejects_a_bad_blur_type(tmp_path, capsys):
     path = _write_project(tmp_path, "project.json", data)
     with pytest.raises(SystemExit):
         v.validate_project(path)
-    assert "blurType must be one of uniform, linear" in capsys.readouterr().err
+    assert "blurType must be one of uniform, linear, spin, zoom" in capsys.readouterr().err
 
 
 def test_validate_project_ignores_a_saved_image_tone(tmp_path):

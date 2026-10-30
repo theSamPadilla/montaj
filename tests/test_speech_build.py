@@ -524,13 +524,14 @@ def test_a_rebuilt_piece_keeps_mask_blend_mode_and_opacity_track(fx):
     c2 = speech_items(project)[1]
     mask = {"shape": "rect", "w": 0.4, "h": 0.4, "feather": 0.05}
     track = {"prop": "opacity", "points": [{"t": 0, "value": 0.2}, {"t": 4.0, "value": 1}]}
-    c2.update(mask=mask, blendMode="multiply", blur=24, blurType="linear", blurAngle=120, keyframes=[track])
+    c2.update(mask=mask, blendMode="multiply", blur=24, blurType="zoom", blurAngle=120, blurX=0.2, blurY=0.9,
+              keyframes=[track])
     b = build(fx, edit(fx.text, "A4 {1.60} Hartford,", None), project=project)
     pieces = [x for x in b.items if x["id"].startswith("clip-2")]
     assert len(pieces) == 2
     for it in pieces:
         assert it["mask"] == mask and it["blendMode"] == "multiply" and it["blur"] == 24
-        assert it["blurType"] == "linear" and it["blurAngle"] == 120
+        assert it["blurType"] == "zoom" and it["blurAngle"] == 120 and it["blurX"] == 0.2 and it["blurY"] == 0.9
         assert it["keyframes"] and it["keyframes"][0]["prop"] == "opacity"
     assert not [f for f in b.report.flagged if f["kind"] == "fields_dropped"]
 

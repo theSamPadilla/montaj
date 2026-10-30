@@ -86,13 +86,15 @@ def test_nulls_and_unknown_fields_are_lenient():
 
 def test_overlay_with_mask_or_blend_is_refused():
     ov = {"id": "o", "type": "overlay", "src": "/a.jsx", "start": 0, "end": 1, "mask": {"shape": "rect"}, "blendMode": "screen",
-          "blur": 10, "blurType": "linear", "blurAngle": 30}
+          "blur": 10, "blurType": "linear", "blurAngle": 30, "blurX": 0.5, "blurY": 0.5}
     errors = _errs(ov)
     assert any(e.startswith("tracks[0].items[0].mask is not supported on overlay") for e in errors)
     assert any(".blendMode is not supported on overlay" in e for e in errors)
     assert any(".blur is not supported on overlay" in e for e in errors)
     assert any(".blurType is not supported on overlay" in e for e in errors)
     assert any(".blurAngle is not supported on overlay" in e for e in errors)
+    assert any(".blurX is not supported on overlay" in e for e in errors)
+    assert any(".blurY is not supported on overlay" in e for e in errors)
 
 
 @pytest.mark.parametrize("make", [_img, _vid])
@@ -119,7 +121,7 @@ def test_a_blur_type_and_angle_pass(make, blur_type, angle):
 @pytest.mark.parametrize("blur_type", ["Linear", "radial", "", 1, True, ["linear"]])
 def test_a_bad_blur_type_is_refused_naming_the_prop(make, blur_type):
     errors = _errs(make(blur=40, blurType=blur_type))
-    assert len(errors) == 1 and ".blurType must be one of uniform, linear" in errors[0], errors
+    assert len(errors) == 1 and ".blurType must be one of uniform, linear, spin, zoom" in errors[0], errors
 
 
 @pytest.mark.parametrize("make", [_img, _vid])
@@ -127,6 +129,33 @@ def test_a_bad_blur_type_is_refused_naming_the_prop(make, blur_type):
 def test_a_bad_blur_angle_is_refused_naming_the_prop(make, angle):
     errors = _errs(make(blur=40, blurType="linear", blurAngle=angle))
     assert len(errors) == 1 and ".blurAngle must be a finite number" in errors[0], errors
+
+
+@pytest.mark.parametrize("make", [_img, _vid])
+@pytest.mark.parametrize("blur_type,ok,bad", [("spin", 180, 180.5), ("zoom", 200, 200.5), ("linear", 200, 201), (None, 200, 201)])
+def test_the_blur_amount_range_follows_the_type(make, blur_type, ok, bad):
+    assert _errs(make(blur=ok, blurType=blur_type)) == []
+    errors = _errs(make(blur=bad, blurType=blur_type))
+    assert len(errors) == 1 and f".blur must be a number from 0 to {ok} " in errors[0], errors
+
+
+def test_a_bad_type_judges_the_amount_as_uniform():
+    errors = _errs(_vid(blur=150, blurType="radial"))
+    assert len(errors) == 1 and ".blurType must be one of" in errors[0], errors
+
+
+@pytest.mark.parametrize("make", [_img, _vid])
+@pytest.mark.parametrize("x,y", [(0.5, 0.5), (0, 1), (-0.2, 1.3), (None, 0.25)])
+def test_a_blur_centre_passes(make, x, y):
+    assert _errs(make(blur=40, blurType="zoom", blurX=x, blurY=y)) == []
+
+
+@pytest.mark.parametrize("make", [_img, _vid])
+@pytest.mark.parametrize("field", ["blurX", "blurY"])
+@pytest.mark.parametrize("value", ["0.5", True, float("nan"), float("inf"), [0.5]])
+def test_a_bad_blur_centre_is_refused_naming_the_prop(make, field, value):
+    errors = _errs(make(blur=40, blurType="spin", **{field: value}))
+    assert len(errors) == 1 and f".{field} must be a finite number" in errors[0], errors
 
 
 def test_unchanged_bad_item_is_not_rechecked():
