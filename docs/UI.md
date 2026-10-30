@@ -669,8 +669,15 @@ the Transform panel; its mask is the **Mask** section below Align: a switch
 (off keeps the settings), the shape, position, size, rotation, feather (the soft
 band's width) and invert, each keyframable but the shape and invert; and under it
 the **Blur** section: a switch (off removes `blur`; on again restores the last
-amount, 20 the first time) and the amount, a slider and box (pixels of the 1080
-canvas, 1 to 200, not keyframable), drawn live in the preview (`preview/itemBlur.tsx`). On the
+amount, 20 the first time); a **Type** row (Uniform, Linear, Spin, Zoom;
+switching keeps the amount, held to the new type's range, and writes only that
+type's fields: none for uniform, `blurAngle` for linear, `blurX` and `blurY` for
+spin and zoom); the amount, a slider and box in the type's unit (px to 200 for
+uniform and linear, degrees to 180 for spin, percent to 200 for zoom); for
+linear an **Angle** row (a box and the Rotate row's dial, whose line is the
+streak); for spin and zoom a **Center** row (X and Y in percent of the box).
+None is keyframable. Uniform and linear draw live in the preview
+(`preview/itemBlur.tsx`); spin and zoom show sharp until they are built. On the
 preview a selected masked clip shows the mask's outline, resize squares, a
 rotate handle and dashed rings marking the feather band; dragging the outer ring
 sets the feather (`preview/MaskGizmo.tsx`). The data is in
