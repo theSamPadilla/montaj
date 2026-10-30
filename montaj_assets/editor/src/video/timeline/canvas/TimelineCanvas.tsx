@@ -641,6 +641,7 @@ export default function TimelineCanvas({
                 fps: scene.project.settings?.fps ?? 30,
                 resolution: scene.project.settings?.resolution,
                 watchFile,
+                gestureActive: () => releaseGestureRef.current !== null,
                 viewport,
                 onReady: () => requestRedraw('all'),
               }),

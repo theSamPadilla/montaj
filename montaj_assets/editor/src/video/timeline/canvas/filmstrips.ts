@@ -296,6 +296,9 @@ export interface FilmstripQueryContext {
   /** The adapter's `watchFile`; a change to an overlay's src bumps its strip
    *  revision so the next paint requests fresh frames. Absent → never bumps. */
   watchFile?: (path: string, onChange: () => void, projectId?: string) => () => void
+  /** True while a timeline gesture (trim, move) is running; an overlay strip is
+   *  not requested then. Absent → the settle delay alone applies. */
+  gestureActive?: () => boolean
 }
 
 /** Overlay strips are costly to render, so a failed request waits this long
@@ -303,6 +306,10 @@ export interface FilmstripQueryContext {
  *  rejects every time). A new key (props, fonts, duration, revision) is
  *  requested at once. */
 export const OVERLAY_RETRY_COOLDOWN_MS = 60_000
+
+/** An overlay's strip key must stay unchanged this long before a request is
+ *  made, so a trim or prop drag does not render a strip per intermediate size. */
+export const OVERLAY_SETTLE_MS = 400
 
 /** JSON with object keys sorted, so equal props always make equal keys. */
 export function stableJson(value: unknown): string {
@@ -324,14 +331,20 @@ export interface FilmstripSceneLookup {
 export class FilmstripStore {
   private indexEntries = new Map<string, IndexEntry>()
   private imageEntries = new Map<string, ImageEntry>()
-  /** Per overlay src: bumped when the host reports the file changed. */
+  /** Per `${projectId}|${src}`: bumped when the host reports the file changed. */
   private revisions = new Map<string, number>()
   private unwatchers = new Map<string, () => void>()
+  /** Per `${projectId}|${item id}`: the strip key it is waiting on and since when. */
+  private settling = new Map<string, { key: string; since: number; timer: ReturnType<typeof setTimeout> | null }>()
+  /** Per `${projectId}|${item id}`: the last strip that was ready, drawn while a new key waits. */
+  private lastReady = new Map<string, { src: string; key: string }>()
 
-  /** Stop every overlay file watch. Call on unmount. */
+  /** Stop every overlay file watch and settle timer. Call on unmount. */
   dispose(): void {
     for (const off of this.unwatchers.values()) off()
     this.unwatchers.clear()
+    for (const s of this.settling.values()) if (s.timer) clearTimeout(s.timer)
+    this.settling.clear()
   }
 
   /**
@@ -360,7 +373,8 @@ export class FilmstripStore {
     const range = visibleRange(ctx.viewport)
     if (item.end < range.start || item.start > range.end) return null
 
-    const band = clipBands(rect).frames
+    // An overlay's frames fill the whole item; a clip's sit in the top band.
+    const band = item.type === 'overlay' ? rect : clipBands(rect).frames
     if (band.height <= 0) return null
 
     // For a video, no sheet index yet means nothing to draw at all — bail
@@ -461,26 +475,60 @@ export class FilmstripStore {
   }
 
   /** Index for an overlay item's strip. Key = src + props + fonts + duration
-   *  + fps + the src's revision; one request in flight per key, a rejection is
-   *  not retried until the cooldown or a new key. */
+   *  + fps + the src's revision. A key is requested only once it has been
+   *  unchanged for `OVERLAY_SETTLE_MS` (and no gesture is running); until then
+   *  the last ready strip for the item is drawn. One request in flight per key,
+   *  a rejection is not retried until the cooldown or a new key. */
   private resolveOverlayIndex(item: VisualItem, ctx: FilmstripQueryContext): { data: FilmstripIndex; tiles: FlatTile[] } | null {
     const src = item.src!
-    this.watchOverlay(src, ctx)
+    const owner = `${ctx.projectId}|${item.id}`
+    const rev = this.watchOverlay(src, ctx)
     const fps = ctx.fps ?? 30
     const durationSec = item.end - item.start
     const [width, height] = ctx.resolution ?? [1080, 1920]
-    const key = `ovl|${ctx.projectId}|${src}|${width}x${height}|${stableJson(item.props ?? {})}|${stableJson(item.googleFonts ?? [])}|${durationSec}|${fps}|${this.revisions.get(src) ?? 0}|${ctx.tileWidth ?? ''}`
+    const key = `ovl|${ctx.projectId}|${src}|${width}x${height}|${stableJson(item.props ?? {})}|${stableJson(item.googleFonts ?? [])}|${durationSec}|${fps}|${rev}|${ctx.tileWidth ?? ''}`
     const entry = this.indexEntries.get(key)
-    if (entry?.status === 'ready' && entry.data) return { data: entry.data, tiles: entry.tiles }
+    if (entry?.status === 'ready' && entry.data) {
+      this.lastReady.set(owner, { src, key })
+      return { data: entry.data, tiles: entry.tiles }
+    }
+    const fallback = (): { data: FilmstripIndex; tiles: FlatTile[] } | null => {
+      const last = this.lastReady.get(owner)
+      const prev = last && last.src === src ? this.indexEntries.get(last.key) : undefined
+      return prev?.status === 'ready' && prev.data ? { data: prev.data, tiles: prev.tiles } : null
+    }
+    if (entry?.status === 'loading') return fallback()
+
+    // Settle: wait for the key to hold still before asking the host.
+    let st = this.settling.get(owner)
+    if (!st || st.key !== key) {
+      if (st?.timer) clearTimeout(st.timer)
+      st = { key, since: Date.now(), timer: null }
+      this.settling.set(owner, st)
+    }
+    const waiting = Date.now() - st.since < OVERLAY_SETTLE_MS
+    const gesture = !waiting && !!ctx.gestureActive?.()
+    if (waiting || gesture) {
+      if (!st.timer) {
+        const onReady = ctx.onReady
+        const mine = st
+        st.timer = setTimeout(() => {
+          mine.timer = null
+          if (mine.key === key) onReady()
+        }, OVERLAY_SETTLE_MS)
+      }
+      return fallback()
+    }
+
     const inCooldown = entry?.status === 'error'
       && Date.now() - (entry.erroredAt ?? 0) < OVERLAY_RETRY_COOLDOWN_MS
-    if (entry?.status !== 'loading' && !inCooldown && ctx.getFilmstrip) {
+    if (!inCooldown && ctx.getFilmstrip) {
       this.indexEntries.set(key, { status: 'loading', data: null, tiles: [] })
       ctx.getFilmstrip({
         projectId: ctx.projectId,
         src,
         tileWidth: ctx.tileWidth,
-        overlay: { props: item.props, googleFonts: item.googleFonts, fps, durationSec, width, height },
+        overlay: { props: item.props, googleFonts: item.googleFonts, fps, durationSec, width, height, revision: rev },
       })
         .then(data => {
           this.indexEntries.set(key, { status: 'ready', data, tiles: flattenTiles(data) })
@@ -490,16 +538,21 @@ export class FilmstripStore {
           this.indexEntries.set(key, { status: 'error', data: null, tiles: [], erroredAt: Date.now() })
         })
     }
-    return null
+    return fallback()
   }
 
-  private watchOverlay(src: string, ctx: FilmstripQueryContext): void {
-    if (!ctx.watchFile || this.unwatchers.has(src)) return
-    const onReady = ctx.onReady
-    this.unwatchers.set(src, ctx.watchFile(src, () => {
-      this.revisions.set(src, (this.revisions.get(src) ?? 0) + 1)
-      onReady()
-    }, ctx.projectId))
+  /** Start the file watch for an overlay src (once per project and src);
+   *  returns the src's current revision. */
+  private watchOverlay(src: string, ctx: FilmstripQueryContext): number {
+    const k = `${ctx.projectId}|${src}`
+    if (ctx.watchFile && !this.unwatchers.has(k)) {
+      const onReady = ctx.onReady
+      this.unwatchers.set(k, ctx.watchFile(src, () => {
+        this.revisions.set(k, (this.revisions.get(k) ?? 0) + 1)
+        onReady()
+      }, ctx.projectId))
+    }
+    return this.revisions.get(k) ?? 0
   }
 
   /** Look up a decoded sheet image by its host path, kicking off a load when

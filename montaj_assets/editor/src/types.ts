@@ -414,6 +414,8 @@ export interface GetFilmstripArgs {
     /** The project canvas, so the host can size each tile to its aspect. */
     width: number
     height: number
+    /** Bumped when the overlay's file changes, so the host re-renders. */
+    revision?: number
   }
 }
 

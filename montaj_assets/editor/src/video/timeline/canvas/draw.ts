@@ -1093,6 +1093,8 @@ export interface ClipDrawArgs {
   /** Lay the soft top shade (`colors.clipTopShade`) over the frames band. Set
    *  when there ARE frames to read the name over; a flat fill needs none. */
   topShade?: boolean
+  /** The frames fill the whole body (an overlay), so the top shade does too. */
+  fullFrames?: boolean
 }
 
 /**
@@ -1239,7 +1241,7 @@ export function drawClipRect(
   args: ClipDrawArgs,
   palette: TimelinePalette = DARK_TIMELINE_PALETTE,
 ): void {
-  const { rect, palette: trackPalette, selected, label, dimmed, drawContent, missing, video = false, topShade = false } = args
+  const { rect, palette: trackPalette, selected, label, dimmed, drawContent, missing, video = false, topShade = false, fullFrames = false } = args
   if (rect.width <= 0) return
 
   const body = clipBodyRect(rect)
@@ -1262,7 +1264,7 @@ export function drawClipRect(
   // The soft shade over the top of a video's frames, so its name reads over
   // a bright frame. Fades out by 55% of the frames band.
   if (topShade && !isClear(palette.colors.clipTopShade)) {
-    const frames = clipBands(body).frames
+    const frames = fullFrames ? body : clipBands(body).frames
     if (frames.height > 0) {
       const shade = ctx.createLinearGradient(0, frames.y, 0, frames.y + frames.height)
       shade.addColorStop(0, palette.colors.clipTopShade)
@@ -2406,8 +2408,9 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
         dimmed,
         drawContent,
         missing: itemMissing,
-        video: item.type === 'video' || (item.type === 'overlay' && !!filmstripTiles),
+        video: item.type === 'video',
         topShade: (item.type === 'video' || item.type === 'overlay') && !!filmstripTiles,
+        fullFrames: item.type === 'overlay',
       }, themePalette)
       // The keyframe strip (SP9b T3.3): selected, keyframed overlays only —
       // see `drawKeyframeStrip`'s own doc for why this is gated here rather
