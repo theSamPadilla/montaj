@@ -340,6 +340,15 @@ def test_validate_project_rejects_a_blur_out_of_range(tmp_path, capsys):
     assert "blur must be a number from 0 to 200" in capsys.readouterr().err
 
 
+def test_validate_project_rejects_a_bad_blur_type(tmp_path, capsys):
+    item = {"id": "v1", "type": "video", "src": "/a.mp4", "start": 0, "end": 3, "blur": 40, "blurType": "radial"}
+    data = {**VALID_PROJECT, "tracks": [{"id": "t0", "items": [item]}]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+    assert "blurType must be one of uniform, linear" in capsys.readouterr().err
+
+
 def test_validate_project_ignores_a_saved_image_tone(tmp_path):
     """`settings.imageTone` was the per-image HDR tone, removed when HDR renders
     began mapping every graphics pixel one way. A project saved with it still

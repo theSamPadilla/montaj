@@ -86,11 +86,13 @@ def test_nulls_and_unknown_fields_are_lenient():
 
 def test_overlay_with_mask_or_blend_is_refused():
     ov = {"id": "o", "type": "overlay", "src": "/a.jsx", "start": 0, "end": 1, "mask": {"shape": "rect"}, "blendMode": "screen",
-          "blur": 10}
+          "blur": 10, "blurType": "linear", "blurAngle": 30}
     errors = _errs(ov)
     assert any(e.startswith("tracks[0].items[0].mask is not supported on overlay") for e in errors)
     assert any(".blendMode is not supported on overlay" in e for e in errors)
     assert any(".blur is not supported on overlay" in e for e in errors)
+    assert any(".blurType is not supported on overlay" in e for e in errors)
+    assert any(".blurAngle is not supported on overlay" in e for e in errors)
 
 
 @pytest.mark.parametrize("make", [_img, _vid])
@@ -104,6 +106,27 @@ def test_a_blur_from_0_to_200_passes(make, blur):
 def test_a_bad_blur_is_refused_naming_the_prop(make, blur):
     errors = _errs(make(blur=blur))
     assert len(errors) == 1 and ".blur must be a number from 0 to 200" in errors[0], errors
+
+
+@pytest.mark.parametrize("make", [_img, _vid])
+@pytest.mark.parametrize("blur_type,angle", [("uniform", None), ("linear", 0), ("linear", 30), ("linear", -135.5),
+                                              ("linear", 720), (None, None), ("uniform", 45)])
+def test_a_blur_type_and_angle_pass(make, blur_type, angle):
+    assert _errs(make(blur=40, blurType=blur_type, blurAngle=angle)) == []
+
+
+@pytest.mark.parametrize("make", [_img, _vid])
+@pytest.mark.parametrize("blur_type", ["Linear", "radial", "", 1, True, ["linear"]])
+def test_a_bad_blur_type_is_refused_naming_the_prop(make, blur_type):
+    errors = _errs(make(blur=40, blurType=blur_type))
+    assert len(errors) == 1 and ".blurType must be one of uniform, linear" in errors[0], errors
+
+
+@pytest.mark.parametrize("make", [_img, _vid])
+@pytest.mark.parametrize("angle", ["30", True, float("nan"), float("inf"), [30], {"deg": 30}])
+def test_a_bad_blur_angle_is_refused_naming_the_prop(make, angle):
+    errors = _errs(make(blur=40, blurType="linear", blurAngle=angle))
+    assert len(errors) == 1 and ".blurAngle must be a finite number" in errors[0], errors
 
 
 def test_unchanged_bad_item_is_not_rechecked():
