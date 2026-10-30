@@ -1,5 +1,5 @@
 import { useRef, useState, type RefObject } from 'react'
-import { AudioLines, Box, Captions, Eye, EyeOff, Film, Layers, Magnet, MoveHorizontal, Settings2, Volume2, VolumeX, ZoomIn, ZoomOut } from 'lucide-react'
+import { AudioLines, Box, Captions, Eye, EyeOff, Film, Layers, Magnet, Settings2, Volume2, VolumeX } from 'lucide-react'
 import { Tooltip } from '../../ui/Tooltip'
 import ConfirmDialog from '../../ui/ConfirmDialog'
 import TrackContextMenu from './TrackContextMenu'
@@ -38,44 +38,6 @@ import { isScene3dItem } from '../scene3d'
 // already have — the base track is 120px tall and was showing a single row of
 // icons in the top 16px of it.
 const GUTTER_WIDTH_PX = 46
-
-/**
- * Timeline look B (dark): the quiet rail. No cell boxes, no left accent bar,
- * no borders — the track-kind icon and the row's controls sit straight on the
- * pane's gradient. Light keeps the boxed cells.
- *
- * A row under `QUIET_ROW_MIN_COLUMN_PX` lays the icon and its controls out in
- * a row; a taller one stacks them in a column under the icon, and when the
- * column would overflow the row (the 64px audio lane's three controls) the
- * controls wrap two to a line.
- */
-const QUIET_ICON_COLOR = '#99ABBD'
-const QUIET_ROW_MIN_COLUMN_PX = 50
-const QUIET_PAD_TOP_PX = 8
-const QUIET_ICON_PX = 15
-const QUIET_CONTROL_PX = 16
-const QUIET_COLUMN_GAP_PX = 7
-
-/** Do `count` controls fit one under another below the icon in `height`? */
-export function quietColumnFits(height: number, count: number): boolean {
-  if (count === 0) return true
-  return QUIET_PAD_TOP_PX + QUIET_ICON_PX + count * (QUIET_CONTROL_PX + QUIET_COLUMN_GAP_PX) <= height
-}
-
-/** Idle and hover colours for a rail control, per mode. Dark is look B's
- *  muted slate; light keeps the `--editor-text` mixes it always had. */
-function idleControlClass(mode: TimelineMode, gear = false): string {
-  // Whole literals, never assembled, so Tailwind's scanner sees every class.
-  if (mode !== 'light') return 'text-[rgba(153,171,189,0.65)] hover:text-[#B6C9D9]'
-  return gear
-    ? 'text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] hover:text-[color-mix(in_srgb,var(--editor-text)_90%,transparent)]'
-    : 'text-[color-mix(in_srgb,var(--editor-text)_35%,transparent)] hover:text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)]'
-}
-
-/** Hit-area size for a rail control: 16px on the quiet rail, 14px light. */
-function controlSizeClass(mode: TimelineMode): string {
-  return mode === 'light' ? 'h-3.5 w-3.5' : 'h-4 w-4'
-}
 
 /**
  * What a visual track is *for*, from what it holds. Tracks aren't typed in the
@@ -124,25 +86,30 @@ function commonTrackSpeed(items: VisualItem[]): number {
 }
 
 function KindIcon({ kind, className }: { kind: string | null; className?: string }) {
-  if (kind === 'scene3d') return <Box size={15} className={className} />
+  // A 3D track: the box with a tiny "3D" under it, so it never reads as an
+  // overlay track at a glance.
+  if (kind === 'scene3d') {
+    return (
+      <span data-track-3d className={`flex flex-col items-center leading-none ${className ?? ''}`}>
+        <Box size={13} />
+        <span className="mt-px text-[7px] font-semibold tracking-wide">3D</span>
+      </span>
+    )
+  }
   if (kind === 'overlay' || kind === 'image') return <Layers size={15} className={className} />
   return <Film size={15} className={className} />
 }
 
 interface RailCellProps {
   height: number
-  /** Left edge accent, matching the hue the clips on this row are drawn in.
-   *  Light only: the quiet dark rail has no accent bar. */
+  /** Left edge accent, matching the hue the clips on this row are drawn in. */
   accent?: string
   icon: React.ReactNode
   label: string
-  /** The row's inline controls — skip, mute, magnet — in display order. The
-   *  settings gear, when there is one, follows them. */
-  controls?: React.ReactNode[]
+  /** Optional control rendered beside the icon — the skip toggle today. */
+  action?: React.ReactNode
   /** Dim the cell to match a skipped track's dimmed clips. */
   dimmed?: boolean
-  /** Which rail to draw: the boxed light cell, or look B's quiet dark one. */
-  mode?: TimelineMode
   /**
    * Makes the icon itself a button that opens the track-settings popover
    * (TrackSettingsPopover). Absent → the icon stays the plain, non-interactive
@@ -159,90 +126,16 @@ interface RailCellProps {
   }
 }
 
-function SettingsGear({ settingsButton, mode }: { settingsButton: NonNullable<RailCellProps['settingsButton']>; mode: TimelineMode }) {
-  return (
-    <Tooltip label={settingsButton.label}>
-      <button
-        ref={settingsButton.buttonRef}
-        type="button"
-        aria-label={settingsButton.label}
-        aria-haspopup="dialog"
-        aria-expanded={settingsButton.open}
-        onClick={settingsButton.onClick}
-        className={`flex ${controlSizeClass(mode)} items-center justify-center rounded transition-colors ${
-          settingsButton.open
-            ? (mode === 'light'
-              ? 'text-[color-mix(in_srgb,var(--editor-text)_90%,transparent)] bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)]'
-              : 'text-[#B6C9D9] bg-[rgba(153,171,189,0.15)]')
-            : `${idleControlClass(mode, true)} ${mode === 'light' ? 'hover:bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)]' : 'hover:bg-[rgba(153,171,189,0.12)]'}`
-        }`}
-      >
-        <Settings2 size={13} />
-      </button>
-    </Tooltip>
-  )
-}
-
 /**
  * One row of the rail. Content sits at the TOP rather than centred: rows vary
- * from 48px to 120px, and a centred icon on the tall base track floats in the
+ * from 40px to 120px, and a centred icon on the tall base track floats in the
  * middle of nothing while the short rows look fine. Top-aligned, every cell
  * reads as the same control at the same place.
  */
-function RailCell({ height, accent, icon, label, controls = [], dimmed, settingsButton, mode = 'dark' }: RailCellProps) {
-  const all = settingsButton ? [...controls, <SettingsGear key="settings" settingsButton={settingsButton} mode={mode} />] : controls
-
-  if (mode !== 'light') {
-    // Look B: no box, no accent bar, no border. The row's height picks the
-    // arrangement (see `QUIET_ROW_MIN_COLUMN_PX` / `quietColumnFits`).
-    const inline = height < QUIET_ROW_MIN_COLUMN_PX
-    const wrap = !inline && !quietColumnFits(height, all.length)
-    // A short row whose icon and controls would not fit side by side in the
-    // gutter lays them out as a two-column grid instead (36 x 36 for three
-    // controls), so nothing is clipped.
-    if (inline && QUIET_ICON_PX + 4 + all.length * (QUIET_CONTROL_PX + 4) > GUTTER_WIDTH_PX) {
-      return (
-        <div
-          data-rail-cell="quiet"
-          data-rail-layout="grid"
-          className={`grid grid-cols-2 gap-1 select-none place-content-center place-items-center overflow-hidden transition-opacity ${dimmed ? 'opacity-40' : ''}`}
-          style={{ height }}
-        >
-          <Tooltip label={label}>
-            <span aria-label={label} className="flex h-4 w-4 items-center justify-center" style={{ color: QUIET_ICON_COLOR }}>
-              {icon}
-            </span>
-          </Tooltip>
-          {all}
-        </div>
-      )
-    }
-    return (
-      <div
-        data-rail-cell="quiet"
-        className={`flex select-none items-center overflow-hidden transition-opacity ${inline ? 'flex-row justify-center gap-1' : 'flex-col justify-start'} ${dimmed ? 'opacity-40' : ''}`}
-        style={{ height, paddingTop: inline ? 0 : (wrap ? 6 : QUIET_PAD_TOP_PX), gap: inline ? 4 : (wrap ? 4 : QUIET_COLUMN_GAP_PX) }}
-      >
-        <Tooltip label={label}>
-          <span aria-label={label} className="flex h-4 w-4 items-center justify-center" style={{ color: QUIET_ICON_COLOR }}>
-            {icon}
-          </span>
-        </Tooltip>
-        {all.length > 0 && (
-          <div
-            className={`flex items-center ${inline ? 'flex-row gap-1' : wrap ? 'flex-row flex-wrap justify-center gap-1' : 'flex-col'}`}
-            style={inline || wrap ? (wrap ? { maxWidth: QUIET_CONTROL_PX * 2 + 4 } : undefined) : { gap: QUIET_COLUMN_GAP_PX }}
-          >
-            {all}
-          </div>
-        )}
-      </div>
-    )
-  }
-
+function RailCell({ height, accent, icon, label, action, dimmed, settingsButton }: RailCellProps) {
   return (
     <div
-      data-rail-cell="boxed"
+      data-rail-cell
       className={`flex items-start gap-1 rounded overflow-hidden bg-[var(--editor-surface)] border border-[var(--editor-border)] px-1 py-0.5 select-none transition-opacity ${dimmed ? 'opacity-40' : ''}`}
       style={{ height, borderLeft: accent ? `2px solid ${accent}` : undefined }}
     >
@@ -251,11 +144,11 @@ function RailCell({ height, accent, icon, label, controls = [], dimmed, settings
           icons could be clicked — a decorative-looking glyph that happened to
           open a dialog. Settings moved to the gear beside it. */}
       <Tooltip label={label}>
-        <span aria-label={label} className="flex h-4 w-4 items-center justify-center text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">
+        <span aria-label={label} className="flex min-h-[1rem] w-4 items-center justify-center text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">
           {icon}
         </span>
       </Tooltip>
-      {/* One COLUMN of controls, not a row: the rows are 48-120px tall and were
+      {/* One COLUMN of controls, not a row: the rows are 40-120px tall and were
           wasting all of that height on a single line of icons, which forced the
           rail wide enough to crowd the timeline.
 
@@ -265,7 +158,26 @@ function RailCell({ height, accent, icon, label, controls = [], dimmed, settings
           so the tall base track just has unused space below the stack —
           harmless — instead of gap scaling to fill it. */}
       <div className="flex min-w-0 flex-col gap-1.5">
-        {all}
+        {action}
+        {settingsButton && (
+          <Tooltip label={settingsButton.label}>
+            <button
+              ref={settingsButton.buttonRef}
+              type="button"
+              aria-label={settingsButton.label}
+              aria-haspopup="dialog"
+              aria-expanded={settingsButton.open}
+              onClick={settingsButton.onClick}
+              className={`flex h-3.5 w-3.5 items-center justify-center rounded transition-colors ${
+                settingsButton.open
+                  ? 'text-[color-mix(in_srgb,var(--editor-text)_90%,transparent)] bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)]'
+                  : 'text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] hover:text-[color-mix(in_srgb,var(--editor-text)_90%,transparent)] hover:bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)]'
+              }`}
+            >
+              <Settings2 size={13} />
+            </button>
+          </Tooltip>
+        )}
       </div>
     </div>
   )
@@ -290,10 +202,10 @@ function MuteToggle({ muted, onToggle, trackLabel, mode }: { muted: boolean; onT
         aria-label={`Mute ${trackLabel}`}
         aria-pressed={muted}
         onClick={onToggle}
-        className={`flex ${controlSizeClass(mode)} items-center justify-center rounded transition-colors ${
+        className={`flex h-3.5 w-3.5 items-center justify-center rounded transition-colors ${
           muted
             ? (mode === 'light' ? 'text-amber-600 hover:text-amber-700' : 'text-amber-400/90 hover:text-amber-300')
-            : idleControlClass(mode)
+            : 'text-[color-mix(in_srgb,var(--editor-text)_35%,transparent)] hover:text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)]'
         }`}
       >
         {muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
@@ -317,10 +229,10 @@ function MagnetToggle({ magnetic, onToggle, trackLabel, mode }: { magnetic: bool
         aria-label={`Magnetic ${trackLabel}`}
         aria-pressed={magnetic}
         onClick={onToggle}
-        className={`flex ${controlSizeClass(mode)} items-center justify-center rounded transition-colors ${
+        className={`flex h-3.5 w-3.5 items-center justify-center rounded transition-colors ${
           magnetic
             ? (mode === 'light' ? 'text-emerald-600 hover:text-emerald-700' : 'text-emerald-400/90 hover:text-emerald-300')
-            : idleControlClass(mode)
+            : 'text-[color-mix(in_srgb,var(--editor-text)_35%,transparent)] hover:text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)]'
         }`}
       >
         <Magnet size={13} />
@@ -339,9 +251,9 @@ function SkipToggle({ enabled, onToggle, trackLabel, mode }: { enabled: boolean;
         aria-label={`Skip ${trackLabel} track`}
         aria-pressed={!enabled}
         onClick={onToggle}
-        className={`flex ${controlSizeClass(mode)} items-center justify-center rounded transition-colors ${
+        className={`flex h-3.5 w-3.5 items-center justify-center rounded transition-colors ${
           enabled
-            ? idleControlClass(mode)
+            ? 'text-[color-mix(in_srgb,var(--editor-text)_35%,transparent)] hover:text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)]'
             : (mode === 'light' ? 'text-amber-600/90 hover:text-amber-700' : 'text-amber-400/80 hover:text-amber-300')
         }`}
       >
@@ -412,34 +324,33 @@ function VisualTrackRailRow({
         height={row.height}
         accent={palette.border}
         icon={<KindIcon kind={kind} />}
-        label={label}
+        label={kind === 'scene3d' ? '3D track' : label}
         dimmed={!enabled}
-        mode={mode}
         settingsButton={hasSettings ? { onClick: () => setOpen(o => !o), open, buttonRef, label: `${label} track settings` } : undefined}
-        // Visibility on top — it is the control you reach for most, and the
-        // one whose state you scan a whole column of rows for. Mute sits
-        // under it so the two state toggles stay together, with the settings
-        // gear last.
-        controls={[
-          onToggleTrackEnabled && (
-            <SkipToggle
-              key="skip"
-              enabled={enabled}
-              mode={mode}
-              trackLabel={trackLabel}
-              onToggle={() => onToggleTrackEnabled(row.trackIdx, !enabled)}
-            />
-          ),
-          hasAudio && onSetTrackMuted && (
-            <MuteToggle
-              key="mute"
-              muted={muted}
-              mode={mode}
-              trackLabel={`${trackLabel} track`}
-              onToggle={() => onSetTrackMuted(row.trackIdx, !muted)}
-            />
-          ),
-        ].filter(Boolean)}
+        action={
+          <>
+            {/* Visibility on top — it is the control you reach for most, and the
+                one whose state you scan a whole column of rows for. Mute sits
+                under it so the two state toggles stay together, with the
+                settings gear last. */}
+            {onToggleTrackEnabled && (
+              <SkipToggle
+                enabled={enabled}
+                mode={mode}
+                trackLabel={trackLabel}
+                onToggle={() => onToggleTrackEnabled(row.trackIdx, !enabled)}
+              />
+            )}
+            {hasAudio && onSetTrackMuted && (
+              <MuteToggle
+                muted={muted}
+                mode={mode}
+                trackLabel={`${trackLabel} track`}
+                onToggle={() => onSetTrackMuted(row.trackIdx, !muted)}
+              />
+            )}
+          </>
+        }
       />
       {open && hasSettings && (
         <TrackSettingsPopover
@@ -509,28 +420,27 @@ function AudioLaneRailRow({
         accent={accent}
         icon={<AudioLines size={15} />}
         label="Audio"
-        mode={mode}
         settingsButton={hasSettings ? { onClick: () => setOpen(o => !o), open, buttonRef, label: 'Audio lane settings' } : undefined}
-        controls={[
-          onSetLaneMuted && (
-            <MuteToggle
-              key="mute"
-              muted={muted}
-              mode={mode}
-              trackLabel="audio lane"
-              onToggle={() => onSetLaneMuted(trackIds, !muted)}
-            />
-          ),
-          onSetLaneMagnet && (
-            <MagnetToggle
-              key="magnet"
-              magnetic={magnetic}
-              mode={mode}
-              trackLabel="audio lane"
-              onToggle={() => onSetLaneMagnet(trackIds, !magnetic)}
-            />
-          ),
-        ].filter(Boolean)}
+        action={
+          <>
+            {onSetLaneMuted && (
+              <MuteToggle
+                muted={muted}
+                mode={mode}
+                trackLabel="audio lane"
+                onToggle={() => onSetLaneMuted(trackIds, !muted)}
+              />
+            )}
+            {onSetLaneMagnet && (
+              <MagnetToggle
+                magnetic={magnetic}
+                mode={mode}
+                trackLabel="audio lane"
+                onToggle={() => onSetLaneMagnet(trackIds, !magnetic)}
+              />
+            )}
+          </>
+        }
       />
       {open && hasSettings && (
         <TrackSettingsPopover
@@ -595,42 +505,6 @@ export interface TrackGutterProps {
   onRemoveTrack?: (trackIdx: number) => void
   /** Remove every `AudioTrack` in a lane, same menu. */
   onRemoveAudioLane?: (laneIndex: number) => void
-  /** Zoom out / zoom in / fit, drawn as icons in the rail's ruler corner
-   *  (look B, dark only — light keeps Timeline's own "− + fit" row). Absent →
-   *  the corner stays empty. */
-  zoom?: { zoomIn: () => void; zoomOut: () => void; fit: () => void; badge?: React.ReactNode }
-}
-
-/** The three zoom icons in the rail's corner beside the ruler. */
-function ZoomCorner({ ruler, zoom }: { ruler: { y: number; height: number }; zoom: NonNullable<TrackGutterProps['zoom']> }) {
-  const buttons = [
-    { label: 'Zoom out', Icon: ZoomOut, run: zoom.zoomOut },
-    { label: 'Zoom in', Icon: ZoomIn, run: zoom.zoomIn },
-    { label: 'Fit to view', Icon: MoveHorizontal, run: zoom.fit },
-  ]
-  return (
-    <div
-      data-timeline-chrome
-      className="absolute inset-x-0 flex items-center justify-center gap-px"
-      style={{ top: ruler.y, height: ruler.height }}
-    >
-      {/* The zoom multiple, kept for assistive tech only: look B shows no
-          readout in a corner three icons already fill. */}
-      {zoom.badge && <span className="sr-only">{zoom.badge}</span>}
-      {buttons.map(({ label, Icon, run }) => (
-        <Tooltip key={label} label={label}>
-          <button
-            type="button"
-            aria-label={label}
-            onClick={(e) => { e.stopPropagation(); run() }}
-            className="flex h-3.5 w-3.5 items-center justify-center rounded text-[#99ABBD] transition-colors hover:text-[#B6C9D9] hover:bg-[rgba(153,171,189,0.12)]"
-          >
-            <Icon size={12} />
-          </button>
-        </Tooltip>
-      ))}
-    </div>
-  )
 }
 
 export default function TrackGutter({
@@ -647,7 +521,6 @@ export default function TrackGutter({
   onSetLaneMagnet,
   onRemoveTrack,
   onRemoveAudioLane,
-  zoom,
 }: TrackGutterProps) {
   const resolved = layout ?? computeTimelineLayout(project)
   const palette = timelinePalette(mode)
@@ -689,7 +562,6 @@ export default function TrackGutter({
           label sits at exactly the y its clips do — including the base track's
           extra height. */}
       <div className="relative" style={{ height: resolved.height }}>
-        {zoom && mode !== 'light' && <ZoomCorner ruler={resolved.ruler} zoom={zoom} />}
         {resolved.rows.map(row => {
           const kind = trackIconKind(tracks[row.trackIdx] ?? [])
           const trackPalette = palette.tracks[row.trackIdx % palette.tracks.length]
@@ -742,7 +614,6 @@ export default function TrackGutter({
             <RailCell
               height={band.height}
               accent={palette.captionRailAccent}
-              mode={mode}
               icon={<Captions size={15} />}
               label={resolved.captions!.length > 1 ? `Captions ${band.lane + 1}` : 'Captions'}
             />

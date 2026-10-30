@@ -2,7 +2,8 @@ import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { Trash2 } from 'lucide-react'
 
-// In-page confirm. No native dialogs.
+// In-page confirm. No native dialogs. Dark wears the editor's own chrome
+// (gray-900 surface, gray-800 border); light the theme vars. Danger is red.
 
 export interface ConfirmDialogProps {
   open: boolean
@@ -59,13 +60,13 @@ export default function ConfirmDialog({
 
   if (!open) return null
 
-  const confirmBg = danger ? (dark ? '#F16890' : '#BE185D') : 'var(--editor-accent)'
-  const confirmFg = danger ? (dark ? '#2A0614' : '#fff') : '#fff'
+  const confirmBg = danger ? '#dc2626' : 'var(--editor-accent)'
+  const confirmFg = '#fff'
   if (typeof document === 'undefined') return null
   return createPortal(
     <div
       className="fixed inset-0 z-[70] flex items-center justify-center"
-      style={{ background: dark ? 'rgba(2,7,16,0.55)' : 'rgba(15,23,42,0.35)' }}
+      style={{ background: dark ? 'rgba(0,0,0,0.55)' : 'rgba(15,23,42,0.35)' }}
       onClick={(e) => { e.stopPropagation(); onCancel() }}
       onMouseDown={(e) => e.stopPropagation()}
     >
@@ -75,31 +76,32 @@ export default function ConfirmDialog({
         aria-label={title}
         onClick={(e) => e.stopPropagation()}
         style={{
-          width: 340, padding: 20, borderRadius: 16,
-          background: dark ? '#101B2C' : 'var(--editor-surface)',
-          border: `1px solid ${dark ? '#35495F' : 'var(--editor-border)'}`,
-          color: dark ? '#D5E3EF' : 'var(--editor-text)',
+          width: 320, padding: 16, borderRadius: 8,
+          background: dark ? '#111827' : 'var(--editor-surface)',
+          border: `1px solid ${dark ? '#1f2937' : 'var(--editor-border)'}`,
+          color: dark ? '#f3f4f6' : 'var(--editor-text)',
+          boxShadow: dark ? '0 10px 30px rgba(0,0,0,0.5)' : '0 12px 30px rgba(15,23,42,0.18)',
         }}
       >
         {danger && (
           <div
             style={{
-              width: 36, height: 36, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: 'rgba(241,104,144,0.12)', color: dark ? '#F16890' : '#BE185D', marginBottom: 12,
+              width: 32, height: 32, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: 'rgba(220,38,38,0.12)', color: dark ? '#fca5a5' : '#dc2626', marginBottom: 12,
             }}
           >
             <Trash2 size={16} />
           </div>
         )}
-        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>{title}</div>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 16 }}>{title}</div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button
             ref={cancelRef}
             type="button"
             onClick={onCancel}
             style={{
-              height: 32, padding: '0 14px', borderRadius: 8, fontSize: 13, background: 'transparent',
-              border: `1px solid ${dark ? '#35495F' : 'var(--editor-border)'}`, color: 'inherit', cursor: 'pointer',
+              height: 30, padding: '0 12px', borderRadius: 6, fontSize: 12, background: 'transparent',
+              border: `1px solid ${dark ? '#1f2937' : 'var(--editor-border)'}`, color: 'inherit', cursor: 'pointer',
             }}
           >
             {cancelLabel}
@@ -108,7 +110,7 @@ export default function ConfirmDialog({
             type="button"
             onClick={onConfirm}
             style={{
-              height: 32, padding: '0 14px', borderRadius: 8, fontSize: 13, fontWeight: 600,
+              height: 30, padding: '0 12px', borderRadius: 6, fontSize: 12, fontWeight: 600,
               background: confirmBg, color: confirmFg, border: 0, cursor: 'pointer',
             }}
           >

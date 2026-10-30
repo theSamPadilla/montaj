@@ -24,15 +24,16 @@ export const VISUAL_ROW_HEIGHT_PX = 24
  *  magnet, and the volume gear share one vertical column (TrackGutter's
  *  RailCell), and three 14px buttons plus their gaps need ~58px — at the old
  *  40px the third control (the volume gear) was clipped below the fold once the
- *  magnet was added. With `ROW_GAP_PX` it is also the audio drag's row stride,
- *  so drag travel and the drawn rows stay coincident. */
-export const AUDIO_LANE_HEIGHT_PX = 64
+ *  magnet was added. 76 rather than 64 gives the bars' waveform room to read.
+ *  With `ROW_GAP_PX` it is also the audio drag's row stride, so drag travel and
+ *  the drawn rows stay coincident. */
+export const AUDIO_LANE_HEIGHT_PX = 76
 
-/** Rendered height of a non-base visual track row — 48px (timeline look B;
- *  was 40). These rows carry overlays, which have no waveform, so they stay
- *  far shorter than the base track; 48 gives an overlay's name and its own
- *  frames room. */
-export const VISUAL_ROW_RENDER_HEIGHT_PX = 48
+/** Rendered height of a non-base visual track row — 40px. Held at that height
+ *  on purpose: these rows carry overlays, which have no waveform and no
+ *  filmstrip to show, so the extra height the base track needs would just be
+ *  empty space here. */
+export const VISUAL_ROW_RENDER_HEIGHT_PX = 40
 
 /** Rendered height of the BASE visual track (index 0). No longer the DOM
  *  `h-14` its name came from: a video clip splits its height between a
@@ -41,9 +42,9 @@ export const VISUAL_ROW_RENDER_HEIGHT_PX = 48
 export const BASE_VISUAL_ROW_RENDER_HEIGHT_PX = 120
 
 
-/** Vertical gap between rows (timeline look B; was 4). With no row dividers,
- *  the gap is what separates one rounded lane from the next. */
-export const ROW_GAP_PX = 6
+/** Vertical gap between rows — the `gap-1` (0.25rem = 4px) on the DOM track
+ *  list's flex column. */
+export const ROW_GAP_PX = 4
 
 /** Caption row height — matches the `h-10` (2.5rem = 40px) Tailwind class the
  *  retired DOM caption row (CaptionTrackRow.tsx) used to draw. The only
@@ -330,18 +331,29 @@ function overlayText(props: Record<string, unknown> | undefined): string | null 
  *   `photo_hero · ex-googler`
  *   `cold_open`                      (no text of its own)
  *
- * A video clip is named by its source file's stem (`clip_04`), with or
- * without a filmstrip: timeline look B (1.6.3) draws the name in white over
- * the top of the frames, under a soft shade. (It used to go blank once the
- * proxy existed; a blank clip before the proxy lands was the reason the name
- * came back, and the new look keeps it for good.) Images fall back to their
- * own filename too.
+ * Video clips get NO label ONCE THEY HAVE A FILMSTRIP TO DRAW INSTEAD: the
+ * track rail already says the row is video, and the filmstrip inside the clip
+ * identifies which shot it is far better than a word would. But a freshly
+ * placed clip has no filmstrip for a while — `filmstrips.ts`'s `clipTiles`
+ * draws nothing for a video until `item.proxySrc` exists, and the proxy is
+ * still encoding (~20s after a save) — so until then the clip would draw as a
+ * blank grey rectangle with nothing identifying it at all. `proxySrc`
+ * presence is what actually gates the filmstrip in the real app: the
+ * production adapter (`montajAdapter.ts`) always implements `getFilmstrip`
+ * and `fileUrl` unconditionally, so `proxySrc` is the only one of
+ * `clipTiles`' guards that varies per item; the rest (off-screen, index still
+ * loading, etc.) are the same brief async gaps every filmstrip/waveform
+ * already tolerates without a compensating label. Images fall back to their
+ * own filename unconditionally, since an image never grows a filmstrip that
+ * would make the label redundant. Do NOT delete the video branch below as
+ * "always blank" — that reintroduces the blank-block bug for the whole
+ * proxy-encoding window.
  *
  * A 3D item (`../scene3d.ts`) is a neutral `3D`: never its reserved `src` and
  * never the id of the 3D it shows, which the user never meets.
  */
 export function visualItemLabel(item: VisualItem): string {
-  if (item.type === 'video') return item.src ? stem(item.src) : 'video'
+  if (item.type === 'video') return item.proxySrc ? '' : (item.src ? stem(item.src) : 'video')
   if (item.type === 'image') return item.src ? stem(item.src) : 'image'
   if (isScene3dItem(item)) return '3D'
 

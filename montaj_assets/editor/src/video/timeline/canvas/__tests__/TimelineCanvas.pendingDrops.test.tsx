@@ -255,8 +255,8 @@ describe('TimelineCanvas — pending-drop ghosts', () => {
       drop({ id: 'pd-2', trackIndex: 0, atTime: 6 }),
     ])
     // Each band lays two paths (fill, then the dashed outline inset by half the
-    // stroke), so the fill origins are the even entries. Only the first four:
-    // the playhead's pentagon head is drawn after the bands and is a path too.
+    // stroke), so the fill origins are the even entries. The playhead's head,
+    // drawn after the bands, is a path of its own: only the bands' four count.
     const origins = overlay.of('moveTo').slice(0, 4).filter((_, i) => i % 2 === 0).map(c => c.args)
     expect(origins).toEqual([
       expectedGhostOrigin(1, 3, store),

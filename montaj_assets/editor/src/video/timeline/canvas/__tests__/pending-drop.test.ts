@@ -23,7 +23,6 @@ import {
   PENDING_DROP_BORDER_PX,
   PENDING_DROP_DASH,
   PENDING_DROP_INSET_PX,
-  PENDING_DROP_RADIUS_PX,
   PLAYHEAD_WIDTH_PX,
   drawPendingDropBand,
   drawTimelineOverlay,
@@ -85,7 +84,7 @@ describe('drawPendingDropBand', () => {
     expect(fills).toHaveLength(1)
     // roundRectPath starts at (x + radius, y).
     const [move] = r.of('moveTo')
-    expect(move.args).toEqual([20 + PENDING_DROP_RADIUS_PX, 40 + PENDING_DROP_INSET_PX])
+    expect(move.args).toEqual([20 + 4, 40 + PENDING_DROP_INSET_PX])
     expect(r.of('set:fillStyle')[0].args[0]).toBe(DARK_TIMELINE_PALETTE.colors.pendingDropFill)
   })
 
@@ -168,8 +167,8 @@ describe('drawTimelineOverlay — pending drops', () => {
     // half the stroke — so the fill paths are the even entries.
     const fillPaths = r.of('moveTo').filter((_, i) => i % 2 === 0).map(c => c.args)
     expect(fillPaths).toEqual([
-      [20 + PENDING_DROP_RADIUS_PX, 42],
-      [200 + PENDING_DROP_RADIUS_PX, 166],
+      [24, 42],
+      [204, 166],
     ])
     expect(r.of('fill')).toHaveLength(2)
   })

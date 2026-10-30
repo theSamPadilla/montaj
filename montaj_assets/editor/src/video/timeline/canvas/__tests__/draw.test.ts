@@ -38,21 +38,7 @@ import {
   LABEL_PAD_PX,
   LABEL_TOP_OFFSET_PX,
   CLIP_GUTTER_PX,
-  CLIP_BORDER_PX,
   CLIP_SELECTED_BORDER_PX,
-  AUDIO_LABEL_MIDDLE_PX,
-  AUDIO_LABEL_PAD_PX,
-  ITEM_LABEL_FONT,
-  ITEM_LABEL_MIDDLE_PX,
-  ITEM_LABEL_PAD_PX,
-  VIDEO_LABEL_FONT,
-  VIDEO_LABEL_MIDDLE_PX,
-  VIDEO_LABEL_PAD_PX,
-  PLAYHEAD_HEAD_WIDTH_PX,
-  PLAYHEAD_HEAD_HEIGHT_PX,
-  PLAYHEAD_GLOW_BLUR_PX,
-  RULER_FONT,
-  formatRulerTime,
   MIN_LABEL_WIDTH_PX,
   PLAYHEAD_WIDTH_PX,
   ROW_RADIUS_PX,
@@ -212,6 +198,12 @@ describe('computeTimelineLayout', () => {
     expect(layout.lanes[0].y).toBe(layout.rows[2].y + BASE_VISUAL_ROW_RENDER_HEIGHT_PX + ROW_GAP_PX)
     expect(layout.lanes[1].y).toBe(layout.lanes[0].y + AUDIO_LANE_HEIGHT_PX + ROW_GAP_PX)
     expect(layout.height).toBe(layout.lanes[1].y + AUDIO_LANE_HEIGHT_PX)
+  })
+
+  it('row sizes: overlay rows 40, gap 4, ruler 18, audio lanes 76 (the audio drag stride too)', () => {
+    expect([VISUAL_ROW_RENDER_HEIGHT_PX, ROW_GAP_PX, RULER_HEIGHT_PX, AUDIO_LANE_HEIGHT_PX]).toEqual([40, 4, 18, 76])
+    const p = project({ audio: { tracks: [audio({ id: 'm', lane: 0 })] } } as unknown as Partial<Project>)
+    expect(computeTimelineLayout(p).lanes[0].height).toBe(76)
   })
 
   it('gives every VIDEO-kind track the tall base row height, not just trackIdx 0 — an overlay track stays short', () => {
@@ -464,25 +456,42 @@ describe('drawClipRect', () => {
     expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TRACK_PALETTE[1].fill)).toBe(true)
     // Top-left, not vertically centred: the centre of a clip is now the seam
     // between its frames band and its waveform band.
-    expect(r.of('fillText')[0].args).toEqual(['▪ video', 120 + CLIP_GUTTER_PX + ITEM_LABEL_PAD_PX, 40 + ITEM_LABEL_MIDDLE_PX])
+    expect(r.of('fillText')[0].args).toEqual(['▪ video', 120 + CLIP_GUTTER_PX + 6, 40 + LABEL_TOP_OFFSET_PX])
   })
 
-  it('outlines every clip in a 2px border of its hue, and a selected one in gold', () => {
+  it('dark: every clip wears a faint 1px white outline, not its track hue', () => {
     const plain = recordingContext()
-    drawClipRect(plain.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, palette: TRACK_PALETTE[0], selected: false, label: 'x' })
-    expect(plain.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === TRACK_PALETTE[0].border)).toBe(true)
-    expect(plain.calls.some(c => c.method === 'set:lineWidth' && c.args[0] === CLIP_BORDER_PX)).toBe(true)
-    expect(CLIP_BORDER_PX).toBe(2)
+    drawClipRect(plain.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, palette: TRACK_PALETTE[1], selected: false, label: 'x' })
+    expect(TIMELINE_COLORS.clipOutline).toBe('rgba(255,255,255,0.07)')
+    const strokes = plain.of('set:strokeStyle').map(c => c.args[0])
+    expect(strokes).toEqual([TIMELINE_COLORS.clipOutline])
+    expect(strokes).not.toContain(TRACK_PALETTE[1].border)
+    expect(plain.calls.some(c => c.method === 'set:lineWidth' && c.args[0] === 1)).toBe(true)
+  })
 
+  it('dark: a selected clip gets a 2px gold ring drawn inside it', () => {
     const picked = recordingContext()
     drawClipRect(picked.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, palette: TRACK_PALETTE[0], selected: true, label: 'x' })
-    // Gold, not the track's own hue — it reads over an arbitrary video frame
-    // and is no track's colour.
     expect(TIMELINE_COLORS.clipSelectedOutline).toBe('#F5C87B')
     expect(CLIP_SELECTED_BORDER_PX).toBe(2)
-    expect(picked.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === TIMELINE_COLORS.clipSelectedOutline)).toBe(true)
-    expect(picked.calls.some(c => c.method === 'set:lineWidth' && c.args[0] === CLIP_SELECTED_BORDER_PX)).toBe(true)
+    expect(picked.of('set:strokeStyle').map(c => c.args[0])).toEqual([TIMELINE_COLORS.clipSelectedOutline])
+    expect(picked.calls.some(c => c.method === 'set:lineWidth' && c.args[0] === 2)).toBe(true)
+    // Inside: the ring's path is inset by half its width from the body.
+    const body = { x: CLIP_GUTTER_PX, y: 0, width: 100 - CLIP_GUTTER_PX * 2, height: 40 }
+    const moves = picked.of('moveTo'); const start = moves[moves.length - 1].args as number[]
+    expect(start[1]).toBe(body.y + 1)
     expect(picked.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TRACK_PALETTE[0].fillSelected)).toBe(true)
+  })
+
+  it('light keeps the track border and the thick near-black selection', () => {
+    const plain = recordingContext()
+    drawClipRect(plain.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, palette: LIGHT_TRACK_PALETTE[1], selected: false, label: 'x' }, LIGHT_TIMELINE_PALETTE)
+    expect(plain.of('set:strokeStyle').map(c => c.args[0])).toEqual([LIGHT_TRACK_PALETTE[1].border])
+
+    const picked = recordingContext()
+    drawClipRect(picked.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, palette: LIGHT_TRACK_PALETTE[0], selected: true, label: 'x' }, LIGHT_TIMELINE_PALETTE)
+    expect(picked.of('set:strokeStyle').map(c => c.args[0])).toEqual([LIGHT_TIMELINE_COLORS.clipSelectedOutline])
+    expect(picked.calls.some(c => c.method === 'set:lineWidth' && c.args[0] === 3)).toBe(true)
   })
 
   it('clips its content to the rounded body, so frames stop at the corners', () => {
@@ -745,11 +754,22 @@ describe('drawAudioItem', () => {
     drawAudioItem(r.ctx, { rect: { x: 10, y: 4, width: 300, height: 32 }, selected: true, muted: false, label: 'Voiceover' })
     expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.audioFill)).toBe(true)
     expect(r.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === TIMELINE_COLORS.audioRing)).toBe(true)
+    // Dark: the same 2px gold ring a selected clip gets, inside the bar.
+    expect(TIMELINE_COLORS.audioRing).toBe(TIMELINE_COLORS.clipSelectedOutline)
+    expect(r.calls.some(c => c.method === 'set:lineWidth' && c.args[0] === 2)).toBe(true)
+    const ringAt = r.calls.findIndex(c => c.method === 'set:lineWidth' && c.args[0] === 2)
+    const ringStart = r.calls.slice(ringAt).find(c => c.method === 'moveTo')!
+    expect((ringStart.args as number[])[1]).toBe(4 + 1)
     // Indented past the in-handle: a selected bar grows a 6px pill on each
     // end, and a label starting under one would lose its first glyph.
-    // Top-left, like a video clip's name: 10px in, middle 12px down.
-    expect(r.of('fillText')[0].args).toEqual(['Voiceover', 10 + AUDIO_LABEL_PAD_PX + AUDIO_HANDLE_WIDTH_PX, 4 + AUDIO_LABEL_MIDDLE_PX])
-    expect(r.of('set:font').map(c => c.args[0])).toContain(ITEM_LABEL_FONT)
+    expect(r.of('fillText')[0].args).toEqual(['Voiceover', 16 + AUDIO_HANDLE_WIDTH_PX, 20])
+  })
+
+  it('light keeps its 1px emerald ring', () => {
+    const r = recordingContext()
+    drawAudioItem(r.ctx, { rect: { x: 10, y: 4, width: 300, height: 32 }, selected: true, muted: false, label: 'Voiceover' }, LIGHT_TIMELINE_PALETTE)
+    expect(r.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === LIGHT_TIMELINE_COLORS.audioRing)).toBe(true)
+    expect(r.calls.some(c => c.method === 'set:lineWidth' && c.args[0] === 1)).toBe(true)
   })
 
   it('leaves its handles to the lane painter too', () => {
@@ -1002,6 +1022,32 @@ describe('drawPlayhead', () => {
     expect(r.of('fillRect')[0].args).toEqual([400 - PLAYHEAD_WIDTH_PX / 2, 0, PLAYHEAD_WIDTH_PX, 160])
     expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.playhead)).toBe(true)
   })
+
+  it('dark: a 1px pink line with a 9x8 pentagon head at the ruler, no glow', () => {
+    const r = recordingContext()
+    drawPlayhead(r.ctx, 400, 0, 160, DARK_TIMELINE_PALETTE, 20)
+    expect(TIMELINE_COLORS.playhead).toBe('#F16890')
+    expect(r.of('fillRect')[0].args).toEqual([399.5, 0, 1, 160])
+    expect(r.of('moveTo').map(c => c.args)).toEqual([[395.5, 20]])
+    // polygon(0 0, 100% 0, 100% 55%, 50% 100%, 0 55%) on a 9x8 box
+    expect(r.of('lineTo').map(c => c.args)).toEqual([[404.5, 20], [404.5, 20 + 8 * 0.55], [400, 28], [395.5, 20 + 8 * 0.55]])
+    expect(r.of('fill')).toHaveLength(1)
+    expect(r.calls.some(c => c.method === 'set:shadowBlur' || c.method === 'set:shadowColor')).toBe(false)
+  })
+
+  it('light: today\'s 2px red line, no head', () => {
+    const r = recordingContext()
+    drawPlayhead(r.ctx, 400, 0, 160, LIGHT_TIMELINE_PALETTE, 20)
+    expect(r.of('fillRect')[0].args).toEqual([399, 0, 2, 160])
+    expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === LIGHT_TIMELINE_COLORS.playhead)).toBe(true)
+    expect(r.of('moveTo')).toHaveLength(0)
+  })
+
+  it('the overlay pass puts the head at the ruler it is given', () => {
+    const r = recordingContext()
+    drawTimelineOverlay(r.ctx, { viewport: viewport({ pxPerSecond: 100, scrollSeconds: 0 }), currentTime: 2, surfaceWidth: 1000, surfaceHeight: 200, rulerY: 12 })
+    expect(r.of('moveTo').map(c => c.args)).toEqual([[195.5, 12]])
+  })
 })
 
 // ── Scene composition ────────────────────────────────────────────────────
@@ -1150,34 +1196,21 @@ describe('drawSnapGuide — weak', () => {
 })
 
 describe('drawRowBackground — panel + divider', () => {
-  it('dark (look B): fills a rounded lane with the faint lift and strokes NO divider', () => {
+  it('fills the row and strokes a rowDivider outline as the track divider', () => {
     const r = recordingContext()
     drawRowBackground(r.ctx, { x: 0, y: 10, width: 200, height: 40 })
-    expect(TIMELINE_COLORS.rowBackground).toBe('rgba(255,255,255,0.022)')
     expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.rowBackground)).toBe(true)
-    expect(r.count('fill')).toBe(1)
-    expect(ROW_RADIUS_PX).toBe(8)
-    expect(r.of('strokeRect')).toHaveLength(0)
-  })
-
-  it('dark (look B): does not alternate lanes', () => {
-    expect(TIMELINE_COLORS.rowBackgroundAlt).toBe(TIMELINE_COLORS.rowBackground)
-  })
-
-  it('light: still strokes a rowDivider outline as the track divider', () => {
-    const r = recordingContext()
-    drawRowBackground(r.ctx, { x: 0, y: 10, width: 200, height: 40 }, undefined, LIGHT_TIMELINE_PALETTE)
-    expect(r.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === LIGHT_TIMELINE_COLORS.rowDivider)).toBe(true)
+    expect(r.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === TIMELINE_COLORS.rowDivider)).toBe(true)
     const strokes = r.of('strokeRect')
     expect(strokes).toHaveLength(1)
     expect(strokes[0].args).toEqual([0.5, 10.5, 199, 39])
   })
 
-  it('paints the alternate shade when one is passed, so adjacent lanes differ (light)', () => {
+  it('paints the alternate shade when one is passed, so adjacent lanes differ', () => {
     const r = recordingContext()
-    drawRowBackground(r.ctx, { x: 0, y: 0, width: 100, height: 20 }, LIGHT_TIMELINE_COLORS.rowBackgroundAlt, LIGHT_TIMELINE_PALETTE)
-    expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === LIGHT_TIMELINE_COLORS.rowBackgroundAlt)).toBe(true)
-    expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === LIGHT_TIMELINE_COLORS.rowBackground)).toBe(false)
+    drawRowBackground(r.ctx, { x: 0, y: 0, width: 100, height: 20 }, TIMELINE_COLORS.rowBackgroundAlt)
+    expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.rowBackgroundAlt)).toBe(true)
+    expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.rowBackground)).toBe(false)
   })
 })
 
@@ -1217,13 +1250,13 @@ describe('drawTimelineContent', () => {
     // 4s @ 20px/s = 80px span, inset by CLIP_GUTTER_PX on each side.
     const barLeft = CLIP_GUTTER_PX
     const barRight = 80 - CLIP_GUTTER_PX
-    expect(r.of('moveTo')[1].args).toEqual([barLeft + AUDIO_ITEM_RADIUS_PX, barTop])
+    expect(r.of('moveTo')[1].args).toEqual([barLeft + 4, barTop])
     expect(r.of('arcTo').some(c =>
-      JSON.stringify(c.args) === JSON.stringify([barRight, barTop, barRight, barTop + barHeight, AUDIO_ITEM_RADIUS_PX]),
+      JSON.stringify(c.args) === JSON.stringify([barRight, barTop, barRight, barTop + barHeight, 4]),
     )).toBe(true)
     // By content, not by index — the ruler's own tick labels are fillText too.
     const barLabel = r.of('fillText').find(c => c.args[0] === 'voice.mp3')
-    expect(barLabel?.args).toEqual(['voice.mp3', barLeft + AUDIO_LABEL_PAD_PX, barTop + AUDIO_LABEL_MIDDLE_PX])
+    expect(barLabel?.args).toEqual(['voice.mp3', barLeft + 6, barTop + barHeight / 2])
   })
 
   it('gives two butted audio bars the same uniform CLIP_GUTTER_PX gap two butted video clips get, not a seamless touch', () => {
@@ -1984,12 +2017,11 @@ describe('timelinePalette', () => {
 })
 
 describe('the light palette is a real inversion, not a copy', () => {
-  /** The one entry that is IDENTICAL across modes on purpose:
+  /** The entry that is IDENTICAL across modes on purpose:
    *  - `keyframeDiamondFill` is amber because no other hue on this surface is
    *    free to mean "keyframe", and a diamond is painted over the clip's own
    *    content (an arbitrary filmstrip frame), not over the row background, so
    *    it is not tuned to either ground in the first place.
-   *  (`playhead` used to be shared too; dark moved to look B's pink.)
    *  Everything else must move. */
   const DELIBERATELY_SHARED = ['keyframeDiamondFill'] as const
 
@@ -2007,7 +2039,7 @@ describe('the light palette is a real inversion, not a copy', () => {
     const whiteInDark = [
       'overlapFill', 'overlapHatch', 'overlapEdge',
       'fadeEnvelopeLine', 'fadeGripSubtle', 'fadeGripActive',
-      'handleFill', 'handleFillHovered',
+      'clipOutline', 'handleFill', 'handleFillHovered',
       'keyframeDiamondSelectedFill', 'marqueeFill', 'marqueeBorder',
       'audioMutedFill',
     ] as const
@@ -2015,8 +2047,7 @@ describe('the light palette is a real inversion, not a copy', () => {
       expect(TIMELINE_COLORS[key]).toMatch(/^(#ffffff|rgba\(255,255,255)/)
       expect(LIGHT_TIMELINE_COLORS[key]).not.toMatch(/^(#ffffff|rgba\(255,255,255)/)
     }
-    // Dark clip bars are look B's mint now, not white; light still must not
-    // be white.
+    expect(WAVEFORM_COLORS.clip).toMatch(/^rgba\(255,255,255/)
     expect(LIGHT_WAVEFORM_COLORS.clip).not.toMatch(/^rgba\(255,255,255/)
     expect(LIGHT_WAVEFORM_COLORS.clipMuted).not.toMatch(/^rgba\(255,255,255/)
   })
@@ -2115,7 +2146,6 @@ describe('painters use the palette they are handed, not the module global', () =
     expect(styles).toContain(LIGHT_TIMELINE_COLORS.marqueeBorder)
     expect(styles).toContain(LIGHT_TIMELINE_COLORS.cursor)
     expect(styles).toContain(LIGHT_TIMELINE_COLORS.snapGuide)
-    // Light keeps red-500; dark moved to look B's pink.
     expect(styles).toContain(LIGHT_TIMELINE_COLORS.playhead)
     expect(styles).not.toContain(TIMELINE_COLORS.playhead)
     expect(styles).not.toContain(TIMELINE_COLORS.cursor)
@@ -2315,132 +2345,5 @@ describe('audioLabel', () => {
 
   it('falls back to "audio" when the track has no src (an AI-saved {id, items} entry)', () => {
     expect(audioLabel({ id: 'a', items: [] } as unknown as AudioTrack)).toBe('audio')
-  })
-})
-
-// ── Timeline look B (1.6.3) ───────────────────────────────────────────────
-
-describe('timeline look B — dark values', () => {
-  it('pink playhead with a glow, gold selection, deep-green audio', () => {
-    expect(TIMELINE_COLORS.playhead).toBe('#F16890')
-    expect(TIMELINE_COLORS.playheadGlow).toBe('rgba(241,104,144,0.45)')
-    expect(TIMELINE_COLORS.clipSelectedOutline).toBe('#F5C87B')
-    expect(TIMELINE_COLORS.audioRing).toBe('#F5C87B')
-    expect(TIMELINE_COLORS.audioFill).toBe('#235F51')
-    expect(TIMELINE_COLORS.audioBorder).toBe('rgba(120,230,179,0.33)')
-    expect(TIMELINE_COLORS.audioText).toBe('#E8F6F7')
-    expect(TIMELINE_COLORS.rulerText).toBe('#96AABC')
-    expect(TIMELINE_COLORS.rulerTick).toBe('#4A5E75')
-    expect(TIMELINE_COLORS.rulerTickMinor).toBe('#2A3B4E')
-    expect(WAVEFORM_COLORS.clip).toBe('#87DAC3')
-    expect(WAVEFORM_COLORS.clipBand).toBe('#0B2A33')
-    expect(WAVEFORM_COLORS.audioLane).toBe('#87DAC3')
-  })
-
-  it('track 0 is the promo blue; every other hue keeps its fill under a 0.95 border', () => {
-    expect(TRACK_PALETTE[0]).toMatchObject({ fill: '#0F6184', border: '#4188A7' })
-    for (const hue of TRACK_PALETTE.slice(1)) expect(hue.border).toMatch(/,0\.95\)$/)
-    expect(TRACK_PALETTE[2].fill).toBe('rgba(109,40,217,0.8)')
-  })
-
-  it('light keeps its own values: red playhead, no glow, alternating lanes with dividers', () => {
-    expect(LIGHT_TIMELINE_COLORS.playhead).toBe('#ef4444')
-    expect(LIGHT_TIMELINE_COLORS.playheadGlow).toBe('transparent')
-    expect(LIGHT_TIMELINE_COLORS.rowBackgroundAlt).not.toBe(LIGHT_TIMELINE_COLORS.rowBackground)
-    expect(LIGHT_TIMELINE_COLORS.rowDivider).not.toBe('transparent')
-  })
-})
-
-describe('timeline look B — geometry', () => {
-  it('overlay rows are 48px tall, rows 6px apart, ruler 22px', () => {
-    expect(VISUAL_ROW_RENDER_HEIGHT_PX).toBe(48)
-    expect(ROW_GAP_PX).toBe(6)
-    expect(RULER_HEIGHT_PX).toBe(22)
-    const p = project({ tracks: [[clip({ id: 'v0' })], [clip({ id: 'o0', type: 'overlay', src: '/p/overlays/t.jsx' })]] } as unknown as Partial<Project>)
-    const layout = computeTimelineLayout(p)
-    const overlayRow = layout.rows.find(r => r.trackIdx === 1)!
-    const baseRow = layout.rows.find(r => r.trackIdx === 0)!
-    expect(overlayRow.height).toBe(48)
-    expect(overlayRow.y).toBe(RULER_HEIGHT_PX + ROW_GAP_PX)
-    expect(baseRow.y).toBe(overlayRow.y + 48 + ROW_GAP_PX)
-  })
-
-  it('a video clip names itself at (9, 7) in 12px medium; an overlay at (8, 5) in 11px', () => {
-    const v = recordingContext()
-    drawClipRect(v.ctx, { rect: { x: 0, y: 100, width: 200, height: 120 }, palette: TRACK_PALETTE[0], selected: false, label: 'clip_04', video: true })
-    expect(v.of('set:font').map(c => c.args[0])).toContain(VIDEO_LABEL_FONT)
-    expect(v.of('fillText')[0].args).toEqual(['clip_04', CLIP_GUTTER_PX + VIDEO_LABEL_PAD_PX, 100 + VIDEO_LABEL_MIDDLE_PX])
-    expect(v.of('set:fillStyle').map(c => c.args[0])).toContain(TIMELINE_COLORS.videoLabel)
-
-    const o = recordingContext()
-    drawClipRect(o.ctx, { rect: { x: 0, y: 0, width: 200, height: 48 }, palette: TRACK_PALETTE[2], selected: false, label: 'text_line' })
-    expect(o.of('set:font').map(c => c.args[0])).toContain(ITEM_LABEL_FONT)
-    expect(o.of('set:fillStyle').map(c => c.args[0])).toContain(TRACK_PALETTE[2].text)
-  })
-
-  it('shades the top of a video clip\'s frames only when asked (there are frames)', () => {
-    const shaded = recordingContext()
-    drawClipRect(shaded.ctx, { rect: { x: 0, y: 0, width: 200, height: 120 }, palette: TRACK_PALETTE[0], selected: false, label: 'a', video: true, topShade: true })
-    expect(shaded.of('createLinearGradient')[0].args).toEqual([0, 0, 0, 80])
-    expect(shaded.of('addColorStop').map(c => c.args)).toEqual([[0, TIMELINE_COLORS.clipTopShade], [0.55, 'rgba(0,0,0,0)']])
-
-    const flat = recordingContext()
-    drawClipRect(flat.ctx, { rect: { x: 0, y: 0, width: 200, height: 120 }, palette: TRACK_PALETTE[0], selected: false, label: 'a', video: true })
-    expect(flat.of('createLinearGradient')).toHaveLength(0)
-  })
-})
-
-describe('timeline look B — ruler', () => {
-  it('formats labels mm:ss, with tenths only on a sub-second step', () => {
-    expect(formatRulerTime(0, 2)).toBe('00:00')
-    expect(formatRulerTime(2, 2)).toBe('00:02')
-    expect(formatRulerTime(75, 5)).toBe('01:15')
-    expect(formatRulerTime(2.5, 0.5)).toBe('00:02.5')
-    expect(formatRulerTime(59.96, 0.1)).toBe('01:00.0')
-    expect(formatRulerTime(59.6, 1)).toBe('01:00')
-    expect(formatRulerTime(-3, 1)).toBe('00:00')
-  })
-
-  it('dark: no ruler band, mono labels, 7px major and 3px minor ticks', () => {
-    const r = recordingContext()
-    drawRuler(r.ctx, viewport({ pxPerSecond: 50 }), { y: 0, height: RULER_HEIGHT_PX }, 400)
-    // No band: the only fillRects are the 1px ticks.
-    for (const call of r.of('fillRect')) expect((call.args as number[])[2]).toBe(1)
-    const heights = new Set(r.of('fillRect').map(c => (c.args as number[])[3]))
-    expect([...heights].sort()).toEqual([3, 7])
-    expect(r.of('set:font').map(c => c.args[0])).toEqual([RULER_FONT])
-    expect(RULER_FONT).toMatch(/JetBrains Mono/)
-    expect(r.of('fillText').map(c => c.args[0])).toContain('00:02')
-  })
-})
-
-describe('timeline look B — playhead', () => {
-  it('draws a 3px glowing line and, at the ruler, a 15x14 pentagon head', () => {
-    const r = recordingContext()
-    drawTimelineOverlay(r.ctx, { viewport: viewport({ pxPerSecond: 100 }), currentTime: 2, surfaceWidth: 1000, surfaceHeight: 300, rulerY: 22 })
-    const [line] = r.of('fillRect')
-    expect(line.args).toEqual([200 - PLAYHEAD_WIDTH_PX / 2, 0, PLAYHEAD_WIDTH_PX, 300])
-    expect(PLAYHEAD_WIDTH_PX).toBe(3)
-    expect(r.of('set:shadowColor').map(c => c.args[0])).toContain(TIMELINE_COLORS.playheadGlow)
-    expect(r.of('set:shadowBlur').map(c => c.args[0])).toContain(PLAYHEAD_GLOW_BLUR_PX)
-
-    // Pentagon: top edge, down both sides to 55%, in to the point.
-    const top = 22 - 2
-    const half = PLAYHEAD_HEAD_WIDTH_PX / 2
-    expect(r.of('moveTo').map(c => c.args)).toEqual([[200 - half, top]])
-    expect(r.of('lineTo').map(c => c.args)).toEqual([
-      [200 + half, top],
-      [200 + half, top + PLAYHEAD_HEAD_HEIGHT_PX * 0.55],
-      [200, top + PLAYHEAD_HEAD_HEIGHT_PX],
-      [200 - half, top + PLAYHEAD_HEAD_HEIGHT_PX * 0.55],
-    ])
-    expect(r.of('fill')).toHaveLength(1)
-  })
-
-  it('draws no head when the overlay is not told where the ruler is', () => {
-    const r = recordingContext()
-    drawTimelineOverlay(r.ctx, { viewport: viewport({ pxPerSecond: 100 }), currentTime: 2, surfaceWidth: 1000, surfaceHeight: 300 })
-    expect(r.of('moveTo')).toHaveLength(0)
-    expect(r.of('fill')).toHaveLength(0)
   })
 })

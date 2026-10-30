@@ -21,7 +21,7 @@
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../../types'
 import { trackFor, valueAt } from '../../../keyframeOps'
-import { CAPTION_ROW_HEIGHT_PX, ROW_GAP_PX, VISUAL_ROW_HEIGHT_PX, computeDerivedTiming, moveItemAcrossTracks, normalizeTracks, pruneEmptiedTracks, trackItems } from '../../timeline-model'
+import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, ROW_GAP_PX, VISUAL_ROW_HEIGHT_PX, computeDerivedTiming, moveItemAcrossTracks, normalizeTracks, pruneEmptiedTracks, trackItems } from '../../timeline-model'
 import { applyMoveDeltaToSelection, moveSelectionToTrack } from '../../multiSelectOps'
 import { AUDIO_ITEM_INSET_PX, computeTimelineLayout } from '../draw'
 import {
@@ -1685,10 +1685,10 @@ describe('audio lane magnet', () => {
     const d = new Driver(makeContext({ project: magnetProject() }))
     // b0 spans [5,7] in lane 1 → body inside that span.
     d.down(600, lane1Y)
-    // Straight up one lane (dy = -AUDIO_LANE_HEIGHT_PX), no horizontal travel:
-    // destLane = max(0, 1 + round(-40/40)) = 0, which holds only a0/a1 —
-    // both magnetic — so b0 should adopt magnetic: true.
-    const mid = lastProjectChange(d.move(600, lane1Y - 40))
+    // Straight up one lane (one lane stride), no horizontal travel: lane 0,
+    // which holds only a0/a1 — both magnetic — so b0 should adopt
+    // magnetic: true.
+    const mid = lastProjectChange(d.move(600, lane1Y - (AUDIO_LANE_HEIGHT_PX + ROW_GAP_PX)))
     const movedB0 = audio(mid, 'b0')
     expect(movedB0.lane).toBe(0)
     expect(movedB0.magnetic).toBe(true)

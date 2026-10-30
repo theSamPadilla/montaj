@@ -10,7 +10,7 @@ import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../../types'
 import type { AudioTrack } from '../../../../schema'
 import { ROW_GAP_PX, computeAutoCrossfade, computeDerivedTiming, groupAudioLanes, normalizeTracks, stampAudioLanes } from '../../timeline-model'
-import { DARK_TIMELINE_PALETTE, LIGHT_TIMELINE_PALETTE, computeTimelineLayout, drawTimelineContent, type DrawContext } from '../draw'
+import { DARK_TIMELINE_PALETTE, LIGHT_TIMELINE_PALETTE, ROW_RADIUS_PX, computeTimelineLayout, drawTimelineContent, type DrawContext } from '../draw'
 import { NO_MODIFIERS, createPointerMachine, type PointerContext, type PointerEffect } from '../pointer-machine'
 
 const VIEWPORT = { pxPerSecond: 100, scrollSeconds: 0, widthPx: 2000 }
@@ -301,15 +301,16 @@ function recorder() {
   return { ctx, calls }
 }
 
-/** Outlines stroked along a row's top edge at `y + 0.5`: a strokeRect there, or a stroked path that starts there
- *  (the rounded drop highlight). Returned as their stroke styles, in paint order. */
+/** Outlines stroked along a row's top edge at `y + 0.5`: a strokeRect there, or a stroked path that starts there at
+ *  the lane's own left corner (the rounded drop highlight; a clip's 1px outline starts further in). Returned as their
+ *  stroke styles, in paint order. */
 function outlinesAt(calls: { method: string; args: unknown[]; strokeStyle?: unknown }[], y: number): unknown[] {
   const out: unknown[] = []
-  let pathY: unknown = null
+  let pathAt: unknown[] | null = null
   for (const c of calls) {
-    if (c.method === 'beginPath') pathY = null
-    else if (c.method === 'moveTo' && pathY === null) pathY = c.args[1]
-    else if (c.method === 'stroke' && pathY === y + 0.5) out.push(c.strokeStyle)
+    if (c.method === 'beginPath') pathAt = null
+    else if (c.method === 'moveTo' && pathAt === null) pathAt = c.args
+    else if (c.method === 'stroke' && pathAt?.[1] === y + 0.5 && pathAt?.[0] === ROW_RADIUS_PX) out.push(c.strokeStyle)
     else if (c.method === 'strokeRect' && c.args[1] === y + 0.5) out.push(c.strokeStyle)
   }
   return out
@@ -329,14 +330,13 @@ describe('drop-target lane highlight', () => {
     return outlinesAt(calls, lane1.y)
   }
 
-  // Dark (look B) lanes have no divider, so the accent outline is the only one.
-  it('outlines the target lane in the accent', () => {
+  it('outlines the target lane in the accent, on top of its usual divider', () => {
     const outlines = paint(1)
-    expect(outlines).toEqual([DARK_TIMELINE_PALETTE.colors.snapGuide])
+    expect(outlines).toEqual([DARK_TIMELINE_PALETTE.colors.rowDivider, DARK_TIMELINE_PALETTE.colors.snapGuide])
   })
 
   it('draws nothing extra without a target', () => {
-    expect(paint(null)).toEqual([])
+    expect(paint(null)).toEqual([DARK_TIMELINE_PALETTE.colors.rowDivider])
   })
 
   it('uses the light accent in light mode', () => {
@@ -484,7 +484,7 @@ describe('the visual row a drag will drop on is highlighted, a new row included'
     const { ctx, calls } = recorder()
     drawTimelineContent(ctx, { project: p, viewport: VIEWPORT, layout, selectedIds: [], surfaceWidth: 1000, surfaceHeight: layout.height, dropTargetItem: 'o2' })
     const outlines = outlinesAt(calls, row.y)
-    expect(outlines).toEqual([DARK_TIMELINE_PALETTE.colors.snapGuide])
+    expect(outlines).toEqual([DARK_TIMELINE_PALETTE.colors.rowDivider, DARK_TIMELINE_PALETTE.colors.snapGuide])
   })
 })
 

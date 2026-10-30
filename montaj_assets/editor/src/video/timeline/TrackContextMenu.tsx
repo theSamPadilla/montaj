@@ -2,7 +2,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Eye, EyeOff, Trash2 } from 'lucide-react'
 
-// Right-click menu on a track header: hide/show, then remove.
+// Right-click menu on a track header: hide/show, then remove. Dark wears the
+// editor's own chrome (gray-900 surface, gray-800 border); light the theme vars.
 
 const EDGE = 8
 
@@ -82,15 +83,15 @@ export default function TrackContextMenu({
     }
   }, [])
 
-  const text = dark ? '#D5E3EF' : 'var(--editor-text)'
+  const text = dark ? '#f3f4f6' : 'var(--editor-text)'
   const item = (label: string, icon: React.ReactNode, run: () => void, opts: { disabled?: boolean; color?: string } = {}) => (
     <button
       type="button"
       role="menuitem"
       aria-disabled={opts.disabled ? true : undefined}
-      className="flex w-full items-center gap-2 px-2.5 text-left hover:bg-[rgba(128,150,170,0.16)]"
+      className={`flex w-full items-center gap-2 bg-transparent px-2.5 text-left ${dark ? 'hover:bg-white/5' : 'hover:bg-[color-mix(in_srgb,var(--editor-text)_8%,transparent)]'}`}
       style={{
-        height: 32, borderRadius: 7, fontSize: 13, background: 'transparent', border: 0,
+        height: 30, borderRadius: 6, fontSize: 12, border: 0,
         color: opts.color ?? text, opacity: opts.disabled ? 0.4 : 1,
         cursor: opts.disabled ? 'default' : 'pointer',
       }}
@@ -115,18 +116,18 @@ export default function TrackContextMenu({
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
       style={{
-        position: 'fixed', left: pos.left, top: pos.top, zIndex: 60, minWidth: 160, padding: 5,
-        borderRadius: 11,
-        background: dark ? '#142737' : 'var(--editor-surface)',
-        border: `1px solid ${dark ? '#35495F' : 'var(--editor-border)'}`,
-        boxShadow: dark ? '0 18px 40px rgba(0,8,16,0.55)' : '0 12px 30px rgba(15,23,42,0.18)',
+        position: 'fixed', left: pos.left, top: pos.top, zIndex: 60, minWidth: 160, padding: 4,
+        borderRadius: 8,
+        background: dark ? '#111827' : 'var(--editor-surface)',
+        border: `1px solid ${dark ? '#1f2937' : 'var(--editor-border)'}`,
+        boxShadow: dark ? '0 10px 30px rgba(0,0,0,0.5)' : '0 12px 30px rgba(15,23,42,0.18)',
       }}
     >
       {item(hideLabel ?? (hidden ? 'Show track' : 'Hide track'), hidden ? <Eye size={14} /> : <EyeOff size={14} />, onHide)}
       {canRemove && (
         <>
-          <div role="separator" style={{ height: 1, margin: '4px 2px', background: dark ? '#2B3E52' : 'var(--editor-border)' }} />
-          {item('Remove track', <Trash2 size={14} />, onRemove, { disabled: removeDisabled, color: dark ? '#F7A3BD' : '#BE185D' })}
+          <div role="separator" style={{ height: 1, margin: '4px 2px', background: dark ? '#1f2937' : 'var(--editor-border)' }} />
+          {item('Remove track', <Trash2 size={14} />, onRemove, { disabled: removeDisabled, color: dark ? '#fca5a5' : '#dc2626' })}
         </>
       )}
     </div>,

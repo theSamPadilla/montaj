@@ -60,8 +60,8 @@ describe('visualItemLabel', () => {
     expect(visualItemLabel(overlay({ src, props: { lines: [{ accent: 'x' }] } }))).toBe('text_line')
   })
 
-  it('names a video clip by its source file, proxy or not (look B draws it over the frames)', () => {
-    expect(visualItemLabel({ id: 'c', type: 'video', src: '/p/IMG_9401.MOV', proxySrc: '/p/proxy.mp4', start: 0, end: 1 })).toBe('IMG_9401')
+  it('gives video clips with a proxy no label — the track rail names the row, the filmstrip names the shot', () => {
+    expect(visualItemLabel({ id: 'c', type: 'video', src: '/p/IMG_9401.MOV', proxySrc: '/p/proxy.mp4', start: 0, end: 1 })).toBe('')
   })
 
   it('names an image by its file', () => {

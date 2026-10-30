@@ -36,8 +36,7 @@ import { createHoverScrub } from './hover-scrub'
 import { createScrubSource, type ScrubSource } from '../engine/scrub-source'
 import { createScrubResolver } from '../engine/scrub-resolve'
 import { useSourcePreview, type SourcePreviewStore } from './source-preview'
-import { formatClockTime, formatTimecode } from './timecode'
-import { MONO_FONT_STACK } from './timeline/canvas/draw'
+import { formatTimecode } from './timecode'
 import { applyOverlayChanges, type OverlayChanges, type OverlayCommitOptions } from './preview/useDragOverlay'
 import VersionPanel, { listVersions } from './VersionPanel'
 import OverlayInspector from './OverlayInspector'
@@ -77,9 +76,6 @@ const MAX_TIMELINE_PANE_PX = 1200
 /** Always left to the preview, so the divider can never strand the picture at
  *  zero height. */
 const MIN_PREVIEW_PANE_PX = 160
-/** Timeline look B (dark): the pane's navy ground and the rule along its top. */
-const TIMELINE_PANE_GRADIENT = 'linear-gradient(#172331, #0A1421)'
-const TIMELINE_PANE_RULE = '#35465C'
 
 const RAIL_WIDTH_STORAGE_KEY = 'montaj.editor.railWidth'
 /** Floor/ceiling for the right rail, and the width always left to the editor
@@ -2640,23 +2636,9 @@ function ReviewSurface<P extends Project>({
     </div>
   )
 
-  // Timeline pane — the half the divider sizes. Dark draws timeline look B
-  // (gradient pane, title block, larger tool icons); light keeps its look.
-  const lookB = timelineMode !== 'light'
-  const toolSize = lookB ? 'w-[26px] h-[26px]' : 'w-5 h-5'
-  const toolIcon = lookB ? 14 : 12
-  const toolIdle = lookB
-    ? 'text-[#99ABBD] bg-transparent hover:text-[#E8F6F7]'
-    : 'text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] bg-transparent hover:text-[var(--editor-text)]'
+  // Timeline pane — the half the divider sizes.
   const timelinePane = (
-    <div
-      className="shrink-0 flex flex-col overflow-hidden"
-      // Look B (dark): one navy gradient under the header and the tracks, with
-      // a 2px slate rule on top. Light keeps the plain surface.
-      style={lookB
-        ? { height: timelinePaneHeight, background: TIMELINE_PANE_GRADIENT, borderTop: `2px solid ${TIMELINE_PANE_RULE}` }
-        : { height: timelinePaneHeight }}
-    >
+    <div className="shrink-0 flex flex-col overflow-hidden" style={{ height: timelinePaneHeight }}>
 
       {/* Track controls bar — controls + undo/redo + preview axis + ripple +
           crop + render. Split is deliberately NOT here: it is a one-key verb
@@ -2672,68 +2654,25 @@ function ReviewSurface<P extends Project>({
           reads as ABSENT, and Crop is disabled whenever no clip is selected —
           which is most of the time, so the control looked like it had been
           removed rather than like it was waiting on a selection. */}
-      <div
-        className={lookB
-          ? 'shrink-0 flex h-10 items-center justify-end gap-0.5 px-4 border-b border-[rgba(53,70,92,0.55)] bg-transparent'
-          : 'shrink-0 flex items-center justify-end gap-1.5 px-3 py-1 border-t border-[var(--editor-border)] bg-[var(--editor-surface)]'}
-      >
-        {lookB ? (
-          // Look B's title block: what this pane is, which project, where the
-          // playhead is of how long. The current time is the go-to-time
-          // button (Timeline's readout strip is light only now).
-          <div className="mr-auto flex min-w-0 items-center gap-2">
-            <Film size={15} className="shrink-0 text-[#99ABBD]" />
-            <span className="shrink-0 text-[12px] font-semibold text-[#B6C9D9]">Timeline</span>
-            {project.name?.trim() && (
-              <span className="ml-1.5 min-w-0 truncate text-[12px] font-medium text-[#54D2E3]">{project.name.trim()}</span>
-            )}
-            <span
-              data-testid="timeline-timecode"
-              className="ml-2.5 shrink-0 text-[11px] tabular-nums text-[#96AABC] select-none"
-              style={{ fontFamily: MONO_FONT_STACK }}
-            >
-              <Tooltip label="Go to time">
-                <button
-                  type="button"
-                  aria-label="Go to time"
-                  onClick={openGoToTime}
-                  className="rounded transition-colors hover:text-[#E8F6F7]"
-                >
-                  {formatClockTime(Math.min(currentTime, previewDuration))}
-                </button>
-              </Tooltip>
-              {' / '}{formatClockTime(previewDuration)}
-            </span>
-            <Tooltip label="Controls & shortcuts">
-              <button
-                onClick={() => setShowControls(true)}
-                aria-label="Editor controls & shortcuts"
-                className="ml-2 flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors text-[#99ABBD] bg-transparent hover:text-[#E8F6F7] hover:bg-[rgba(153,171,189,0.12)]"
-              >
-                <HelpCircle size={14} />
-              </button>
-            </Tooltip>
-          </div>
-        ) : (
-          <Tooltip label="Controls & shortcuts" className="mr-auto">
-            <button
-              onClick={() => setShowControls(true)}
-              aria-label="Editor controls & shortcuts"
-              className="flex items-center gap-1 px-1.5 h-5 rounded transition-colors text-[color-mix(in_srgb,var(--editor-text)_75%,transparent)] bg-transparent hover:text-[var(--editor-text)] hover:bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)]"
-            >
-              <HelpCircle size={14} />
-              <span className="text-[10px] leading-none">Controls</span>
-            </button>
-          </Tooltip>
-        )}
+      <div className="shrink-0 flex items-center justify-end gap-1.5 px-3 py-1 border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
+        <Tooltip label="Controls & shortcuts" className="mr-auto">
+          <button
+            onClick={() => setShowControls(true)}
+            aria-label="Editor controls & shortcuts"
+            className="flex items-center gap-1 px-1.5 h-5 rounded transition-colors text-[color-mix(in_srgb,var(--editor-text)_75%,transparent)] bg-transparent hover:text-[var(--editor-text)] hover:bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)]"
+          >
+            <HelpCircle size={14} />
+            <span className="text-[10px] leading-none">Controls</span>
+          </button>
+        </Tooltip>
         <Tooltip label="Undo" keys={['⌘', 'Z']}>
           <button
             onClick={sync.undo}
             disabled={!sync.canUndo}
             aria-label="Undo"
-            className={`flex items-center justify-center ${toolSize} rounded transition-colors ${toolIdle} disabled:opacity-50 disabled:pointer-events-none`}
+            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] bg-transparent hover:text-[var(--editor-text)] disabled:opacity-50 disabled:pointer-events-none"
           >
-            <Undo2 size={toolIcon} />
+            <Undo2 size={12} />
           </button>
         </Tooltip>
         <Tooltip label="Redo" keys={['⌘', '⇧', 'Z']}>
@@ -2741,9 +2680,9 @@ function ReviewSurface<P extends Project>({
             onClick={sync.redo}
             disabled={!sync.canRedo}
             aria-label="Redo"
-            className={`flex items-center justify-center ${toolSize} rounded transition-colors ${toolIdle} disabled:opacity-50 disabled:pointer-events-none`}
+            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] bg-transparent hover:text-[var(--editor-text)] disabled:opacity-50 disabled:pointer-events-none"
           >
-            <Redo2 size={toolIcon} />
+            <Redo2 size={12} />
           </button>
         </Tooltip>
         <Tooltip label={previewAxis ? 'Preview axis on — hover to preview' : 'Preview axis off'} keys={['A']}>
@@ -2751,13 +2690,13 @@ function ReviewSurface<P extends Project>({
             onClick={() => setPreviewAxis(v => !v)}
             aria-label="Preview axis"
             aria-pressed={previewAxis}
-            className={`flex items-center justify-center ${toolSize} rounded transition-colors ${
+            className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
               previewAxis
                 ? (timelineMode === 'light' ? 'text-yellow-700 bg-yellow-400/15 hover:bg-yellow-400/25' : 'text-yellow-400 bg-yellow-400/15 hover:bg-yellow-400/25')
-                : toolIdle
+                : 'text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] bg-transparent hover:text-[var(--editor-text)]'
             }`}
           >
-            <SeparatorVertical size={toolIcon} />
+            <SeparatorVertical size={12} />
           </button>
         </Tooltip>
         <Tooltip label={rippleMode ? 'Ripple on — gaps close' : 'Ripple: close the gap'}>
@@ -2765,13 +2704,13 @@ function ReviewSurface<P extends Project>({
             onClick={handleRippleToggle}
             aria-label="Ripple mode"
             aria-pressed={rippleMode}
-            className={`flex items-center justify-center ${toolSize} rounded transition-colors ${
+            className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
               rippleMode
                 ? (timelineMode === 'light' ? 'text-teal-600 bg-teal-400/15 hover:bg-teal-400/25' : 'text-teal-400 bg-teal-400/15 hover:bg-teal-400/25')
-                : toolIdle
+                : 'text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] bg-transparent hover:text-[var(--editor-text)]'
             }`}
           >
-            <Magnet size={toolIcon} />
+            <Magnet size={12} />
           </button>
         </Tooltip>
         <Tooltip
@@ -2782,13 +2721,13 @@ function ReviewSurface<P extends Project>({
             disabled={!cropTarget}
             aria-label="Crop source"
             aria-pressed={cropMode}
-            className={`flex items-center justify-center ${toolSize} rounded transition-colors disabled:opacity-50 disabled:pointer-events-none ${
+            className={`flex items-center justify-center w-5 h-5 rounded transition-colors disabled:opacity-50 disabled:pointer-events-none ${
               cropMode
                 ? (timelineMode === 'light' ? 'text-amber-600 bg-amber-400/15 hover:bg-amber-400/25' : 'text-amber-400 bg-amber-400/15 hover:bg-amber-400/25')
-                : toolIdle
+                : 'text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] bg-transparent hover:text-[var(--editor-text)]'
             }`}
           >
-            <Crop size={toolIcon} />
+            <Crop size={12} />
           </button>
         </Tooltip>
         {/* The Pencil "Edit overlay" button used to sit here, opening the
@@ -2804,9 +2743,9 @@ function ReviewSurface<P extends Project>({
             <button
               onClick={handleAudioPolish}
               aria-label="Polish audio"
-              className={`flex items-center justify-center ${toolSize} rounded transition-colors ${toolIdle}`}
+              className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] bg-transparent hover:text-[var(--editor-text)]"
             >
-              <Wand2 size={toolIcon} />
+              <Wand2 size={12} />
             </button>
           </Tooltip>
         )}
@@ -2818,9 +2757,9 @@ function ReviewSurface<P extends Project>({
             onClick={() => handleAudibleScrubChange(!currentAudibleScrub)}
             aria-label="Toggle audible drag-scrub"
             aria-pressed={currentAudibleScrub}
-            className={`flex items-center justify-center ${toolSize} rounded transition-colors ${toolIdle}`}
+            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] bg-transparent hover:text-[var(--editor-text)]"
           >
-            {currentAudibleScrub ? <Ear size={toolIcon} /> : <EarOff size={toolIcon} />}
+            {currentAudibleScrub ? <Ear size={12} /> : <EarOff size={12} />}
           </button>
         </Tooltip>
         {/* Default placement. A host that sets onProvideRenderTrigger renders
@@ -2839,7 +2778,7 @@ function ReviewSurface<P extends Project>({
           viewport to grow its surface down into the empty space below the
           tracks (see TimelineCanvas's pane-fill effect). Its height is fixed by
           the resizable pane, so the measurement never feeds back. */}
-      <div data-timeline-scroll className={lookB ? 'flex-1 min-h-0 overflow-y-auto' : 'flex-1 min-h-0 overflow-y-auto border-t border-[var(--editor-border)] bg-[var(--editor-surface)]'}>
+      <div data-timeline-scroll className="flex-1 min-h-0 overflow-y-auto border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
         <Timeline
           project={project}
           clock={clock}

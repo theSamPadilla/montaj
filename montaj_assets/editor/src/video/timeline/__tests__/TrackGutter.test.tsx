@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
-import TrackGutter, { visualTrackKind, trackIconKind, quietColumnFits } from '../TrackGutter'
+import TrackGutter, { visualTrackKind, trackIconKind } from '../TrackGutter'
 import { computeTimelineLayout } from '../canvas/draw'
 import type { Project } from '../../../types'
 import type { Captions, VisualItem } from '../../../schema'
@@ -68,7 +68,11 @@ describe('TrackGutter 3D icon', () => {
     const { container } = render(<TrackGutter project={p} layout={layout} />)
     expect(container.querySelectorAll('svg.lucide-box')).toHaveLength(1)
     expect(container.querySelectorAll('svg.lucide-layers')).toHaveLength(1)
-    expect(screen.getByLabelText('3D')).toBeTruthy()
+    const mark = screen.getByLabelText('3D track')
+    expect(mark.querySelector('svg.lucide-box')).toBeTruthy()
+    expect(mark.textContent).toBe('3D')
+    // The overlay track's cell carries no 3D mark.
+    expect(container.querySelectorAll('[data-track-3d]')).toHaveLength(1)
   })
 })
 
@@ -396,103 +400,5 @@ describe('TrackGutter — rail controls and settings', () => {
 
     fireEvent.pointerUp(slider)
     expect(onSetTrackVolume).toHaveBeenLastCalledWith(0, 0.5, true)
-  })
-})
-
-describe('TrackGutter — timeline look B (quiet rail)', () => {
-  const allWired = {
-    onToggleTrackEnabled: vi.fn(),
-    onSetTrackVolume: vi.fn(),
-    onSetTrackMuted: vi.fn(),
-    onApplySpeed: vi.fn(),
-    onSetLaneVolume: vi.fn(),
-    onSetLaneMuted: vi.fn(),
-    onSetLaneMagnet: vi.fn(),
-  }
-
-  it('dark: no boxed cell, no border, no left accent bar', () => {
-    const { container } = render(<TrackGutter project={project()} mode="dark" {...allWired} />)
-    const cells = container.querySelectorAll('[data-rail-cell]')
-    expect(cells.length).toBeGreaterThan(0)
-    for (const cell of cells) {
-      const el = cell as HTMLElement
-      expect(el.dataset.railCell).toBe('quiet')
-      expect(el.className).not.toMatch(/(^|\s)border(\s|$)/)
-      expect(el.className).not.toMatch(/bg-\[var\(--editor-surface\)\]/)
-      expect(el.style.borderLeft).toBe('')
-    }
-  })
-
-  it('dark: still renders every control, with its name — eye, mute, magnet and settings', () => {
-    render(<TrackGutter project={project()} mode="dark" {...allWired} />)
-    for (const name of [
-      'Skip video track', 'Mute video track', 'Video track settings',
-      'Skip overlay track',
-      'Mute audio lane', 'Magnetic audio lane', 'Audio lane settings',
-    ]) {
-      expect(screen.getByRole('button', { name })).toBeTruthy()
-    }
-    // And they still act.
-    fireEvent.click(screen.getByRole('button', { name: 'Magnetic audio lane' }))
-    expect(allWired.onSetLaneMagnet).toHaveBeenCalledWith(['a0'], true)
-    fireEvent.click(screen.getByRole('button', { name: 'Skip video track' }))
-    expect(allWired.onToggleTrackEnabled).toHaveBeenCalledWith(0, false)
-    fireEvent.click(screen.getByRole('button', { name: 'Audio lane settings' }))
-    expect(screen.getByLabelText('Audio lane volume')).toBeTruthy()
-  })
-
-  it('lays a short row out in a row, and wraps a column that would overflow its lane', () => {
-    expect(quietColumnFits(120, 3)).toBe(true)  // base video row: eye, mute, gear
-    expect(quietColumnFits(64, 3)).toBe(false)  // audio lane: mute, magnet, gear
-    render(<TrackGutter project={project()} mode="dark" {...allWired} />)
-    const overlayCell = screen.getByLabelText('Overlay').closest('[data-rail-cell]') as HTMLElement
-    expect(overlayCell.className).toMatch(/flex-row/)
-    const audioCell = screen.getByLabelText('Audio').closest('[data-rail-cell]') as HTMLElement
-    expect(audioCell.className).toMatch(/flex-col/)
-    expect(audioCell.querySelector('.flex-wrap')).toBeTruthy()
-  })
-
-  it('a short video row with skip, mute and gear lays icon and controls out as a 2-column grid', () => {
-    const p = project({ tracks: [[video('c0')], [video('c1')]] } as unknown as Partial<Project>)
-    const base = computeTimelineLayout(p)
-    const layout = { ...base, rows: base.rows.map(r => ({ ...r, height: 48 })) }
-    const { container } = render(<TrackGutter project={p} layout={layout} mode="dark" {...allWired} />)
-    const grids = [...container.querySelectorAll('[data-rail-layout="grid"]')] as HTMLElement[]
-    expect(grids.length).toBeGreaterThan(0)
-    const g = grids[0]
-    expect(g.className).toMatch(/grid-cols-2/)
-    expect(parseInt(g.style.height, 10)).toBeLessThan(50)
-    // icon + three controls, none dropped
-    expect(g.querySelector('[aria-label]')).toBeTruthy()
-    expect(g.querySelectorAll('button').length).toBe(3)
-  })
-
-  it('light keeps the boxed cell with its accent bar', () => {
-    const { container } = render(<TrackGutter project={project()} mode="light" {...allWired} />)
-    const cells = [...container.querySelectorAll('[data-rail-cell]')] as HTMLElement[]
-    expect(cells.every(c => c.dataset.railCell === 'boxed')).toBe(true)
-    expect(cells.some(c => c.style.borderLeft !== '')).toBe(true)
-  })
-
-  it('dark: the ruler corner holds zoom out, zoom in and fit', () => {
-    const zoom = { zoomIn: vi.fn(), zoomOut: vi.fn(), fit: vi.fn() }
-    const p = project()
-    const layout = computeTimelineLayout(p)
-    render(<TrackGutter project={p} layout={layout} mode="dark" zoom={zoom} />)
-    const out = screen.getByRole('button', { name: 'Zoom out' })
-    const corner = out.closest('[data-timeline-chrome]') as HTMLElement
-    expect(corner.style.top).toBe(`${layout.ruler.y}px`)
-    expect(corner.style.height).toBe(`${layout.ruler.height}px`)
-    fireEvent.click(out)
-    fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Fit to view' }))
-    expect(zoom.zoomOut).toHaveBeenCalledTimes(1)
-    expect(zoom.zoomIn).toHaveBeenCalledTimes(1)
-    expect(zoom.fit).toHaveBeenCalledTimes(1)
-  })
-
-  it('light: no zoom corner (Timeline keeps its own row there)', () => {
-    render(<TrackGutter project={project()} mode="light" zoom={{ zoomIn: vi.fn(), zoomOut: vi.fn(), fit: vi.fn() }} />)
-    expect(screen.queryByRole('button', { name: 'Zoom out' })).toBeNull()
   })
 })

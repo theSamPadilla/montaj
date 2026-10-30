@@ -1033,9 +1033,8 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
       onClick={handleContainerClick}
     >
 
-      {/* Zoom controls. Light only: look B (dark) draws them as icons in the
-          rail's ruler corner instead (TrackGutter's `zoom`). */}
-      {totalDuration > 0 && mode === 'light' && (
+      {/* Zoom controls */}
+      {totalDuration > 0 && (
         <div className="flex items-center justify-end gap-0.5 -mb-1 cursor-pointer">
           <Tooltip label="Zoom out">
             <button
@@ -1076,10 +1075,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
       {/* Readout strip + tracks, wrapped in a relative container */}
       <div className="relative flex flex-col gap-2">
 
-      {/* Light only: on look B (dark) the current and total time sit in the
-          pane header, where VideoEditor draws them (and the go-to-time
-          button) beside the project name. */}
-      {mode === 'light' && <Scrubber onOpenGoToTime={onOpenGoToTime} />}
+      <Scrubber onOpenGoToTime={onOpenGoToTime} />
 
       {/* ── Tracks ── */}
       <div className="flex flex-col gap-1">
@@ -1094,12 +1090,11 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
             so passing `!!captionTrack?.segments?.length` on top can never
             change the outcome — it exists as a host knob for other callers,
             not for this one. */}
-        <div className={`flex ${mode === 'light' ? 'gap-1' : 'gap-2'}`}>
+        <div className="flex gap-1">
             <TrackGutter
               project={project}
               layout={canvasLayout}
               mode={mode}
-              zoom={totalDuration > 0 ? zoomControls : undefined}
               onToggleTrackEnabled={handleToggleTrackEnabled}
               onSetTrackVolume={handleSetTrackVolume}
               onSetTrackMuted={handleSetTrackMuted}

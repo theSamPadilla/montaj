@@ -1098,8 +1098,8 @@ describe('visualItemLabel — video items', () => {
     expect(visualItemLabel(video({ proxySrc: undefined }))).toBe('beach_shot')
   })
 
-  it('keeps the filename once proxySrc arrives — look B names every clip over its frames', () => {
-    expect(visualItemLabel(video({ proxySrc: 'clips/beach_shot_proxy_v1.mp4' }))).toBe('beach_shot')
+  it('goes blank once proxySrc arrives — the filmstrip identifies the shot instead', () => {
+    expect(visualItemLabel(video({ proxySrc: 'clips/beach_shot_proxy_v1.mp4' }))).toBe('')
   })
 
   it('falls back to a generic label when a proxy-less video has no src either', () => {
