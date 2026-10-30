@@ -171,27 +171,32 @@ export function resamplePeaksToColumns(peaks: number[], columns: number): Wavefo
 // ── Drawing primitives ───────────────────────────────────────────────────
 
 export const WAVEFORM_COLORS = {
-  /** Translucent white so the bars read over any of `TRACK_PALETTE`'s six clip
-   *  hues without needing a per-palette variant. Raised from the original
-   *  0.35: at 10px the strip was a texture and low alpha kept it from
-   *  competing with the label, but across half a clip it is the thing you cut
-   *  against and needs to read as a waveform. */
-  clip: 'rgba(255,255,255,0.6)',
-  /** Darkens the waveform band relative to the clip fill so the lower half
-   *  reads as its own lane rather than bars floating on the clip — the
-   *  separation a distinct band colour would give. */
-  clipBand: 'rgba(0,0,0,0.22)',
-  /** Sits inside `AudioTrackRow`'s emerald bar; brighter than the fill so it
-   *  reads as drawn "on top of" it, echoing `TIMELINE_COLORS.audioRing`. */
-  audioLane: 'rgba(167,243,208,0.75)',
-  /** Muted video-track clip bars: dimmer than `clip`, but still readable so
-   *  the waveform shape survives on top of the darker muted scrim below. */
-  clipMuted: 'rgba(255,255,255,0.3)',
-  /** Muted band: a distinctly DARKER scrim than `clipBand` (not the old faint
-   *  lighten, which read almost identical to an unmuted clip), so a muted
-   *  clip's audio region visibly dims and reads as "off" at a glance. */
-  clipBandMuted: 'rgba(0,0,0,0.45)',
+  /** Timeline look B: mint bars in a solid deep-teal band under the frames,
+   *  the same mint the audio lane's bars use, so audio reads as one colour
+   *  wherever it is drawn. */
+  clip: '#87DAC3',
+  /** The band under the frames. Solid, so the lower third reads as its own
+   *  lane rather than bars floating on the clip. */
+  clipBand: '#0B2A33',
+  /** The audio lane's bars, over `TIMELINE_COLORS.audioFill`. */
+  audioLane: '#87DAC3',
+  /** Muted video-track clip bars: the mint at low alpha, so the waveform shape
+   *  survives on top of the darker muted band below. */
+  clipMuted: 'rgba(135,218,195,0.35)',
+  /** Muted band: distinctly DARKER than `clipBand`, so a muted clip's audio
+   *  region visibly dims and reads as "off" at a glance. */
+  clipBandMuted: '#061A20',
 } as const
+
+/** Bar geometry for the clip and audio-lane waveforms: discrete rounded bars
+ *  rather than one column per pixel. Mode-independent. */
+export interface WaveformBarStyle { width: number; gap: number }
+export const CLIP_WAVEFORM_BARS: WaveformBarStyle = { width: 2, gap: 3 }
+export const AUDIO_WAVEFORM_BARS: WaveformBarStyle = { width: 3, gap: 4 }
+/** Inset of the clip waveform's bars inside their band: clear of the clip's
+ *  2px border at the sides and bottom. */
+export const CLIP_WAVEFORM_BAR_INSET_X_PX = 4
+export const CLIP_WAVEFORM_BAR_INSET_Y_PX = 6
 
 /** The shape both waveform sets satisfy — `WAVEFORM_COLORS`'s keys widened
  *  from its `as const` literals to plain `string`. Carried on
@@ -247,6 +252,7 @@ export function drawWaveformBars(
   columns: WaveformColumn[],
   color: string,
   gainAt?: (x: number) => number,
+  bars?: WaveformBarStyle,
 ): void {
   if (rect.width <= 0 || rect.height <= 0 || columns.length === 0) return
   const centerY = rect.y + rect.height / 2
@@ -254,6 +260,10 @@ export function drawWaveformBars(
   const colWidth = rect.width / columns.length
 
   ctx.fillStyle = color
+  if (bars) {
+    drawRoundedBars(ctx, rect, columns, gainAt, bars)
+    return
+  }
   for (let i = 0; i < columns.length; i++) {
     const { min, max } = columns[i]
     const x = rect.x + i * colWidth
@@ -264,6 +274,56 @@ export function drawWaveformBars(
     const bottom = centerY - lo * halfHeight
     ctx.fillRect(x, top, Math.max(1, colWidth), Math.max(1, bottom - top))
   }
+}
+
+/** `drawWaveformBars` in bar mode: `bars.width`-wide rounded bars every
+ *  `bars.width + bars.gap` px, each the envelope (highest max, lowest min) of
+ *  the columns under it, all in ONE path and one fill. A bar is never shorter
+ *  than its own width, so a silent stretch reads as a row of dots. */
+function drawRoundedBars(
+  ctx: DrawContext,
+  rect: Rect,
+  columns: WaveformColumn[],
+  gainAt: ((x: number) => number) | undefined,
+  bars: WaveformBarStyle,
+): void {
+  const pitch = bars.width + bars.gap
+  const count = Math.floor((rect.width + bars.gap) / pitch)
+  if (count <= 0) return
+  const centerY = rect.y + rect.height / 2
+  const halfHeight = rect.height / 2
+  const colWidth = rect.width / columns.length
+  const minHeight = Math.min(bars.width, rect.height)
+  const r = bars.width / 2
+
+  ctx.beginPath()
+  for (let k = 0; k < count; k++) {
+    const x = rect.x + k * pitch
+    const i0 = Math.min(columns.length - 1, Math.floor((x - rect.x) / colWidth))
+    const i1 = Math.max(i0 + 1, Math.min(columns.length, Math.ceil((x + bars.width - rect.x) / colWidth)))
+    let hi = -Infinity
+    let lo = Infinity
+    for (let i = i0; i < i1; i++) {
+      hi = Math.max(hi, columns[i].min, columns[i].max)
+      lo = Math.min(lo, columns[i].min, columns[i].max)
+    }
+    const gain = gainAt ? gainAt(x + bars.width / 2) : 1
+    let top = centerY - hi * gain * halfHeight
+    let bottom = centerY - lo * gain * halfHeight
+    if (bottom - top < minHeight) {
+      const mid = (top + bottom) / 2
+      top = mid - minHeight / 2
+      bottom = mid + minHeight / 2
+    }
+    const radius = Math.min(r, (bottom - top) / 2)
+    ctx.moveTo(x + radius, top)
+    ctx.arcTo(x + bars.width, top, x + bars.width, bottom, radius)
+    ctx.arcTo(x + bars.width, bottom, x, bottom, radius)
+    ctx.arcTo(x, bottom, x, top, radius)
+    ctx.arcTo(x, top, x + bars.width, top, radius)
+    ctx.closePath()
+  }
+  ctx.fill()
 }
 
 /** The lower half of a clip rect the waveform draws into — `clip-bands.ts` owns
@@ -289,7 +349,10 @@ export function drawClipWaveform(
   if (band.height <= 0 || band.width <= 0) return
   ctx.fillStyle = muted ? colors.clipBandMuted : colors.clipBand
   ctx.fillRect(band.x, band.y, band.width, band.height)
-  drawWaveformBars(ctx, band, columns, muted ? colors.clipMuted : colors.clip)
+  const insetX = Math.min(CLIP_WAVEFORM_BAR_INSET_X_PX, band.width / 4)
+  const insetY = Math.min(CLIP_WAVEFORM_BAR_INSET_Y_PX, band.height / 4)
+  const barsRect = { x: band.x + insetX, y: band.y + insetY, width: band.width - insetX * 2, height: band.height - insetY * 2 }
+  drawWaveformBars(ctx, barsRect, columns, muted ? colors.clipMuted : colors.clip, undefined, CLIP_WAVEFORM_BARS)
 }
 
 /** Full-bar audio-lane waveform. `rect` is already the fetched window's
@@ -308,7 +371,7 @@ export function drawAudioLaneWaveform(
   gainAt?: (x: number) => number,
   colors: WaveformColors = WAVEFORM_COLORS,
 ): void {
-  drawWaveformBars(ctx, rect, columns, colors.audioLane, gainAt)
+  drawWaveformBars(ctx, rect, columns, colors.audioLane, gainAt, AUDIO_WAVEFORM_BARS)
 }
 
 // ── Fetch-state store ────────────────────────────────────────────────────

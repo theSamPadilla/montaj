@@ -21,6 +21,8 @@ import {
   sourceTimeToBarFraction,
   WaveformPeaksStore,
   WAVEFORM_COLORS,
+  AUDIO_WAVEFORM_BARS,
+  CLIP_WAVEFORM_BARS,
   type WaveformColumn,
   type WaveformQueryContext,
 } from '../waveforms'
@@ -35,6 +37,22 @@ import {
 } from '../draw'
 import type { Viewport } from '../viewport'
 import { clipBands } from '../clip-bands'
+
+/** The rounded paths a recorder saw, as rects: each is a `moveTo` then four
+ *  `arcTo`s (`drawRoundedBars`, `roundRectPath`). */
+function roundedPaths(calls: { method: string; args: unknown[] }[]): Array<{ x: number; y: number; w: number; h: number }> {
+  const out: Array<{ x: number; y: number; w: number; h: number }> = []
+  for (let i = 0; i < calls.length; i++) {
+    if (calls[i].method !== 'moveTo') continue
+    const arcs = calls.slice(i + 1, i + 5)
+    if (arcs.length < 4 || arcs.some(c => c.method !== 'arcTo')) continue
+    const [, top] = calls[i].args as number[]
+    const a1 = arcs[0].args as number[]
+    const a3 = arcs[2].args as number[]
+    out.push({ x: a3[0], y: top, w: a1[0] - a3[0], h: a1[3] - top })
+  }
+  return out
+}
 
 // ── Recording context (mirrors draw.test.ts's convention) ────────────────
 
@@ -325,8 +343,10 @@ describe('drawAudioLaneWaveform gainAt passthrough', () => {
     const bandRect = rect({ x: 0, y: 0, width: 20, height: 20 })
     const columns: WaveformColumn[] = [{ min: -1, max: 1 }]
     drawAudioLaneWaveform(r.ctx, bandRect, columns, () => 0)
-    const [, , , h] = r.of('fillRect')[0].args as number[]
-    expect(h).toBeLessThan(2)
+    // Silenced to the floor: a bar never draws shorter than its own width.
+    const bars = roundedPaths(r.calls)
+    expect(bars.length).toBeGreaterThan(0)
+    for (const bar of bars) expect(bar.h).toBeLessThanOrEqual(AUDIO_WAVEFORM_BARS.width + 1e-9)
   })
 
   it('omitting gainAt draws at full amplitude, same as before the fade-shape feature', () => {
@@ -334,17 +354,29 @@ describe('drawAudioLaneWaveform gainAt passthrough', () => {
     const bandRect = rect({ x: 0, y: 0, width: 20, height: 20 })
     const columns: WaveformColumn[] = [{ min: -1, max: 1 }]
     drawAudioLaneWaveform(r.ctx, bandRect, columns)
-    const [, y, , h] = r.of('fillRect')[0].args as number[]
-    expect(y).toBeCloseTo(0)
-    expect(h).toBeCloseTo(20)
+    const [bar] = roundedPaths(r.calls)
+    expect(bar.y).toBeCloseTo(0)
+    expect(bar.h).toBeCloseTo(20)
+  })
+
+  it('draws discrete rounded bars, 3px wide every 7px, in one fill', () => {
+    const r = recordingContext()
+    drawAudioLaneWaveform(r.ctx, rect({ x: 0, y: 0, width: 70, height: 20 }), [{ min: -1, max: 1 }])
+    const bars = roundedPaths(r.calls)
+    expect(AUDIO_WAVEFORM_BARS).toEqual({ width: 3, gap: 4 })
+    expect(bars).toHaveLength(10) // floor((70 + 4) / 7)
+    expect(bars.map(b => b.x)).toEqual([0, 7, 14, 21, 28, 35, 42, 49, 56, 63])
+    for (const bar of bars) expect(bar.w).toBe(3)
+    expect(r.of('fill')).toHaveLength(1)
+    expect(r.of('set:fillStyle').map(c => c.args[0])).toEqual([WAVEFORM_COLORS.audioLane])
   })
 })
 
 describe('clipWaveformBand', () => {
-  it('takes the LOWER HALF of the clip, not the thin bottom strip it started as', () => {
+  it('takes the slim lower third of the clip (40 of 120)', () => {
     const r = rect({ x: 0, y: 0, width: 80, height: 120 })
     const band = clipWaveformBand(r)
-    expect(band.height).toBe(59) // (120 - 2px inset) / 2
+    expect(band.height).toBe(40)
     expect(band.y + band.height).toBeLessThanOrEqual(r.y + r.height)
     expect(band.width).toBe(r.width)
   })
@@ -405,14 +437,16 @@ describe('drawClipRect content hook', () => {
     })
 
     const fills = r.of('fillRect')
-    // [0]=the clip body fill, [1]=the darkened waveform band, then N bars. The
-    // clip's outline is a stroked path now, not a fillRect.
-    const waveformFills = fills.slice(2)
-    expect(waveformFills.length).toBe(columns.length)
-    for (const call of waveformFills) {
-      const [x, , w] = call.args as number[]
-      expect(x).toBeGreaterThanOrEqual(clipRect.x)
-      expect(x + w).toBeLessThanOrEqual(clipRect.x + clipRect.width + 0.001)
+    // [0]=the clip body fill, [1]=the waveform band; the bars are one rounded
+    // path, 2px wide every 5px. The clip's outline is a stroked path too.
+    expect(fills).toHaveLength(2)
+    const bars = roundedPaths(r.calls).filter(b => b.w === CLIP_WAVEFORM_BARS.width)
+    expect(bars.length).toBeGreaterThan(0)
+    for (const bar of bars) {
+      expect(bar.x).toBeGreaterThanOrEqual(clipRect.x)
+      expect(bar.x + bar.w).toBeLessThanOrEqual(clipRect.x + clipRect.width + 0.001)
+      expect(bar.y).toBeGreaterThanOrEqual(clipRect.y)
+      expect(bar.y + bar.h).toBeLessThanOrEqual(clipRect.y + clipRect.height + 0.001)
     }
   })
 
@@ -442,10 +476,10 @@ describe('drawAudioItem content hook', () => {
       drawContent: (ctx, rc) => drawAudioLaneWaveform(ctx, rc, columns),
     })
 
-    // A clip() call must precede the waveform's fillRects so it's constrained
+    // A clip() call must precede the waveform's bars so they're constrained
     // to the bar's bounds.
     const clipIdx = r.calls.findIndex(c => c.method === 'clip')
-    const firstFillAfterClip = r.calls.findIndex((c, i) => i > clipIdx && c.method === 'fillRect')
+    const firstFillAfterClip = r.calls.findIndex((c, i) => i > clipIdx && c.method === 'fill')
     expect(clipIdx).toBeGreaterThanOrEqual(0)
     expect(firstFillAfterClip).toBeGreaterThan(clipIdx)
   })
@@ -1043,12 +1077,19 @@ describe('drawTimelineContent waveform wiring', () => {
       },
     }))
 
-    // The bar's own background is painted via fill() (roundRectPath), not
-    // fillRect, so the waveform's 3 bars are the only fillRects the LOOKUP
-    // adds. Measured as a delta against the same scene with no lookup, because
-    // the ruler strip along the top fillRects too.
+    // The waveform is ONE extra fill (every bar in one path) and no extra
+    // fillRect. Measured as a delta against the same scene with no lookup,
+    // because the lane, the bar body and the ruler paint too.
     const bare = recordingContext()
     drawTimelineContent(bare.ctx, scene({ project: p, layout: computeTimelineLayout(p) }))
-    expect(r.of('fillRect').length - bare.of('fillRect').length).toBe(3)
+    expect(r.of('fillRect').length - bare.of('fillRect').length).toBe(0)
+    expect(r.of('fill').length - bare.of('fill').length).toBe(1)
+    const lane = computeTimelineLayout(p).lanes[0]
+    const bars = roundedPaths(r.calls).filter(b => b.w === AUDIO_WAVEFORM_BARS.width)
+    expect(bars.length).toBeGreaterThan(0)
+    for (const bar of bars) {
+      expect(bar.y).toBeGreaterThanOrEqual(lane.y)
+      expect(bar.y + bar.h).toBeLessThanOrEqual(lane.y + lane.height + 0.001)
+    }
   })
 })

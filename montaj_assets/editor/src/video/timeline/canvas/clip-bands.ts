@@ -18,15 +18,16 @@ import type { Rect } from './draw'
 
 /**
  * Share of a clip's height given to the waveform; the frames band takes the
- * rest. An even split is a deliberate departure from a frames-heavy
- * ~70/30 — audio is what you actually cut against in a talking-head edit, and
- * the frames band stays legible at half of a 120px row.
+ * rest. A third (40px of the 120px base row): timeline look B gives the
+ * picture the room and keeps the waveform as a slim band under it, still
+ * tall enough to cut against.
  */
-export const CLIP_WAVEFORM_FRACTION = 0.5
+export const CLIP_WAVEFORM_FRACTION = 1 / 3
 
-/** Hairline left clear at the clip's top and bottom edge so neither band
- *  paints over the 1px border/selection ring `drawClipRect` strokes there. */
-export const CLIP_BAND_INSET_PX = 1
+/** Edge left clear at the clip's top and bottom. Zero: the frames fill the
+ *  clip edge to edge, and `drawClipRect` strokes its 2px border over them
+ *  after the content, so nothing needs to stay clear of it. */
+export const CLIP_BAND_INSET_PX = 0
 
 export interface ClipBands {
   /** Filmstrip tiles. */
@@ -46,7 +47,7 @@ export interface ClipBands {
  * `height <= 0` guard.
  */
 export function clipBands(rect: Rect): ClipBands {
-  const inset = rect.height >= CLIP_BAND_INSET_PX * 4 ? CLIP_BAND_INSET_PX : 0
+  const inset = CLIP_BAND_INSET_PX > 0 && rect.height >= CLIP_BAND_INSET_PX * 4 ? CLIP_BAND_INSET_PX : 0
   const inner = Math.max(0, rect.height - inset * 2)
   const waveformHeight = Math.round(inner * CLIP_WAVEFORM_FRACTION)
   const framesHeight = Math.max(0, inner - waveformHeight)

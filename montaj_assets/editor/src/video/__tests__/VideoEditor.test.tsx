@@ -18,6 +18,7 @@ import VideoEditor from '../VideoEditor'
 import type { PlaybackClock } from '../playback-clock'
 import { VIDEO_CONTROLS } from '../../ControlsInfoModal'
 import { stubPlatform } from '../../ui/__tests__/platform'
+import { lightMontajTheme } from '../../theme'
 import { CROSSFADE_COMMIT_DELAY_MS } from '../timeline/Timeline'
 import { trackItems } from '../timeline/timeline-model'
 import { canvasItemPoint, canvasSurface, dragCanvasItem, installCanvasHarness, selectCanvasItem, timeToClientX } from '../timeline/__tests__/_canvasSelect'
@@ -144,6 +145,26 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('VideoEditor — editor-package integration', () => {
+  it('dark (look B): the timeline header names the pane and the project and reads the time; light keeps its Controls row', async () => {
+    const adapter = makeFakeAdapter()
+    const project = { ...makeVideoProject(), name: 'Coast study' }
+    const dark = render(<VideoEditor project={project} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+    const readout = await dark.findByTestId('timeline-timecode')
+    expect(readout.textContent).toMatch(/^\d\d:\d\d\.\d\d \/ \d\d:\d\d\.\d\d$/)
+    expect(dark.getByText('Timeline')).toBeTruthy()
+    expect(dark.getByText('Coast study', { selector: 'span' })).toBeTruthy()
+    expect(dark.getByRole('button', { name: 'Go to time' })).toBeTruthy()
+    // The help button is an icon only now.
+    expect(dark.getByRole('button', { name: 'Editor controls & shortcuts' }).textContent).toBe('')
+    dark.unmount()
+
+    const light = render(<VideoEditor project={project} adapter={adapter} theme={lightMontajTheme} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+    await light.findByRole('button', { name: 'Editor controls & shortcuts' })
+    expect(light.queryByTestId('timeline-timecode')).toBeNull()
+    expect(light.getByRole('button', { name: 'Editor controls & shortcuts' }).textContent).toContain('Controls')
+    light.unmount()
+  })
+
   it('renders the timeline and preview for a draft project', async () => {
     const adapter = makeFakeAdapter()
     const initial = makeVideoProject()

@@ -57,3 +57,21 @@ export function formatTimecode(sec: number): string {
     ? `${hours}:${String(minutes).padStart(2, '0')}:${secondsStr}`
     : `${minutes}:${secondsStr}`
 }
+
+/**
+ * Format seconds for the timeline pane header's readout (look B), as
+ * `mm:ss.cc` — two-digit minutes, hundredths of a second (`00:06.27`), or
+ * `h:mm:ss.cc` once it reaches an hour. Still a shape `parseTimecode`
+ * accepts, so a copied readout pastes into "go to time" as the same instant.
+ */
+export function formatClockTime(sec: number): string {
+  const clamped = Number.isFinite(sec) ? Math.max(0, sec) : 0
+  const totalHundredths = Math.round(clamped * 100)
+  const wholeSeconds = Math.floor(totalHundredths / 100)
+  const hundredths = totalHundredths % 100
+  const hours = Math.floor(wholeSeconds / 3600)
+  const minutes = Math.floor((wholeSeconds % 3600) / 60)
+  const seconds = wholeSeconds % 60
+  const tail = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(hundredths).padStart(2, '0')}`
+  return hours > 0 ? `${hours}:${tail}` : tail
+}

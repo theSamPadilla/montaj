@@ -671,6 +671,7 @@ export default function TimelineCanvas({
           surfaceWidth: cssWidth,
           surfaceHeight: cssHeight,
           mode: scene.mode,
+          rulerY: scene.layout.ruler.y,
         })
       }
     }

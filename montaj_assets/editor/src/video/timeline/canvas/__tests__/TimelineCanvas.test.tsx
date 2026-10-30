@@ -378,10 +378,11 @@ describe('TimelineCanvas — theme mode', () => {
     expect(content.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.rowBackground)).toBe(false)
     // Overlay: nothing else on this idle surface would ever repaint it, so a
     // fresh clear+playhead pass here is the whole proof that the flip marked
-    // it dirty too. (Its one mark, the playhead, is red in both modes by
-    // design — see draw.test.ts — so the colour can't be the tell.)
+    // it dirty too — and the playhead is now painted in the LIGHT colour
+    // (dark is look B's pink, light keeps red-500).
     expect(overlay.some(c => c.method === 'clearRect')).toBe(true)
-    expect(overlay.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.playhead)).toBe(true)
+    expect(overlay.some(c => c.method === 'set:fillStyle' && c.args[0] === LIGHT_TIMELINE_COLORS.playhead)).toBe(true)
+    expect(overlay.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.playhead)).toBe(false)
   })
 
   it('flips back to dark, so the dependency is the mode and not "changed once"', () => {

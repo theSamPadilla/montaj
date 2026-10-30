@@ -44,6 +44,7 @@ import {
   type WaveformSceneLookup,
 } from './waveforms'
 import { drawFilmstripTiles, type FilmstripSceneLookup } from './filmstrips'
+import { clipBands } from './clip-bands'
 
 // ── The context surface the painter needs ────────────────────────────────
 // A structural subset of CanvasRenderingContext2D: a real context satisfies it,
@@ -110,14 +111,20 @@ export interface TrackPalette {
 }
 
 /** VisualTrackRow's `trackColors`, resolved. Same order, same cycle length —
- *  a clip keeps its colour when the flag flips. */
+ *  a clip keeps its colour when the flag flips.
+ *
+ *  Timeline look B (1.6.3): track 0 is the promo blue (`#0F6184` fill under a
+ *  `#4188A7` border) rather than slate, and every other hue keeps its fill
+ *  with its border raised to 0.95 alpha, since the 2px border is now what
+ *  draws the clip's edge over its frames. Selection is the gold
+ *  `clipSelectedOutline`, so `ring` follows it. */
 export const TRACK_PALETTE: TrackPalette[] = [
-  { fill: 'rgba(71,85,105,0.8)',   fillSelected: 'rgba(100,116,139,0.9)', ring: 'rgba(203,213,225,0.8)', border: 'rgba(148,163,184,0.5)', text: '#e2e8f0' }, // slate
-  { fill: 'rgba(3,105,161,0.8)',   fillSelected: 'rgba(2,132,199,0.9)',   ring: 'rgba(125,211,252,0.8)', border: 'rgba(56,189,248,0.5)',  text: '#bae6fd' }, // sky
-  { fill: 'rgba(109,40,217,0.8)',  fillSelected: 'rgba(124,58,237,0.9)',  ring: 'rgba(196,181,253,0.8)', border: 'rgba(167,139,250,0.5)', text: '#ddd6fe' }, // violet
-  { fill: 'rgba(4,120,87,0.8)',    fillSelected: 'rgba(5,150,105,0.9)',   ring: 'rgba(110,231,183,0.8)', border: 'rgba(52,211,153,0.5)',  text: '#a7f3d0' }, // emerald
-  { fill: 'rgba(190,18,60,0.8)',   fillSelected: 'rgba(225,29,72,0.9)',   ring: 'rgba(253,164,175,0.8)', border: 'rgba(251,113,133,0.5)', text: '#fecdd3' }, // rose
-  { fill: 'rgba(180,83,9,0.6)',    fillSelected: 'rgba(217,119,6,0.8)',   ring: 'rgba(251,191,36,0.8)',  border: 'rgba(245,158,11,0.5)',  text: '#fde68a' }, // amber
+  { fill: '#0F6184',               fillSelected: '#0F6184',               ring: '#F5C87B', border: '#4188A7',                text: '#ffffff' }, // promo blue
+  { fill: 'rgba(3,105,161,0.8)',   fillSelected: 'rgba(2,132,199,0.9)',   ring: '#F5C87B', border: 'rgba(56,189,248,0.95)',  text: '#bae6fd' }, // sky
+  { fill: 'rgba(109,40,217,0.8)',  fillSelected: 'rgba(124,58,237,0.9)',  ring: '#F5C87B', border: 'rgba(167,139,250,0.95)', text: '#ddd6fe' }, // violet
+  { fill: 'rgba(4,120,87,0.8)',    fillSelected: 'rgba(5,150,105,0.9)',   ring: '#F5C87B', border: 'rgba(52,211,153,0.95)',  text: '#a7f3d0' }, // emerald
+  { fill: 'rgba(190,18,60,0.8)',   fillSelected: 'rgba(225,29,72,0.9)',   ring: '#F5C87B', border: 'rgba(251,113,133,0.95)', text: '#fecdd3' }, // rose
+  { fill: 'rgba(180,83,9,0.6)',    fillSelected: 'rgba(217,119,6,0.8)',   ring: '#F5C87B', border: 'rgba(245,158,11,0.95)',  text: '#fde68a' }, // amber
 ]
 
 /** `TRACK_PALETTE` for a LIGHT row.
@@ -192,21 +199,24 @@ export const CAPTION_RAIL_ACCENT = 'rgba(34,211,238,0.6)'
 export const LIGHT_CAPTION_RAIL_ACCENT = 'rgba(8,145,178,0.75)'
 
 export const TIMELINE_COLORS = {
-  /** `bg-gray-900` — the dark-mode row background both row kinds use. */
-  rowBackground: '#111827',
-  /** A hair lighter than `rowBackground`, alternated with it per row so
-   *  adjacent track lanes read as distinct panels instead of one dark field. */
-  rowBackgroundAlt: '#161f30',
-  /** Subtle outline around every row band — the visible divider that separates
-   *  one track lane from the next, rather than relying on the gap alone. */
-  rowDivider: 'rgba(148,163,184,0.16)',
-  /** `bg-emerald-500/40` + `border-emerald-500/60` on AudioTrackRow's bars. */
-  audioFill: 'rgba(16,185,129,0.4)',
-  audioBorder: 'rgba(16,185,129,0.6)',
+  /** Timeline look B: every lane is the same faint lift off the pane's navy
+   *  gradient (`rgba(255,255,255,0.022)`), with no alternation and no divider.
+   *  The rounded lane and the 6px gap separate the rows on their own. */
+  rowBackground: 'rgba(255,255,255,0.022)',
+  /** Same as `rowBackground`: look B does not alternate lanes. Kept as its own
+   *  key because the light set still alternates. */
+  rowBackgroundAlt: 'rgba(255,255,255,0.022)',
+  /** `transparent` skips the stroke (see `drawRowBackground`): look B has no
+   *  row dividers. */
+  rowDivider: 'transparent',
+  /** The audio bar: a solid deep green under a faint mint ring. */
+  audioFill: '#235F51',
+  audioBorder: 'rgba(120,230,179,0.33)',
   /** `bg-white/10` — a muted audio bar. */
   audioMutedFill: 'rgba(255,255,255,0.1)',
-  audioRing: 'rgba(110,231,183,0.8)',
-  audioText: '#a7f3d0',
+  /** Selection is gold everywhere on look B, audio bars included. */
+  audioRing: '#F5C87B',
+  audioText: '#E8F6F7',
   /** Fade envelope: the dimmed tint across the WHOLE fade-width band
    *  (`drawFadeEnvelope`; both sides of the curve, not a wedge on one side),
    *  and the curve's own stroke drawn on top of it. Replaces a flat
@@ -266,11 +276,22 @@ export const TIMELINE_COLORS = {
    *  selected clip. Thin enough to bound the span, faint enough not to be
    *  mistaken for a border. */
   overlapEdge: 'rgba(255,255,255,0.55)',
-  /** `bg-red-500` — the playhead, i.e. where playback/preview actually is. */
-  playhead: '#ef4444',
-  /** The selected clip's outline. White rather than the track's own hue: it is
-   *  the one colour that stays obvious over an arbitrary video frame. */
-  clipSelectedOutline: '#ffffff',
+  /** The playhead, i.e. where playback/preview actually is. Look B's pink. */
+  playhead: '#F16890',
+  /** The soft glow round the playhead line (`drawPlayhead`). `transparent`
+   *  draws no glow. */
+  playheadGlow: 'rgba(241,104,144,0.45)',
+  /** The selected clip's outline. Gold rather than the track's own hue: it
+   *  stays obvious over an arbitrary video frame and is no track's colour. */
+  clipSelectedOutline: '#F5C87B',
+  /** A video clip's name. White over the frames, with `labelShadow` behind.
+   *  A cool white a hair off `#ffffff`, which `handleFillHovered` already
+   *  holds: two meanings never share one literal on this surface. */
+  videoLabel: '#fbfdff',
+  /** The soft shade across the top of a video clip's frames band, so its
+   *  name reads over a bright frame. Fades to nothing at 55% of the band.
+   *  `transparent` draws none. */
+  clipTopShade: 'rgba(1,45,70,0.35)',
   /** `bg-yellow-400` — the preview-axis cursor: the line that tracks the
    *  pointer while the axis is on. Yellow so it can never be mistaken for the
    *  red playback line it moves independently of; it inherits the colour of
@@ -299,12 +320,12 @@ export const TIMELINE_COLORS = {
   snapGuideWeak: 'rgba(34,211,238,0.4)',
   /** The time ruler across the top. A shade off `rowBackground` so the strip
    *  reads as chrome rather than as one more track you could drop a clip on. */
-  rulerBackground: '#0b1220',
+  rulerBackground: 'transparent',
   /** Tick marks and their labels. Deliberately low-contrast: the ruler is a
    *  reference you consult, not something that should compete with the clips. */
-  rulerTick: 'rgba(148,163,184,0.55)',
-  rulerTickMinor: 'rgba(148,163,184,0.25)',
-  rulerText: 'rgba(148,163,184,0.9)',
+  rulerTick: '#4A5E75',
+  rulerTickMinor: '#2A3B4E',
+  rulerText: '#96AABC',
   /** A marker's flag stem, in the strip above the ruler. Violet-400. It was
    *  sky-400, which sat one step from the note pin's cyan (`pinFlagNote`) in the
    *  same strip and read as the same mark. Violet is clear of every line and
@@ -462,12 +483,18 @@ export const LIGHT_TIMELINE_COLORS: TimelineColors = {
    *  treatment survives both a bright and a dark filmstrip frame. */
   overlapHatchShadow: 'rgba(255,255,255,0.6)',
   overlapEdge: 'rgba(15,23,42,0.5)',
-  /** IDENTICAL to dark. Red-500 is unmistakable on either ground and there is
-   *  no second thing on this surface it could be confused with. */
+  /** Red-500: unmistakable on a light ground and there is no second thing on
+   *  this surface it could be confused with. (Dark moved to look B's pink.) */
   playhead: '#ef4444',
-  /** Dark's white outline is "the one colour that stays obvious over an
-   *  arbitrary video frame"; on a light editor that colour is near-black. */
+  /** No glow on a light ground. */
+  playheadGlow: 'transparent',
+  /** Near-black: on a light editor this is the colour that stays obvious over
+   *  an arbitrary video frame. */
   clipSelectedOutline: '#0f172a',
+  /** Near-black, under the light `labelShadow`'s white halo. */
+  videoLabel: '#0f172a',
+  /** No top shade on a light ground. */
+  clipTopShade: 'transparent',
   /** The preview-axis cursor. The ONE "keep it vivid" colour that had to move:
    *  yellow-400 against a near-white row is roughly 1.1:1 and simply is not
    *  there. Stepped to yellow-700 — still unmistakably the gold line, still
@@ -542,12 +569,16 @@ export const LIGHT_TIMELINE_COLORS: TimelineColors = {
  *  and that gesture is now the marquee. Giving scrubbing its own strip is what
  *  every NLE does, and it is what makes drag-to-select in the track area
  *  possible without losing drag-to-scrub. */
-export const RULER_HEIGHT_PX = 18
+export const RULER_HEIGHT_PX = 22
 /** Tick height for a labelled (major) tick and an unlabelled (minor) one. */
 export const RULER_MAJOR_TICK_PX = 7
-export const RULER_MINOR_TICK_PX = 4
+export const RULER_MINOR_TICK_PX = 3
 /** Baseline for a ruler label, measured from the top of the strip. */
-export const RULER_LABEL_BASELINE_PX = 9
+export const RULER_LABEL_BASELINE_PX = 11
+/** The mono stack every time readout uses. JetBrains Mono when the host has
+ *  it; the editor loads no fonts itself, so otherwise the system mono. */
+export const MONO_FONT_STACK = "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace"
+export const RULER_FONT = `10px ${MONO_FONT_STACK}`
 /** Minimum px between labelled ticks. Below this the labels collide, so the
  *  step is promoted to the next entry in `RULER_STEPS_SECONDS`. */
 export const RULER_MIN_LABEL_SPACING_PX = 64
@@ -603,15 +634,18 @@ export const PIN_HIT_WIDTH_PX = 104
 /** Extra hit slop left of a pin's stem, so a click a hair off the line lands. */
 export const PIN_HIT_SLOP_PX = 3
 
-export const ROW_RADIUS_PX = 4           // Tailwind `rounded`
+export const ROW_RADIUS_PX = 8
 /** Horizontal inset per side between a clip's time span and its drawn body —
  *  two touching clips therefore show twice this as a dark gutter. */
 export const CLIP_GUTTER_PX = 2
 /** Corner radius on a clip body. */
-export const CLIP_RADIUS_PX = 4
-/** Weight of the selected-clip outline. Thick on purpose: it has to read over
- *  filmstrip frames of any brightness. */
-export const CLIP_SELECTED_BORDER_PX = 3
+export const CLIP_RADIUS_PX = 8
+/** Weight of a clip's border in its track hue. 2px, so the edge reads over
+ *  the frames that now fill the clip edge to edge. */
+export const CLIP_BORDER_PX = 2
+/** Weight of the selected-clip outline: the same 2px as the border, in gold.
+ *  The colour, not the weight, is what says "selected". */
+export const CLIP_SELECTED_BORDER_PX = 2
 /** Drawn width of a visual clip's trim handle. Equal to
  *  `VISUAL_EDGE_TOLERANCE_PX` in hit-test.ts ON PURPOSE — the pill you see is
  *  exactly the strip that trims, so aiming at it is never a guess. Change one
@@ -646,16 +680,35 @@ export const OVERLAP_HATCH_WIDTH_PX = 1.5
 /** How much wider the shadow pass is than the amber it sits under. */
 export const OVERLAP_HATCH_SHADOW_WIDTH_PX = 3
 export const OVERLAP_EDGE_WIDTH_PX = 1.5
-export const AUDIO_ITEM_RADIUS_PX = 4    // Tailwind `rounded` on the bar
+export const AUDIO_ITEM_RADIUS_PX = 8
 export const AUDIO_ITEM_INSET_PX = 4     // `top-1 bottom-1` on the bar
 /** Fade-grip triangle size (px), base and height alike. Kept small
  *  deliberately — see hit-test.ts's `FADE_GRIP_HALF_WIDTH_PX`/
  *  `FADE_GRIP_ZONE_HEIGHT_PX` for why the grip's CLICKABLE zone is a
  *  matching small top-corner target rather than the full bar height. */
 export const FADE_GRIP_SIZE_PX = 6
-export const PLAYHEAD_WIDTH_PX = 2       // `w-[2px]`
+export const PLAYHEAD_WIDTH_PX = 3
+/** The pentagon head on the playhead, at the ruler: a 15x14 box whose sides
+ *  run straight down 55% of its height before closing to the point. */
+export const PLAYHEAD_HEAD_WIDTH_PX = 15
+export const PLAYHEAD_HEAD_HEIGHT_PX = 14
+export const PLAYHEAD_HEAD_SHOULDER = 0.55
+/** How far the head rides above the ruler's top edge. */
+export const PLAYHEAD_HEAD_LIFT_PX = 2
+/** Blur radius of the playhead's glow (`colors.playheadGlow`). */
+export const PLAYHEAD_GLOW_BLUR_PX = 8
 export const CURSOR_WIDTH_PX = 2         // matches the playhead's weight
 export const LABEL_FONT = '10px ui-sans-serif, system-ui, sans-serif'
+/** A video clip's name: 12px medium, its top-left at (9, 7) inside the clip. */
+export const VIDEO_LABEL_FONT = '500 12px ui-sans-serif, system-ui, sans-serif'
+export const VIDEO_LABEL_PAD_PX = 9
+/** Middle baseline: the 7px top margin plus half the 12px line. */
+export const VIDEO_LABEL_MIDDLE_PX = 13
+/** An overlay, image or 3D item's name, and an audio bar's: 11px medium. */
+export const ITEM_LABEL_FONT = '500 11px ui-sans-serif, system-ui, sans-serif'
+/** An overlay/image item's name: top-left at (8, 5), so middle at 5 + 5.5. */
+export const ITEM_LABEL_PAD_PX = 8
+export const ITEM_LABEL_MIDDLE_PX = 10.5
 export const LABEL_PAD_PX = 6
 /** Below this width a label is more smear than information, so it is skipped. */
 export const MIN_LABEL_WIDTH_PX = 28
@@ -673,6 +726,10 @@ export const MIN_MUTED_ICON_WIDTH_PX = 14
 /** Middle-baseline offset from a clip's top edge — half the font's 10px plus a
  *  4px margin, so the label rides just inside the clip's top border. */
 export const LABEL_TOP_OFFSET_PX = 9
+/** An audio bar's label sits at the top-left too: 10px in, middle baseline
+ *  6px plus half the 11px line down. */
+export const AUDIO_LABEL_PAD_PX = 10
+export const AUDIO_LABEL_MIDDLE_PX = 12
 /** Drop shadow behind a clip label, so it stays readable over a filmstrip
  *  frame of any brightness without needing a solid plate behind it. */
 export const LABEL_SHADOW_COLOR = 'rgba(0,0,0,0.85)'
@@ -982,6 +1039,14 @@ export function clampRectToSurface(rect: Rect, surfaceWidth: number): Rect {
   return { ...rect, x: left, width: Math.max(0, right - left) }
 }
 
+/** A palette colour of `transparent` means "draw nothing here" — the dark
+ *  set uses it for marks look B removed (row dividers, the ruler band, the
+ *  playhead glow on light) so the painter skips the call instead of filling
+ *  an invisible shape. */
+function isClear(color: string): boolean {
+  return color === 'transparent'
+}
+
 // ── Element painters ─────────────────────────────────────────────────────
 
 /** `color` stays the THIRD parameter (callers and tests pass the alternating
@@ -997,11 +1062,12 @@ export function drawRowBackground(
   ctx.fillStyle = color ?? palette.colors.rowBackground
   roundRectPath(ctx, rect.x, rect.y, rect.width, rect.height, ROW_RADIUS_PX)
   ctx.fill()
+  // Look B (dark) has no dividers: the rounded lane and the gap do it.
+  if (isClear(palette.colors.rowDivider)) return
   // A faint outline so each lane reads as its own panel and the boundary
   // between adjacent tracks is a visible divider, not just the gap. Uses
   // strokeRect rather than a stroked roundRectPath so it adds no path
-  // (`moveTo`) calls — the row corners are only 4px, so a square outline reads
-  // as clean at this radius.
+  // (`moveTo`) calls.
   ctx.strokeStyle = palette.colors.rowDivider
   ctx.lineWidth = 1
   ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, Math.max(0, rect.width - 1), Math.max(0, rect.height - 1))
@@ -1021,6 +1087,12 @@ export interface ClipDrawArgs {
    *  per-clip waveform hooks in here (filmstrip, T7, will too). Receives the
    *  same rect as the clip itself. */
   drawContent?: (ctx: DrawContext, rect: Rect) => void
+  /** A video clip: its name is the larger white label at (9, 7). Every other
+   *  item takes the 11px label in its track's own text colour. */
+  video?: boolean
+  /** Lay the soft top shade (`colors.clipTopShade`) over the frames band. Set
+   *  when there ARE frames to read the name over; a flat fill needs none. */
+  topShade?: boolean
 }
 
 /**
@@ -1167,7 +1239,7 @@ export function drawClipRect(
   args: ClipDrawArgs,
   palette: TimelinePalette = DARK_TIMELINE_PALETTE,
 ): void {
-  const { rect, palette: trackPalette, selected, label, dimmed, drawContent, missing } = args
+  const { rect, palette: trackPalette, selected, label, dimmed, drawContent, missing, video = false, topShade = false } = args
   if (rect.width <= 0) return
 
   const body = clipBodyRect(rect)
@@ -1187,25 +1259,29 @@ export function drawClipRect(
   ctx.fillStyle = selected ? trackPalette.fillSelected : trackPalette.fill
   ctx.fillRect(body.x, body.y, body.width, body.height)
   drawContent?.(ctx, body)
+  // The soft shade over the top of a video's frames, so its name reads over
+  // a bright frame. Fades out by 55% of the frames band.
+  if (topShade && !isClear(palette.colors.clipTopShade)) {
+    const frames = clipBands(body).frames
+    if (frames.height > 0) {
+      const shade = ctx.createLinearGradient(0, frames.y, 0, frames.y + frames.height)
+      shade.addColorStop(0, palette.colors.clipTopShade)
+      shade.addColorStop(0.55, 'rgba(0,0,0,0)')
+      ctx.fillStyle = shade
+      ctx.fillRect(frames.x, frames.y, frames.width, frames.height)
+    }
+  }
   if (missing) drawMissingHatch(ctx, body, trackPalette.border)
   ctx.restore()
 
-  // The outline is the selection. A 1px inset ring in the track's own hue was
-  // invisible once frames filled the clip; selection now reads as a thick
-  // white border round the whole block, the one treatment that survives any
-  // frame underneath it.
-  if (selected) {
-    const inset = CLIP_SELECTED_BORDER_PX / 2
-    ctx.strokeStyle = palette.colors.clipSelectedOutline
-    ctx.lineWidth = CLIP_SELECTED_BORDER_PX
-    roundRectPath(ctx, body.x + inset, body.y + inset, Math.max(0, body.width - CLIP_SELECTED_BORDER_PX), Math.max(0, body.height - CLIP_SELECTED_BORDER_PX), radius)
-    ctx.stroke()
-  } else {
-    ctx.strokeStyle = trackPalette.border
-    ctx.lineWidth = 1
-    roundRectPath(ctx, body.x + 0.5, body.y + 0.5, Math.max(0, body.width - 1), Math.max(0, body.height - 1), radius)
-    ctx.stroke()
-  }
+  // A 2px border all round: the track's hue, or gold when selected. Stroked
+  // inside the body, over the frames, which fill the clip edge to edge.
+  const borderWidth = selected ? CLIP_SELECTED_BORDER_PX : CLIP_BORDER_PX
+  const inset = borderWidth / 2
+  ctx.strokeStyle = selected ? palette.colors.clipSelectedOutline : trackPalette.border
+  ctx.lineWidth = borderWidth
+  roundRectPath(ctx, body.x + inset, body.y + inset, Math.max(0, body.width - borderWidth), Math.max(0, body.height - borderWidth), Math.max(0, radius - inset))
+  ctx.stroke()
 
   // The handles themselves are NOT drawn here — the row painter puts them on
   // in a pass of its own once every clip is down (see `drawTimelineContent`),
@@ -1221,8 +1297,8 @@ export function drawClipRect(
     ctx.beginPath()
     ctx.rect(body.x, body.y, body.width, body.height)
     ctx.clip()
-    ctx.fillStyle = trackPalette.text
-    ctx.font = LABEL_FONT
+    ctx.fillStyle = video ? palette.colors.videoLabel : trackPalette.text
+    ctx.font = video ? VIDEO_LABEL_FONT : ITEM_LABEL_FONT
     ctx.textBaseline = 'middle'
     // Pinned to the TOP, not the vertical centre it used to sit at: a video
     // clip is now split into a frames band and a waveform band, and the centre
@@ -1231,7 +1307,9 @@ export function drawClipRect(
     // `restore()` below drops it before anything else paints.
     ctx.shadowColor = palette.labelShadow
     ctx.shadowBlur = LABEL_SHADOW_BLUR_PX
-    ctx.fillText(label, body.x + LABEL_PAD_PX + handleWidth, body.y + LABEL_TOP_OFFSET_PX)
+    const padX = video ? VIDEO_LABEL_PAD_PX : ITEM_LABEL_PAD_PX
+    const middleY = video ? VIDEO_LABEL_MIDDLE_PX : ITEM_LABEL_MIDDLE_PX
+    ctx.fillText(label, body.x + padX + handleWidth, body.y + middleY)
     ctx.restore()
   }
 
@@ -1575,13 +1653,16 @@ export function drawAudioItem(
 
   // Mute glyph leads, and the label starts after it, so the two can never
   // overlap on a narrow bar.
-  const headX = rect.x + LABEL_PAD_PX + handleWidth
+  // Both ride the top-left corner, over the bars, the way a video clip's
+  // name does; the label's middle line is `AUDIO_LABEL_MIDDLE_PX` down.
+  const headX = rect.x + AUDIO_LABEL_PAD_PX + handleWidth
+  const middleY = rect.y + Math.min(AUDIO_LABEL_MIDDLE_PX, rect.height / 2)
   let labelX = headX
   if (muted && rect.width >= MIN_MUTED_ICON_WIDTH_PX) {
     drawMutedGlyph(
       ctx,
       headX,
-      rect.y + (rect.height - MUTED_ICON_SIZE_PX) / 2,
+      middleY - MUTED_ICON_SIZE_PX / 2,
       MUTED_ICON_SIZE_PX,
       palette.colors.audioText,
     )
@@ -1590,16 +1671,17 @@ export function drawAudioItem(
 
   if (rect.width >= MIN_LABEL_WIDTH_PX) {
     ctx.fillStyle = palette.colors.audioText
-    ctx.font = LABEL_FONT
+    ctx.font = ITEM_LABEL_FONT
     ctx.textBaseline = 'middle'
-    ctx.fillText(label, labelX, rect.y + rect.height / 2)
+    ctx.fillText(label, labelX, middleY)
   }
   ctx.restore()
 
   if (selected) {
+    const inset = CLIP_SELECTED_BORDER_PX / 2
     ctx.strokeStyle = palette.colors.audioRing
-    ctx.lineWidth = 1
-    roundRectPath(ctx, rect.x + 0.5, rect.y + 0.5, Math.max(0, rect.width - 1), Math.max(0, rect.height - 1), AUDIO_ITEM_RADIUS_PX)
+    ctx.lineWidth = CLIP_SELECTED_BORDER_PX
+    roundRectPath(ctx, rect.x + inset, rect.y + inset, Math.max(0, rect.width - CLIP_SELECTED_BORDER_PX), Math.max(0, rect.height - CLIP_SELECTED_BORDER_PX), AUDIO_ITEM_RADIUS_PX - inset)
     ctx.stroke()
     // Handles come later, in the lane painter's own pass — crossfaded bars
     // overlap by design, so burying them here would be the normal case rather
@@ -1765,15 +1847,40 @@ export function overlapBands(items: readonly { start: number; end: number }[]): 
   return out
 }
 
+/**
+ * The playhead: a 3px line with a soft glow, and — when `headTop` is given —
+ * the pentagon head at the ruler (`PLAYHEAD_HEAD_*`), the part you see first
+ * and the part you grab.
+ */
 export function drawPlayhead(
   ctx: DrawContext,
   x: number,
   top: number,
   bottom: number,
   palette: TimelinePalette = DARK_TIMELINE_PALETTE,
+  headTop?: number,
 ): void {
+  ctx.save()
   ctx.fillStyle = palette.colors.playhead
+  if (!isClear(palette.colors.playheadGlow)) {
+    ctx.shadowColor = palette.colors.playheadGlow
+    ctx.shadowBlur = PLAYHEAD_GLOW_BLUR_PX
+  }
   ctx.fillRect(x - PLAYHEAD_WIDTH_PX / 2, top, PLAYHEAD_WIDTH_PX, bottom - top)
+  ctx.restore()
+  if (headTop === undefined) return
+
+  const half = PLAYHEAD_HEAD_WIDTH_PX / 2
+  const shoulder = headTop + PLAYHEAD_HEAD_HEIGHT_PX * PLAYHEAD_HEAD_SHOULDER
+  ctx.fillStyle = palette.colors.playhead
+  ctx.beginPath()
+  ctx.moveTo(x - half, headTop)
+  ctx.lineTo(x + half, headTop)
+  ctx.lineTo(x + half, shoulder)
+  ctx.lineTo(x, headTop + PLAYHEAD_HEAD_HEIGHT_PX)
+  ctx.lineTo(x - half, shoulder)
+  ctx.closePath()
+  ctx.fill()
 }
 
 /**
@@ -1935,15 +2042,21 @@ export function rulerStepSeconds(pxPerSecond: number): number {
   return RULER_STEPS_SECONDS[RULER_STEPS_SECONDS.length - 1]
 }
 
-/** `m:ss`, plus tenths only when the step is finer than a second — a ruler
- *  labelled `0:03.0` every three seconds is noise, and one labelled `0:03`
+/** `mm:ss`, plus tenths only when the step is finer than a second — a ruler
+ *  labelled `00:03.0` every three seconds is noise, and one labelled `00:03`
  *  every 250ms is four identical labels in a row. */
 export function formatRulerTime(seconds: number, step: number): string {
   const safe = Math.max(0, seconds)
-  const mins = Math.floor(safe / 60)
-  const secs = safe - mins * 60
-  if (step < 1) return `${mins}:${secs.toFixed(1).padStart(4, '0')}`
-  return `${mins}:${String(Math.round(secs)).padStart(2, '0')}`
+  if (step < 1) {
+    // Round to tenths FIRST, so 59.96s reads `01:00.0`, never `00:60.0`.
+    const tenths = Math.round(safe * 10)
+    const mins = Math.floor(tenths / 600)
+    const secs = (tenths - mins * 600) / 10
+    return `${String(mins).padStart(2, '0')}:${secs.toFixed(1).padStart(4, '0')}`
+  }
+  const whole = Math.round(safe)
+  const mins = Math.floor(whole / 60)
+  return `${String(mins).padStart(2, '0')}:${String(whole - mins * 60).padStart(2, '0')}`
 }
 
 /**
@@ -1960,8 +2073,11 @@ export function drawRuler(
   palette: TimelinePalette = DARK_TIMELINE_PALETTE,
 ): void {
   ctx.save()
-  ctx.fillStyle = palette.colors.rulerBackground
-  ctx.fillRect(0, rect.y, surfaceWidth, rect.height)
+  // Look B (dark) has no ruler band: the labels and ticks sit on the pane.
+  if (!isClear(palette.colors.rulerBackground)) {
+    ctx.fillStyle = palette.colors.rulerBackground
+    ctx.fillRect(0, rect.y, surfaceWidth, rect.height)
+  }
 
   const step = rulerStepSeconds(viewport.pxPerSecond)
   const minor = step / 5
@@ -1970,7 +2086,7 @@ export function drawRuler(
   const first = Math.floor(range.start / minor) * minor
   const last = range.end
 
-  ctx.font = LABEL_FONT
+  ctx.font = RULER_FONT
   ctx.textBaseline = 'alphabetic'
 
   // Iterated in integer multiples of `minor` rather than by accumulating a
@@ -1990,7 +2106,7 @@ export function drawRuler(
 
     if (isMajor) {
       ctx.fillStyle = palette.colors.rulerText
-      ctx.fillText(formatRulerTime(t, step), x + 3, rect.y + RULER_LABEL_BASELINE_PX)
+      ctx.fillText(formatRulerTime(t, step), x + 4, rect.y + RULER_LABEL_BASELINE_PX)
     }
   }
   ctx.restore()
@@ -2290,6 +2406,8 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
         dimmed,
         drawContent,
         missing: itemMissing,
+        video: item.type === 'video',
+        topShade: item.type === 'video' && !!filmstripTiles,
       }, themePalette)
       // The keyframe strip (SP9b T3.3): selected, keyframed overlays only —
       // see `drawKeyframeStrip`'s own doc for why this is gated here rather
@@ -2485,6 +2603,9 @@ export interface OverlayScene {
    *  and the marquee all live on this layer, and a mode change has to be able
    *  to repaint them without waiting for a content edit. */
   mode?: TimelineMode
+  /** Top of the ruler strip (`layout.ruler.y`). Given, the playhead wears its
+   *  pentagon head there; absent, it is a bare line. */
+  rulerY?: number
 }
 
 /** Paint the playhead layer. Kept separate from the content so playback — which
@@ -2519,8 +2640,9 @@ export function drawTimelineOverlay(ctx: DrawContext, scene: OverlayScene): void
     }
   }
   const x = timeToX(currentTime, viewport)
-  if (!(x < -PLAYHEAD_WIDTH_PX || x > surfaceWidth + PLAYHEAD_WIDTH_PX)) {
-    drawPlayhead(ctx, x, 0, surfaceHeight, themePalette)
+  if (!(x < -PLAYHEAD_HEAD_WIDTH_PX || x > surfaceWidth + PLAYHEAD_HEAD_WIDTH_PX)) {
+    const headTop = scene.rulerY === undefined ? undefined : Math.max(0, scene.rulerY - PLAYHEAD_HEAD_LIFT_PX)
+    drawPlayhead(ctx, x, 0, surfaceHeight, themePalette, headTop)
   }
   // Last, so it wins over both lines. A gesture snapped to the playhead should
   // look snapped, not hidden behind the thing it snapped to.

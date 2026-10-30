@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatTimecode, parseTimecode } from '../timecode'
+import { formatClockTime, formatTimecode, parseTimecode } from '../timecode'
 
 describe('parseTimecode', () => {
   it('parses bare seconds', () => {
@@ -73,5 +73,28 @@ describe('formatTimecode', () => {
     for (const t of values) {
       expect(parseTimecode(formatTimecode(t))).toBeCloseTo(t, 1)
     }
+  })
+})
+
+describe('formatClockTime (timeline header, look B)', () => {
+  it('prints mm:ss.cc', () => {
+    expect(formatClockTime(6.27)).toBe('00:06.27')
+    expect(formatClockTime(12.5)).toBe('00:12.50')
+    expect(formatClockTime(0)).toBe('00:00.00')
+    expect(formatClockTime(75.004)).toBe('01:15.00')
+  })
+
+  it('rounds into the next second rather than printing .100', () => {
+    expect(formatClockTime(59.999)).toBe('01:00.00')
+  })
+
+  it('adds hours past an hour, and clamps junk to zero', () => {
+    expect(formatClockTime(3725.5)).toBe('1:02:05.50')
+    expect(formatClockTime(-1)).toBe('00:00.00')
+    expect(formatClockTime(Number.NaN)).toBe('00:00.00')
+  })
+
+  it('round-trips through parseTimecode', () => {
+    expect(parseTimecode(formatClockTime(6.27))).toBeCloseTo(6.27)
   })
 })
