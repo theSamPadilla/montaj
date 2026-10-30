@@ -1138,12 +1138,16 @@ def test_a_caption_straddling_the_moment_the_card_reaches_the_band_is_split(tmp_
     pieces = changes[("id", "a")]["split"]
     # word middles 1.25 .. 3.75 s are frames 40, 56, 64 (before 78) and 80, 96, 112 (after)
     assert [x["text"] for x in pieces] == ["one two three", "four five six"]
-    assert [(x["start"], x["end"]) for x in pieces] == [(1.0, 2.5), (2.5, 4.0)]
+    # "four" starts at 2.5 s, over footage: the dark piece starts half a frame before 80, the first grid frame that
+    # shows the card (72 does not), and the piece before holds its text up to it
+    assert [(x["start"], x["end"]) for x in pieces] == [(1.0, 2.65), (2.65, 4.0)]
+    assert pieces[1]["words"][0] == {"word": "four", "start": 2.65, "end": 3.0}
     assert "ink" not in pieces[0] and pieces[1]["ink"] == "dark" and pieces[1]["inkAuto"]["card"] == "matte"
     assert ("id", "pre") not in changes and changes[("id", "post")]["ink"] == "dark"
-    assert (counts["split"], counts["dark"]) == (1, 2) and warnings == []
-    # the coarse frames either side of every caption (0..160, 32 apart), then 80 only, where 64 and 96 disagree
-    assert sorted(calls) == [0, 32, 64, 80, 96, 128, 160]
+    assert (counts["split"], counts["snapped"], counts["dark"]) == (1, 1, 2) and warnings == []
+    # the coarse frames either side of every caption (0..160, 32 apart); 80, where 64 and 96 disagree; 72, the dark
+    # piece's first grid frame, between 64 and 80, which disagree. Nothing else: the card is the same between the rest.
+    assert sorted(calls) == [0, 32, 64, 72, 80, 96, 128, 160]
 
 
 def test_a_rerun_over_an_unchanged_settling_card_renders_nothing_and_says_the_same(tmp_path):
@@ -1152,7 +1156,7 @@ def test_a_rerun_over_an_unchanged_settling_card_renders_nothing_and_says_the_sa
     first = _settle_plan(p, tmp_path, calls)
     rendered = len(calls)
     second = _settle_plan(p, tmp_path, calls)
-    assert rendered == 7 and len(calls) == rendered, "every frame is a cache hit"
+    assert rendered == 8 and len(calls) == rendered, "every frame is a cache hit"
     assert second[0] == first[0] and second[1] == first[1]
 
 
@@ -1171,3 +1175,43 @@ def test_the_split_is_written_is_idempotent_and_look_reports_nothing(tmp_path):
 def test_the_frame_for_a_time_is_on_the_quarter_second_grid_within_the_span():
     item = _matte(start=10, end=12.1)   # 63 frames: 0..62; 12.09 s is nearest grid frame 64, past the last
     assert [ci._frame_at(item, t, 30) for t in (10, 10.1, 10.14, 11.5, 11.99, 12.09)] == [0, 0, 8, 48, 56, 62]
+
+
+def test_a_dark_piece_ends_where_the_card_leaves_the_band(tmp_path):
+    # the reverse: the surround covers the band up to 2.4 s (frame 72) and then opens onto footage
+    clear, card = _alpha_png(tmp_path, "leave-clear", window="all"), _alpha_png(tmp_path, "leave-card", window=(60, 300, 1020, 900))
+    p = _settle_project(tmp_path, [_straddler()])
+    changes, counts, warnings = ci.plan(p, lambda t: None, W, H, overlay_fn=lambda item, n: card if n < 72 else clear,
+                                        project_dir=str(tmp_path))
+    pieces = changes[("id", "a")]["split"]
+    assert [x["text"] for x in pieces] == ["one two three", "four five six"]
+    # "three" ends at 2.5 s, over footage from 2.4: the dark piece ends half a frame after 64, the last grid frame that
+    # shows the card (72 does not), and the piece after starts there
+    assert [(x["start"], x["end"]) for x in pieces] == [(1.0, 2.15), (2.15, 4.0)]
+    assert pieces[0]["ink"] == "dark" and "ink" not in pieces[1]
+    assert pieces[0]["words"][-1] == {"word": "three", "start": 2.0, "end": 2.15}
+    assert (counts["split"], counts["snapped"]) == (1, 1) and warnings == []
+
+
+def test_a_snapped_piece_is_read_where_it_will_show_so_a_second_pass_changes_nothing(tmp_path):
+    # the card covers up to frame 72 and is a lighter paper from frame 56: the dark piece (1.0 to 2.5 s, middle frame
+    # 56) is snapped to end at 2.15 s (middle frame 48), so it is read at 48, where the next pass will read it too
+    clear = _alpha_png(tmp_path, "shade-clear", window="all")
+    shades = {}
+    for name, rgb in (("a", (0xd8, 0xd4, 0xc8)), ("b", PAPER[:3])):
+        img = Image.new("RGBA", (W // 2, H // 2), (*rgb, 255))
+        img.paste((0, 0, 0, 0), (30, 150, 510, 450))
+        img.save(tmp_path / f"shade-{name}.png")
+        shades[name] = str(tmp_path / f"shade-{name}.png")
+
+    def overlay(item, n):
+        return clear if n >= 72 else shades["b" if n >= 56 else "a"]
+    p = _settle_project(tmp_path, [_straddler()])
+    changes, _, _ = ci.plan(p, lambda t: None, W, H, overlay_fn=overlay, project_dir=str(tmp_path))
+    piece = changes[("id", "a")]["split"][0]
+    assert (piece["start"], piece["end"]) == (1.0, 2.15)
+    assert piece["inkAuto"]["backdrop"] == pytest.approx(_lum((0xd8, 0xd4, 0xc8)), abs=0.002)
+    fresh = copy.deepcopy(p)
+    assert ci.apply_changes(fresh, changes, _read_of(p), str(tmp_path))
+    again, _, _ = ci.plan(fresh, lambda t: None, W, H, overlay_fn=overlay, project_dir=str(tmp_path))
+    assert not ci.apply_changes(copy.deepcopy(fresh), again, _read_of(fresh), str(tmp_path))

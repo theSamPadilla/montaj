@@ -20,7 +20,8 @@ card and ink). An overlay only its pixels can judge (a footage card whose surrou
 below has shrunk into it) is rendered alone at those times, on a grid (`_judge`): the frames MEASURE_COARSE_S apart
 either side of a caption first, and the frames between, down to MEASURE_FINE_S, only where those two disagree. So an
 overlay whose coverage never changes costs about one frame per second of captions over it, one that changes is split
-where it changes, and every frame is a cache hit the next time.
+where it changes (a dark piece starts or ends where the card reaches or leaves the band, to the fine grid, as it does
+at the card's own start and end), and every frame is a cache hit the next time.
 
 A 3D item's backdrop is read from one frame of the project without the captions, and a JSX card from the overlay
 rendered alone at the frame that showed it covering the caption; what is read from each (per-row means, see
@@ -239,11 +240,16 @@ def _grid(fps):
     return fine, fine * max(1, int(round(MEASURE_COARSE_S / MEASURE_FINE_S)))
 
 
+def _last_frame(item, fps):
+    """The last frame of an overlay's own render."""
+    return max(0, int(round((lc._num(item.get("end")) - lc._num(item.get("start"))) * fps)) - 1)
+
+
 def _frame_at(item, t, fps):
     """The frame of an overlay's own render that stands for timeline time `t`: (t - start) in frames, rounded to the
     fine grid, within its span (0 .. its last frame)."""
     fine, _ = _grid(fps)
-    last = max(0, int(round((lc._num(item.get("end")) - lc._num(item.get("start"))) * fps)) - 1)
+    last = _last_frame(item, fps)
     rel = (t - lc._num(item.get("start"))) * fps
     return max(0, min(last, int(round(rel / fine)) * fine))
 
@@ -257,7 +263,7 @@ def _judge(measured, label, item, t, box, size, fps):
     halfway between is rendered, down to `t`'s own frame. Raises Unmeasured when a frame it needs failed to render."""
     fine, coarse = _grid(fps)
     f = _frame_at(item, t, fps)
-    last = max(0, int(round((lc._num(item.get("end")) - lc._num(item.get("start"))) * fps)) - 1)
+    last = _last_frame(item, fps)
 
     def read(n):
         if measured[(label, n)] is None:
@@ -749,6 +755,47 @@ def _overhangs(seg, item):
     return out
 
 
+def _pixel_judged(item):
+    """True for an overlay whose coverage only its render can say (not opaque, not an engine item)."""
+    return item.get("opaque") is not True and not str(item.get("src") or "").startswith("engine:")
+
+
+def _coverage_edges(seg, item, label, box, probe, fps):
+    """{"start"|"end": the time}: where a pixel-judged card `item` (`label`) begins or stops covering `box` inside its
+    own span while `seg` shows, over footage on the other side. Read on the fine grid at the frames from the caption's
+    start (end) to its middle: the first (last) frame that shows the card, when the grid frame before (after) it, still
+    within the caption, shows footage. The edge lies half a frame before (after) that frame, so the caption is dark
+    only on frames known to be over the card. Empty when the card covers the caption's first and last frames.
+    `probe(t, box)` -> (known, card or None) reads the frames already rendered (for the words and the caption); a
+    frame it cannot read ends the walk on that side. It asks for a frame only inside a gap whose two rendered ends
+    disagree, where the card is changing, never for a new coarse frame: a card that does not change costs nothing more."""
+    fine, _ = _grid(fps)
+    cs = lc._num(item.get("start"))
+    s, e, m = lc._num(seg.get("start")), lc._num(seg.get("end")), _mid(seg)
+    fm = _frame_at(item, m, fps)
+    out = {}
+    for side, frames in (("start", range(_frame_at(item, s, fps), fm + 1, fine)),
+                         ("end", range(_frame_at(item, e - 0.5 / fps, fps), fm - 1, -fine))):
+        seen = []   # (frame, the card there or None) from the caption's edge inward, up to the first showing `label`
+        for n in frames:
+            known, c = probe(cs + n / fps, box)
+            if not known:
+                seen = []
+                break
+            seen.append((n, c["id"] if c else None))
+            if seen[-1][1] == label:
+                break
+        if len(seen) < 2 or seen[-1][1] != label or seen[-2][1] is not None:
+            continue
+        n = seen[-1][0]
+        edge = round(cs + (n - 0.5 if side == "start" else n + 0.5) / fps, 3)
+        if side == "start" and edge > s + 1e-9 and _shows_frame(s, edge, fps):
+            out["start"] = edge
+        elif side == "end" and edge < e - 1e-9 and _shows_frame(edge, e, fps):
+            out["end"] = edge
+    return out
+
+
 def _shows_frame(a, b, fps):
     """Whether a frame (at n/fps) falls in [a, b): a caption is drawn on the frames where start <= t < end."""
     return math.ceil(a * fps - 1e-6) / fps < b - 1e-9
@@ -835,6 +882,17 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
         to ink. A caption whose card could not be judged is left out."""
         def card_at(t, box):
             return find_card(project, t, box, size, project_dir, measured, need if measured is not None else None, warn)
+
+        def probe(t, box):   # (known, card); asks only for frames between two rendered ones that disagree
+            scratch = {}
+            try:
+                c = find_card(project, t, box, size, project_dir, measured, scratch, warn)
+            except Unmeasured:
+                return False, None
+            if scratch and need is not None and all(n % _grid(fps)[1] and n != _last_frame(it, fps)
+                                                    for (_, n), it in scratch.items()):
+                need.update(scratch)
+            return not scratch, c
         out = []
         for key, seg, mid, box, i in mine:
             try:
@@ -865,6 +923,12 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
                     if sl["card"] and seg.get("id") and seg["id"] not in named:
                         sl["over"] = {side: edge for side, (a, b, edge) in _overhangs(sl["seg"], sl["item"]).items()
                                       if _shows_frame(a, b, fps) and card_at((a + b) / 2, sl["box"]) is None}
+                        if measured is not None and _pixel_judged(sl["item"]):
+                            edges = _coverage_edges(sl["seg"], sl["item"], sl["card"], sl["box"], probe, fps)
+                            if edges.get("start", -math.inf) > sl["over"].get("start", -math.inf):
+                                sl["over"]["start"] = edges["start"]
+                            if edges.get("end", math.inf) < sl["over"].get("end", math.inf):
+                                sl["over"]["end"] = edges["end"]
             except Unmeasured:
                 continue
             out.append({"key": key, "seg": seg, "pieces": pieces, "slots": slots})
@@ -899,13 +963,23 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
     jsx = [sl for sl in slots if overlay_fn is not None and not str(sl["item"].get("src") or "").startswith("engine:")]
 
     def lum_frame(sl):
+        # at the middle of the span the caption has once snapped (so the next pass reads the same frame), else of its
+        # own span
+        over = sl.get("over") or {}
+        times = [sl["mid"]]
+        if over:
+            times.insert(0, (over.get("start", lc._num(sl["seg"].get("start")))
+                             + over.get("end", lc._num(sl["seg"].get("end")))) / 2)
         if sl["item"].get("opaque") is True:
-            return _frame_at(sl["item"], sl["mid"], fps)
-        try:
-            covers, n = _judge(measured, sl["card"], sl["item"], sl["mid"], sl["box"], size, fps)
-        except Unmeasured:
-            return None
-        return n if covers is True else None
+            return _frame_at(sl["item"], times[0], fps)
+        for t in times:
+            try:
+                covers, n = _judge(measured, sl["card"], sl["item"], t, sl["box"], size, fps)
+            except Unmeasured:
+                continue
+            if covers is True:
+                return n
+        return None
     for sl in jsx:
         sl["frame"] = lum_frame(sl)
     again = {(sl["card"], sl["frame"]): sl["item"] for sl in jsx
@@ -967,7 +1041,8 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
             ink = "dark" if sl["lum"] >= LIGHT_L else "light"
             sl["change"] = {"ink": ink, "inkAuto": {"card": sl["card"], "ink": ink, "backdrop": round(sl["lum"], 3)}}
             # Dark ink is for the card: a caption that shows over footage for a frame or more before the card starts
-            # or after it ends is snapped to the card's edge (light ink reads on footage as it is).
+            # or after it ends, or before a card judged by its pixels reaches the band or after it leaves it, is
+            # snapped to that edge (light ink reads on footage as it is).
             if ink == "dark" and sl.get("over"):
                 sl["snap"] = _snapped(sl["seg"], sl["over"])
     for e in entries:
