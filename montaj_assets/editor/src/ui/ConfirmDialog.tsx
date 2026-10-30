@@ -65,7 +65,7 @@ export default function ConfirmDialog({
   if (typeof document === 'undefined') return null
   return createPortal(
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center"
+      className="fixed inset-0 z-[70] flex items-center justify-center text-[var(--editor-text)]"
       style={{ background: dark ? 'rgba(0,0,0,0.55)' : 'rgba(15,23,42,0.35)' }}
       onClick={(e) => { e.stopPropagation(); onCancel() }}
       onMouseDown={(e) => e.stopPropagation()}
