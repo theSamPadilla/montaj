@@ -17,7 +17,7 @@ full cols*rows grid of input frames and stalls waiting for frames that will
 never arrive if the last chunk is partial (fewer tiles than cols*rows), so
 nb_frames is always set explicitly to the actual chunk size.
 """
-import json, math, os, sys, argparse, shutil, tempfile, hashlib, subprocess
+import json, math, os, re, sys, argparse, shutil, tempfile, hashlib, subprocess
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import ffmpeg_error_tail, fail, require_file, run, check_output, get_duration, ffmpeg_bin
@@ -25,6 +25,12 @@ from common import ffmpeg_error_tail, fail, require_file, run, check_output, get
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 # Bump when the overlay strip's pixels or index shape change, so cached strips retire.
 OVERLAY_STRIP_VERSION = 1
+# A 3D item's reserved src, the host stage it renders through and the scene id rule (render/scene3d.js).
+SCENE3D_SRC = "engine:scene3d"
+SCENE3D_STAGE_ENV = "MONTAJ_SCENE3D_STAGE"
+SCENE_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
+# What a stage derives from a 3D item's props; read afresh from the saved 3D, never keyed or passed.
+SCENE3D_DERIVED_PROPS = ("sceneFile", "sceneJson")
 
 
 # How far back to retry when a seek lands past the last decodable frame.
@@ -139,15 +145,19 @@ def _montaj_version() -> str:
 
 
 def overlay_base_key(jsx, props, fonts, duration, fps, timestamps, tile_width, width, height, cols, tiles_per_sheet,
-                     jsx_sha=None) -> str:
+                     jsx_sha=None, extra=None) -> str:
     """Hash of everything but the overlay's imports: the JSX content, props (canonical), fonts, length, fps,
     the time grid, tile size, the montaj version and the strip version. Names the folder that holds the import list.
-    `jsx_sha` is the content hash when the caller already took it (so it can later check the file did not move)."""
-    raw = json.dumps({
+    `jsx_sha` is the content hash when the caller already took it (so it can later check the file did not move).
+    `extra` is more key, when given (a 3D item's saved scene)."""
+    fields = {
         "jsx": jsx_sha if jsx_sha is not None else _file_sha(jsx), "mv": _montaj_version(), "props": props, "fonts": fonts, "duration": duration, "fps": fps,
         "times": [round(t, 3) for t in timestamps], "tile": tile_width, "canvas": [width, height],
         "cols": cols, "perSheet": tiles_per_sheet, "v": OVERLAY_STRIP_VERSION,
-    }, sort_keys=True, separators=(",", ":"))
+    }
+    if extra is not None:
+        fields["extra"] = extra
+    raw = json.dumps(fields, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -230,10 +240,12 @@ def flatten_tile(png: str, dest: str, w: int, h: int, timeout: int):
     check_output(dest)
 
 
-def _inputs_changed(jsx: str, jsx_sha: str, inputs: list) -> bool:
+def _inputs_changed(jsx: str, jsx_sha: str, inputs: list, also=()) -> bool:
     """True when the overlay or anything it imported changed since the render read it: a strip rendered from
-    one version must not be cached under the key of another."""
+    one version must not be cached under the key of another. `also` is more (path, sha) pairs to hold still."""
     if _file_sha(jsx) != jsx_sha:
+        return True
+    if any(_file_sha(path) != sha for path, sha in also):
         return True
     for entry in inputs:
         try:
@@ -255,22 +267,31 @@ def _move_into(src: str, dest: str):
             raise
 
 
-def build_overlay(jsx, duration, out_dir, max_tiles, min_interval, cols, tile_width, tiles_per_sheet, timeout,
-                  props="{}", google_fonts=None, fps=30, width=1080, height=1920):
-    out_dir = os.path.abspath(out_dir)
-    os.makedirs(out_dir, exist_ok=True)
+def _props_object(props) -> dict:
     try:
         props_obj = json.loads(props or "{}")
     except ValueError:
         fail("invalid_param", "--props is not valid JSON")
     if not isinstance(props_obj, dict):
         fail("invalid_param", "--props must be a JSON object")
+    return props_obj
+
+
+def build_overlay(jsx, duration, out_dir, max_tiles, min_interval, cols, tile_width, tiles_per_sheet, timeout,
+                  props="{}", google_fonts=None, fps=30, width=1080, height=1920,
+                  component=None, key_extra=None, extra_cmd=(), hold=()):
+    """An overlay's strip. `component` is what the node sampler is handed (the jsx by default; a 3D item passes
+    engine:scene3d and the jsx is then the host stage, which keys the strip); `key_extra`, `extra_cmd` and `hold`
+    (path, sha pairs that must not change during the render) are build_scene3d's."""
+    out_dir = os.path.abspath(out_dir)
+    os.makedirs(out_dir, exist_ok=True)
+    props_obj = props if isinstance(props, dict) else _props_object(props)
 
     interval = max(duration / max_tiles, min_interval)
     timestamps = tile_timestamps(duration, interval)
     jsx_sha = _file_sha(jsx)
     base = overlay_base_key(jsx, props_obj, google_fonts or "", duration, fps, timestamps, tile_width, width, height, cols, tiles_per_sheet,
-                            jsx_sha=jsx_sha)
+                            jsx_sha=jsx_sha, extra=key_extra)
 
     hit = cached_overlay_strip(out_dir, base)
     if hit:
@@ -280,12 +301,13 @@ def build_overlay(jsx, duration, out_dir, max_tiles, min_interval, cols, tile_wi
     work = tempfile.mkdtemp(prefix=".strip_", dir=out_dir)
     try:
         cmd = ["node", os.path.join(_render_dir(), "sample-frame.js"), "--mode", "overlay-strip",
-               "--component", jsx, "--times", json.dumps([round(t, 4) for t in timestamps]),
+               "--component", component or jsx, "--times", json.dumps([round(t, 4) for t in timestamps]),
                "--fps", str(fps), "--duration", str(max(1, round(duration * fps))),
                "--width", str(width), "--height", str(height), "--props", json.dumps(props_obj, sort_keys=True),
                "--tile-width", str(tile_width), "--out-dir", work]
         if google_fonts:
             cmd += ["--google-fonts", google_fonts]
+        cmd += list(extra_cmd)
         got = run_overlay_strip_node(cmd, timeout)
         inputs = got.get("inputs", [])
         imports = sorted({p for p, _ in inputs} | {jsx})
@@ -310,7 +332,7 @@ def build_overlay(jsx, duration, out_dir, max_tiles, min_interval, cols, tile_wi
             })
         index = {"sheets": sheets, "interval": round(interval, 3), "tileWidth": tile_width, "tileHeight": tile_height}
         # An edit landed while the strip rendered: it is a fine picture of the old file, but no entry for the new key.
-        if _inputs_changed(jsx, jsx_sha, inputs):
+        if _inputs_changed(jsx, jsx_sha, inputs, hold):
             return index
         os.makedirs(os.path.join(out_dir, base), exist_ok=True)
         _write_json_atomic(os.path.join(out_dir, base, "imports.json"), imports, valid=lambda d: isinstance(d, list))
@@ -318,6 +340,38 @@ def build_overlay(jsx, duration, out_dir, max_tiles, min_interval, cols, tile_wi
         return _write_json_atomic(os.path.join(key_dir, "index.json"), index, valid=lambda d: isinstance(d, dict) and bool(d.get("sheets")))
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def scene3d_scene_file(project_dir: str, scene) -> str:
+    """The saved 3D a scene id names, as render/scene3d.js finds it: models/scenes/<id>/active.json, or the
+    project's own models/active.json when the id is absent."""
+    if scene is None:
+        return os.path.join(project_dir, "models", "active.json")
+    return os.path.join(project_dir, "models", "scenes", scene, "active.json")
+
+
+def build_scene3d(project, duration, out_dir, max_tiles, min_interval, cols, tile_width, tiles_per_sheet, timeout,
+                  props="{}", fps=30, width=1080, height=1920):
+    """A 3D item's strip (src engine:scene3d, props {scene, inPoint}). The node sampler materializes the item as an
+    export does (the host stage from MONTAJ_SCENE3D_STAGE, the scene read from the project) and renders it in the same
+    one-Chromium overlay strip session. Keyed like an overlay, on the stage's content, plus the saved scene's content;
+    the stage or scene being absent is the sampler's to report."""
+    if not project:
+        fail("invalid_param", "--project (the project's folder or its project.json) is required for a 3D item")
+    project_dir = os.path.abspath(project)
+    if os.path.isfile(project_dir):
+        project_dir = os.path.dirname(project_dir)
+    props_obj = {k: v for k, v in _props_object(props).items() if k not in SCENE3D_DERIVED_PROPS}
+    scene = props_obj.get("scene")
+    if scene is not None and (not isinstance(scene, str) or not SCENE_NAME.match(scene)):
+        fail("invalid_param", "a 3D's id is lowercase letters, digits and -")
+    stage = os.environ.get(SCENE3D_STAGE_ENV) or ""
+    scene_file = scene3d_scene_file(project_dir, scene)
+    scene_sha = _file_sha(scene_file)
+    return build_overlay(stage, duration, out_dir, max_tiles, min_interval, cols, tile_width, tiles_per_sheet, timeout,
+                         props=props_obj, fps=fps, width=width, height=height,
+                         component=SCENE3D_SRC, key_extra={"scene3d": scene_sha},
+                         extra_cmd=("--project-dir", project_dir), hold=((scene_file, scene_sha),))
 
 
 def _render_dir() -> str:
@@ -329,7 +383,7 @@ def _render_dir() -> str:
 
 def main():
     p = argparse.ArgumentParser(description="Tile a video into a uniform time-grid filmstrip with an index JSON")
-    p.add_argument("--input", required=True, help="Source video file (all-intra proxy expected)")
+    p.add_argument("--input", required=True, help="Source video file (all-intra proxy expected), an overlay .jsx, or engine:scene3d")
     p.add_argument("--out-dir", required=True, help="Directory to write sheet images into")
     p.add_argument("--max-tiles", type=int, default=100,
                    help="Total tile budget across the whole filmstrip; bounds interval = max(duration/max-tiles, min-interval)")
@@ -344,10 +398,13 @@ def main():
     p.add_argument("--duration", type=float, default=None, help="Overlay only (required): length in seconds")
     p.add_argument("--width", type=int, default=1080, help="Overlay only: canvas width")
     p.add_argument("--height", type=int, default=1920, help="Overlay only: canvas height")
+    p.add_argument("--project", default=None, help="3D only: the project's folder or project.json")
     args = p.parse_args()
 
-    src = os.path.abspath(args.input)
-    require_file(src)
+    scene3d = args.input == SCENE3D_SRC
+    src = args.input if scene3d else os.path.abspath(args.input)
+    if not scene3d:
+        require_file(src)
     if args.max_tiles < 1:
         fail("invalid_param", "--max-tiles must be at least 1")
     if args.min_interval <= 0:
@@ -359,11 +416,19 @@ def main():
     if args.tiles_per_sheet < 1:
         fail("invalid_param", "--tiles-per-sheet must be at least 1")
 
-    if src.lower().endswith(".jsx"):
+    if scene3d or src.lower().endswith(".jsx"):
         if args.duration is None or args.duration <= 0:
             fail("invalid_param", "--duration (seconds) is required for an overlay .jsx")
         if args.fps < 1 or args.width < 1 or args.height < 1:
             fail("invalid_param", "--fps, --width and --height must be at least 1")
+    if scene3d:
+        result = build_scene3d(args.project, args.duration, args.out_dir, args.max_tiles, args.min_interval,
+                               args.cols, args.tile_width, args.tiles_per_sheet, args.timeout,
+                               props=args.props, fps=args.fps, width=args.width, height=args.height)
+        print(json.dumps(result))
+        return
+
+    if src.lower().endswith(".jsx"):
         result = build_overlay(src, args.duration, args.out_dir, args.max_tiles, args.min_interval,
                                args.cols, args.tile_width, args.tiles_per_sheet, args.timeout,
                                props=args.props, google_fonts=args.google_fonts, fps=args.fps,

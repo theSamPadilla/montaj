@@ -1,9 +1,9 @@
 {
   "name": "filmstrip",
-  "description": "Tile a uniform time-grid of frames into filmstrip contact sheets, with an index JSON mapping every tile to its timestamp. Input is a video (pure ffmpeg) or an overlay .jsx (one Chromium session). Feeds a timeline scrubber thumbnail strip — unlike shot_sheet this samples on a fixed time grid, not per detected shot.",
+  "description": "Tile a uniform time-grid of frames into filmstrip contact sheets, with an index JSON mapping every tile to its timestamp. Input is a video (pure ffmpeg), an overlay .jsx or engine:scene3d (one Chromium session). Feeds a timeline scrubber thumbnail strip — unlike shot_sheet this samples on a fixed time grid, not per detected shot.",
   "input": {
     "type": "video_or_jsx",
-    "description": "Source video file (all-intra proxy expected for cheap per-tile seeking), or an overlay .jsx (needs duration)"
+    "description": "Source video file (all-intra proxy expected for cheap per-tile seeking), an overlay .jsx (needs duration), or engine:scene3d (needs duration, project, props {scene, inPoint})"
   },
   "output": {
     "type": "json",
@@ -22,6 +22,7 @@
     { "name": "duration", "type": "float", "min": 0.01, "description": "Overlay only, required: length in seconds" },
     { "name": "width", "type": "int", "default": 1080, "min": 1, "description": "Overlay only: canvas width; with height sets the tile aspect" },
     { "name": "height", "type": "int", "default": 1920, "min": 1, "description": "Overlay only: canvas height" },
+    { "name": "project", "type": "path", "description": "3D only: the project (id, folder or project.json) whose models/ holds the scene" },
     { "name": "timeout", "type": "int", "default": 600, "description": "Per-ffmpeg-call timeout in seconds" }
   ]
 }

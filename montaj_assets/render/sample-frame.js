@@ -347,7 +347,7 @@ if (isMain) {
       '  sample-frame.js --mode frame --project <path> --at <seconds> --no-captions --out <path>\n' +
       '  sample-frame.js --mode frame --project <path> --at <s> --at <s> ... --frames-dir <dir>\n' +
       '  sample-frame.js --mode measure --jobs <file.json> [--lanes N]\n' +
-      '  sample-frame.js --mode overlay-strip --component <path> --times \'[0,1,2]\' --duration <frames>\n' +
+      '  sample-frame.js --mode overlay-strip --component <path|engine:scene3d> --times \'[0,1,2]\' --duration <frames> [--project-dir <dir>]\n' +
       '    [--fps N] [--width W] [--height H] [--props \'...\'] [--google-fonts f1,f2]\n' +
       '    --tile-width N --out-dir <dir>   one browser, one small PNG per time (t_0000.png...)\n'
     )
@@ -508,9 +508,22 @@ if (isMain) {
     if (!Array.isArray(timesArg) || !timesArg.length || !timesArg.every(Number.isFinite)) fail('invalid_times', '--times is a non-empty JSON list of seconds')
     if (!Number.isFinite(durationArg) || durationArg < 1) fail('missing_argument', '--duration <frames> is required for --mode overlay-strip')
     if (!Number.isFinite(tileWidthArg) || tileWidthArg < 1) fail('missing_argument', '--tile-width is required for --mode overlay-strip')
+    // A 3D item's strip (`--component engine:scene3d`, its props and --project-dir): the host's stage, with the
+    // scene in its props, exactly as an export materializes it.
+    const projectDir = projectDirArg ? resolve(projectDirArg) : null
+    let strip
+    try {
+      strip = componentArg === SCENE3D_SRC
+        ? scene3dStripSource(propsArg, projectDir)
+        : { componentPath: resolve(componentArg), props: propsArg }
+    } catch (err) {
+      process.stderr.write(JSON.stringify({ error: err instanceof Scene3dError ? err.code : 'sample_failed', message: err.message }) + '\n')
+      process.exit(1)
+    }
     sampleOverlayStrip({
-      componentPath: resolve(componentArg),
-      props: propsArg,
+      componentPath: strip.componentPath,
+      props: strip.props,
+      projectDir,
       times: timesArg,
       fps: fpsArg,
       durationFrames: durationArg,
@@ -1233,6 +1246,17 @@ export async function sampleOverlay({
 /** The frame each strip time shows: seconds to frames at `fps`, inside the overlay's `durationFrames`. */
 export function stripFrames(times, fps, durationFrames) {
   return times.map((t) => Math.min(Math.max(0, Math.round(t * fps)), Math.max(0, durationFrames - 1)))
+}
+
+/**
+ * A 3D item's strip source: the item `{ src: engine:scene3d, props }` materialized as an export does it
+ * (render/scene3d.js materializeScene3d), so the component is the host's stage (MONTAJ_SCENE3D_STAGE) and the props
+ * gain the scene (`sceneFile`, `sceneJson`). Throws Scene3dError naming what is missing.
+ */
+export function scene3dStripSource(props, projectDir, opts) {
+  const item = { type: 'overlay', src: SCENE3D_SRC, start: 0, end: 1, props: { ...(props || {}) } }
+  materializeScene3d({ tracks: [[item]] }, projectDir, opts)
+  return { componentPath: item.src, props: item.props }
 }
 
 /**

@@ -391,3 +391,111 @@ def test_montaj_version_is_in_the_key(fake_node, overlay, tmp_path, monkeypatch)
     monkeypatch.setattr(fs, "_montaj_version", lambda: "9.9.9")
     build(overlay, out)
     assert len(fake_node) == 2
+
+
+# ---------------------------------------------------------------------------
+# 3D items (--input engine:scene3d)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def project3d(tmp_path, monkeypatch):
+    """A project with two saved 3Ds, and the host stage the app supplies."""
+    proj = tmp_path / "proj"
+    for sid in ("hands", "walk"):
+        (proj / "models" / "scenes" / sid).mkdir(parents=True)
+        (proj / "models" / "scenes" / sid / "active.json").write_text(json.dumps({"model": {"id": sid}}))
+    (proj / "project.json").write_text("{}")
+    stage = tmp_path / "stage.jsx"
+    stage.write_text("export default function Stage() { return null }\n")
+    monkeypatch.setenv(fs.SCENE3D_STAGE_ENV, str(stage))
+    return proj
+
+
+@pytest.fixture
+def fake_node3d(monkeypatch, project3d):
+    """The node sampler for a 3D strip: real PNGs, and the stage and scene as the files it read."""
+    calls = []
+
+    def fake(cmd, timeout):
+        calls.append(cmd)
+        out = cmd[cmd.index("--out-dir") + 1]
+        props = json.loads(cmd[cmd.index("--props") + 1])
+        scene = project3d / "models" / "scenes" / props.get("scene", "hands") / "active.json"
+        stage = fs.os.environ[fs.SCENE3D_STAGE_ENV]
+        pngs = []
+        for i in range(len(json.loads(cmd[cmd.index("--times") + 1]))):
+            p = f"{out}/t_{i:04d}.png"
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=blue@0.5:s=16x28",
+                            "-frames:v", "1", p], check=True)
+            pngs.append(p)
+        return {"pngs": pngs, "tileWidth": 160, "tileHeight": 284,
+                "inputs": [[str(f), fs.os.stat(f).st_mtime * 1000] for f in (stage, str(scene))]}
+
+    monkeypatch.setattr(fs, "run_overlay_strip_node", fake)
+    monkeypatch.setattr(fs, "_render_dir", lambda: "/render")
+    return calls
+
+
+def build3d(project, out, **kw):
+    args = dict(project=str(project), duration=3.0, out_dir=str(out), max_tiles=100, min_interval=1.0,
+                cols=10, tile_width=160, tiles_per_sheet=100, timeout=60, props='{"scene":"hands","inPoint":2}')
+    args.update(kw)
+    return fs.build_scene3d(**args)
+
+
+def test_3d_strip_renders_the_scene_through_the_overlay_strip_session(fake_node3d, project3d, tmp_path):
+    idx = build3d(project3d, tmp_path / "out")
+    assert [t["t"] for t in idx["sheets"][0]["tiles"]] == [0.0, 1.0, 2.0]
+    cmd = fake_node3d[0]
+    assert cmd[cmd.index("--mode") + 1] == "overlay-strip"
+    assert cmd[cmd.index("--component") + 1] == "engine:scene3d"
+    assert cmd[cmd.index("--project-dir") + 1] == str(project3d)
+    assert json.loads(cmd[cmd.index("--props") + 1]) == {"scene": "hands", "inPoint": 2}
+
+
+def test_3d_strip_takes_project_json_too_and_drops_derived_props(fake_node3d, project3d, tmp_path):
+    build3d(project3d / "project.json", tmp_path / "out",
+            props=json.dumps({"scene": "hands", "inPoint": 2, "sceneJson": "{}", "sceneFile": "/x/active.json"}))
+    cmd = fake_node3d[0]
+    assert cmd[cmd.index("--project-dir") + 1] == str(project3d)
+    assert json.loads(cmd[cmd.index("--props") + 1]) == {"scene": "hands", "inPoint": 2}
+
+
+def test_3d_strip_second_run_is_a_hit(fake_node3d, project3d, tmp_path):
+    first = build3d(project3d, tmp_path / "out")
+    assert build3d(project3d, tmp_path / "out") == first
+    assert len(fake_node3d) == 1
+
+
+def test_editing_the_saved_3d_changes_the_key(fake_node3d, project3d, tmp_path):
+    build3d(project3d, tmp_path / "out")
+    (project3d / "models" / "scenes" / "hands" / "active.json").write_text(json.dumps({"model": {"id": "hands", "v": 2}}))
+    build3d(project3d, tmp_path / "out")
+    assert len(fake_node3d) == 2
+    # Another 3D's file changing does not touch this one's key.
+    (project3d / "models" / "scenes" / "walk" / "active.json").write_text(json.dumps({"model": {"id": "walk", "v": 2}}))
+    build3d(project3d, tmp_path / "out")
+    assert len(fake_node3d) == 2
+
+
+@pytest.mark.parametrize("change", ["scene", "inPoint", "stage", "duration"])
+def test_3d_strip_key_follows_scene_props_stage_and_length(fake_node3d, project3d, tmp_path, change):
+    build3d(project3d, tmp_path / "out")
+    if change == "stage":
+        stage = fs.os.environ[fs.SCENE3D_STAGE_ENV]
+        with open(stage, "a") as f:
+            f.write("// newer stage\n")
+        build3d(project3d, tmp_path / "out")
+    else:
+        kw = {"scene": dict(props='{"scene":"walk","inPoint":2}'), "inPoint": dict(props='{"scene":"hands","inPoint":3}'),
+              "duration": dict(duration=4.0)}[change]
+        build3d(project3d, tmp_path / "out", **kw)
+    assert len(fake_node3d) == 2
+
+
+def test_3d_strip_refuses_a_bad_id_and_a_missing_project(fake_node3d, project3d, tmp_path):
+    with pytest.raises(SystemExit):
+        build3d(project3d, tmp_path / "out", props='{"scene":"../etc"}')
+    with pytest.raises(SystemExit):
+        fs.build_scene3d(None, 3.0, str(tmp_path / "out"), 100, 1.0, 10, 160, 100, 60, props='{"scene":"hands"}')
+    assert fake_node3d == []
