@@ -141,17 +141,34 @@ test('video: a mask comes after the blur', () => {
 // The image blur: planar RGB with the image's alpha put back, then RGBA again.
 const IMAGE_BLUR = /,format=gbrap16le,split=2\[bl1a\]\[bl1b\];\[bl1b\]pad=w=[^;]*\[bl1c\];\[bl1c\]\[bl1a\]mergeplanes=[^,]*:format=gbrap16le,format=rgba/
 
+// A still's blur runs once: one frame in, replayed by `loop` for the duration.
+const ONCE = ',loop=loop=-1:size=1,setpts=N/FRAME_RATE/TB,trim=duration=2'
+
+test('image: a blur on a still box runs on one frame and is looped; an animated box or crop keeps the per-frame blur', () => {
+  const g = (item) => graphOf(buildImageItemFilterParts(item, 1080, 1920, 1, '[canvas]', 2, 0))
+  const still = g(image({ blur: 20 }))
+  assert.ok(still.startsWith('[1:v]trim=end_frame=1,scale='), still)
+  assert.ok(still.includes(ONCE + ','), still)
+  assert.ok(still.indexOf('gblur') < still.indexOf('loop=loop'), 'the loop comes after the blur')
+  assert.ok(!g(image()).includes('loop='), 'no blur: no loop')
+  const grow = g(image({ blur: 20, keyframes: [{ prop: 'scale', points: [{ t: 0, value: 0.5 }, { t: 1, value: 1 }] }] }))
+  assert.ok(!grow.includes('loop=') && !grow.includes('trim=end_frame'), grow)
+})
+
 test('image: without a blur unchanged; cover and fill blur the fitted box, contain blurs before its pad', () => {
   for (const fit of ['cover', 'contain', 'fill']) {
     const plain = graphOf(buildImageItemFilterParts(image({ fit }), 1080, 1920, 1, '[canvas]', 2, 0))
     assert.equal(graphOf(buildImageItemFilterParts(image({ fit, blur: 0 }), 1080, 1920, 1, '[canvas]', 2, 0)), plain)
     const on = graphOf(buildImageItemFilterParts(image({ fit, blur: 20 }), 1080, 1920, 1, '[canvas]', 2, 0))
+      .replace('[1:v]trim=end_frame=1,', '[1:v]').replace(ONCE, '')
     assert.ok(IMAGE_BLUR.test(on), on)
     assert.equal(on.replace(IMAGE_BLUR, (m) => (fit === 'contain' ? ',' : '')).replace('format=rgba,,pad', 'format=rgba,pad'), plain, fit)
   }
   const contain = graphOf(buildImageItemFilterParts(image({ fit: 'contain', blur: 20 }), 1080, 1920, 1, '[canvas]', 2, 0))
+    .replace('[1:v]trim=end_frame=1,', '[1:v]').replace(ONCE, '')
   assert.ok(/decrease,format=rgba,format=gbrap16le,split=2[^;]*;[^;]*;[^;]*format=gbrap16le,format=rgba,pad=1080:1920:/.test(contain), contain)
   const cover = graphOf(buildImageItemFilterParts(image({ blur: 20 }), 1080, 1920, 1, '[canvas]', 2, 0))
+    .replace('[1:v]trim=end_frame=1,', '[1:v]').replace(ONCE, '')
   assert.ok(cover.includes('crop=1080:1920,format=rgba,format=gbrap16le,split=2[bl1a][bl1b];'), cover)
 })
 

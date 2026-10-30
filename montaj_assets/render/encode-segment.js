@@ -1307,6 +1307,15 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   }
   // A keyframed crop's chain always covers the box (animatedImageCrop).
   fitChain = cropAnim?.chain ? `${cropAnim.chain}${blur ? ',' + blur : ''}` : (cropStep + fitChain)
+  // A blurred still whose picture does not change over time (no animated box,
+  // no animated crop) is blurred ONCE: one frame goes through the fit and the
+  // blur, and `loop` replays it for the item's duration. `-loop 1` would push
+  // every frame through gblur (measured: a 2 s 1080x1920 image, 1.7 s without
+  // a blur, 6.9 s with one). The replay's timestamps are rebuilt at the
+  // input's frame rate, and the `trim` ends it where `-t` ended the input.
+  if (blur && !anim?.needsAnimatedChain && !cropAnim?.chain) {
+    fitChain = `trim=end_frame=1,${fitChain},loop=loop=-1:size=1,setpts=N/FRAME_RATE/TB,trim=duration=${ffSeconds(duration)}`
+  }
   // No alpha pin on the rotate: all three fit chains already run through
   // `format=rgba`, so the transparent pad and `c=black@0.0` corners are
   // representable exactly as the static path assumes.
