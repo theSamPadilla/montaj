@@ -35,10 +35,12 @@ import hashlib
 import json
 import math
 import os
+import queue
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -75,6 +77,7 @@ MEASURE_ROUNDS = 8
 # its span, for the captions not yet judged, with one warning. A long card never costs minutes.
 MEASURE_BUDGET = 64
 RENDER_TIMEOUT_S = 90
+SERVE_CLOSE_S = 15   # how long the overlay sampler (sample_overlay --serve) may take to close its browsers at the end
 # The step's own wall clock for the frames: one not started by then counts as failed, so the caller's timeout (serve's
 # 300 s) never has to kill it.
 DEADLINE_S = 240
@@ -719,9 +722,10 @@ def overlay_renderer(project, project_dir, out_dir, deadline=None):
     """overlay_fn(item, frame, ref=None) -> the path of a transparent PNG of the overlay rendered alone at `frame`
     (steps/render/sample_overlay.py, as look measures it but without --measure), at the project's design size and fps,
     over the item's own length. Same time limits as frame_renderer. `overlay_fn.many(jobs)` renders [((ref, frame),
-    item)] in one sample_overlay --jobs --no-measure call (RENDER_WORKERS browsers, a page per overlay kept open across
-    its frames) and answers ({key: path or None}, {key: why} for the failed ones); when that call itself fails, the
-    frames are rendered one process each."""
+    item)] through one sample_overlay --serve process kept for the whole plan (RENDER_WORKERS browsers, each overlay's
+    page kept open across its frames and the rounds: started once, not once a round) and answers ({key: path or None},
+    {key: why} for the failed ones); when that process fails, the round's frames are rendered one process each and the
+    next round starts a new one. `overlay_fn.close()` ends it (update calls it)."""
     width, height = lc.design_size(project)
     fps = int(round(lc._num((project.get("settings") or {}).get("fps"), 30))) or 30
 
@@ -762,6 +766,63 @@ def overlay_renderer(project, project_dir, out_dir, deadline=None):
             raise RuntimeError("sample_overlay failed")
         return out
 
+    served = {}   # the sample_overlay --serve process: {"proc", "lines": a queue of its stdout lines, None at its end}
+
+    def stop(kill=False):
+        proc = served.pop("proc", None)
+        if proc is None:
+            return
+        try:
+            proc.stdin.close()   # its end of input: it closes its browsers and exits
+        except OSError:
+            kill = True
+        if not kill:
+            try:
+                proc.wait(timeout=SERVE_CLOSE_S)
+            except subprocess.TimeoutExpired:
+                kill = True
+        if kill and proc.poll() is None:
+            kill_tree(proc)
+            proc.wait()
+
+    def ask(jobs, timeout):
+        """The results of one line of jobs from the --serve process (started on first use), or None when it fails,
+        dies or takes longer than `timeout` (it is killed, and the next call starts another)."""
+        if served.get("proc") is None or served["proc"].poll() is not None:
+            stop(kill=True)
+            proc = subprocess.Popen([sys.executable, SAMPLE_OVERLAY_PY, "--serve", "--lanes", str(RENDER_WORKERS)],
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                                    **detached_kwargs())
+            lines = queue.Queue()
+
+            def pump():
+                for line in proc.stdout:
+                    lines.put(line)
+                lines.put(None)
+            threading.Thread(target=pump, daemon=True).start()
+            served.update(proc=proc, lines=lines)
+        try:
+            served["proc"].stdin.write(json.dumps(jobs) + "\n")
+            served["proc"].stdin.flush()
+        except OSError:
+            stop(kill=True)
+            return None
+        end = time.monotonic() + timeout
+        while True:
+            try:
+                line = served["lines"].get(timeout=max(0.0, end - time.monotonic()))
+            except queue.Empty:
+                line = None
+            if line is None:
+                stop(kill=True)
+                return None
+            try:
+                answer = json.loads(line)
+            except ValueError:
+                continue   # not an answer line
+            results = answer.get("results") if isinstance(answer, dict) else None
+            return results if isinstance(results, list) and len(results) == len(jobs) else None
+
     def many(jobs):
         done, failed, batch = {}, {}, []
         for key, item in jobs:
@@ -785,20 +846,8 @@ def overlay_renderer(project, project_dir, out_dir, deadline=None):
             for key, _, _ in batch:
                 done[key], failed[key] = None, str(e)
             return done, failed
-        fd, jobs_path = tempfile.mkstemp(prefix="ink-jobs-", suffix=".json", dir=out_dir)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump([job for _, _, job in batch], f)
-        r = _run_group([sys.executable, SAMPLE_OVERLAY_PY, "--jobs", jobs_path, "--lanes", str(RENDER_WORKERS),
-                        "--no-measure"], timeout)
-        if r is None:
-            for key, _, _ in batch:
-                done[key], failed[key] = None, "timed out"
-            return done, failed
-        try:
-            results = json.loads(r[1].strip().splitlines()[-1])["results"] if r[0] == 0 else None
-        except (ValueError, IndexError, KeyError, TypeError):
-            results = None
-        if not isinstance(results, list) or len(results) != len(batch):
+        results = ask([job for _, _, job in batch], timeout)
+        if results is None:
             more, why = _pooled(lambda item, frame, ref: render(item, frame, ref),
                                 [(key, (item, key[1], key[0])) for key, item, _ in batch], deadline)
             done.update(more)
@@ -814,6 +863,7 @@ def overlay_renderer(project, project_dir, out_dir, deadline=None):
         return done, failed
 
     render.many = many
+    render.close = stop
     return render
 
 
@@ -1407,6 +1457,9 @@ def update(project_path, render_fn=None, timeout=LOCK_TIMEOUT, overlay_fn=None):
         changes, counts, warnings = plan(project, render_fn, width, height, deadline, overlay_fn, project_dir,
                                          cache_path)
     finally:
+        close = getattr(overlay_fn, "close", None)
+        if close is not None:
+            close()
         if samples:
             shutil.rmtree(samples, ignore_errors=True)
     out = dict(counts)

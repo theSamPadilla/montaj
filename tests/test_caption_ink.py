@@ -1339,27 +1339,77 @@ def test_two_overlays_with_no_id_on_one_track_are_judged_apart(tmp_path):
     assert changes[("id", "a")]["inkAuto"]["card"] == "track 1 item" and ("id", "b") not in changes and warnings == []
 
 
+FAKE_SERVE = """import json, os, sys
+from PIL import Image
+log = sys.argv[sys.argv.index("--log") + 1] if "--log" in sys.argv else None
+for line in sys.stdin:
+    jobs = json.loads(line)
+    for j in jobs:
+        Image.new("RGBA", (4, 4)).save(j["out"])
+    with open(os.environ["FAKE_SERVE_LOG"], "a") as f:
+        f.write(json.dumps({"pid": os.getpid(), "argv": sys.argv[1:], "frames": [j["frame"] for j in jobs]}) + "\\n")
+    print(json.dumps({"results": [{"pngPath": j["out"]} for j in jobs], "browsers": 1}), flush=True)
+"""
+
+
+def _fake_sampler(tmp_path, monkeypatch):
+    """sample_overlay --serve faked: a PNG per job, one answer line per line of jobs, a log line per round."""
+    script = tmp_path / "fake_serve.py"
+    script.write_text(FAKE_SERVE)
+    log = tmp_path / "serve.log"
+    monkeypatch.setattr(ci, "SAMPLE_OVERLAY_PY", str(script))
+    monkeypatch.setenv("FAKE_SERVE_LOG", str(log))
+    return log
+
+
 def test_two_overlays_with_no_id_on_the_same_frame_render_to_two_files(tmp_path, monkeypatch):
     import json
+    log = _fake_sampler(tmp_path, monkeypatch)
     (tmp_path / "overlays").mkdir()
     (tmp_path / "overlays" / "footage-card.jsx").write_text("export default () => null")
     first, second = _matte(start=0, end=5), _matte(start=5, end=10)
     first.pop("id"), second.pop("id")
     p = _project([first, second])
-    seen = []
-
-    def fake(cmd, timeout):
-        jobs = json.loads(Path(cmd[cmd.index("--jobs") + 1]).read_text())
-        for j in jobs:
-            Image.new("RGBA", (4, 4)).save(j["out"])
-        seen.append(cmd)
-        return 0, json.dumps({"results": [{"pngPath": j["out"]} for j in jobs], "browsers": 1}) + "\n", ""
-    monkeypatch.setattr(ci, "_run_group", fake)
     render = ci.overlay_renderer(p, str(tmp_path), str(tmp_path))
-    refs = [ref for _, _, ref in ci._stack_refs(p, 1)] + [ref for _, _, ref in ci._stack_refs(p, 6)]
-    refs = [r for r in refs if r[0] == "track 1 item"]
-    done, failed = render.many([((refs[0], 8), first), ((refs[1], 8), second)])
-    assert failed == {} and len(seen) == 1 and "--no-measure" in seen[0], "one call for both"
+    refs = [ref for t in (1, 6) for _, label, ref in ci._stack_refs(p, t) if label == "track 1 item"]
+    try:
+        done, failed = render.many([((refs[0], 8), first), ((refs[1], 8), second)])
+    finally:
+        render.close()
+    assert failed == {}
     paths = [done[(refs[0], 8)], done[(refs[1], 8)]]
     assert paths[0] != paths[1] and all(Path(x).is_file() for x in paths)
     assert ci._overlay_png_name(first, 8, refs[0]) != ci._overlay_png_name(first, 8, refs[1])
+    rounds = [json.loads(x) for x in log.read_text().splitlines()]
+    assert len(rounds) == 1 and "--serve" in rounds[0]["argv"], "one call for both"
+
+
+def test_every_round_goes_to_one_sampler_process_closed_at_the_end(tmp_path, monkeypatch):
+    import json
+    log = _fake_sampler(tmp_path, monkeypatch)
+    p = _settle_project(tmp_path, [_straddler(), _seg("post", 4.5, 5.5)])
+    samples = tmp_path / "samples"
+    samples.mkdir()
+    render = ci.overlay_renderer(p, str(tmp_path), str(samples))
+    many = render.many
+    real = {}
+
+    def judged(jobs):   # the fake sampler draws blank PNGs: read the settling card for each frame instead
+        done, failed = many(jobs)
+        alpha = _settling(tmp_path)
+        real.update({k: alpha(None, k[1]) for k in done})
+        return {k: real[k] for k in done}, failed
+    render.many = judged
+    try:
+        changes, counts, warnings = ci.plan(p, lambda t: None, W, H, overlay_fn=render, project_dir=str(tmp_path))
+    finally:
+        render.close()
+    rounds = [json.loads(x) for x in log.read_text().splitlines()]
+    assert len(rounds) >= 3 and len({r["pid"] for r in rounds}) == 1, "the browsers start once for every round"
+    plain = []
+    same = _settle_plan(p, tmp_path, plain, cache=False)
+    assert sorted(n for r in rounds for n in r["frames"]) == sorted(plain), "the frames one at a time would be"
+    assert (changes, counts, warnings) == same and counts["split"] == 1 and warnings == []
+    pid = rounds[0]["pid"]
+    with pytest.raises(ProcessLookupError):
+        __import__("os").kill(pid, 0)
