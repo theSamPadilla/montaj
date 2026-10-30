@@ -94,9 +94,25 @@ def _seconds(entries):
     return sum(max(0.0, float(e.get("end") or 0) - float(e.get("start") or 0)) for e in entries)
 
 
-def _heard(entries):
-    """Whether any of a source's items plays its sound: not muted, volume above 0. Footage laid in with its sound off
-    (b-roll, a clip of someone else talking) is never the narration."""
+def _track_silent(track):
+    """Whether a video TRACK as a whole plays no sound: `muted` true, `volume` 0, or `enabled` false (the track rail's
+    mute switch, volume gear and skip toggle write these on the track, not on its clips)."""
+    if not isinstance(track, dict):
+        return False
+    try:
+        vol = None if track.get("volume") is None else float(track["volume"])
+    except (TypeError, ValueError):
+        vol = None
+    return track.get("muted") is True or vol == 0 or track.get("enabled") is False
+
+
+def _heard(entries, track=None):
+    """Whether any of a source's items plays its sound: not muted, volume above 0, on a track that is not silent
+    itself. Footage laid in with its sound off (b-roll, a clip of someone else talking) is never the narration.
+    Audio rows carry their own `muted`/`volume` (checked as items here) and no `enabled`."""
+    if _track_silent(track):
+        return False
+
     def plays(e):
         try:
             vol = 1.0 if e.get("volume") is None else float(e["volume"])
@@ -109,10 +125,15 @@ def _heard(entries):
 def choose(project, project_dir, asked=None):
     """The source key to cut. `asked`: None or "auto", a video track id, an audio key, or "voiceover".
 
-    auto: of the sources whose sound plays (a source whose items are all muted or at volume 0 is skipped), the one
-    with the most seconds of transcribed media (a video track wins a tie, so a project cut before sources existed
-    picks the same track). With nothing heard and transcribed: the same over every source. With nothing transcribed
-    yet: the voiceover, else the longest audio group of `voiceover` items, else the first video track (as before)."""
+    auto, in this order:
+      (a) of the sources whose sound plays (every item muted or at volume 0, or a video track muted, at volume 0 or
+          disabled, is silent), the one with the most seconds of transcribed media (a video track wins a tie, so a
+          project cut before sources existed picks the same track);
+      (b) the heard voiceover: the project's voiceover file, else the audio group playing it;
+      (c) of the silent sources, the one with the most transcribed seconds;
+      (d) the rest as before: any group playing the voiceover file, the first video track, the longest group of
+          `voiceover` items.
+    So a heard voiceover not yet transcribed outranks a muted clip that is."""
     cands = candidates(project, project_dir)
     if asked not in (None, "", "auto"):
         for key, kind, entries in cands:
@@ -128,18 +149,31 @@ def choose(project, project_dir, asked=None):
         if has_source(project, project_dir, asked):
             return asked                    # a type key whose row the editor has since stamped as a lane
         fail("invalid_params", f"speech must be auto or one of: {', '.join(k for k, _, _ in cands) or 'nothing'}")
-    for pool in ([c for c in cands if _heard(c[2])], cands):
+    tracks = {t["id"]: t for t in normalize_tracks(copy.deepcopy(project)).get("tracks", [])}
+    heard = [c for c in cands if _heard(c[2], tracks.get(c[0]) if c[1] == "video" else None)]
+
+    def most_transcribed(pool):
         best, best_s = None, 0.0
         for key, kind, entries in pool:
             s = _transcribed_seconds(entries, project_dir)
             if s > best_s + _EPS:
                 best, best_s = key, s
-        if best is not None:
-            return best
-    for key, kind, _ in cands:
+        return best
+
+    best = most_transcribed(heard)
+    if best is not None:
+        return best
+    vo = _voiceover_src(project)
+    for key, kind, _ in heard:
         if kind == VOICEOVER:
             return key
-    vo = _voiceover_src(project)
+    playing = [(_seconds(entries), key) for key, kind, entries in heard
+               if vo and kind == "audio" and any(_same_file(e["src"], vo, project_dir) for e in entries)]
+    if playing:
+        return max(playing)[1]
+    best = most_transcribed([c for c in cands if c not in heard])
+    if best is not None:
+        return best
     playing = [(_seconds(entries), key) for key, kind, entries in cands
                if vo and kind == "audio" and any(_same_file(e["src"], vo, project_dir) for e in entries)]
     if playing:

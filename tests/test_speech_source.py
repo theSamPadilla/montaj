@@ -58,6 +58,49 @@ def test_auto_skips_footage_whose_sound_is_off(tmp_path):
     assert ss.choose(p, str(tmp_path)) == "trk-0"                  # heard, and longer: as before
 
 
+def _talking_clip(tmp_path, **over):
+    return {"id": "c", "type": "video", "src": str(tmp_path / "vo.mp4"), "start": 0, "end": 3.0, "inPoint": 0.0,
+            "outPoint": 3.0, **over}
+
+
+@pytest.mark.parametrize("silent", [{"muted": True}, {"volume": 0}, {"enabled": False}])
+def test_auto_skips_a_video_track_that_is_silent_as_a_track(tmp_path, silent):
+    """The track rail's mute switch, volume gear and skip toggle write on the TRACK; its clips stay as they were."""
+    a = [{"id": "v1", "type": "voiceover", "lane": 0, "src": str(tmp_path / "vo.mp4"), "start": 0.0, "end": 2.0,
+          "inPoint": 0.0, "outPoint": 2.0}]
+    p = project(tmp_path, a)
+    (tmp_path / "vo.json").write_text(json.dumps({"transcription": []}))
+    p["tracks"][0]["items"].append(_talking_clip(tmp_path))
+    assert ss.choose(p, str(tmp_path)) == "trk-0"
+    p["tracks"][0].update(silent)
+    assert ss.choose(p, str(tmp_path)) == "audio:lane-0"
+    p["tracks"][0].update({k: ({"muted": False, "volume": 1, "enabled": True}[k]) for k in silent})
+    assert ss.choose(p, str(tmp_path)) == "trk-0"                   # switched back on: heard again
+
+
+def test_a_muted_audio_row_is_not_heard_either(tmp_path):
+    a = [{"id": "v1", "type": "voiceover", "lane": 0, "src": str(tmp_path / "vo.mp4"), "start": 0.0, "end": 3.0,
+          "inPoint": 0.0, "outPoint": 3.0, "muted": True}]
+    p = project(tmp_path, a)
+    (tmp_path / "vo.json").write_text(json.dumps({"transcription": []}))
+    p["tracks"][0]["items"].append(_talking_clip(tmp_path, end=1.0, outPoint=1.0))
+    assert ss.choose(p, str(tmp_path)) == "trk-0"
+
+
+def test_a_heard_voiceover_not_yet_transcribed_outranks_a_silent_transcribed_clip(tmp_path):
+    p = project(tmp_path, voiceover=True)
+    (tmp_path / "clip.mp4").write_bytes((tmp_path / "vo.mp4").read_bytes())
+    (tmp_path / "clip.json").write_text(json.dumps({"transcription": []}))   # only the clip is transcribed
+    p["tracks"][0]["items"].append(_talking_clip(tmp_path, src=str(tmp_path / "clip.mp4"), muted=True))
+    assert ss.choose(p, str(tmp_path)) == "voiceover"
+    # the same with the voiceover laid on the timeline as an audio group
+    a = [{"id": "v1", "type": "voiceover", "lane": 0, "src": str(tmp_path / "vo.mp4"), "start": 0.0, "end": 3.0,
+          "inPoint": 0.0, "outPoint": 3.0}]
+    p = project(tmp_path, a, voiceover=True)
+    p["tracks"][0]["items"].append(_talking_clip(tmp_path, src=str(tmp_path / "clip.mp4"), muted=True))
+    assert ss.choose(p, str(tmp_path)) == "audio:lane-0"
+
+
 def test_auto_with_only_silent_sources_still_picks_by_transcribed_seconds(tmp_path):
     p = project(tmp_path)
     (tmp_path / "vo.json").write_text(json.dumps({"transcription": []}))
