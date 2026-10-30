@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Initialize a montaj project workspace."""
-import argparse, json, os, re, shutil, subprocess, sys, threading, time, uuid
+import argparse, json, os, re, shutil, signal, subprocess, sys, threading, time, uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -428,11 +428,13 @@ def _build_carousel_project(args, workspace_dir: str, assets: list) -> None:
 
     git(["add", "project.json"], cwd=workspace_dir)
     git(["commit", "-m", "init: new project"], cwd=workspace_dir)
+    _CREATED.pop("dir", None)  # §627: made; a later failure never removes it
 
     print(project_path)
 
 
 def _main():
+    _CREATED.clear()
     parser = argparse.ArgumentParser(description="Initialize a montaj project workspace")
     parser.add_argument("--clips", nargs="*", default=[], help="Input clip paths")
     parser.add_argument("--assets", nargs="*", default=[], help="Asset file paths (images, logos, etc.)")
@@ -675,10 +677,11 @@ def _main():
         parent = os.path.dirname(parent)
     os.makedirs(workspace_dir)
     _CREATED["parents"] = made_parents
-    # From here a failure on a full disk removes this folder (main()); nothing
-    # before this line wrote anything.
+    # From here a failure of any kind removes this folder (main(), §627);
+    # nothing before this line wrote anything.
     _CREATED["dir"] = workspace_dir
     _CREATED["root"] = workspace_root
+    _CREATED["copied_from"] = []
 
     # --- Fetch remote items into workspace (all-or-nothing) ---
     if all_remote_items:
@@ -709,6 +712,8 @@ def _main():
 
     def copy_into_workspace(src: str, prefix: str, link: bool = False, name: str | None = None) -> str:
         """Thin wrapper around the module-level helper, bound to workspace_dir."""
+        if not link:
+            _CREATED["copied_from"].append(os.path.abspath(src))
         dest = _copy_into_workspace(src, workspace_dir, prefix, link=link, name=name)
         # Track for post-init cleanup: real copies only (a symlink still
         # points at the source), and only files sitting directly inside the
@@ -1348,6 +1353,7 @@ def _main():
 
     git(["add", "project.json"], cwd=workspace_dir)
     git(["commit", "-m", "init: new project"], cwd=workspace_dir)
+    _CREATED.pop("dir", None)  # §627: made; a later failure never removes it
 
     _cleanup_staged_uploads(staged_uploads)
 
@@ -1366,9 +1372,33 @@ def _emit_timing(t0: float) -> None:
         pass
 
 
-# §541: the project folder this run made (and the workspace root), so a full
-# disk part way can remove exactly it and say so. Set only once makedirs made it.
+# §541: the project folder this run made (and the workspace root), so a failed
+# create can remove exactly it (§627: any failure, not only a full disk). Set
+# only once makedirs made it, cleared once project.json is committed.
+# `copied_from` lists the sources copied in, so a removal never takes the only
+# copy of a file.
 _CREATED: dict = {}
+
+
+def _remove_created() -> None:
+    """A failed create: remove the folder this run made (only it: it was
+    created new, `os.makedirs` without exist_ok) and the empty parents it
+    made. Everything in it is a copy, a link, a download or derived from one,
+    and the staged uploads it copied from are removed only on success. If a
+    source it copied is gone, the copy may be the only one left, so the folder
+    is kept as it is (Settings > Storage counts it under Other files)."""
+    created = _CREATED.pop("dir", None)
+    if not created:
+        return
+    if any(not os.path.exists(src) for src in _CREATED.get("copied_from") or []):
+        progress(f"init: kept {created}: a file copied into it is no longer at its source")
+        return
+    rmtree_force(created, ignore_errors=True)
+    for folder in reversed(_CREATED.get("parents") or []):
+        try:
+            os.rmdir(folder)          # only if empty: never another project's folder
+        except OSError:
+            break
 
 
 def _ref_path(raw: str) -> str | None:
@@ -1401,15 +1431,8 @@ def _disk_full_exit(exc: BaseException) -> None:
     """A full disk: remove the folder this run made (only it: it was created
     new, `os.makedirs` without exist_ok), then the one JSON error line, exit 1.
     The staged uploads it copied from are untouched (removed only on success)."""
-    created = _CREATED.get("dir")
     root = _CREATED.get("root") or (exc.path if isinstance(exc, disk_space.DiskFull) else None)
-    if created:
-        rmtree_force(created, ignore_errors=True)
-        for folder in reversed(_CREATED.get("parents") or []):
-            try:
-                os.rmdir(folder)          # only if empty: never another project's folder
-            except OSError:
-                break
+    _remove_created()
     if isinstance(exc, disk_space.DiskFull):
         err = disk_space.DiskFull(needed=exc.needed, free=exc.free if exc.free is not None else disk_space.free_bytes(root),
                                   path=exc.path or root)
@@ -1418,13 +1441,31 @@ def _disk_full_exit(exc: BaseException) -> None:
     disk_space.print_and_exit(err)
 
 
+def _exit_on_signal(signum, _frame):
+    """SIGTERM or SIGHUP (the app quitting part way) unwinds through main(),
+    so the half-made folder is removed like any other failure (§627)."""
+    raise SystemExit(128 + signum)
+
+
 def main():
     t0 = time.perf_counter()
+    for name in ("SIGTERM", "SIGHUP"):
+        if hasattr(signal, name):
+            try:
+                signal.signal(getattr(signal, name), _exit_on_signal)
+            except (ValueError, OSError):
+                pass  # not the main thread
     try:
         _main()
-    except Exception as exc:
-        if isinstance(exc, disk_space.DiskFull) or disk_space.is_disk_full(exc):
+    except SystemExit as exc:
+        # fail() exits 1; a clean exit (0 or None) made its project.
+        if exc.code not in (0, None):
+            _remove_created()
+        raise
+    except BaseException as exc:
+        if isinstance(exc, Exception) and (isinstance(exc, disk_space.DiskFull) or disk_space.is_disk_full(exc)):
             _disk_full_exit(exc)
+        _remove_created()
         raise
     finally:
         _emit_timing(t0)
