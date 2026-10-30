@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../../types'
 import type { AudioTrack } from '../../../../schema'
-import { ROW_GAP_PX, computeDerivedTiming, groupAudioLanes, normalizeTracks } from '../../timeline-model'
+import { ROW_GAP_PX, computeAutoCrossfade, computeDerivedTiming, groupAudioLanes, normalizeTracks, stampAudioLanes } from '../../timeline-model'
 import { DARK_TIMELINE_PALETTE, LIGHT_TIMELINE_PALETTE, computeTimelineLayout, drawTimelineContent, type DrawContext } from '../draw'
 import { NO_MODIFIERS, createPointerMachine, type PointerContext, type PointerEffect } from '../pointer-machine'
 
@@ -132,6 +132,51 @@ describe('audio: dragging a clip into the row above', () => {
     const p = project()
     const { effects } = drag(p, { x: 250, y: laneMid(p, 2) }, { x: 400, y: laneMid(p, 2) })
     expect(effects.some(e => e.type === 'dropLane')).toBe(false)
+  })
+})
+
+describe('audio: a person-made overlap on one row is a crossfade, kept as dropped', () => {
+  const project = () => audioProject([
+    { id: 'music', type: 'music', src: 'm.mp3', start: 0, end: 10 },
+    { id: 'voA', type: 'voiceover', src: 'a.wav', start: 0, end: 2 },
+    { id: 'voB', type: 'voiceover', src: 'b.wav', start: 1.5, end: 3 },
+  ] as AudioTrack[])
+
+  // Auto packing never makes that overlap: the two voice clips start on two rows.
+  it('auto packing splits the overlapping clips', () => {
+    expect(audioRows(project())).toEqual([['music'], ['voA'], ['voB']])
+  })
+
+  // Straight up one row, no horizontal travel: voB lands in voA's row overlapping it by 0.5 s.
+  const dropped = () => {
+    const p = project()
+    return drag(p, { x: 250, y: laneMid(p, 2) }, { x: 250, y: laneMid(p, 1) }).committed
+  }
+
+  it('stays on that row exactly as dropped', () => {
+    const c = dropped()
+    expect(c.audio!.tracks.find(t => t.id === 'voB')).toMatchObject({ start: 1.5, end: 3, lane: 1 })
+    expect(audioRows(c)).toEqual([['music'], ['voA', 'voB']])
+  })
+
+  it('survives a re-render: grouping again never splits or re-packs it', () => {
+    const c = dropped()
+    const regrouped = groupAudioLanes(c.audio!.tracks, computeDerivedTiming(c).contentDuration)
+    expect(regrouped.map(l => [l.laneIndex, l.tracks.map(t => t.id)])).toEqual([[0, ['music']], [1, ['voA', 'voB']]])
+  })
+
+  it('survives a save: stamping leaves explicit lanes alone, and the crossfade is found', () => {
+    const c = dropped()
+    // The commit path (`commitTimelineEdit`): stamp, then the audio crossfade pass.
+    expect(stampAudioLanes(c)).toBe(c)
+    const saved = computeAutoCrossfade(stampAudioLanes(c))!
+    expect(saved).not.toBeNull()
+    expect(saved.audio!.tracks.find(t => t.id === 'voA')!.fadeOut).toBe(0.5)
+    expect(saved.audio!.tracks.find(t => t.id === 'voB')!.fadeIn).toBe(0.5)
+    expect(saved.audio!.tracks.find(t => t.id === 'voB')).toMatchObject({ start: 1.5, end: 3, lane: 1 })
+    expect(audioRows(saved)).toEqual([['music'], ['voA', 'voB']])
+    // And a second save is a no-op.
+    expect(computeAutoCrossfade(stampAudioLanes(saved))).toBeNull()
   })
 })
 
