@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { BLUR_MAX, BLUR_TYPES, blurAngleOf, blurOf, blurSigmaPx, blurTypeOf, pictureRectInBox } from '../index.js'
+import { BLUR_MAX, BLUR_SPIN_MAX, BLUR_TYPES, BLUR_ZOOM_MAX, blurAngleOf, blurCenterOf, blurMaxOf, blurOf, blurSigmaPx, blurTypeOf, pictureRectInBox } from '../index.js'
 
 test('blurOf: a finite number above 0, held to BLUR_MAX; anything else is 0', () => {
   assert.equal(BLUR_MAX, 200)
@@ -42,13 +42,31 @@ test('pictureRectInBox: contain-fit, centred, as fractions of the box', () => {
   assert.deepEqual(pictureRectInBox(0, 1920, 100, 100), { x: 0, y: 0, w: 1, h: 1 })
 })
 
-test('blurTypeOf: linear only when it says so; uniform otherwise', () => {
-  assert.deepEqual(BLUR_TYPES, ['uniform', 'linear'])
+test('blurTypeOf: one of the four when it says so; uniform otherwise', () => {
+  assert.deepEqual(BLUR_TYPES, ['uniform', 'linear', 'spin', 'zoom'])
   assert.equal(blurTypeOf(null), 'uniform')
   assert.equal(blurTypeOf({}), 'uniform')
   assert.equal(blurTypeOf({ blurType: 'uniform' }), 'uniform')
   assert.equal(blurTypeOf({ blurType: 'Linear' }), 'uniform')
-  assert.equal(blurTypeOf({ blurType: 'linear' }), 'linear')
+  assert.equal(blurTypeOf({ blurType: 'radial' }), 'uniform')
+  for (const t of ['linear', 'spin', 'zoom']) assert.equal(blurTypeOf({ blurType: t }), t)
+})
+
+test('the amount\'s ceiling follows the type: 200 px, 180 degrees, 200 percent', () => {
+  assert.equal(BLUR_SPIN_MAX, 180)
+  assert.equal(BLUR_ZOOM_MAX, 200)
+  assert.deepEqual(BLUR_TYPES.map(blurMaxOf), [200, 200, 180, 200])
+  assert.equal(blurOf({ blur: 190, blurType: 'spin' }), 180)
+  assert.equal(blurOf({ blur: 190, blurType: 'zoom' }), 190)
+  assert.equal(blurOf({ blur: 190, blurType: 'linear' }), 190)
+})
+
+test('blurCenterOf: blurX and blurY as fractions of the box, 0.5 (the centre) by default', () => {
+  assert.deepEqual(blurCenterOf(null), { x: 0.5, y: 0.5 })
+  assert.deepEqual(blurCenterOf({}), { x: 0.5, y: 0.5 })
+  assert.deepEqual(blurCenterOf({ blurX: 0.25, blurY: 1.2 }), { x: 0.25, y: 1.2 })
+  assert.deepEqual(blurCenterOf({ blurX: '0.25', blurY: NaN }), { x: 0.5, y: 0.5 })
+  assert.deepEqual(blurCenterOf({ blurX: 0 }), { x: 0, y: 0.5 })
 })
 
 test('blurAngleOf: degrees mod 180, in [0, 180); not a finite number is 0', () => {

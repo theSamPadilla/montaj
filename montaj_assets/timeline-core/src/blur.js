@@ -28,14 +28,23 @@
 //   3. 0, absent or anything that is not a finite number is no blur. Above
 //      {@link BLUR_MAX} is held to it (save refuses it: lib/overlay_validation.py).
 //
-//   4. THE TYPE, `blurType`: `uniform` (the default, and anything that is not
-//      `linear`) blurs every direction alike; `linear` blurs along one
-//      direction only, `blurAngle` degrees ({@link blurAngleOf}): 0 runs along
-//      the picture's x axis (horizontal streaks), positive turns it clockwise
-//      on screen, as a clip's `rotation` does, taken mod 180. `blur` is then
-//      the sigma along that direction and there is no blur across it. The
-//      angle is the picture's own, so it turns with the clip's rotation.
-//      Both are static.
+//   4. THE TYPE, `blurType` ({@link BLUR_TYPES}; absent or unknown is
+//      `uniform`):
+//        - `uniform` blurs every direction alike;
+//        - `linear` blurs along one direction only, `blurAngle` degrees
+//          ({@link blurAngleOf}): 0 runs along the picture's x axis
+//          (horizontal streaks), positive turns it clockwise on screen, as a
+//          clip's `rotation` does, taken mod 180. `blur` is then the sigma
+//          along that direction and there is no blur across it. The angle is
+//          the picture's own, so it turns with the clip's rotation;
+//        - `spin` turns about a centre, `blur` the sweep in degrees (0 to 180);
+//        - `zoom` streaks out from a centre, `blur` in percent (0 to 200).
+//      Spin and zoom's centre is `blurX`, `blurY` ({@link blurCenterOf}),
+//      fractions of the clip's box as a mask's `x`, `y` are: 0 its left (top)
+//      edge, 0.5 its centre, the default. Every field is static. The amount's
+//      ceiling follows the type ({@link blurMaxOf}). Spin and zoom are not
+//      drawn yet (render item-blur.js, editor itemBlur.tsx): both engines
+//      draw them sharp.
 //
 // Pure like the rest of the package: no DOM, no I/O, no dependency.
 
@@ -43,32 +52,66 @@
 export const BLUR_MAX = 200
 
 /** The blur types, the default first. lib/overlay_validation.py mirrors them. */
-export const BLUR_TYPES = /** @type {const} */ (['uniform', 'linear'])
+export const BLUR_TYPES = /** @type {const} */ (['uniform', 'linear', 'spin', 'zoom'])
+
+/** Spin's largest sweep, in degrees. lib/overlay_validation.py mirrors it. */
+export const BLUR_SPIN_MAX = 180
+
+/** Zoom's largest amount, in percent. lib/overlay_validation.py mirrors it. */
+export const BLUR_ZOOM_MAX = 200
 
 /** The short edge of the design canvas the blur is measured on. */
 const DESIGN_SHORT_EDGE = 1080
 
 /**
- * The item's blur in design-canvas pixels: its `blur` when that is a finite
- * number above 0, held to {@link BLUR_MAX}; else 0.
+ * The item's blur amount: its `blur` when that is a finite number above 0,
+ * held to its type's ceiling ({@link blurMaxOf}); else 0. Design-canvas
+ * pixels for uniform and linear, degrees for spin, percent for zoom.
  *
- * @param {{ blur?: unknown } | null | undefined} item
+ * @param {{ blur?: unknown, blurType?: unknown } | null | undefined} item
  * @returns {number}
  */
 export function blurOf(item) {
   const b = item?.blur
   if (typeof b !== 'number' || !Number.isFinite(b) || b <= 0) return 0
-  return Math.min(BLUR_MAX, b)
+  return Math.min(blurMaxOf(blurTypeOf(item)), b)
 }
 
 /**
- * The item's blur type: `linear` when its `blurType` says so, else `uniform`.
+ * The largest amount a blur type takes: {@link BLUR_MAX} design pixels for
+ * uniform and linear, {@link BLUR_SPIN_MAX} degrees for spin,
+ * {@link BLUR_ZOOM_MAX} percent for zoom.
+ *
+ * @param {'uniform' | 'linear' | 'spin' | 'zoom'} type
+ * @returns {number}
+ */
+export function blurMaxOf(type) {
+  return type === 'spin' ? BLUR_SPIN_MAX : type === 'zoom' ? BLUR_ZOOM_MAX : BLUR_MAX
+}
+
+/**
+ * The item's blur type: its `blurType` when that is one of {@link BLUR_TYPES},
+ * else `uniform`.
  *
  * @param {{ blurType?: unknown } | null | undefined} item
- * @returns {'uniform' | 'linear'}
+ * @returns {'uniform' | 'linear' | 'spin' | 'zoom'}
  */
 export function blurTypeOf(item) {
-  return item?.blurType === 'linear' ? 'linear' : 'uniform'
+  const t = item?.blurType
+  return t === 'linear' || t === 'spin' || t === 'zoom' ? t : 'uniform'
+}
+
+/**
+ * A spin or zoom blur's centre, as fractions of the clip's box (a mask's `x`,
+ * `y` convention): its `blurX`, `blurY` where each is a finite number, else
+ * 0.5, the box's centre.
+ *
+ * @param {{ blurX?: unknown, blurY?: unknown } | null | undefined} item
+ * @returns {{ x: number, y: number }}
+ */
+export function blurCenterOf(item) {
+  const f = (/** @type {unknown} */ v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0.5)
+  return { x: f(item?.blurX), y: f(item?.blurY) }
 }
 
 /**
@@ -90,7 +133,7 @@ export function blurAngleOf(item) {
  * canvas: {@link blurOf} scaled from the 1080-short-edge design canvas. 0 for
  * no blur or a canvas with no size.
  *
- * @param {{ blur?: unknown } | null | undefined} item
+ * @param {{ blur?: unknown, blurType?: unknown } | null | undefined} item
  * @param {number} canvasW
  * @param {number} canvasH
  * @returns {number}

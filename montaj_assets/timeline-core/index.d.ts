@@ -1340,22 +1340,41 @@ export declare function isPlainComposite(item: CompositeItem | null | undefined)
 export declare const BLUR_MAX: number
 
 /**
- * The item's blur in design-canvas pixels (1080 on the short edge): its `blur`
- * when a finite number above 0, held to {@link BLUR_MAX}; else 0.
+ * The item's blur amount: its `blur` when a finite number above 0, held to its
+ * type's ceiling (blurMaxOf); else 0. Design pixels (1080 on the short edge)
+ * for uniform and linear, degrees for spin, percent for zoom.
  */
-export declare function blurOf(item: { blur?: unknown } | null | undefined): number
+export declare function blurOf(item: { blur?: unknown; blurType?: unknown } | null | undefined): number
 
 /**
  * The item's blur as a Gaussian sigma in pixels of a `canvasW` x `canvasH`
  * canvas: `blurOf(item) * min(canvasW, canvasH) / 1080`. 0 for no blur.
  */
-export declare function blurSigmaPx(item: { blur?: unknown } | null | undefined, canvasW: number, canvasH: number): number
+export declare function blurSigmaPx(item: { blur?: unknown; blurType?: unknown } | null | undefined, canvasW: number, canvasH: number): number
+
+/** A clip's blur type (src/blur.js). */
+export type BlurType = 'uniform' | 'linear' | 'spin' | 'zoom'
 
 /** The blur types, the default first (src/blur.js). */
-export declare const BLUR_TYPES: readonly ['uniform', 'linear']
+export declare const BLUR_TYPES: readonly ['uniform', 'linear', 'spin', 'zoom']
 
-/** The item's blur type: `linear` when its `blurType` says so, else `uniform`. */
-export declare function blurTypeOf(item: { blurType?: unknown } | null | undefined): 'uniform' | 'linear'
+/** Spin's largest sweep, in degrees. */
+export declare const BLUR_SPIN_MAX: number
+
+/** Zoom's largest amount, in percent. */
+export declare const BLUR_ZOOM_MAX: number
+
+/** The largest amount a blur type takes: BLUR_MAX px, BLUR_SPIN_MAX degrees or BLUR_ZOOM_MAX percent. */
+export declare function blurMaxOf(type: BlurType): number
+
+/** The item's blur type: its `blurType` when one of BLUR_TYPES, else `uniform`. */
+export declare function blurTypeOf(item: { blurType?: unknown } | null | undefined): BlurType
+
+/**
+ * A spin or zoom blur's centre, fractions of the clip's box as a mask's `x`,
+ * `y`: `blurX`, `blurY` where finite, else 0.5 (the box's centre).
+ */
+export declare function blurCenterOf(item: { blurX?: unknown; blurY?: unknown } | null | undefined): { x: number; y: number }
 
 /**
  * A linear blur's direction in degrees, in [0, 180): its `blurAngle` mod 180
