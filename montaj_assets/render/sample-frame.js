@@ -63,7 +63,7 @@ import {
   SEEK_PREROLL_S,
 } from './encode-segment.js'
 import { writeItemMask } from './item-mask.js'
-import { resolveAt, sourceWindow, opaqueReplacesPicture, isFullCanvasPlacement, opacityAt, maskAt, blendModeOf, trackLayerPositions, RESOLVER_VERSION } from '@bycrux/timeline-core'
+import { resolveAt, sourceWindow, opaqueReplacesPicture, isFullCanvasPlacement, opacityAt, maskAt, blendModeOf, blurOf, trackLayerPositions, RESOLVER_VERSION } from '@bycrux/timeline-core'
 import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
 import { captionOverlayFields } from './caption-spec.js'
 import { materializeScene3d, Scene3dError, SCENE3D_SRC } from './scene3d.js'
@@ -196,6 +196,7 @@ const SHORT_EDGE_TARGET = 1080
  * 24: §616, a clip's opacity track, mask and blend mode show in the still (the
  *    sampled opacity, the mask cut, the blend). 23's entries hold such a clip
  *    at its static opacity, whole and normally composited.
+ * 25: a clip's `blur` shows in the still. 24's entries hold such a clip sharp.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -203,7 +204,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 24
+const SAMPLE_CACHE_VERSION = 25
 
 // The still's composite canvas (`format=rgba`), which a blend mode converts from and back to.
 const SAMPLE_CANVAS_PIX_FMT = 'rgba'
@@ -1951,6 +1952,9 @@ export async function sampleFrame({
     if (mask) pseudoItem.mask = mask
     const blend = blendModeOf(ri.item)
     if (blend !== 'normal') pseudoItem.blendMode = blend
+    // The blur (static, never keyframed): the builder blurs the fitted
+    // picture before its contain pad, as the export does a video's footage.
+    if (blurOf(ri.item) > 0) pseudoItem.blur = blurOf(ri.item)
     // `maskBase` goes in workDir, which the cleanup below removes whole. The
     // builder draws no mask without one. The canvas is RGBA and the extracted
     // frames are already BT.709 (see the note after the stack), so a blend

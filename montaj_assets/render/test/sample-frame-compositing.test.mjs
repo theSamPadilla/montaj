@@ -91,3 +91,42 @@ test('a clip with a blend mode blends over what is below it', { skip: !hasFfmpeg
     near(px(out, 135, 240), [222, 100, 100], 8, 'screen of red over grey')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+// A clip's blur shows in the still, on the fitted picture, with opaque edges.
+test('a blurred clip is blurred in the still, and its edges stay opaque', { skip: !hasFfmpeg, timeout: 200_000 }, () => {
+  const { dir } = setup()
+  try {
+    // Left half red, right half blue, full frame, blur 40 (sigma 10 at 270 wide).
+    const split = join(dir, 'split.png')
+    const r = spawnSync(FFMPEG, ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=0xc80000:size=270x480',
+      '-f', 'lavfi', '-i', 'color=c=0x0000ff:size=135x480', '-filter_complex', '[0][1]overlay=x=135',
+      '-frames:v', '1', '-pix_fmt', 'rgb24', split])
+    assert.equal(r.status, 0, `${r.stderr}`)
+    const sharp = sample(dir, projectOf([img('a', split)]), 1, 'sharp')
+    near(px(sharp, 133, 240), [200, 0, 0], 4, 'unblurred, just left of the seam')
+    const out = sample(dir, projectOf([img('a', split, { blur: 40 })]), 1, 'blur')
+    // At the seam the two colours mix; two pixels left of it, mostly red but not pure.
+    near(px(out, 135, 240), [100, 0, 128], 14, 'at the seam')
+    const left = px(out, 133, 240)
+    assert.ok(left[0] < 190 && left[2] > 20, `blurred just left of the seam: ${left}`)
+    // The frame's edges read the edge pixel again: pure red, not darkened.
+    near(px(out, 0, 0), [200, 0, 0], 4, 'top-left corner')
+    near(px(out, 0, 479), [200, 0, 0], 4, 'bottom-left corner')
+    near(px(out, 269, 0), [0, 0, 255], 4, 'top-right corner')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a blurred video clip filling the frame keeps opaque edges in the still', { skip: !hasFfmpeg, timeout: 200_000 }, () => {
+  const { dir } = setup()
+  try {
+    const clip = join(dir, 'red.mp4')
+    const r = spawnSync(FFMPEG, ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=0xc80000:size=160x90:r=30:d=2',
+      '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-crf', '0', clip])
+    assert.equal(r.status, 0, `${r.stderr}`)
+    const vid = { id: 'v', type: 'video', src: clip, start: 0, end: 2, inPoint: 0, scale: 3.4, blur: 60 }
+    const out = sample(dir, projectOf([vid]), 1, 'video')
+    for (const [x, y] of [[0, 0], [269, 0], [0, 479], [269, 479], [135, 0], [135, 240]]) {
+      near(px(out, x, y), [200, 0, 0], 8, `(${x},${y})`)
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
