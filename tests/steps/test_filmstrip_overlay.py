@@ -1,3 +1,4 @@
+import os
 """Tests for the overlay (.jsx) path of steps/media/filmstrip.py"""
 import importlib.util
 import json
@@ -561,7 +562,10 @@ def test_prune_keeps_the_newest_strips(fake_node, overlay, tmp_path):
         build(overlay, out, duration=float(d))
         time.sleep(0.02)  # distinct mtimes, so the newest is unambiguous
     keys = [f for f in out.iterdir() if f.is_dir() and (f / "index.json").exists()]
-    assert len(keys) == fs.KEEP_STRIPS
+    assert len(keys) == 6        # many items on one jsx all keep their strips: the cap is far above a real track
+    fs.prune_strips(str(out), keep=4)
+    keys = [f for f in out.iterdir() if f.is_dir() and (f / "index.json").exists()]
+    assert len(keys) == 4
     # the newest build is still a hit; the oldest renders again
     n = len(fake_node)
     build(overlay, out, duration=6.0)
@@ -580,3 +584,15 @@ def test_prune_keeps_the_newest_strips(fake_node, overlay, tmp_path):
     assert (out / ("a" * 64)).is_dir() and (out / ".strip_x").is_dir()
     assert not [f for f in out.iterdir() if (f / "index.json").exists()]
     fs.prune_strips(str(tmp_path / "missing"))  # never raises
+
+
+def test_prune_retires_strips_unused_for_two_weeks(fake_node, overlay, tmp_path):
+    out = tmp_path / "out"
+    build(overlay, out, duration=1.0)
+    build(overlay, out, duration=2.0)
+    keys = sorted(f for f in out.iterdir() if f.is_dir() and (f / "index.json").exists())
+    old = time.time() - fs.KEEP_STRIP_AGE_S - 60
+    os.utime(keys[0], (old, old))
+    fs.prune_strips(str(out))
+    left = [f for f in out.iterdir() if f.is_dir() and (f / "index.json").exists()]
+    assert left == [keys[1]]

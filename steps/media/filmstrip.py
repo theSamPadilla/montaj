@@ -17,7 +17,7 @@ full cols*rows grid of input frames and stalls waiting for frames that will
 never arrive if the last chunk is partial (fewer tiles than cols*rows), so
 nb_frames is always set explicitly to the actual chunk size.
 """
-import json, math, os, re, sys, argparse, shutil, tempfile, hashlib, subprocess
+import json, math, os, re, sys, argparse, shutil, tempfile, hashlib, subprocess, time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import ffmpeg_error_tail, fail, require_file, run, check_output, get_duration, ffmpeg_bin
@@ -230,13 +230,17 @@ def _touch(path: str):
 
 
 # Strip folders kept per out-dir; older ones are pruned after each new strip.
-KEEP_STRIPS = 4
+# Overlays that share a jsx share its out-dir (one strip per item's props), so a count cap must sit far above any
+# real track (the promo project has 15 cards on one jsx); age is what really retires old strips.
+KEEP_STRIPS = 200
+KEEP_STRIP_AGE_S = 14 * 24 * 3600
 _KEY_DIR = re.compile(r"^[0-9a-f]{64}$")
 
 
-def prune_strips(out_dir: str, keep: int = KEEP_STRIPS):
-    """Best effort, never raises: keep the `keep` newest finished strip folders (they hold an index.json; a cache
-    hit touches its folder) and stale_* folders, remove the rest, then the import lists whose strip is gone.
+def prune_strips(out_dir: str, keep: int = KEEP_STRIPS, max_age_s: float = KEEP_STRIP_AGE_S):
+    """Best effort, never raises: remove finished strip folders (they hold an index.json; a cache hit touches its
+    folder) and stale_* folders unused for `max_age_s`, and any past the `keep` newest, then the import lists whose
+    strip is gone.
     A folder with no index.json yet may be a render in progress, and dot folders are work folders: both are left."""
     try:
         done = []
@@ -247,8 +251,10 @@ def prune_strips(out_dir: str, keep: int = KEEP_STRIPS):
             if name.startswith("stale_") or (_KEY_DIR.match(name) and os.path.isfile(os.path.join(path, "index.json"))):
                 done.append((os.path.getmtime(path), path))
         done.sort(reverse=True)
-        for _, path in done[keep:]:
-            shutil.rmtree(path, ignore_errors=True)
+        cutoff = time.time() - max_age_s
+        for i, (mtime, path) in enumerate(done):
+            if i >= keep or mtime < cutoff:
+                shutil.rmtree(path, ignore_errors=True)
         for name in os.listdir(out_dir):
             imports = _read_json(os.path.join(out_dir, name, "imports.json")) if _KEY_DIR.match(name) else None
             if isinstance(imports, list) and not os.path.isdir(os.path.join(out_dir, overlay_key(name, imports))):
