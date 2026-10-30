@@ -6,7 +6,7 @@ import type { OverlayFactory } from '../../../types'
 import OverlayItemsLayer from '../OverlayItemsLayer'
 import PreviewPlayer from '../PreviewPlayer'
 import { createPlaybackClock } from '../../playback-clock'
-import { blurFilterSpec, linearBlurRegion, pictureSizeFor } from '../itemBlur'
+import { blurFilterSpec, linearBlurRegion, pictureSizeFor, radialBlurSpec } from '../itemBlur'
 import { mediaBoxOf } from './mediaBox'
 
 // A clip's blur in the preview: an SVG filter on the clip's media box that cuts
@@ -79,13 +79,65 @@ describe('blurFilterSpec', () => {
     expect(r90.y * 100).toBeCloseTo(-50 - 2, 6)
   })
 
-  // PLACEHOLDER: spin and zoom are not drawn yet (itemBlur.tsx `drawsBlur`),
-  // so they show sharp, as the export draws them. Replace with their own tests
-  // when they are built.
-  it('spin and zoom are not drawn yet: null, the clip shows sharp', () => {
+  it('spin and zoom take no SVG filter (they draw on a canvas: radialBlurSpec)', () => {
     for (const blurType of ['spin', 'zoom'] as const) {
       expect(blurFilterSpec({ item: { ...item, blurType, blurX: 0.3 }, renderScale: 0.25, ...CANVAS, scaleX: 1, scaleY: 1 }, null)).toBeNull()
     }
+  })
+})
+
+describe('radialBlurSpec', () => {
+  const video = (over: Partial<VisualItem> = {}) =>
+    ({ id: 'v', type: 'video', start: 0, end: 1, blur: 30, blurType: 'spin', blurX: 0.3, blurY: 0.6, ...over }) as VisualItem
+  const image = (over: Partial<VisualItem> = {}) =>
+    ({ id: 'i', type: 'image', start: 0, end: 1, blur: 40, blurType: 'zoom', ...over }) as VisualItem
+  const at = (item: VisualItem, over: Record<string, unknown> = {}) =>
+    ({ item, renderScale: 0.25, ...CANVAS, scaleX: 1, scaleY: 1, ...over })
+  const h = (9 / 16) / (16 / 9)
+
+  it('uniform, linear or no blur: null', () => {
+    expect(radialBlurSpec(at(video({ blurType: undefined })), { w: 1920, h: 1080 })).toBeNull()
+    expect(radialBlurSpec(at(video({ blurType: 'linear' })), { w: 1920, h: 1080 })).toBeNull()
+    expect(radialBlurSpec(at(video({ blur: 0 })), { w: 1920, h: 1080 })).toBeNull()
+  })
+
+  it('a video: type, amount, centre; the footage contain-fitted in the box; the whole source', () => {
+    const r = radialBlurSpec(at(video({ sourceWidth: 1920, sourceHeight: 1080 }), { scaleX: 3.2, scaleY: 3.2 }), null)!
+    expect([r.type, r.amount, r.center]).toEqual(['spin', 30, { x: 0.3, y: 0.6 }])
+    expect(r.pictureRect.x).toBe(0)
+    expect(r.pictureRect.h).toBeCloseTo(h, 6)
+    expect(r.sourceRect).toBeUndefined()
+    // The wrapper's uniform scale is the box's on-screen scale; a per-axis box is 1.
+    expect(r.scale).toBe(3.2)
+    expect(radialBlurSpec(at(video({ sourceWidth: 1920, sourceHeight: 1080 }), { scaleX: 1, scaleY: 0.5 }), null)!.scale).toBe(1)
+  })
+
+  it('a video\'s crop is its source rect only with its stored size (as the export); unknown size: null (sharp until known)', () => {
+    const crop = { x: 0.25, y: 0, w: 0.5, h: 1 }
+    expect(radialBlurSpec(at(video({ sourceWidth: 1920, sourceHeight: 1080 }), { crop }), null)!.sourceRect).toEqual(crop)
+    expect(radialBlurSpec(at(video(), { crop }), { w: 1920, h: 1080 })!.sourceRect).toBeUndefined()
+    expect(radialBlurSpec(at(video()), null)).toBeNull()
+  })
+
+  it('the engine canvas spans the box: its source rect is the picture\'s rect', () => {
+    const r = radialBlurSpec(at(video({ sourceWidth: 1920, sourceHeight: 1080 }), { engineCanvas: true }), null)!
+    expect(r.sourceRect).toEqual(r.pictureRect)
+  })
+
+  it('a cover image: the whole box, from the centred part of the image at the box\'s aspect; fill: the crop stretched; contain: fitted', () => {
+    // A 1000x1000 image in a 9:16 box: the middle 9/16 of its width.
+    const cover = radialBlurSpec(at(image(), { fit: 'cover' }), { w: 1000, h: 1000 })!
+    expect(cover.pictureRect).toEqual({ x: 0, y: 0, w: 1, h: 1 })
+    expect(cover.sourceRect!.w).toBeCloseTo(9 / 16, 6)
+    expect(cover.sourceRect!.x).toBeCloseTo((1 - 9 / 16) / 2, 6)
+    expect(cover.sourceRect!.h).toBe(1)
+    expect(radialBlurSpec(at(image(), { fit: 'cover' }), null)).toBeNull()
+    const crop = { x: 0.1, y: 0.2, w: 0.5, h: 0.5 }
+    expect(radialBlurSpec(at(image(), { fit: 'fill', crop }), null)).toMatchObject({ pictureRect: { x: 0, y: 0, w: 1, h: 1 }, sourceRect: crop })
+    const contain = radialBlurSpec(at(image(), { fit: 'contain', crop }), { w: 1000, h: 1000 })!
+    expect(contain.sourceRect).toEqual(crop)
+    expect(contain.pictureRect.w).toBe(1)
+    expect(contain.pictureRect.h).toBeCloseTo(9 / 16, 6)
   })
 })
 
@@ -261,12 +313,16 @@ describe('OverlayItemsLayer — a clip\'s blur', () => {
     expect(turn().style.display).toBe('contents')
   })
 
-  it('spin and zoom (not drawn yet): no filter and no SVG, as with no blur', () => {
-    const card = { id: 'bg', type: 'video', src: 'bg.mp4', start: 0, end: 10, inPoint: 0, scale: 0.5, blur: 40, blurType: 'zoom' } as VisualItem
+  it('spin and zoom: no SVG filter; without WebGL2 (jsdom) no surface either, the clip shows sharp', () => {
+    const card = { id: 'bg', type: 'video', src: 'bg.mp4', start: 0, end: 10, inPoint: 0, scale: 0.5, blur: 40, blurType: 'zoom',
+      sourceWidth: 1920, sourceHeight: 1080 } as VisualItem
     const { container } = renderLayer([card])
-    const mediaBox = mediaBoxOf(container.querySelector('video[src="bg.mp4"]') as HTMLElement)
+    const video = container.querySelector('video[src="bg.mp4"]') as HTMLElement
+    const mediaBox = mediaBoxOf(video)
     expect(mediaBox.style.filter).toBe('')
     expect(container.querySelector('filter[data-montaj-blur]')).toBeNull()
+    expect(container.querySelector('canvas[data-montaj-radial-blur]')).toBeNull()
+    expect((mediaBox.querySelector('[data-montaj-blur-back]') as HTMLElement).style.opacity).toBe('')
   })
 
   it('no blur: no filter and no SVG (unchanged)', () => {

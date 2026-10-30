@@ -63,9 +63,22 @@
 // `display: contents`: no box, nothing drawn differently. Measured against
 // the export in Chromium at 0, 30, 90 and 135 degrees: within 13 codes, mean
 // under 1.6, edge rows within 3 (render/test/item-blur-preview-parity.test.mjs).
+//
+// SPIN AND ZOOM (`blurType: 'spin' | 'zoom'`) draw on a canvas, not with SVG:
+// a RadialBlurSurface (the shared WebGL2 pass, radialBlurGL.ts) after the two
+// wrappers, filling the media box, so the box's mask and the wrapper's blend
+// apply to it ({@link BlurWrappers}). It reads the media inside the wrappers
+// (the overlay <video>, the <img>, the base clip's active <video> slot, the
+// engine's canvas, redrawn on each engine paint), which stays mounted at
+// opacity 0 once the surface draws; on failure the media shows sharp. The
+// picture's rect and the part of the source that fills it come from
+// {@link radialBlurSpec}. Measured against the export in Chromium: worst 8
+// codes, mean under 1 (editor/browser/radial-blur.test.mjs).
 
-import { useId, type CSSProperties, type ReactNode } from 'react'
-import { blurAngleOf, blurOf, blurTypeOf, pictureRectInBox } from '@bycrux/timeline-core'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { blurAngleOf, blurCenterOf, blurOf, blurTypeOf, pictureRectInBox } from '@bycrux/timeline-core'
+import RadialBlurSurface, { type RadialBlurSurfaceHandle } from './RadialBlurSurface'
+import type { FracRect, RadialBlurSource } from './radialBlurGL'
 import type { VisualItem } from '../../schema'
 import { useVideoNaturalSize } from '../useVideoNaturalSize'
 import { useImageNaturalSize } from '../useImageNaturalSize'
@@ -93,6 +106,11 @@ export interface ItemBlurInput {
   scaleY: number
   /** A fallback for the picture's size until the probe of `src` answers (the base clip's loaded `<video>`). */
   knownSize?: Size | null
+  /** The source is the engine's canvas, which spans the box (the picture inside it, black bars around):
+   *  a spin or zoom blur reads the picture's rect of it. */
+  engineCanvas?: boolean
+  /** Playback is running (a spin or zoom blur may drop to half resolution on long frames). */
+  playing?: boolean
 }
 
 /** The SVG filter for a blur: its sigma in the media box's own pixels, the
@@ -127,27 +145,24 @@ export function pictureSizeFor(item: VisualItem, crop: Crop | undefined, fit: It
   return cropApplies ? { w: size.w * crop.w, h: size.h * crop.h } : size
 }
 
-/**
- * Whether the preview draws the clip's blur at all.
- *
- * SPIN AND ZOOM PLUG IN HERE. They are not drawn yet: until they are, a spin
- * or zoom clip shows sharp (a uniform blur of sigma 0), as the export draws it
- * (render item-blur.js). Pinned by itemBlur.test.tsx "spin and zoom are not
- * drawn yet".
- */
-export function drawsBlur(item: VisualItem): boolean {
+const isRadial = (item: VisualItem) => {
   const type = blurTypeOf(item)
-  if (type === 'spin' || type === 'zoom') return false
+  return type === 'spin' || type === 'zoom'
+}
+
+/** Whether the preview draws the clip's blur at all: an SVG filter (uniform, linear) or the WebGL surface (spin, zoom). */
+export function drawsBlur(item: VisualItem): boolean {
   return blurOf(item) > 0
 }
 
 /**
- * The blur's SVG filter, or null when the clip has none. Pure: the hook
- * {@link useItemBlur} renders it.
+ * The blur's SVG filter, or null when the clip has none or its blur is a
+ * spin or zoom (those draw on a canvas: {@link radialBlurSpec}). Pure: the
+ * hook {@link useItemBlur} renders it.
  */
 export function blurFilterSpec(input: Omit<ItemBlurInput, 'src' | 'knownSize'>, picture: Size | null): BlurFilterSpec | null {
   const b = blurOf(input.item)
-  if (!drawsBlur(input.item) || !drawable(input.renderScale)) return null
+  if (!drawsBlur(input.item) || isRadial(input.item) || !drawable(input.renderScale)) return null
   const { scaleX: sx, scaleY: sy } = input
   // mediaBoxStyle: a uniform box (or one it cannot draw per axis) is the full
   // frame under the wrapper's scale(s); a per-axis one has a net scale of 1.
@@ -162,6 +177,63 @@ export function blurFilterSpec(input: Omit<ItemBlurInput, 'src' | 'knownSize'>, 
   const box = uniform ? { w: frameW, h: frameH } : { w: frameW * sx, h: frameH * sy }
   const angle = blurTypeOf(input.item) === 'linear' ? blurAngleOf(input.item) : null
   return { sigma, rect, box, perScreenPx: 1 / local, angle }
+}
+
+/** What a spin or zoom blur's surface needs (RadialBlurSurface's props). */
+export interface RadialBlurSpec {
+  type: 'spin' | 'zoom'
+  amount: number
+  center: { x: number; y: number }
+  /** The picture's rect in the media box, fractions. */
+  pictureRect: FracRect
+  /** The part of the source element that fills the picture, fractions of it; the whole source when absent. */
+  sourceRect?: FracRect
+  /** The media box's own on-screen scale (the wrapper's uniform scale; 1 for a per-axis box). */
+  scale: number
+}
+
+/**
+ * A spin or zoom blur's surface (see {@link BlurWrappers}), or null for any
+ * other blur, or while the picture's size is not known yet (the clip then
+ * shows sharp until it is). Pure.
+ *
+ * `natural` is the source's own size before its crop (a video's footage, an
+ * image's pixels). The picture: a video, and a `contain` image, contain-fitted
+ * in the box; a `cover` or `fill` image is the whole box. The source rect: the
+ * crop (a video's only with its stored size, as the export), narrowed for a
+ * `cover` image to the part of it the box shows; on the engine canvas, which
+ * spans the box and draws the crop itself, the picture's rect.
+ */
+export function radialBlurSpec(input: Omit<ItemBlurInput, 'src' | 'knownSize'>, natural: Size | null): RadialBlurSpec | null {
+  const { item, crop, fit, scaleX: sx, scaleY: sy } = input
+  if (!isRadial(item) || !(blurOf(item) > 0)) return null
+  const type = blurTypeOf(item) as 'spin' | 'zoom'
+  const uniform = sx === sy || !drawable(sx) || !drawable(sy)
+  const scale = uniform && drawable(sx) ? sx : 1
+  const boxW = input.canvasW * (drawable(sx) ? sx : 1)
+  const boxH = input.canvasH * (drawable(sy) ? sy : 1)
+  const base = { type, amount: blurOf(item), center: blurCenterOf(item), scale }
+  const whole: FracRect = { x: 0, y: 0, w: 1, h: 1 }
+  const cropRect = crop && drawable(crop.w) && drawable(crop.h) ? crop : null
+  if (item.type === 'image' && fit !== 'contain') {
+    if (fit === 'fill') return { ...base, pictureRect: whole, sourceRect: cropRect ?? undefined }
+    // cover: the centred part of the (cropped) image at the box's aspect.
+    if (!known(natural)) return null
+    const c = cropRect ?? whole
+    const a = (natural.w * c.w) / (natural.h * c.h)
+    const boxA = boxW / boxH
+    const sourceRect = a > boxA
+      ? { x: c.x + (c.w * (1 - boxA / a)) / 2, y: c.y, w: (c.w * boxA) / a, h: c.h }
+      : { x: c.x, y: c.y + (c.h * (1 - a / boxA)) / 2, w: c.w, h: (c.h * a) / boxA }
+    return { ...base, pictureRect: whole, sourceRect }
+  }
+  const picture = pictureSizeFor(item, crop, fit, natural)
+  if (!picture) return null
+  const pictureRect = pictureRectInBox(boxW, boxH, picture.w, picture.h)
+  if (input.engineCanvas) return { ...base, pictureRect, sourceRect: pictureRect }
+  const stored = item.type === 'video' && drawable(item.sourceWidth ?? 0) && drawable(item.sourceHeight ?? 0)
+  const cropApplies = cropRect && (item.type === 'image' || stored)
+  return { ...base, pictureRect, sourceRect: cropApplies ? cropRect : undefined }
 }
 
 /**
@@ -190,25 +262,99 @@ export function linearBlurRegion(rect: BlurFilterSpec['rect'], box: Size, deg: n
 const INERT: CSSProperties = { display: 'contents' }
 
 /** What {@link useItemBlur} hands its layer: the media box's style, the two
- *  wrappers' (see the header; inert without a linear blur), and the SVG. */
+ *  wrappers' (see the header; inert without a linear blur), the SVG, and a
+ *  spin or zoom blur's surface (null for any other). */
 export interface ItemBlurParts {
   style: CSSProperties
   turnStyle: CSSProperties
   backStyle: CSSProperties
   defs: ReactNode
+  radial: (RadialBlurSpec & { playing: boolean }) | null
 }
 
-const NONE: ItemBlurParts = { style: {}, turnStyle: INERT, backStyle: INERT, defs: null }
+const NONE: ItemBlurParts = { style: {}, turnStyle: INERT, backStyle: INERT, defs: null, radial: null }
+
+/** The back wrapper while a spin or zoom surface draws: the media stays mounted and decoding, unseen. */
+const HIDDEN: CSSProperties = { position: 'absolute', inset: 0, opacity: 0 }
+
+/**
+ * The element a spin or zoom blur reads: the one marked
+ * `data-montaj-blur-source` (the base clip's active `<video>` slot), else the
+ * only `<video>`, else the `<img>`, else the engine's canvas.
+ */
+export function blurSourceIn(root: Element | null): RadialBlurSource | null {
+  if (!root) return null
+  const marked = root.querySelector('[data-montaj-blur-source]')
+  if (marked) return marked as RadialBlurSource
+  const videos = root.querySelectorAll('video')
+  if (videos.length === 1) return videos[0]
+  return (root.querySelector('img') ?? root.querySelector('canvas[data-montaj-engine-canvas]')) as RadialBlurSource | null
+}
 
 /**
  * The media box's children inside the two blur wrappers. Always render it,
  * blur or not, so the media never remounts.
+ *
+ * SPIN AND ZOOM. With `blur.radial`, a RadialBlurSurface (a canvas filling the
+ * media box, after the wrappers, so the box's mask and the wrapper's blend
+ * apply to it) draws the blur from the media inside: {@link blurSourceIn}.
+ * Once it draws, the back wrapper turns to opacity 0, so the media stays
+ * mounted, decoding and firing its frame callbacks (and a base clip's
+ * `<video>` keeps its audio routing) while only the surface shows. On
+ * failure ('unsupported', 'lost', 'blocked') the surface renders nothing and
+ * the media shows sharp. `redraw` subscribes the surface to a source that
+ * changes without events of its own (the engine canvas: `onPaint`).
+ * `backing` paints under the surface what the hidden media painted around
+ * the picture (the engine canvas's black bars).
  */
-export function BlurWrappers({ blur, children }: { blur: ItemBlurParts; children: ReactNode }) {
+export function BlurWrappers({ blur, children, redraw, backing }: {
+  blur: ItemBlurParts
+  children: ReactNode
+  redraw?: (listener: () => void) => () => void
+  backing?: string
+}) {
+  const backRef = useRef<HTMLDivElement | null>(null)
+  const surfaceRef = useRef<RadialBlurSurfaceHandle | null>(null)
+  const [source, setSource] = useState<RadialBlurSource | null>(null)
+  const [drawing, setDrawing] = useState(false)
+  const radial = blur.radial
+  const on = !!radial
+  // The source can change under any render (the base clip's active slot, an
+  // image's crop wrapper), so look again after each one.
+  useLayoutEffect(() => {
+    const next = on ? blurSourceIn(backRef.current) : null
+    if (next !== source) setSource(next)
+  })
+  useEffect(() => { if (!on) setDrawing(false) }, [on])
+  useEffect(() => {
+    if (!on || !redraw) return
+    return redraw(() => surfaceRef.current?.draw())
+  }, [on, redraw])
+  const onStatus = useCallback((ok: boolean) => setDrawing(ok), [])
+  const hide = !!radial && drawing && !!source
   return (
-    <div data-montaj-blur-turn="" style={blur.turnStyle}>
-      <div data-montaj-blur-back="" style={blur.backStyle}>{children}</div>
-    </div>
+    <>
+      <div data-montaj-blur-turn="" style={blur.turnStyle}>
+        <div ref={backRef} data-montaj-blur-back="" style={hide ? HIDDEN : blur.backStyle}>{children}</div>
+      </div>
+      {radial && source && (
+        <>
+          {backing && hide && <div data-montaj-blur-backing="" style={{ position: 'absolute', inset: 0, background: backing }} />}
+          <RadialBlurSurface
+            ref={surfaceRef}
+            source={source}
+            type={radial.type}
+            amount={radial.amount}
+            center={radial.center}
+            pictureRect={radial.pictureRect}
+            sourceRect={radial.sourceRect}
+            playing={radial.playing}
+            scale={radial.scale}
+            onStatus={onStatus}
+          />
+        </>
+      )}
+    </>
   )
 }
 
@@ -224,6 +370,7 @@ function linearParts(id: string, spec: BlurFilterSpec): ItemBlurParts {
   const pct = (n: number) => `${fmt(n * 100)}%`
   const region = linearBlurRegion(rect, box, angle)
   return {
+    radial: null,
     style: { clipPath: `inset(${pct(rect.y)} ${pct(1 - rect.x - rect.w)} ${pct(1 - rect.y - rect.h)} ${pct(rect.x)})` },
     turnStyle: { position: 'absolute', inset: 0, transform: `rotate(${fmt(angle)}deg)`, filter: `url(#${id})` },
     backStyle: { position: 'absolute', inset: 0, transform: `rotate(${fmt(-angle)}deg)`, filter: `url(#${id}-cut)` },
@@ -260,16 +407,22 @@ export function useItemBlur(input: ItemBlurInput | null): ItemBlurParts {
   const item = input?.item
   const needsVideo = wants && item?.type === 'video'
     && !(drawable(item.sourceWidth ?? 0) && drawable(item.sourceHeight ?? 0))
-  const needsImage = wants && item?.type === 'image' && input?.fit === 'contain'
+  // A spin or zoom over a cover image needs its size too (the part the box shows).
+  const needsImage = wants && item?.type === 'image' && (input?.fit === 'contain' || (isRadial(item) && input?.fit !== 'fill'))
   const videoSize = useVideoNaturalSize(needsVideo ? input?.src : undefined)
   const imageSize = useImageNaturalSize(needsImage ? input?.src : undefined)
   if (!input || !wants) return NONE
   const natural = item?.type === 'image' ? imageSize : (known(videoSize) ? videoSize : input.knownSize)
+  if (isRadial(input.item)) {
+    const radial = radialBlurSpec(input, natural ?? null)
+    return radial ? { ...NONE, radial: { ...radial, playing: !!input.playing } } : NONE
+  }
   const spec = blurFilterSpec(input, pictureSizeFor(input.item, input.crop, input.fit, natural))
   if (!spec) return NONE
   const { sigma, rect, box } = spec
   if (spec.angle !== null) return linearParts(id, spec)
   return {
+    radial: null,
     turnStyle: INERT,
     backStyle: INERT,
     style: { filter: `url(#${id})` },

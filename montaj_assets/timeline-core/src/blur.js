@@ -42,9 +42,10 @@
 //      Spin and zoom's centre is `blurX`, `blurY` ({@link blurCenterOf}),
 //      fractions of the clip's box as a mask's `x`, `y` are: 0 its left (top)
 //      edge, 0.5 its centre, the default. Every field is static. The amount's
-//      ceiling follows the type ({@link blurMaxOf}). Spin and zoom are not
-//      drawn yet (render item-blur.js, editor itemBlur.tsx): both engines
-//      draw them sharp.
+//      ceiling follows the type ({@link blurMaxOf}). Spin and zoom draw from
+//      one shared plan (src/radialBlur.js): the export's averaged copies
+//      (render item-blur.js) and the preview's WebGL pass (editor
+//      radialBlurGL.ts).
 //
 // Pure like the rest of the package: no DOM, no I/O, no dependency.
 

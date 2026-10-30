@@ -211,6 +211,12 @@ export interface EngineDeps {
   /** §190: what the mixer carries, whenever that changes. Same stability note as `onTime`. */
   onMixerChange?: (state: MixerState) => void
   /**
+   * Called after every frame painted into the canvas (a paint or a blend),
+   * the canvas already holding it: a spin or zoom blur over the canvas
+   * (video/preview/RadialBlurSurface.tsx) redraws from it here.
+   */
+  onPaint?: () => void
+  /**
    * §190: `outputLatency + baseLatency` of the shared context, read live per
    * tick; today's path paints this far behind its clock. Default: the shared
    * context's, 0 before one exists.
@@ -1504,10 +1510,12 @@ export function createEngine(project: Project, deps: EngineDeps): Engine {
         paint: (frame, plan) => {
           recordPaint()
           painter.paint(frame, plan)
+          deps.onPaint?.()
         },
         paintBlend: (from, to, p, fromPlan, toPlan) => {
           recordPaint()
           painter.paintBlend(from, to, p, fromPlan, toPlan)
+          deps.onPaint?.()
         },
       })
     },

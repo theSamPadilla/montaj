@@ -192,6 +192,12 @@ export interface EnginePlayback {
   /** §190 T4: the engine's scrub grain sink, `null` outside mixer mode. Read per gesture. Stable identity. */
   mixerScrub: () => MixerScrub | null
   /**
+   * Calls `listener` after every frame the engine paints into the canvas;
+   * returns the unsubscribe. A spin or zoom blur over the canvas redraws from
+   * it there (RadialBlurSurface). Stable identity.
+   */
+  onPaint: (listener: () => void) => () => void
+  /**
    * §190: whether the preview mixer plays this overlay-track video's sound
    * (by the item's `src`), in which case its `<video>` must play muted. False
    * outside mixer mode and for a source the plan left out. Changes identity
@@ -538,6 +544,8 @@ export function useEnginePlayback(
   const projectId = project.id
   const projectRef = useRef(project)
   projectRef.current = project
+  /** RadialBlurSurface redraws after each paint (`onPaint`). */
+  const paintListenersRef = useRef(new Set<() => void>())
   /** The project object the engine has already been told about. */
   const appliedProjectRef = useRef<Project | null>(null)
 
@@ -548,6 +556,7 @@ export function useEnginePlayback(
       onStatusChange: handleStatus,
       onError: handleError,
       onMixerChange: handleMixer,
+      onPaint: () => { for (const fn of paintListenersRef.current) fn() },
       startProjectS: currentTimeRef.current,
       // A muted host has no sound to carry: no MixClock, no conforms.
       ...(mutedRef.current ? { mixer: false as const } : {}),
@@ -706,6 +715,11 @@ export function useEnginePlayback(
 
   const mixerScrub = useCallback((): MixerScrub | null => engineRef.current?.mixerScrub() ?? null, [])
 
+  const onPaint = useCallback((listener: () => void) => {
+    paintListenersRef.current.add(listener)
+    return () => { paintListenersRef.current.delete(listener) }
+  }, [])
+
   return {
     isPlaying: status.transport === 'playing',
     setIsPlaying,
@@ -721,6 +735,7 @@ export function useEnginePlayback(
     getStats,
     acquireDemux,
     mixerScrub,
+    onPaint,
     audioInMix,
   }
 }

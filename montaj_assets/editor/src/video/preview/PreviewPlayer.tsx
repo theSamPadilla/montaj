@@ -742,6 +742,9 @@ function PreviewSurface({
     crop: cropKeyed ? geometryAt(baseShown, 'video', localTimeOf(baseShown, currentTime)).sourceCrop : baseShown.sourceCrop,
     renderScale, canvasW: RENDER_W, canvasH: RENDER_H, scaleX: baseSx, scaleY: baseSy,
     knownSize: videoDims,
+    // A spin or zoom reads the engine's canvas (the picture's rect of it) or the active <video> slot.
+    engineCanvas: playback.mode === 'engine',
+    playing: playback.isPlaying,
   } : null)
   const mediaBox = { ...mediaBoxStyle(xf), ...baseComp?.mask, ...baseBlur.style }
   const xfBox = videoTransformBoxPct(xf)
@@ -836,8 +839,13 @@ function PreviewSurface({
         <div className="absolute inset-0" style={transformContainerStyle}>
           <div style={mediaBox}>
             {/* The blur's wrappers (itemBlur.tsx), always rendered: a linear
-                blur turns them, and neither the slots nor the canvas ever remount. */}
-            <BlurWrappers blur={baseBlur}>
+                blur turns them, and neither the slots nor the canvas ever remount.
+                A spin or zoom draws over them from the engine canvas (redrawn on
+                each paint, its black bars kept under the surface) or the active
+                slot (marked `data-montaj-blur-source`). */}
+            <BlurWrappers blur={baseBlur}
+              redraw={playback.mode === 'engine' ? playback.onPaint : undefined}
+              backing={playback.mode === 'engine' ? '#000' : undefined}>
             {playback.mode === 'engine' ? (
               <EngineSurface
                 attach={playback.attachCanvas}
@@ -851,6 +859,7 @@ function PreviewSurface({
                 {/* Slot 0 */}
                 <video
                   ref={playback.video0Ref}
+                  data-montaj-blur-source={playback.activeSlot === 0 ? '' : undefined}
                   // Clips load cross-origin from R2; without this the media is CORS-tainted
                   // and the Web Audio createMediaElementSource graph outputs silence. R2
                   // sends Access-Control-Allow-Origin, so anonymous CORS keeps it audible.
@@ -875,6 +884,7 @@ function PreviewSurface({
                 {/* Slot 1 */}
                 <video
                   ref={playback.video1Ref}
+                  data-montaj-blur-source={playback.activeSlot === 1 ? '' : undefined}
                   // See slot 0: anonymous CORS so R2 cross-origin clips aren't tainted
                   // (which would mute the Web Audio graph).
                   crossOrigin="anonymous"
