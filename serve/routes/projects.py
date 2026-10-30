@@ -15,6 +15,7 @@ import os
 import secrets
 import shutil
 import subprocess
+import threading
 import sys
 import time
 from collections import deque
@@ -1240,6 +1241,44 @@ def _server_timing_header(timings: dict) -> str | None:
     return ", ".join(parts) or None
 
 
+def _hold_lock_until(project_path, acquired, release, failure) -> None:
+    """Thread body of `_hold_project_lock_in_thread`: take the lock, say so, hold
+    it until told to let go."""
+    try:
+        with project_lock(project_path):
+            acquired.set()
+            release.wait()
+    except BaseException as exc:  # noqa: BLE001 - re-raised on the loop
+        failure.append(exc)
+    finally:
+        acquired.set()
+
+
+@contextlib.asynccontextmanager
+async def _hold_project_lock_in_thread(project_path: Path):
+    """Hold the project's lock for the length of an `await`, which
+    `project_lock_async` must not do: its lock is thread-reentrant, so another
+    task on this event-loop thread (a PUT, an ingest) would walk straight in
+    while a subprocess ran. A worker thread owns the lock here instead; loop
+    tasks reach `project_lock_async`, fail the non-blocking acquire and wait.
+    Other processes wait on the OS lock as always. Nothing awaited inside may
+    itself take this project's lock on the loop thread: it would wait for us."""
+    acquired = threading.Event()
+    release = threading.Event()
+    failure: list[BaseException] = []
+    thread = threading.Thread(target=_hold_lock_until, args=(project_path, acquired, release, failure),
+                              name="project-lock-holder", daemon=True)
+    thread.start()
+    await asyncio.to_thread(acquired.wait)
+    if failure:
+        raise failure[0]
+    try:
+        yield
+    finally:
+        release.set()
+        await asyncio.shield(asyncio.to_thread(thread.join))
+
+
 async def _run_init_subprocess(
     cmd: list[str],
     *,
@@ -1247,6 +1286,7 @@ async def _run_init_subprocess(
     broadcaster: "SSEBroadcaster | None" = None,
     background_normalize: bool = False,
     timings: dict | None = None,
+    hold_lock: Path | None = None,
 ) -> dict:
     """Spawn project/init.py via subprocess, capture stdout (project path), and
     return the parsed project.json dict. Raises HTTPException on any failure.
@@ -1266,64 +1306,70 @@ async def _run_init_subprocess(
     migration button. `broadcaster` is optional: without one the write-back into
     project.json still happens as each encode lands, only the live SSE nudge to
     an already-open editor is lost.
+
+    `hold_lock` (a project.json path): the project's lock is held for the init
+    subprocess alone (§631 --adopt-seed reads the seed and replaces project.json),
+    and released before init's output is read back and the proxy work queued,
+    which take that lock themselves.
     """
     debug_log = os.environ.get("MONTAJ_DEBUG") == "1"
     spawn_started = time.perf_counter()
 
-    try:
-        if debug_log:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=str(Path.cwd()),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                stdout_chunks: list[bytes] = []
-                stderr_chunks: list[bytes] = []
-
-                async def _drain_to_stderr(stream, sink):
-                    while True:
-                        line = await stream.readline()
-                        if not line:
-                            return
-                        sink.append(line)
-                        try:
-                            sys.stderr.buffer.write(line)
-                            sys.stderr.buffer.flush()
-                        except Exception:
-                            pass
-
-                async def _read_all(stream, sink):
-                    while True:
-                        chunk = await stream.read(8192)
-                        if not chunk:
-                            return
-                        sink.append(chunk)
-
-                await asyncio.wait_for(
-                    asyncio.gather(
-                        _read_all(proc.stdout, stdout_chunks),
-                        _drain_to_stderr(proc.stderr, stderr_chunks),
-                        proc.wait(),
-                    ),
-                    timeout=timeout,
+    async with (_hold_project_lock_in_thread(hold_lock) if hold_lock is not None else contextlib.nullcontext()):
+        try:
+            if debug_log:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    cwd=str(Path.cwd()),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
-                stdout = b"".join(stdout_chunks).decode()
-                stderr = b"".join(stderr_chunks).decode()
-                returncode = proc.returncode
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                raise HTTPException(504, detail={"error": "timeout", "message": f"Project init exceeded {timeout}s"})
-        else:
-            stdout, stderr, returncode = await run_subprocess(
-                cmd,
-                timeout=timeout,
-                cwd=str(Path.cwd()),
-            )
-    except FileNotFoundError as e:
-        raise server_error("init_failed", str(e))
+                try:
+                    stdout_chunks: list[bytes] = []
+                    stderr_chunks: list[bytes] = []
+
+                    async def _drain_to_stderr(stream, sink):
+                        while True:
+                            line = await stream.readline()
+                            if not line:
+                                return
+                            sink.append(line)
+                            try:
+                                sys.stderr.buffer.write(line)
+                                sys.stderr.buffer.flush()
+                            except Exception:
+                                pass
+
+                    async def _read_all(stream, sink):
+                        while True:
+                            chunk = await stream.read(8192)
+                            if not chunk:
+                                return
+                            sink.append(chunk)
+
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            _read_all(proc.stdout, stdout_chunks),
+                            _drain_to_stderr(proc.stderr, stderr_chunks),
+                            proc.wait(),
+                        ),
+                        timeout=timeout,
+                    )
+                    stdout = b"".join(stdout_chunks).decode()
+                    stderr = b"".join(stderr_chunks).decode()
+                    returncode = proc.returncode
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+                    raise HTTPException(504, detail={"error": "timeout", "message": f"Project init exceeded {timeout}s"})
+            else:
+                stdout, stderr, returncode = await run_subprocess(
+                    cmd,
+                    timeout=timeout,
+                    cwd=str(Path.cwd()),
+                )
+        except FileNotFoundError as e:
+            raise server_error("init_failed", str(e))
 
     # Init's own timing line comes off stderr before anything reads it, so it
     # can never show up inside an error message.
@@ -1346,7 +1392,15 @@ async def _run_init_subprocess(
         # plan's HTTP contract (see docs/plans/2026-05-02-workspace-paths.md).
         # Hub's idempotent-retry logic pattern-matches on 400 + error code, so
         # these must not be 500. All other init.py error codes keep 500.
-        status = 400 if err.get("error") in {"project_path_exists", "invalid_project_path"} else 500
+        code = err.get("error")
+        status = 400 if code in {"project_path_exists", "invalid_project_path"} else 500
+        # §631 --adopt-seed: the seed was wrong or missing, not a server fault.
+        if code in {"adopt_refused", "adopt_unsupported", "adopt_needs_id"}:
+            status = 400
+        elif code == "adopt_not_found":
+            status = 404
+        elif code == "duplicate_project_id":
+            status = 409
         raise HTTPException(status, detail=err)
 
     project_path = Path(stdout.strip())
@@ -1394,6 +1448,15 @@ async def run_project(request: Request, response: Response, body: dict = Body(..
       ``normalize`` ("eager" | "lazy"), ``symlinkClips`` (bool), ``derivedFrom``
       (str). Unknown keys are rejected rather than ignored. These are forwarded
       for EVERY workflow, not just ai_video.
+    - ``adoptSeed`` — ``true`` with ``id`` (§631): the seed project ``id`` (an
+      empty project holding only recorded ``sources``, ``seed: true``) becomes
+      the real project in place: same id, same folder, its sources kept first,
+      new clips appended. Refused (400 ``invalid_field``) with ``projectPath``,
+      ``clipUrls``, ``remoteClips`` or ``remoteAssets``; 400 ``missing_field``
+      without ``id``; 400 ``adopt_unsupported`` for carousel and ai_video; init's
+      ``adopt_refused`` (not a seed, or it holds items) is 400, ``adopt_not_found``
+      404, ``duplicate_project_id`` 409. The project's lock is held while init
+      runs, and open editors get the new project.json over SSE.
     - ``aiVideoIntake`` — the legacy spelling, still supported (montaj's own UI
       sends it). It additionally carries imageRefs/styleRefs/aspectRatio/
       targetDurationSeconds/colorSpace/music/voiceover, which have no
@@ -1427,6 +1490,19 @@ async def run_project(request: Request, response: Response, body: dict = Body(..
     if not isinstance(voiceover_assets, list):
         raise bad_request("invalid_field", "'voiceoverAssets' must be a list of paths")
     project_id_arg = _validate_optional_id(body)
+    # §631: `adoptSeed` turns the seed project `id` into the real project in place.
+    adopt_seed = body.get("adoptSeed")
+    if adopt_seed:
+        if adopt_seed is not True:
+            raise bad_request("invalid_field", f"'adoptSeed' must be the boolean true (got {adopt_seed!r})")
+        if not project_id_arg:
+            raise bad_request("missing_field", "'adoptSeed' needs 'id' (the seed project's id)")
+        if project_path_arg is not None:
+            raise bad_request("invalid_field", "'adoptSeed' and 'projectPath' are mutually exclusive")
+        if body.get("clipUrls"):
+            raise bad_request("invalid_field", "'adoptSeed' does not take 'clipUrls'")
+        if remote_clips or remote_assets:
+            raise bad_request("invalid_field", "'adoptSeed' does not take 'remoteClips' or 'remoteAssets'")
     if project_id_arg:
         # §482: a second folder under a synced project's id shares its clash set (A-17), so the AI may not make
         # one while a clash is open. Not even from the window it drives with the clash held (B1 allows writing a held
@@ -1439,6 +1515,8 @@ async def run_project(request: Request, response: Response, body: dict = Body(..
     # --- Carousel fast path — branch before clip/asset/intake validation ---
     wf_data = read_workflow(workflow)
     if wf_data is not None and wf_data.get("project_type") == "carousel":
+        if adopt_seed:
+            raise bad_request("adopt_unsupported", "a seed cannot become a carousel project")
         carousel_aspect = body.get("carouselAspect")
         if not carousel_aspect or carousel_aspect not in CAROUSEL_ASPECTS:
             raise bad_request(
@@ -1757,13 +1835,32 @@ async def run_project(request: Request, response: Response, body: dict = Body(..
     # seconds to a few minutes even on heavy footage.
     broadcaster = getattr(request.app.state, "broadcaster", None)
     timings = {}
+    adopt_lock = None
+    if adopt_seed:
+        # §631: init reads the seed's project.json and replaces it, so no serve
+        # write (an ingest, a save) may land in between: the lock is held for
+        # the init subprocess (_hold_project_lock_in_thread).
+        seed_dir = find_project_dir(resolve_workspace(), project_id_arg)
+        if seed_dir is None:
+            raise not_found("adopt_not_found", f"No project with id {project_id_arg}")
+        adopt_lock = Path(seed_dir) / "project.json"
+        cmd.append("--adopt-seed")
     project = await _run_init_subprocess(
         cmd,
         broadcaster=broadcaster,
         background_normalize=background_normalize,
         timings=timings,
+        hold_lock=adopt_lock,
     )
     _set_server_timing(response, _server_timing_header(timings))
+    if adopt_lock is not None and broadcaster is not None:
+        # What a save does once the file is written: tell the editors already
+        # open on this project. (The dir cache and the revision cache need
+        # nothing: same folder, and revisions are keyed by the file's text.)
+        try:
+            broadcaster.publish(project_id_arg, _sse_data_frame(adopt_lock.read_text()))
+        except Exception:
+            pass
     if youtube is None:
         return project
     # Returned WITH the record, so the editor's first paint has the spinner.
