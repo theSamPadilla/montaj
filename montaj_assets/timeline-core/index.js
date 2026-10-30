@@ -84,6 +84,11 @@ export * from './src/transitions.js'
 // src/mask.js header.
 export * from './src/mask.js'
 
+// A clip's blur (blurOf, blurSigmaPx: a Gaussian sigma on the 1080-short-edge
+// design canvas; pictureRectInBox: where the blurred picture sits in its box,
+// the preview's filter region). See the src/blur.js header.
+export * from './src/blur.js'
+
 /**
  * Version salt for resolver-derived caches. sample-frame.js mixes this into its
  * cache key so a change in resolver semantics invalidates stale cached frames

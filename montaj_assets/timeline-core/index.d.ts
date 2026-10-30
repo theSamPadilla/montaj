@@ -1335,3 +1335,26 @@ export declare function cssBlendMode(mode: BlendMode): string
  * `normal`, and full opacity for its whole life ({@link fullOpacitySpans}).
  */
 export declare function isPlainComposite(item: CompositeItem | null | undefined): boolean
+
+/** The largest clip blur, in design-canvas pixels (src/blur.js). */
+export declare const BLUR_MAX: number
+
+/**
+ * The item's blur in design-canvas pixels (1080 on the short edge): its `blur`
+ * when a finite number above 0, held to {@link BLUR_MAX}; else 0.
+ */
+export declare function blurOf(item: { blur?: unknown } | null | undefined): number
+
+/**
+ * The item's blur as a Gaussian sigma in pixels of a `canvasW` x `canvasH`
+ * canvas: `blurOf(item) * min(canvasW, canvasH) / 1080`. 0 for no blur.
+ */
+export declare function blurSigmaPx(item: { blur?: unknown } | null | undefined, canvasW: number, canvasH: number): number
+
+/**
+ * The rect a `srcW` x `srcH` picture fills when contain-fitted, centred, in a
+ * `boxW` x `boxH` box, as fractions of the box. The whole box when a size is unknown.
+ */
+export declare function pictureRectInBox(
+  boxW: number, boxH: number, srcW: number | null | undefined, srcH: number | null | undefined,
+): { x: number; y: number; w: number; h: number }
