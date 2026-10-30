@@ -17,11 +17,10 @@
  *   error.
  *
  * ── Fetch policy (SP5 plan decision 6 + T7 task) ──────────────────────────
- * Proxy-only for VIDEO: input is `item.proxySrc` ONLY, never `item.src` — no
- * proxy, no filmstrip, no fallback decode of the original, no error, no
- * spinner (same shape as T6's clip waveforms). Fetch identity includes
- * `proxySrc`, so an SSE-delivered proxy arriving mid-session re-keys and
- * fetches automatically. On top of that, the index fetch is gated on the clip
+ * Proxy first for VIDEO: input is `item.proxySrc` when there is one, else
+ * `item.src`, so a clip with no proxy (yet, or ever) still shows its frames.
+ * Fetch identity is that input, so an SSE-delivered proxy arriving mid-session
+ * re-keys onto the proxy and fetches automatically. On top of that, the index fetch is gated on the clip
  * actually intersecting the viewport's visible time range.
  *
  * An IMAGE item has no proxy and no per-frame step to fetch from — a still is
@@ -53,6 +52,7 @@ import { clipBands } from './clip-bands'
 import type { DrawContext, Rect } from './draw'
 import { timeToX, visibleRange, xToTime, type Viewport } from './viewport'
 import { FETCH_RETRY_COOLDOWN_MS } from './waveforms'
+import { isScene3dItem } from '../../scene3d'
 
 // ── Cell sizing ──────────────────────────────────────────────────────────
 
@@ -311,6 +311,17 @@ export const OVERLAY_RETRY_COOLDOWN_MS = 60_000
  *  made, so a trim or prop drag does not render a strip per intermediate size. */
 export const OVERLAY_SETTLE_MS = 400
 
+/** A 3D item's props as its strip request carries them: which 3D and where in
+ *  it, without what a stage derives from them (`sceneFile`, the whole
+ *  `sceneJson`), which the engine reads afresh from the saved 3D. */
+export function scene3dRequestProps(props: Record<string, unknown> | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(props ?? {})) {
+    if (k !== 'sceneFile' && k !== 'sceneJson') out[k] = v
+  }
+  return out
+}
+
 /** JSON with object keys sorted, so equal props always make equal keys. */
 export function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`
@@ -365,7 +376,8 @@ export class FilmstripStore {
    * cell and every future repaint, never one decode per tile.
    */
   clipTiles(item: VisualItem, rect: Rect, ctx: FilmstripQueryContext): FilmstripTileDraw[] | null {
-    const isVideo = item.type === 'video' && !!item.proxySrc && !!ctx.getFilmstrip
+    const videoSrc = item.type === 'video' ? (item.proxySrc ?? item.src) : undefined
+    const isVideo = !!videoSrc && !!ctx.getFilmstrip
     const isImage = item.type === 'image' && !!item.src
     const isOverlay = item.type === 'overlay' && !!item.src && !!ctx.getFilmstrip
     if ((!isVideo && !isImage && !isOverlay) || !ctx.fileUrl) return null
@@ -379,7 +391,7 @@ export class FilmstripStore {
 
     // For a video, no sheet index yet means nothing to draw at all — bail
     // before doing any cell-grid work. An image has no index to wait on.
-    const resolved = isVideo ? this.resolveIndex(item.proxySrc!, ctx)
+    const resolved = isVideo ? this.resolveIndex(videoSrc!, ctx)
       : isOverlay ? this.resolveOverlayIndex(item, ctx) : null
     if ((isVideo || isOverlay) && (!resolved || resolved.tiles.length === 0)) return null
 
@@ -482,11 +494,15 @@ export class FilmstripStore {
   private resolveOverlayIndex(item: VisualItem, ctx: FilmstripQueryContext): { data: FilmstripIndex; tiles: FlatTile[] } | null {
     const src = item.src!
     const owner = `${ctx.projectId}|${item.id}`
-    const rev = this.watchOverlay(src, ctx)
+    // A 3D item's src is the reserved `engine:scene3d`, no file to watch: its
+    // props (which 3D, where in it) are what tell two 3D strips apart.
+    const scene3d = isScene3dItem(item)
+    const rev = scene3d ? 0 : this.watchOverlay(src, ctx)
+    const props = scene3d ? scene3dRequestProps(item.props) : item.props
     const fps = ctx.fps ?? 30
     const durationSec = item.end - item.start
     const [width, height] = ctx.resolution ?? [1080, 1920]
-    const key = `ovl|${ctx.projectId}|${src}|${width}x${height}|${stableJson(item.props ?? {})}|${stableJson(item.googleFonts ?? [])}|${durationSec}|${fps}|${rev}|${ctx.tileWidth ?? ''}`
+    const key = `ovl|${ctx.projectId}|${src}|${width}x${height}|${stableJson(props ?? {})}|${stableJson(item.googleFonts ?? [])}|${durationSec}|${fps}|${rev}|${ctx.tileWidth ?? ''}`
     const entry = this.indexEntries.get(key)
     if (entry?.status === 'ready' && entry.data) {
       this.lastReady.set(owner, { src, key })
@@ -528,7 +544,7 @@ export class FilmstripStore {
         projectId: ctx.projectId,
         src,
         tileWidth: ctx.tileWidth,
-        overlay: { props: item.props, googleFonts: item.googleFonts, fps, durationSec, width, height, revision: rev },
+        overlay: { props, googleFonts: item.googleFonts, fps, durationSec, width, height, revision: rev },
       })
         .then(data => {
           this.indexEntries.set(key, { status: 'ready', data, tiles: flattenTiles(data) })

@@ -19,6 +19,7 @@ import {
   nearestTile,
   OVERLAY_RETRY_COOLDOWN_MS,
   OVERLAY_SETTLE_MS,
+  scene3dRequestProps,
   stableJson,
   tileSourceRect,
   type FilmstripQueryContext,
@@ -326,11 +327,19 @@ describe('FilmstripStore.clipTiles fetch policy', () => {
     expect(fetcher).not.toHaveBeenCalled()
   })
 
-  it('never fetches when the item has no proxySrc', () => {
+  it('a clip with no proxySrc fetches its frames from src', () => {
     const store = new FilmstripStore()
-    const fetcher = vi.fn()
-    store.clipTiles(clip({ start: 0, end: 5 }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
-    expect(fetcher).not.toHaveBeenCalled()
+    const fetcher = vi.fn().mockResolvedValue(filmstripIndexFixture())
+    store.clipTiles(clip({ src: 'flat.mp4', start: 0, end: 5 }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(fetcher.mock.calls[0][0]).toMatchObject({ src: 'flat.mp4' })
+  })
+
+  it('prefers the proxy over src when there is one', () => {
+    const store = new FilmstripStore()
+    const fetcher = vi.fn().mockResolvedValue(filmstripIndexFixture())
+    store.clipTiles(clip({ src: 'flat.mp4', proxySrc: 'proxy.mp4', start: 0, end: 5 }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
+    expect(fetcher.mock.calls.map(c => c[0].src)).toEqual(['proxy.mp4'])
   })
 
   it('never fetches for a non-video item even with a proxySrc set', () => {
@@ -341,15 +350,13 @@ describe('FilmstripStore.clipTiles fetch policy', () => {
     expect(fetcher).not.toHaveBeenCalled()
   })
 
-  it('fires a fetch once a proxySrc arrives (SSE import completion), since the key changes', () => {
+  it('re-keys onto the proxy once it arrives (SSE import completion)', () => {
     const store = new FilmstripStore()
     const fetcher = vi.fn().mockResolvedValue(filmstripIndexFixture())
 
-    store.clipTiles(clip({ start: 0, end: 5 }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
-    expect(fetcher).not.toHaveBeenCalled()
-
-    store.clipTiles(clip({ start: 0, end: 5, proxySrc: 'proxy.mp4' }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
-    expect(fetcher).toHaveBeenCalledTimes(1)
+    store.clipTiles(clip({ src: 'flat.mp4', start: 0, end: 5 }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
+    store.clipTiles(clip({ src: 'flat.mp4', start: 0, end: 5, proxySrc: 'proxy.mp4' }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
+    expect(fetcher.mock.calls.map(c => c[0].src)).toEqual(['flat.mp4', 'proxy.mp4'])
   })
 
   it('stays inert (never fetches, never throws) when the adapter has no getFilmstrip', () => {
@@ -877,6 +884,29 @@ describe('FilmstripStore overlay strips', () => {
     const tiles = store.clipTiles(overlay(), r, ctx())!
     expect(tiles[0].rect.y).toBe(r.y)
     expect(tiles[0].rect.height).toBe(r.height)
+  })
+
+  it('a 3D item asks for its scene\'s strip: src stays engine:scene3d, no file watch, derived props left out', () => {
+    const store = new FilmstripStore()
+    const getFilmstrip = vi.fn().mockResolvedValue(filmstripIndexFixture())
+    const watchFile = vi.fn(() => () => {})
+    const ctx = () => queryCtx({ getFilmstrip, watchFile, viewport: zoomedIn })
+    const scene = (props: Record<string, unknown>, id = 's0') =>
+      overlay({ id, src: 'engine:scene3d', props })
+    store.clipTiles(scene({ scene: 'hands', inPoint: 2, sceneJson: '{"big":1}', sceneFile: '/p/models/scenes/hands/active.json' }), r, ctx())
+    settle()
+    store.clipTiles(scene({ scene: 'hands', inPoint: 2, sceneJson: '{"big":1}', sceneFile: '/p/models/scenes/hands/active.json' }), r, ctx())
+    expect(watchFile).not.toHaveBeenCalled()
+    expect(getFilmstrip).toHaveBeenCalledTimes(1)
+    expect(getFilmstrip.mock.calls[0][0]).toMatchObject({ src: 'engine:scene3d', overlay: { props: { scene: 'hands', inPoint: 2 }, revision: 0 } })
+    expect(getFilmstrip.mock.calls[0][0].overlay.props).not.toHaveProperty('sceneJson')
+    // Another 3D is another key.
+    store.clipTiles(scene({ scene: 'walk', inPoint: 0 }, 's1'), r, ctx())
+    settle()
+    store.clipTiles(scene({ scene: 'walk', inPoint: 0 }, 's1'), r, ctx())
+    expect(getFilmstrip).toHaveBeenCalledTimes(2)
+    expect(getFilmstrip.mock.calls[1][0].overlay.props).toEqual({ scene: 'walk', inPoint: 0 })
+    expect(scene3dRequestProps({ scene: 'a', sceneFile: 'x', sceneJson: 'y' })).toEqual({ scene: 'a' })
   })
 
   it('draws image tiles for an overlay with tiles and the plain box without', async () => {
