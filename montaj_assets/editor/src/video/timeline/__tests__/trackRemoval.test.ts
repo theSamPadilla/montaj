@@ -4,6 +4,7 @@ import type { Project } from '../../../types'
 import {
   canRemoveVisualTrack, removeVisualTrack, visualTrackItemCount,
   canRemoveAudioLane, removeAudioLane, audioLaneItemCount,
+  removeAudioTracksByIds, removeVisualTrackById, visualTrackId, visualTrackItemCountById,
 } from '../trackRemoval'
 import { groupAudioLanes, trackItems } from '../timeline-model'
 
@@ -139,5 +140,24 @@ describe('audio lanes', () => {
     expect(removeAudioLane(one, 0)).toBe(one)
     expect(canRemoveAudioLane(p, 9)).toBe(false)
     expect(canRemoveAudioLane(proj([]), 0)).toBe(false)
+  })
+})
+
+describe('removal by id (what the menu opened on)', () => {
+  it('removes the visual track with that id wherever it now sits, and nothing for an unknown id', () => {
+    const p = proj([{ id: 't0', items: [v('v0')] }, { id: 'x', items: [o('n')] }, { id: 't1', items: [o('o0')] }])
+    expect(visualTrackId(p, 2)).toBe('t1')
+    expect(visualTrackItemCountById(p, 't1')).toBe(1)
+    const out = removeVisualTrackById(p, 't1')
+    expect((out.tracks as Array<{ id: string }>).map(t => t.id)).toEqual(['t0', 'x'])
+    expect(removeVisualTrackById(p, 'gone')).toBe(p)
+  })
+
+  it('removes exactly the audio tracks named, never the last audio', () => {
+    const p = proj([[v('v0')]], [a('a0', 0), a('a1', 1), a('a2', 1)])
+    const out = removeAudioTracksByIds(p, ['a1', 'a2'])
+    expect(out.audio!.tracks!.map(t => t.id)).toEqual(['a0'])
+    expect(removeAudioTracksByIds(out, ['a0'])).toBe(out)
+    expect(removeAudioTracksByIds(p, ['nope'])).toBe(p)
   })
 })

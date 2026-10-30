@@ -3,7 +3,7 @@ import { AudioLines, Box, Captions, Eye, EyeOff, Film, Layers, Magnet, Settings2
 import { Tooltip } from '../../ui/Tooltip'
 import ConfirmDialog from '../../ui/ConfirmDialog'
 import TrackContextMenu from './TrackContextMenu'
-import { audioLaneItemCount, canRemoveAudioLane, canRemoveVisualTrack, visualTrackItemCount } from './trackRemoval'
+import { canRemoveAudioLane, canRemoveVisualTrack, visualTrackId, visualTrackItemCountById } from './trackRemoval'
 import type { Project } from '../../types'
 import type { VisualItem } from '../../schema'
 import { computeTimelineLayout, timelinePalette, type TimelineLayout, type TimelineMode, type TrackPalette, type VisualRowLayout, type AudioLaneLayout } from './canvas/draw'
@@ -500,11 +500,11 @@ export interface TrackGutterProps {
    *  and the clips beside it stop matching. Threaded from Timeline (never
    *  looked up here) for exactly that reason. Defaults to `'dark'`. */
   mode?: TimelineMode
-  /** Remove a visual track and its items, from the header's right-click menu.
-   *  Absent → the menu offers hide only. */
-  onRemoveTrack?: (trackIdx: number) => void
-  /** Remove every `AudioTrack` in a lane, same menu. */
-  onRemoveAudioLane?: (laneIndex: number) => void
+  /** Remove a visual track and its items, from the header's right-click menu,
+   *  by the track's id as the menu opened on it. Absent → hide only. */
+  onRemoveTrack?: (trackId: string) => void
+  /** Remove a lane's `AudioTrack`s, same menu, by the ids it held then. */
+  onRemoveAudioLane?: (trackIds: string[]) => void
 }
 
 export default function TrackGutter({
@@ -531,17 +531,23 @@ export default function TrackGutter({
   const trackSettings = normalizeTracks(project).tracks ?? []
 
   // Right-click on a header opens the menu; a non-empty track confirms first.
-  type Target = { kind: 'visual' | 'audio'; index: number }
+  // What a removal removes is captured as ids when the menu opens, so a save
+  // landing meanwhile (the AI's) cannot make a different row go.
+  type Target = { kind: 'visual' | 'audio'; index: number; ids: string[] }
   const [menu, setMenu] = useState<(Target & { x: number; y: number }) | null>(null)
   const [confirm, setConfirm] = useState<(Target & { count: number }) | null>(null)
-  const openMenu = (target: Target) => (e: React.MouseEvent) => {
-    e.preventDefault()
-    setMenu({ ...target, x: e.clientX, y: e.clientY })
-  }
   const laneOf = (index: number) => resolved.lanes.find(l => l.laneIndex === index)
+  const openMenu = (target: Omit<Target, 'ids'>) => (e: React.MouseEvent) => {
+    e.preventDefault()
+    const ids = target.kind === 'visual'
+      ? [visualTrackId(project, target.index)].filter((id): id is string => !!id)
+      : (laneOf(target.index)?.tracks ?? []).map(t => t.id)
+    setMenu({ ...target, ids, x: e.clientX, y: e.clientY })
+  }
   const applyRemove = (t: Target) => {
-    if (t.kind === 'visual') onRemoveTrack?.(t.index)
-    else onRemoveAudioLane?.(t.index)
+    if (t.ids.length === 0) return
+    if (t.kind === 'visual') onRemoveTrack?.(t.ids[0])
+    else onRemoveAudioLane?.(t.ids)
   }
   const menuHidden = menu
     ? menu.kind === 'visual'
@@ -639,10 +645,10 @@ export default function TrackGutter({
             }
           }}
           onRemove={() => {
-            const target = { kind: menu.kind, index: menu.index }
+            const target = { kind: menu.kind, index: menu.index, ids: menu.ids }
             const count = menu.kind === 'visual'
-              ? visualTrackItemCount(project, menu.index)
-              : audioLaneItemCount(project, menu.index)
+              ? (menu.ids[0] ? visualTrackItemCountById(project, menu.ids[0]) : 0)
+              : menu.ids.length
             if (count === 0) applyRemove(target)
             else setConfirm({ ...target, count })
           }}

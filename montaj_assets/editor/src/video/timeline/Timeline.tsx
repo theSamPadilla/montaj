@@ -20,7 +20,7 @@ import { mapTrackItems, normalizeTracks, stampAudioLanes, updateAudioTrack } fro
 import { deleteSelection, toggleSelection } from './multiSelectOps'
 import { removeMarkers } from './markers'
 import { computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, trackItems } from './timeline-model'
-import { audioLaneTrackIds, removeAudioLane, removeVisualTrack } from './trackRemoval'
+import { removeAudioTracksByIds, removeVisualTrackById } from './trackRemoval'
 import TimelineCanvas, { useCanvasZoomControls, type ZoomControls } from './canvas/TimelineCanvas'
 import type { KeyframeSelection } from './canvas/pointer-machine'
 import { revealAtEdge, timeToX, useViewportStore, useViewportValue, xToTime, type ViewportStore } from './canvas/viewport'
@@ -485,13 +485,16 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
     if (selectedIds.some(id => gone.has(id))) onSelectIds?.(selectedIds.filter(id => !gone.has(id)))
   }
 
-  function handleRemoveTrack(trackIdx: number) {
-    const ids = (trackItems(editBase)[trackIdx] ?? []).map(i => i.id)
-    commitRemoval(removeVisualTrack(editBase, trackIdx), ids)
+  // By id, as the menu captured them: a save that moved the rows since never
+  // makes a different track go.
+  function handleRemoveTrack(trackId: string) {
+    const idx = ((normalizeTracks(editBase).tracks ?? []) as Array<{ id?: string }>).findIndex(t => t.id === trackId)
+    const ids = idx < 0 ? [] : (trackItems(editBase)[idx] ?? []).map(i => i.id)
+    commitRemoval(removeVisualTrackById(editBase, trackId), ids)
   }
 
-  function handleRemoveAudioLane(laneIndex: number) {
-    commitRemoval(removeAudioLane(editBase, laneIndex), audioLaneTrackIds(editBase, laneIndex))
+  function handleRemoveAudioLane(trackIds: string[]) {
+    commitRemoval(removeAudioTracksByIds(editBase, trackIds), trackIds)
   }
 
   function handleSetLaneMuted(trackIds: string[], muted: boolean) {

@@ -56,6 +56,28 @@ export function removeVisualTrack(project: Project, trackIdx: number): Project {
   return { ...normalizeTracks(project), tracks: tracks as unknown as Project['tracks'] }
 }
 
+/** The id of visual track `trackIdx`, as the menu opened on it. */
+export function visualTrackId(project: Project, trackIdx: number): string | null {
+  const tracks = (normalizeTracks(project).tracks ?? []) as Array<{ id?: string }>
+  return tracks[trackIdx]?.id ?? null
+}
+
+function visualTrackIndex(project: Project, trackId: string): number {
+  return ((normalizeTracks(project).tracks ?? []) as Array<{ id?: string }>).findIndex(t => t.id === trackId)
+}
+
+/** Removes the visual track with id `trackId` (captured when the menu opened),
+ *  so a save that moved the rows meanwhile never removes a different one. */
+export function removeVisualTrackById(project: Project, trackId: string): Project {
+  const idx = visualTrackIndex(project, trackId)
+  return idx < 0 ? project : removeVisualTrack(project, idx)
+}
+
+export function visualTrackItemCountById(project: Project, trackId: string): number {
+  const idx = visualTrackIndex(project, trackId)
+  return idx < 0 ? 0 : visualTrackItemCount(project, idx)
+}
+
 /** The AudioTrack ids drawn on row `laneIndex`. */
 export function audioLaneTrackIds(project: Project, laneIndex: number): string[] {
   const lane = groupAudioLanes(stampAudioLanes(project).audio?.tracks ?? []).find(l => l.laneIndex === laneIndex)
@@ -69,6 +91,19 @@ export function audioLaneItemCount(project: Project, laneIndex: number): number 
 export function canRemoveAudioLane(project: Project, laneIndex: number): boolean {
   const lanes = groupAudioLanes(stampAudioLanes(project).audio?.tracks ?? [])
   return lanes.length > 1 && lanes.some(l => l.laneIndex === laneIndex)
+}
+
+/** Removes the AudioTracks `ids` (the lane's, captured when the menu opened)
+ *  from the stamped project, so what remains keeps its rows. Never the last
+ *  audio left, as `canRemoveAudioLane` never offers the last lane. */
+export function removeAudioTracksByIds(project: Project, ids: readonly string[]): Project {
+  if (!project.audio) return project
+  const stamped = stampAudioLanes(project)
+  const all = stamped.audio?.tracks ?? []
+  const drop = new Set(ids)
+  const kept = all.filter(t => !drop.has(t.id))
+  if (kept.length === all.length || kept.length === 0) return project
+  return { ...stamped, audio: { ...stamped.audio, tracks: kept } }
 }
 
 /** Removes row `laneIndex` from the stamped project, so what remains carries

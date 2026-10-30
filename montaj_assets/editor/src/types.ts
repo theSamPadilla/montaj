@@ -408,6 +408,10 @@ export interface GetFilmstripArgs {
   maxTiles?: number
   minInterval?: number
   tileWidth?: number
+  /** A video clip with no proxy: `src` is its original file, slow to read, so
+   *  the host runs these one at a time and the editor never retries a failed
+   *  one. */
+  original?: boolean
   /** Set for an overlay item: `src` is then the overlay's jsx src as the item
    *  stores it, and the host renders the overlay itself at each tile time
    *  (item-local seconds, 0 = the item's start). A host without overlay

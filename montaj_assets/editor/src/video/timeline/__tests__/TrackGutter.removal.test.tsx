@@ -65,7 +65,7 @@ describe('TrackGutter right-click menu', () => {
     const f = setup(project())
     fireEvent.contextMenu(f.cells()[2])
     fireEvent.click(screen.getByRole('menuitem', { name: 'Remove track' }))
-    expect(f.onRemoveTrack).toHaveBeenCalledWith(2)
+    expect(f.onRemoveTrack).toHaveBeenCalledWith('trk-2')
     expect(screen.queryByText(/Remove track and/)).toBeNull()
   })
 
@@ -82,7 +82,7 @@ describe('TrackGutter right-click menu', () => {
     fireEvent.contextMenu(f.cells()[1])
     fireEvent.click(screen.getByRole('menuitem', { name: 'Remove track' }))
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
-    expect(f.onRemoveTrack).toHaveBeenCalledWith(1)
+    expect(f.onRemoveTrack).toHaveBeenCalledWith('trk-1')
   })
 
   it('says 1 clip for a single clip', () => {
@@ -123,7 +123,7 @@ describe('TrackGutter right-click menu', () => {
     fireEvent.contextMenu(f.cells()[4])
     fireEvent.click(screen.getByRole('menuitem', { name: 'Remove track' }))
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
-    expect(f.onRemoveAudioLane).toHaveBeenCalledWith(1)
+    expect(f.onRemoveAudioLane).toHaveBeenCalledWith(['a1'])
     cleanup()
 
     const g = setup(project({ audio: { tracks: [{ id: 'a0', src: 'v.mp3', start: 0, end: 2, lane: 0 }] } }))
@@ -137,6 +137,19 @@ describe('TrackGutter right-click menu', () => {
     const f = setup(project(), 'light')
     fireEvent.contextMenu(f.cells()[0])
     expect(screen.getByRole('menu').style.background).toContain('--editor-surface')
+  })
+
+  it('removes what the menu opened on, by id, even when the rows move before Remove', () => {
+    const fns = { onToggleTrackEnabled: vi.fn(), onSetLaneMuted: vi.fn(), onRemoveTrack: vi.fn(), onRemoveAudioLane: vi.fn() }
+    const p = project({ tracks: [{ id: 'base', items: [video('c0')] }, { id: 'mid', items: [video('c1')] }, { id: 'top', items: [] }] })
+    const utils = render(<TrackGutter project={p} mode="dark" {...fns} />)
+    const midCell = Array.from(utils.container.querySelectorAll('[data-rail-cell]'))[1] as HTMLElement
+    fireEvent.contextMenu(midCell)
+    // A save lands: a new track now sits where 'mid' was drawn.
+    utils.rerender(<TrackGutter project={project({ tracks: [{ id: 'base', items: [video('c0')] }, { id: 'new', items: [video('n')] }, { id: 'mid', items: [video('c1')] }, { id: 'top', items: [] }] })} mode="dark" {...fns} />)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Remove track' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    expect(fns.onRemoveTrack).toHaveBeenCalledWith('mid')
   })
 
   it('a read-only gutter (no remove callbacks) offers no Remove', () => {

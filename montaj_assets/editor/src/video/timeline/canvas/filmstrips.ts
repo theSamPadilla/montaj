@@ -312,15 +312,20 @@ export function isCaptionOverlay(item: VisualItem): boolean {
   return item.type === 'overlay' && typeof item.src === 'string' && CAPTION_TEMPLATE.test(item.src)
 }
 
-/** Overlay strips are costly to render, so a failed request waits this long
- *  before the next paint may ask again (a host without overlay support
- *  rejects every time). A new key (props, fonts, duration, revision) is
- *  requested at once. */
-export const OVERLAY_RETRY_COOLDOWN_MS = 60_000
 
 /** An overlay's strip key must stay unchanged this long before a request is
  *  made, so a trim or prop drag does not render a strip per intermediate size. */
 export const OVERLAY_SETTLE_MS = 400
+
+/** The saved 3D file a 3D item draws, project-relative (render/scene3d.js):
+ *  `models/scenes/<id>/active.json`, or the project's own `models/active.json`
+ *  when it names none. Null for an id the engine would refuse. Watched, so a
+ *  saved 3D re-renders its strip. */
+export function scene3dWatchPath(props: Record<string, unknown> | undefined): string | null {
+  const scene = props?.scene
+  if (scene === undefined) return 'models/active.json'
+  return typeof scene === 'string' && /^[a-z0-9][a-z0-9-]{0,47}$/.test(scene) ? `models/scenes/${scene}/active.json` : null
+}
 
 /** A 3D item's props as its strip request carries them: which 3D and where in
  *  it, without what a stage derives from them (`sceneFile`, the whole
@@ -388,6 +393,7 @@ export class FilmstripStore {
    */
   clipTiles(item: VisualItem, rect: Rect, ctx: FilmstripQueryContext): FilmstripTileDraw[] | null {
     const videoSrc = item.type === 'video' ? (item.proxySrc ?? item.src) : undefined
+    const original = item.type === 'video' && !item.proxySrc
     const isVideo = !!videoSrc && !!ctx.getFilmstrip
     const isImage = item.type === 'image' && !!item.src
     const isOverlay = item.type === 'overlay' && !!item.src && !!ctx.getFilmstrip && !isCaptionOverlay(item)
@@ -402,7 +408,7 @@ export class FilmstripStore {
 
     // For a video, no sheet index yet means nothing to draw at all — bail
     // before doing any cell-grid work. An image has no index to wait on.
-    const resolved = isVideo ? this.resolveIndex(videoSrc!, ctx)
+    const resolved = isVideo ? this.resolveIndex(videoSrc!, ctx, original)
       : isOverlay ? this.resolveOverlayIndex(item, ctx) : null
     if ((isVideo || isOverlay) && (!resolved || resolved.tiles.length === 0)) return null
     // An overlay that covers too little of its frame to read (the engine's
@@ -487,7 +493,7 @@ export class FilmstripStore {
     }
     const path = base.proxySrc ?? base.src
     if (!path || !ctx.getFilmstrip) return null
-    const resolved = this.resolveIndex(path, ctx)
+    const resolved = this.resolveIndex(path, ctx, !base.proxySrc)
     if (!resolved) return null
     const tile = nearestTile(resolved.tiles, clipTimeToSourceTime(base, t))
     if (!tile) return null
@@ -501,8 +507,10 @@ export class FilmstripStore {
 
   /** Look up the index for `src`, kicking off a fetch when absent. Never
    *  re-fetches while loading or once ready; an errored entry is retried on
-   *  the next call that needs it (same quiet-retry shape as T6). */
-  private resolveIndex(src: string, ctx: FilmstripQueryContext): { data: FilmstripIndex; tiles: FlatTile[] } | null {
+   *  the next call that needs it (same quiet-retry shape as T6), except an
+   *  `original` (a clip with no proxy, read from its source file: slow, so a
+   *  failure or timeout is not asked again). */
+  private resolveIndex(src: string, ctx: FilmstripQueryContext, original = false): { data: FilmstripIndex; tiles: FlatTile[] } | null {
     const key = `${ctx.projectId}|${src}|${ctx.maxTiles ?? ''}|${ctx.minInterval ?? ''}|${ctx.tileWidth ?? ''}`
     const entry = this.indexEntries.get(key)
     if (entry?.status === 'ready' && entry.data) return { data: entry.data, tiles: entry.tiles }
@@ -514,12 +522,12 @@ export class FilmstripStore {
     // overlay layer repaints at ~60Hz during playback, which would turn a
     // persistently-failing fetch into a request storm.
     const inCooldown = entry?.status === 'error'
-      && Date.now() - (entry.erroredAt ?? 0) < FETCH_RETRY_COOLDOWN_MS
+      && (original || Date.now() - (entry.erroredAt ?? 0) < FETCH_RETRY_COOLDOWN_MS)
     if (entry?.status !== 'loading' && !inCooldown) {
       const fetcher = ctx.getFilmstrip
       if (fetcher) {
         this.indexEntries.set(key, { status: 'loading', data: null, tiles: [] })
-        fetcher({ projectId: ctx.projectId, src, maxTiles: ctx.maxTiles, minInterval: ctx.minInterval, tileWidth: ctx.tileWidth })
+        fetcher({ projectId: ctx.projectId, src, maxTiles: ctx.maxTiles, minInterval: ctx.minInterval, tileWidth: ctx.tileWidth, ...(original ? { original: true } : {}) })
           .then(data => {
             this.indexEntries.set(key, { status: 'ready', data, tiles: flattenTiles(data) })
             ctx.onReady()
@@ -540,10 +548,12 @@ export class FilmstripStore {
   private resolveOverlayIndex(item: VisualItem, ctx: FilmstripQueryContext): { data: FilmstripIndex; tiles: FlatTile[] } | null {
     const src = item.src!
     const owner = `${ctx.projectId}|${item.id}`
-    // A 3D item's src is the reserved `engine:scene3d`, no file to watch: its
-    // props (which 3D, where in it) are what tell two 3D strips apart.
+    // A 3D item's src is the reserved `engine:scene3d`: its props (which 3D,
+    // where in it) tell two 3D strips apart, and its saved 3D file is what is
+    // watched for a new revision.
     const scene3d = isScene3dItem(item)
-    const rev = scene3d ? 0 : this.watchOverlay(src, ctx)
+    const scenePath = scene3d ? scene3dWatchPath(item.props) : null
+    const rev = scene3d ? (scenePath ? this.watchOverlay(scenePath, ctx) : 0) : this.watchOverlay(src, ctx)
     const props = scene3d ? scene3dRequestProps(item.props) : item.props
     const fps = ctx.fps ?? 30
     const durationSec = item.end - item.start
@@ -551,7 +561,9 @@ export class FilmstripStore {
     const key = `ovl|${ctx.projectId}|${src}|${width}x${height}|${stableJson(props ?? {})}|${stableJson(item.googleFonts ?? [])}|${durationSec}|${fps}|${rev}|${ctx.tileWidth ?? ''}`
     const entry = this.indexEntries.get(key)
     if (entry?.status === 'ready' && entry.data) {
+      const prev = this.lastReady.get(owner)
       this.lastReady.set(owner, { src, key })
+      if (prev && prev.key !== key) this.releaseStrip(prev.key, entry.data)
       return { data: entry.data, tiles: entry.tiles }
     }
     const fallback = (): { data: FilmstripIndex; tiles: FlatTile[] } | null => {
@@ -582,9 +594,9 @@ export class FilmstripStore {
       return fallback()
     }
 
-    const inCooldown = entry?.status === 'error'
-      && Date.now() - (entry.erroredAt ?? 0) < OVERLAY_RETRY_COOLDOWN_MS
-    if (!inCooldown && ctx.getFilmstrip) {
+    // A failed key is never asked again on its own (a strip that fails once
+    // fails the same way); a new key or revision asks again.
+    if (entry?.status !== 'error' && ctx.getFilmstrip) {
       this.indexEntries.set(key, { status: 'loading', data: null, tiles: [] })
       ctx.getFilmstrip({
         projectId: ctx.projectId,
@@ -601,6 +613,17 @@ export class FilmstripStore {
         })
     }
     return fallback()
+  }
+
+  /** An owner moved off strip `key`: unless another item still shows it, drop
+   *  its index and its decoded sheets (bar any the new strip shares). */
+  private releaseStrip(key: string, next: FilmstripIndex): void {
+    for (const held of this.lastReady.values()) if (held.key === key) return
+    const old = this.indexEntries.get(key)?.data
+    this.indexEntries.delete(key)
+    if (!old) return
+    const keep = new Set(next.sheets.map(s => s.path))
+    for (const sheet of old.sheets) if (!keep.has(sheet.path)) this.imageEntries.delete(sheet.path)
   }
 
   /** Start the file watch for an overlay src (once per project and src);

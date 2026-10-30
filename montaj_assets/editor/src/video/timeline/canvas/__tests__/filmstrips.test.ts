@@ -17,10 +17,10 @@ import {
   drawFilmstripTiles,
   flattenTiles,
   nearestTile,
-  OVERLAY_RETRY_COOLDOWN_MS,
   OVERLAY_SETTLE_MS,
   isCaptionOverlay,
   scene3dRequestProps,
+  scene3dWatchPath,
   stableJson,
   tileSourceRect,
   type FilmstripQueryContext,
@@ -349,6 +349,24 @@ describe('FilmstripStore.clipTiles fetch policy', () => {
     const imageItem = clip({ type: 'image', proxySrc: 'proxy.mp4', start: 0, end: 5 } as Partial<VisualItem> as VisualItem)
     store.clipTiles(imageItem, rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
     expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it('a clip with no proxy is marked original, and a failed original strip is never asked again', async () => {
+    const store = new FilmstripStore()
+    const fetcher = vi.fn().mockRejectedValue(new Error('timeout'))
+    const now = vi.spyOn(Date, 'now')
+    let t = 1_000_000
+    now.mockImplementation(() => t)
+    try {
+      store.clipTiles(clip({ src: 'flat.mp4', start: 0, end: 5 }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
+      await flush()
+      t += 3600 * 1000
+      store.clipTiles(clip({ src: 'flat.mp4', start: 0, end: 5 }), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
+      expect(fetcher).toHaveBeenCalledTimes(1)
+      expect(fetcher.mock.calls[0][0]).toMatchObject({ src: 'flat.mp4', original: true })
+    } finally {
+      now.mockRestore()
+    }
   })
 
   it('re-keys onto the proxy once it arrives (SSE import completion)', () => {
@@ -842,19 +860,43 @@ describe('FilmstripStore overlay strips', () => {
     store.dispose()
   })
 
-  it('a rejected request leaves no tiles and is not retried on every frame', async () => {
+  it('a rejected key is never asked again on its own; a new revision asks again', async () => {
     const store = new FilmstripStore()
     const getFilmstrip = vi.fn().mockRejectedValue(new Error('no overlay support'))
-    const ctx = () => queryCtx({ getFilmstrip, viewport: zoomedIn })
+    let fire = () => {}
+    const watchFile = vi.fn((_p: string, cb: () => void) => { fire = cb; return () => {} })
+    const ctx = () => queryCtx({ getFilmstrip, watchFile, viewport: zoomedIn })
     expect(store.clipTiles(overlay(), r, ctx())).toBeNull()
     settle()
     expect(store.clipTiles(overlay(), r, ctx())).toBeNull()
     await flush()
     for (let i = 0; i < 5; i++) expect(store.clipTiles(overlay(), r, ctx())).toBeNull()
+    clock += 24 * 3600 * 1000 // a day later, still not asked again
+    store.clipTiles(overlay(), r, ctx())
     expect(getFilmstrip).toHaveBeenCalledTimes(1)
-    clock += OVERLAY_RETRY_COOLDOWN_MS + 1
+    fire() // the overlay's file changed: a new key
+    store.clipTiles(overlay(), r, ctx())
+    settle()
     store.clipTiles(overlay(), r, ctx())
     expect(getFilmstrip).toHaveBeenCalledTimes(2)
+    expect(getFilmstrip.mock.calls[1][0].overlay.revision).toBe(1)
+  })
+
+  it('moving to a new strip drops the old one\'s decoded sheets', async () => {
+    const store = new FilmstripStore()
+    let n = 0
+    const getFilmstrip = vi.fn(() => Promise.resolve(filmstripIndexFixture({ sheets: [{ ...filmstripIndexFixture().sheets[0], path: `s${++n}.png` }] })))
+    const loader = vi.fn().mockResolvedValue(loadedImage())
+    const ctx = () => queryCtx({ getFilmstrip: getFilmstrip as never, loader, viewport: zoomedIn })
+    const run = async (item: VisualItem) => { store.clipTiles(item, r, ctx()); settle(); for (let i = 0; i < 3; i++) { store.clipTiles(item, r, ctx()); await flush() } }
+    await run(overlay())
+    expect(store.clipTiles(overlay(), r, ctx())).not.toBeNull()
+    await run(overlay({ props: { text: 'new', size: 3 } }))
+    expect(loader).toHaveBeenCalledTimes(2)
+    // Back to the first props: its index and sheet were dropped, so both load again.
+    await run(overlay())
+    expect(getFilmstrip).toHaveBeenCalledTimes(3)
+    expect(loader).toHaveBeenCalledTimes(3)
   })
 
   it('maps tiles by item-local time, not a source in-point', async () => {
@@ -887,7 +929,22 @@ describe('FilmstripStore overlay strips', () => {
     expect(tiles[0].rect.height).toBe(r.height)
   })
 
-  it('a 3D item asks for its scene\'s strip: src stays engine:scene3d, no file watch, derived props left out', () => {
+  it('a saved 3D bumps its item\'s revision and asks again', () => {
+    const store = new FilmstripStore()
+    const getFilmstrip = vi.fn().mockResolvedValue(filmstripIndexFixture())
+    let fire = () => {}
+    const watchFile = vi.fn((_p: string, cb: () => void) => { fire = cb; return () => {} })
+    const item = overlay({ src: 'engine:scene3d', props: { inPoint: 0 } })
+    const ctx = () => queryCtx({ getFilmstrip, watchFile, viewport: zoomedIn })
+    store.clipTiles(item, r, ctx()); settle(); store.clipTiles(item, r, ctx())
+    expect(watchFile.mock.calls[0][0]).toBe('models/active.json') // the project's own 3D
+    fire()
+    store.clipTiles(item, r, ctx()); settle(); store.clipTiles(item, r, ctx())
+    expect(getFilmstrip.mock.calls.map(c => c[0].overlay.revision)).toEqual([0, 1])
+    expect(scene3dWatchPath({ scene: '../x' })).toBeNull()
+  })
+
+  it('a 3D item asks for its scene\'s strip: src stays engine:scene3d, watches its saved 3D, derived props left out', () => {
     const store = new FilmstripStore()
     const getFilmstrip = vi.fn().mockResolvedValue(filmstripIndexFixture())
     const watchFile = vi.fn(() => () => {})
@@ -897,7 +954,8 @@ describe('FilmstripStore overlay strips', () => {
     store.clipTiles(scene({ scene: 'hands', inPoint: 2, sceneJson: '{"big":1}', sceneFile: '/p/models/scenes/hands/active.json' }), r, ctx())
     settle()
     store.clipTiles(scene({ scene: 'hands', inPoint: 2, sceneJson: '{"big":1}', sceneFile: '/p/models/scenes/hands/active.json' }), r, ctx())
-    expect(watchFile).not.toHaveBeenCalled()
+    // Its saved 3D is what it watches, never the reserved src.
+    expect(watchFile.mock.calls.map(c => (c as unknown[])[0])).toEqual(['models/scenes/hands/active.json'])
     expect(getFilmstrip).toHaveBeenCalledTimes(1)
     expect(getFilmstrip.mock.calls[0][0]).toMatchObject({ src: 'engine:scene3d', overlay: { props: { scene: 'hands', inPoint: 2 }, revision: 0 } })
     expect(getFilmstrip.mock.calls[0][0].overlay.props).not.toHaveProperty('sceneJson')
