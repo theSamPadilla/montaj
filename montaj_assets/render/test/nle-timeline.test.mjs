@@ -513,12 +513,15 @@ describe('left out of the editor', () => {
           blurType: 'linear', blurAngle: 30 },
         { id: 'streak', type: 'video', src: '/abs/s.mp4', start: 4, end: 6, inPoint: 0, outPoint: 2, blur: 30,
           blurType: 'linear', blurAngle: 30 },
+        { id: 'whirl', type: 'video', src: '/abs/w.mp4', start: 6, end: 8, inPoint: 0, outPoint: 2, blur: 90,
+          blurType: 'spin', blurX: 0.3, blurY: 0.6 },
       ] }],
     })
     assert.deepEqual(clip(tl, 'm').unsupported, ['keyframes:opacity', 'keyframes:maskW', 'mask', 'blendMode:screen', 'blur'])
     assert.deepEqual(clip(tl, 'plain').unsupported, [])
-    // A linear blur is a blur: the same one entry, and nothing for a type without an amount.
+    // A linear, spin or zoom blur is a blur: the same one entry, and nothing for a type without an amount.
     assert.deepEqual(clip(tl, 'streak').unsupported, ['blur'])
+    assert.deepEqual(clip(tl, 'whirl').unsupported, ['blur'])
   })
 
   test('a path mask with a morph track lists the mask and keyframes:maskPoints (array values do not crash)', () => {

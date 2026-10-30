@@ -64,7 +64,7 @@ import {
   SEEK_PREROLL_S,
 } from './encode-segment.js'
 import { writeItemMask } from './item-mask.js'
-import { resolveAt, sourceWindow, opaqueReplacesPicture, isFullCanvasPlacement, opacityAt, maskAt, blendModeOf, blurOf, blurTypeOf, blurAngleOf, trackLayerPositions, RESOLVER_VERSION } from '@bycrux/timeline-core'
+import { resolveAt, sourceWindow, opaqueReplacesPicture, isFullCanvasPlacement, opacityAt, maskAt, blendModeOf, blurOf, blurTypeOf, blurAngleOf, blurCenterOf, trackLayerPositions, RESOLVER_VERSION } from '@bycrux/timeline-core'
 import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
 import { captionOverlayFields } from './caption-spec.js'
 import { materializeScene3d, Scene3dError, SCENE3D_SRC } from './scene3d.js'
@@ -198,8 +198,9 @@ const SHORT_EDGE_TARGET = 1080
  *    sampled opacity, the mask cut, the blend). 23's entries hold such a clip
  *    at its static opacity, whole and normally composited.
  * 25: a clip's `blur` shows in the still. 24's entries hold such a clip sharp.
- * 26: a clip's `blurType` and `blurAngle` show in the still (a linear blur).
- *    25's entries hold such a clip blurred evenly.
+ * 26: a clip's `blurType` and `blurAngle` show in the still (a linear blur;
+ *    spin and zoom are carried, `blurX` and `blurY` too, and drawn sharp until
+ *    item-blur.js draws them). 25's entries hold such a clip blurred evenly.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -2015,9 +2016,13 @@ export async function sampleFrame({
     // picture before its contain pad, as the export does a video's footage.
     if (blurOf(ri.item) > 0) {
       pseudoItem.blur = blurOf(ri.item)
-      if (blurTypeOf(ri.item) === 'linear') {
-        pseudoItem.blurType = 'linear'
-        pseudoItem.blurAngle = blurAngleOf(ri.item)
+      const type = blurTypeOf(ri.item)
+      if (type !== 'uniform') pseudoItem.blurType = type
+      if (type === 'linear') pseudoItem.blurAngle = blurAngleOf(ri.item)
+      if (type === 'spin' || type === 'zoom') {
+        const c = blurCenterOf(ri.item)
+        pseudoItem.blurX = c.x
+        pseudoItem.blurY = c.y
       }
     }
     // `maskBase` goes in workDir, which the cleanup below removes whole. The

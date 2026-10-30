@@ -121,9 +121,15 @@ function withoutAlpha(format) {
  * @returns {string}
  */
 export function blurFilterStep(item, { vw, vh, format, alpha = false, name, unitX = 1, unitY = 1, animated, picture } = {}) {
+  const type = blurTypeOf(item)
+  // SPIN AND ZOOM PLUG IN HERE. They are not drawn yet: until they are, a
+  // spin or zoom clip renders as a uniform blur of sigma 0, i.e. sharp, and
+  // the graph is the unblurred one (callers splice nothing for ''). Pinned by
+  // test/item-blur.test.mjs "spin and zoom are not drawn yet".
+  if (type === 'spin' || type === 'zoom') return ''
   const sigma = blurSigmaPx(item, vw, vh)
   if (!(sigma > 0)) return ''
-  if (blurTypeOf(item) === 'linear') {
+  if (type === 'linear') {
     return linearBlurStep(item, sigma, { vw, vh, format, alpha, name, unitX, unitY, animated, picture })
   }
 

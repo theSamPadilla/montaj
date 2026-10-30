@@ -208,6 +208,22 @@ test('video: a mask comes after the blur', () => {
   assert.ok(g.indexOf('gblur=') < g.indexOf('alphaextract'), g)
 })
 
+// PLACEHOLDER: spin and zoom are not drawn yet (item-blur.js, "SPIN AND ZOOM
+// PLUG IN HERE"): a uniform blur of sigma 0, so the graph is the sharp one.
+// Replace with their own tests when they are built.
+test('spin and zoom are not drawn yet: no step, and the video and image graphs are the unblurred ones', () => {
+  for (const blurType of ['spin', 'zoom']) {
+    assert.equal(blurFilterStep({ blur: 40, blurType, blurX: 0.3, blurY: 0.6 }, O), '')
+    const v = (over) => graphOf(buildVideoItemFilterParts(video({ scale: 3.2, probedWidth: 960, probedHeight: 540, ...over }),
+      1080, 1920, 1, '[canvas]', vOpts))
+    assert.equal(v({ blur: 40, blurType }), v({}))
+    assert.equal(graphOf(buildVideoItemFilterParts(video({ blur: 40, blurType }), 1080, 1920, 1, '[canvas]', vOpts)),
+      graphOf(buildVideoItemFilterParts(video(), 1080, 1920, 1, '[canvas]', vOpts)))
+    assert.equal(graphOf(buildImageItemFilterParts(image({ blur: 90, blurType }), 1080, 1920, 1, '[canvas]', 2, 0)),
+      graphOf(buildImageItemFilterParts(image(), 1080, 1920, 1, '[canvas]', 2, 0)))
+  }
+})
+
 // The image blur: planar RGB with the image's alpha put back, then RGBA again.
 const IMAGE_BLUR = /,format=gbrap16le,split=2\[bl1a\]\[bl1b\];\[bl1b\]pad=w=[^;]*\[bl1c\];\[bl1c\]\[bl1a\]mergeplanes=[^,]*:format=gbrap16le,format=rgba/
 

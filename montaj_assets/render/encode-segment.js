@@ -1765,11 +1765,13 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     // is known, else anything the box holds.
     if (fitted && unitX < 1 && unitY < 1 && blurSigmaPx(item, vw, vh) * Math.max(unitX, unitY) >= PRE_SCALE_BLUR_MIN_SIGMA) {
       const picture = { w: footageW, h: footageH, exact: true }
-      preBlur = `${blurFilterStep(item, { vw, vh, format, alpha, name, unitX, unitY, animated, picture })},`
+      const step = blurFilterStep(item, { vw, vh, format, alpha, name, unitX, unitY, animated, picture })
+      preBlur = step ? `${step},` : ''
     } else {
       const fit = footageW && footageH ? decreaseFitSize(footageW, footageH, padW, padH, divisibleBy ? 2 : 1) : null
       const picture = fit ? { w: fit.width, h: fit.height, exact: true } : { w: padW, h: padH, exact: false }
-      postBlur = `${blurFilterStep(item, { vw, vh, format, alpha, name, animated, picture })},`
+      const step = blurFilterStep(item, { vw, vh, format, alpha, name, animated, picture })
+      postBlur = step ? `${step},` : ''
     }
   }
   const padStep = transparentPad
