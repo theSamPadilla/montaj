@@ -2677,6 +2677,7 @@ export function drawDropTargetLane(ctx: DrawContext, rect: Rect, palette: Timeli
   ctx.globalAlpha = 1
   ctx.strokeStyle = palette.colors.snapGuide
   ctx.lineWidth = 1
-  ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, Math.max(0, rect.width - 1), Math.max(0, rect.height - 1))
+  roundRectPath(ctx, rect.x + 0.5, rect.y + 0.5, Math.max(0, rect.width - 1), Math.max(0, rect.height - 1), ROW_RADIUS_PX - 0.5)
+  ctx.stroke()
   ctx.restore()
 }

@@ -301,6 +301,20 @@ function recorder() {
   return { ctx, calls }
 }
 
+/** Outlines stroked along a row's top edge at `y + 0.5`: a strokeRect there, or a stroked path that starts there
+ *  (the rounded drop highlight). Returned as their stroke styles, in paint order. */
+function outlinesAt(calls: { method: string; args: unknown[]; strokeStyle?: unknown }[], y: number): unknown[] {
+  const out: unknown[] = []
+  let pathY: unknown = null
+  for (const c of calls) {
+    if (c.method === 'beginPath') pathY = null
+    else if (c.method === 'moveTo' && pathY === null) pathY = c.args[1]
+    else if (c.method === 'stroke' && pathY === y + 0.5) out.push(c.strokeStyle)
+    else if (c.method === 'strokeRect' && c.args[1] === y + 0.5) out.push(c.strokeStyle)
+  }
+  return out
+}
+
 describe('drop-target lane highlight', () => {
   const project = audioProject([
     { id: 'a', src: 'a.mp3', start: 0, end: 2, lane: 0 },
@@ -312,21 +326,21 @@ describe('drop-target lane highlight', () => {
   function paint(dropTargetLane: number | null, mode: 'dark' | 'light' = 'dark') {
     const { ctx, calls } = recorder()
     drawTimelineContent(ctx, { project, viewport: VIEWPORT, layout, selectedIds: [], surfaceWidth: 1000, surfaceHeight: layout.height, dropTargetLane, mode })
-    return calls.filter(c => c.method === 'strokeRect' && c.args[1] === lane1.y + 0.5)
+    return outlinesAt(calls, lane1.y)
   }
 
   // Dark (look B) lanes have no divider, so the accent outline is the only one.
   it('outlines the target lane in the accent', () => {
     const outlines = paint(1)
-    expect(outlines.map(c => c.strokeStyle)).toEqual([DARK_TIMELINE_PALETTE.colors.snapGuide])
+    expect(outlines).toEqual([DARK_TIMELINE_PALETTE.colors.snapGuide])
   })
 
   it('draws nothing extra without a target', () => {
-    expect(paint(null).map(c => c.strokeStyle)).toEqual([])
+    expect(paint(null)).toEqual([])
   })
 
   it('uses the light accent in light mode', () => {
-    expect(paint(1, 'light').map(c => c.strokeStyle)).toEqual([LIGHT_TIMELINE_PALETTE.colors.rowDivider, LIGHT_TIMELINE_PALETTE.colors.snapGuide])
+    expect(paint(1, 'light')).toEqual([LIGHT_TIMELINE_PALETTE.colors.rowDivider, LIGHT_TIMELINE_PALETTE.colors.snapGuide])
   })
 })
 
@@ -469,7 +483,7 @@ describe('the visual row a drag will drop on is highlighted, a new row included'
     const row = layout.rows.find(r => r.trackIdx === 2)!
     const { ctx, calls } = recorder()
     drawTimelineContent(ctx, { project: p, viewport: VIEWPORT, layout, selectedIds: [], surfaceWidth: 1000, surfaceHeight: layout.height, dropTargetItem: 'o2' })
-    const outlines = calls.filter(c => c.method === 'strokeRect' && c.args[1] === row.y + 0.5).map(c => c.strokeStyle)
+    const outlines = outlinesAt(calls, row.y)
     expect(outlines).toEqual([DARK_TIMELINE_PALETTE.colors.snapGuide])
   })
 })
