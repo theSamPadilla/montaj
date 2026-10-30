@@ -137,6 +137,10 @@ export interface TimelineCanvasProps {
    *  debounced crossfade pass, which otherwise fires whenever the pointer
    *  pauses mid-drag. */
   onGestureActiveChange?: (active: boolean) => void
+  /** The audio lanes a live move holds open (the machine's `holdLanes`
+   *  effect), or null when none, so a host laying out its own rail from
+   *  `computeTimelineLayout` can pass the same list and stay row for row. */
+  onHoldLanesChange?: (lanes: number[] | null) => void
   onInspectClip?: (id: string) => void
   onInspectAudio?: (id: string) => void
   /** Double-click on a caption block. A caption has no inspector dialog, so
@@ -460,6 +464,7 @@ export default function TimelineCanvas({
   onProjectChange,
   onOverlayEdit,
   onGestureActiveChange,
+  onHoldLanesChange,
   onInspectClip,
   onInspectAudio,
   onEditCaption,
@@ -498,7 +503,10 @@ export default function TimelineCanvas({
   // marker-less project adds 16px above the ruler and moves every row down by
   // it. Without this dep the pins would be painted into a strip the layout says
   // is not there, over the top of the ruler.
-  const layout = useMemo(() => computeTimelineLayout(project, pins), [project.tracks, project.audio, project.captions, pins])
+  // Lanes a live move keeps drawn while it empties them (the machine's
+  // `holdLanes` effect), so the rows under the pointer do not slide up mid-drag.
+  const [holdLanes, setHoldLanes] = useState<number[] | null>(null)
+  const layout = useMemo(() => computeTimelineLayout(project, pins, holdLanes ?? []), [project.tracks, project.audio, project.captions, pins, holdLanes])
 
   // How far the surface grows PAST the drawn tracks to fill the empty area at
   // the bottom of the resizable timeline pane. The tracks stay top-anchored;
@@ -854,12 +862,12 @@ export default function TimelineCanvas({
   // handlers bound once on mount never read a stale project or callback.
   const pointerRef = useRef({
     project, layout, selectedIds, selectedKeyframe, snapBoundaries, totalDuration, fps, rippleMode, previewAxis, pins,
-    onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onGestureActiveChange, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onScrubDrag, onFadeCurveMenu, onKeyframeMenu, onPinClick,
+    onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onGestureActiveChange, onHoldLanesChange, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onScrubDrag, onFadeCurveMenu, onKeyframeMenu, onPinClick,
     onImportFilesToTimeline,
   })
   pointerRef.current = {
     project, layout, selectedIds, selectedKeyframe, snapBoundaries, totalDuration, fps, rippleMode, previewAxis, pins,
-    onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onGestureActiveChange, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onScrubDrag, onFadeCurveMenu, onKeyframeMenu, onPinClick,
+    onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onGestureActiveChange, onHoldLanesChange, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onScrubDrag, onFadeCurveMenu, onKeyframeMenu, onPinClick,
     // Read by the drag handlers below, which are bound ONCE on mount — a
     // file-drop hook read from the closure instead of from here would be the
     // one the host passed on the very first render, forever.
@@ -919,6 +927,10 @@ export default function TimelineCanvas({
         case 'dropLane':
           dropLaneRef.current = effect.laneIndex
           requestRedraw('content')
+          break
+        case 'holdLanes':
+          setHoldLanes(effect.lanes)
+          p.onHoldLanesChange?.(effect.lanes)
           break
         case 'selectMany':
           if (p.onSelectItems) {

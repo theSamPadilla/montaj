@@ -940,7 +940,10 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
 
   // Same layout the canvas paints from, so the rail's rows line up with the
   // clips exactly rather than by two independent calculations agreeing.
-  const canvasLayout = useMemo(() => computeTimelineLayout(project), [project.tracks, project.audio, project.captions])
+  // `holdLanes`: the lanes a live move keeps drawn (TimelineCanvas reports
+  // them), so the rail and the canvas stay row for row mid-drag.
+  const [holdLanes, setHoldLanes] = useState<number[] | null>(null)
+  const canvasLayout = useMemo(() => computeTimelineLayout(project, [], holdLanes ?? []), [project.tracks, project.audio, project.captions, holdLanes])
 
   const ctx = useMemo<TimelineContextValue>(() => ({
     contentDuration, clock,
@@ -1098,6 +1101,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
               onProjectChange={onProjectChange}
               onOverlayEdit={onOverlayEdit}
               onGestureActiveChange={setGestureActive}
+              onHoldLanesChange={setHoldLanes}
               onInspectClip={onInspectClip}
               onInspectAudio={onInspectAudio}
               onEditCaption={onEditCaption}

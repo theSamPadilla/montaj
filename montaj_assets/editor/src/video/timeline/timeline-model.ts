@@ -366,6 +366,11 @@ export interface CrossTrackMoveArgs {
    *  this function's own doc comment. Defaults to false, which reproduces the
    *  function's pre-existing (magnet-off) behaviour byte-for-byte. */
   makeSpace?: boolean
+  /** Drop tracks the move leaves empty (the default). A drag's transient
+   *  frames pass false, so the track it lifts the item off keeps its place
+   *  and the rows under the pointer do not shift mid-drag; the drop prunes
+   *  (`pruneEmptiedTracks`). */
+  prune?: boolean
 }
 
 export interface ResolveTargetTrackOptions {
@@ -548,7 +553,7 @@ export function resolveTargetTrackIdx(
  * same pointed-at track) is identical in both modes — there is nothing to push.
  */
 export function moveItemAcrossTracks(args: CrossTrackMoveArgs): VisualTrack[] {
-  const { tracks, item, start, end, makeSpace = false } = args
+  const { tracks, item, start, end, makeSpace = false, prune = true } = args
   const duration = end - start
   const overlapMin = duration * 0.3
   const bestIdx = resolveTargetTrackIdx(args)
@@ -593,7 +598,27 @@ export function moveItemAcrossTracks(args: CrossTrackMoveArgs): VisualTrack[] {
   // rather than staying stranded above the overlays, and makes every
   // mid-drag transient frame already-canonical instead of relying on some
   // later pass to re-normalize it.
-  return orderedTrackArray(placed.filter(t => t.items.length > 0))
+  const ordered = orderedTrackArray(placed.filter(t => t.items.length > 0))
+  if (prune) return ordered
+  // Not pruned: each empty track goes back at the index it had, so every row
+  // the move did not touch stays where the press saw it.
+  const out = [...ordered]
+  placed.forEach((t, i) => { if (t.items.length === 0) out.splice(Math.min(i, out.length), 0, t) })
+  return out
+}
+
+/**
+ * Drop the visual tracks a gesture left empty: empty in `project`, holding
+ * items in `base` (the project the gesture started from). A track that was
+ * already empty is kept. The drop half of a drag whose transient frames did
+ * not prune (`moveItemAcrossTracks`' `prune`). Returns `project` itself when
+ * nothing was emptied.
+ */
+export function pruneEmptiedTracks<P extends Project>(base: Project, project: P): P {
+  const before = new Set((normalizeTracks(base).tracks ?? []).filter(t => t.items.length > 0).map(t => t.id))
+  const tracks = normalizeTracks(project).tracks ?? []
+  if (!tracks.some(t => t.items.length === 0 && before.has(t.id))) return project
+  return { ...project, tracks: orderedTrackArray(tracks.filter(t => t.items.length > 0 || !before.has(t.id))) }
 }
 
 // ── Audio track update ───────────────────────────────────────────────────

@@ -818,7 +818,10 @@ export interface TimelineLayout {
  * T5's hit-testing should derive its rows from here rather than re-deriving
  * geometry — one layout, two readers.
  */
-export function computeTimelineLayout(project: Project, pins: readonly TimelinePin[] = []): TimelineLayout {
+/** `holdLanes`: audio lanes to draw even when no track is on them (empty), so
+ *  a drag that empties a row does not slide every row under it up a row while
+ *  the pointer is still moving. The pointer machine's `holdLanes` effect. */
+export function computeTimelineLayout(project: Project, pins: readonly TimelinePin[] = [], holdLanes: readonly number[] = []): TimelineLayout {
   // Order-normalized (Part B): `trackItems` funnels through `normalizeTracks`,
   // which now groups tracks into the canonical video-block/overlay-block
   // stack (`normalizeTrackOrder`) before returning — so `allTracks` here is
@@ -925,7 +928,9 @@ export function computeTimelineLayout(project: Project, pins: readonly TimelineP
   // Resolved once per layout, not per track: an audio track may legally omit
   // `start`/`end`, and `groupAudioLanes` needs a horizon to fall back to.
   const { contentDuration } = computeDerivedTiming(project)
-  const lanes: AudioLaneLayout[] = groupAudioLanes(project.audio?.tracks ?? [], contentDuration).map(lane => {
+  const grouped = groupAudioLanes(project.audio?.tracks ?? [], contentDuration)
+  const held = holdLanes.filter(l => !grouped.some(g => g.laneIndex === l)).map(laneIndex => ({ laneIndex, tracks: [] as AudioTrack[] }))
+  const lanes: AudioLaneLayout[] = (held.length ? [...grouped, ...held].sort((a, b) => a.laneIndex - b.laneIndex) : grouped).map(lane => {
     const laneLayout: AudioLaneLayout = {
       laneIndex: lane.laneIndex,
       tracks: lane.tracks,

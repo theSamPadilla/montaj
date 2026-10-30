@@ -21,7 +21,7 @@
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../../types'
 import { trackFor, valueAt } from '../../../keyframeOps'
-import { CAPTION_ROW_HEIGHT_PX, ROW_GAP_PX, VISUAL_ROW_HEIGHT_PX, computeDerivedTiming, moveItemAcrossTracks, normalizeTracks, trackItems } from '../../timeline-model'
+import { CAPTION_ROW_HEIGHT_PX, ROW_GAP_PX, VISUAL_ROW_HEIGHT_PX, computeDerivedTiming, moveItemAcrossTracks, normalizeTracks, pruneEmptiedTracks, trackItems } from '../../timeline-model'
 import { applyMoveDeltaToSelection, moveSelectionToTrack } from '../../multiSelectOps'
 import { AUDIO_ITEM_INSET_PX, computeTimelineLayout } from '../draw'
 import {
@@ -788,9 +788,13 @@ describe('cross-track move', () => {
     const d = new Driver(makeContext({ project: sameKindProject() }))
     d.down(300, SAME_KIND_TRACK1_Y)                     // o0, the only item on track 1
     // Down onto track 0's row and out past the end of the base track's
-    // content, where nothing collides — so track 1 is left empty and disappears.
-    const after = lastProjectChange(d.move(300 + 900, SAME_KIND_BASE_Y))
-    expect(visual(after, 'o0').start).toBeCloseTo(11)
+    // content, where nothing collides — so track 1 is left empty. Mid-drag it
+    // keeps its row (nothing shifts under the pointer); the drop prunes it.
+    const mid = lastProjectChange(d.move(300 + 900, SAME_KIND_BASE_Y))
+    expect(visual(mid, 'o0').start).toBeCloseTo(11)
+    expect(mid.tracks).toHaveLength(2)
+    expect(mid.tracks![1]).toMatchObject({ id: 'trk-1', items: [] })
+    const after = of(d.up(300 + 900, SAME_KIND_BASE_Y), 'commit')[0].project
     expect(after.tracks).toHaveLength(1)
     expect(trackIndexOf(after, 'o0')).toBe(0)
   })
@@ -2655,11 +2659,13 @@ describe('multi-select move across tracks', () => {
     expect(visual(preview, 'o1')).toMatchObject({ start: 0, end: 2 })
     expect(visual(preview, 'o2')).toMatchObject({ start: 3, end: 5 })
     expect(visual(preview, 'o3')).toMatchObject({ start: 6, end: 8 })
-    // The emptied source tracks are pruned, as a single-item move prunes.
-    expect(normalizeTracks(preview).tracks!.map(t => t.id)).toEqual(['trk-0', 'trk-4'])
+    // The emptied source tracks keep their rows mid-drag, and the drop prunes
+    // them, as a single-item move does.
+    expect(normalizeTracks(preview).tracks!.map(t => [t.id, t.items.length])).toEqual([['trk-0', 1], ['trk-1', 0], ['trk-2', 0], ['trk-3', 0], ['trk-4', 4]])
     const commits = of(d.up(O1_X, rowMidYFor(ctx, 4)), 'commit')
     expect(commits).toHaveLength(1)
-    expect(commits[0].project).toEqual(preview)
+    expect(normalizeTracks(commits[0].project).tracks!.map(t => t.id)).toEqual(['trk-0', 'trk-4'])
+    expect(commits[0].project).toEqual(pruneEmptiedTracks(ctx.project, preview))
   })
 
   it('consolidates onto a NEW track when the pointer is above the top row', () => {
@@ -2672,7 +2678,9 @@ describe('multi-select move across tracks', () => {
     expect(trackIdOf(preview, 'o2')).toBe(target)
     expect(trackIdOf(preview, 'o3')).toBe(target)
     expect(trackIdOf(preview, 'o4')).toBe('trk-4')
-    expect(normalizeTracks(preview).tracks).toHaveLength(3)
+    expect(normalizeTracks(preview).tracks).toHaveLength(6)   // the emptied rows held mid-drag
+    const committed = of(d.up(O1_X, aboveTopY(ctx)), 'commit')[0].project
+    expect(normalizeTracks(committed).tracks).toHaveLength(3)
   })
 
   it('applies the horizontal delta and the track change together', () => {
@@ -2748,7 +2756,7 @@ describe('multi-select move across tracks', () => {
     // Back over the pressed row after leaving it gathers there (it does not
     // fall back to the horizontal-only move), rebuilt from the press-time project.
     expect(backHome).toEqual(
-      moveSelectionToTrack(applyMoveDeltaToSelection(ctx.project, ['o1', 'o2', 'o3'], 1, ctx.totalDuration), ['o1', 'o2', 'o3'], 1),
+      moveSelectionToTrack(applyMoveDeltaToSelection(ctx.project, ['o1', 'o2', 'o3'], 1, ctx.totalDuration), ['o1', 'o2', 'o3'], 1, 'overlay', false),
     )
     d.move(O1_X + 100, rowMidYFor(ctx, 4))
     const final = lastProjectChange(d.move(O1_X + 100, rowMidYFor(ctx, 4) + 1))
@@ -2769,7 +2777,9 @@ describe('multi-select move across tracks', () => {
     expect(visual(back, 'o1')).toMatchObject({ start: 0, end: 2 })
     const commits = of(d.up(400, rowMidYFor(ctx, 2)), 'commit')
     expect(commits).toHaveLength(1)
-    expect(commits[0].project).toEqual(back)
+    // The drop prunes the tracks the drag emptied, which its frames kept.
+    expect(commits[0].project).toEqual(pruneEmptiedTracks(ctx.project, back))
+    expect(normalizeTracks(commits[0].project).tracks!.map(t => t.id)).toEqual(['trk-0', 'trk-2', 'trk-4'])
   })
 
   it('never leaving the pressed row stays the horizontal-only move', () => {
@@ -2814,7 +2824,7 @@ describe('multi-select move across tracks', () => {
     const preview = lastProjectChange(d.move(to.x, to.y))
     const o1 = visual(ctx.project, 'o1')
     const expected = moveItemAcrossTracks({
-      tracks: normalizeTracks(ctx.project).tracks!, item: o1, start: 0, end: 2, sourceTrackIdx: 1, dy: to.y - from.y, targetTrackIdx: 3,
+      tracks: normalizeTracks(ctx.project).tracks!, item: o1, start: 0, end: 2, sourceTrackIdx: 1, dy: to.y - from.y, targetTrackIdx: 3, prune: false,
     })
     // Item for item (a minted track's id is random, so ids are not compared).
     expect(preview.tracks!.map(t => t.items)).toEqual(expected.map(t => t.items))

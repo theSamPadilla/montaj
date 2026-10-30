@@ -64,7 +64,7 @@ import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
 import { canKeyframe, enableKeyframing, moveKeyframe, setKeyframe, transformProps, valueAt } from '../../keyframeOps'
 import { moveMarker } from '../markers'
 import { applyMoveDeltaToSelection, applyResizeDeltaToSelection, moveSelectionToLane, moveSelectionToTrack } from '../multiSelectOps'
-import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, ROW_GAP_PX, coarseItemKind, computeDerivedTiming, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, resolveTargetTrackIdx, stampAudioLanes, trackItems, updateAudioTrack } from '../timeline-model'
+import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, ROW_GAP_PX, coarseItemKind, computeDerivedTiming, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, pruneEmptiedTracks, resolveTargetTrackIdx, stampAudioLanes, trackItems, updateAudioTrack } from '../timeline-model'
 import { DRAG_THRESHOLD_PX, computeResizedItem, resizeWindowedItem, type Draggable } from '../useItemDragDrop'
 import type { TimelineLayout } from './draw'
 import { keyframeUnionTimes } from './keyframe-strip'
@@ -217,6 +217,11 @@ export type PointerEffect =
    *  to highlight, or null to take the highlight down. Set only while the bar
    *  is over a row other than its own, and emitted only when it changes. */
   | { type: 'dropLane'; laneIndex: number | null }
+  /** Audio lanes the surface keeps drawing (empty if nothing is on them) while
+   *  a move is live, so a row the drag empties does not collapse and slide the
+   *  rows under it up beneath the pointer. The press-time lanes at the start of
+   *  a move, null at its end. See `computeTimelineLayout`'s `holdLanes`. */
+  | { type: 'holdLanes'; lanes: number[] | null }
 
 /** The host's record of which diamond is selected. A diamond is a time on an
  *  item — the props at that time are derived when acted on, never stored here. */
@@ -937,7 +942,7 @@ function applyGroupMove(
   // snaps back to where the press found it: the preview shows the press-time
   // project, and since that is `baseProject` itself, a release there commits
   // nothing (`pointerUp` commits only a project that differs from it).
-  const moved = moveSelectionToTrack(next, selection, target.idx, preferKind)
+  const moved = moveSelectionToTrack(next, selection, target.idx, preferKind, false)
   if (moved === null) return change(press.baseProject, lastProject, snapped.state, null)
   return change(moved, lastProject, snapped.state, guide)
 }
@@ -1156,6 +1161,7 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
       dy,
       targetTrackIdx,
       makeSpace: ctx.rippleMode,
+      prune: false,
     }),
   }
   return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next, guide }
@@ -1883,6 +1889,20 @@ function dropLaneEffects(previous: number | null | undefined, next: number | nul
   return [...effects, { type: 'dropLane', laneIndex: next ?? null }]
 }
 
+/** The lanes a live move holds (`holdLanes` effect), or null: a move of a
+ *  clip or an audio bar, on a timeline that draws audio lanes. */
+function heldLanes(gesture: GestureKind, press: Press): number[] | null {
+  if (gesture !== 'move' && gesture !== 'audio-move') return null
+  return press.layout.lanes.length > 0 ? press.layout.lanes.map(l => l.laneIndex) : null
+}
+
+/** Release or cancel: take the held lanes down if the gesture held any. */
+function releaseHeldLanes(state: MachineState, effects: PointerEffect[]): PointerEffect[] {
+  return state.kind === 'dragging' && heldLanes(state.gesture, state.press) !== null
+    ? [...effects, { type: 'holdLanes', lanes: null }]
+    : effects
+}
+
 /** The drop lane the surface is currently highlighting. */
 function currentDropLane(state: MachineState): number | null {
   return state.kind === 'dragging' ? state.dropLane ?? null : null
@@ -1906,7 +1926,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
     return withCursor(
       { kind: 'idle', cursor: state.cursor },
       initialMachineState().cursor,
-      dropLaneEffects(currentDropLane(state), null, guideEffects(currentGuide(state), null, cancelled)),
+      releaseHeldLanes(state, dropLaneEffects(currentDropLane(state), null, guideEffects(currentGuide(state), null, cancelled))),
     )
   }
 
@@ -2064,7 +2084,9 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         leftPressedRow,
         dropLane: applied.dropLane ?? null,
       }
-      return withCursor(next, cursorForGesture(gesture), dropLaneEffects(null, applied.dropLane, guideEffects(null, applied.guide, [...selectFirst, ...applied.effects])))
+      const hold = heldLanes(gesture, state.press)
+      const held: PointerEffect[] = hold ? [{ type: 'holdLanes', lanes: hold }] : []
+      return withCursor(next, cursorForGesture(gesture), dropLaneEffects(null, applied.dropLane, guideEffects(null, applied.guide, [...held, ...selectFirst, ...applied.effects])))
     }
 
     case 'pointerUp': {
@@ -2170,6 +2192,11 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
           // audio are unaffected; keeping it off the transient
           // `projectChange` frames is what keeps the drag itself smooth.
           let committed = reflowMagneticLanes(state.lastProject)
+          // The move's transient frames kept the tracks it emptied in place
+          // (see `moveItemAcrossTracks`' `prune`); the drop removes them.
+          if (state.gesture === 'move' || state.gesture === 'audio-move') {
+            committed = pruneEmptiedTracks(state.press.baseProject, committed)
+          }
           // A caption that was alone in its row leaves a HOLE lane behind it.
           // Collapse it here — after the "did anything change" gate, inside the
           // one commit — so a cross-row drag renumbers exactly once and lands
@@ -2206,7 +2233,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         return withCursor(
           { kind: 'idle', cursor: state.cursor },
           cursorForHit(hit),
-          dropLaneEffects(state.dropLane, null, guideEffects(state.guide, null, effects)),
+          releaseHeldLanes(state, dropLaneEffects(state.dropLane, null, guideEffects(state.guide, null, effects))),
         )
       }
 

@@ -328,3 +328,51 @@ describe('drop-target lane highlight', () => {
     expect(paint(1, 'light').map(c => c.strokeStyle)).toEqual([LIGHT_TIMELINE_PALETTE.colors.rowDivider, LIGHT_TIMELINE_PALETTE.colors.snapGuide])
   })
 })
+
+// ── Rows hold still mid-drag ─────────────────────────────────────────────
+
+describe('rows do not collapse while a drag empties one', () => {
+  function frames(effects: PointerEffect[]): Project[] {
+    return effects.filter((e): e is Extract<PointerEffect, { type: 'projectChange' }> => e.type === 'projectChange').map(e => e.project)
+  }
+
+  it('audio: the emptied lane stays drawn (holdLanes), so the row under the pointer does not slide up', () => {
+    const p = audioProject([
+      { id: 'a', src: 'a.mp3', start: 0, end: 2, lane: 0 },
+      { id: 'b', src: 'b.mp3', start: 4, end: 6, lane: 1 },
+      { id: 'c', src: 'c.mp3', start: 8, end: 10, lane: 2 },
+    ] as AudioTrack[])
+    const pressLanes = computeTimelineLayout(p).lanes
+    const { effects } = drag(p, { x: 500, y: laneMid(p, 1) }, { x: 500, y: laneMid(p, 2) })
+    const holds = effects.filter((e): e is Extract<PointerEffect, { type: 'holdLanes' }> => e.type === 'holdLanes')
+    expect(holds.map(h => h.lanes)).toEqual([[0, 1, 2], null])
+    // The last transient frame has b in lane 2 and nothing in lane 1.
+    const all = frames(effects)
+    const last = all[all.length - 1]
+    expect(computeTimelineLayout(last).lanes.map(l => l.laneIndex)).toEqual([0, 2])
+    // Laid out with the held lanes, every lane is where the press drew it.
+    const held = computeTimelineLayout(last, [], [0, 1, 2]).lanes
+    expect(held.map(l => [l.laneIndex, l.y])).toEqual(pressLanes.map(l => [l.laneIndex, l.y]))
+    expect(held[1].tracks).toEqual([])
+  })
+
+  it('visual: the emptied track keeps its row on every transient frame, and the drop prunes it', () => {
+    const p = {
+      id: 'p',
+      tracks: [
+        { id: 'trk-0', items: [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 10, inPoint: 0, outPoint: 10, sourceDuration: 20 }] },
+        { id: 'trk-1', items: [{ id: 'o1', type: 'overlay', start: 0, end: 2 }] },
+        { id: 'trk-2', items: [{ id: 'o2', type: 'overlay', start: 4, end: 6 }] },
+        { id: 'trk-3', items: [{ id: 'o3', type: 'overlay', start: 8, end: 9 }] },
+      ],
+    } as unknown as Project
+    const pressRows = computeTimelineLayout(p).rows.map(r => r.y)
+    const { committed, effects } = drag(p, { x: 500, y: rowMid(p, 2) }, { x: 500, y: rowMid(p, 3) })
+    for (const f of frames(effects)) {
+      expect(normalizeTracks(f).tracks!.map(t => t.id)).toEqual(['trk-0', 'trk-1', 'trk-2', 'trk-3'])
+      expect(computeTimelineLayout(f).rows.map(r => r.y)).toEqual(pressRows)
+    }
+    expect(trackIdOf(committed, 'o2')).toBe('trk-3')
+    expect(normalizeTracks(committed).tracks!.map(t => t.id)).toEqual(['trk-0', 'trk-1', 'trk-3'])
+  })
+})

@@ -251,7 +251,8 @@ export function applyMoveDeltaToSelection(
  * track (`landsLegally`). That also catches a pair legally nested on tracks[0]
  * being carried onto a track where nesting is not allowed.
  *
- * Tracks left empty are pruned and the stack is re-grouped into the canonical
+ * Tracks left empty are pruned (unless `prune` is false, for a drag's
+ * transient frames) and the stack is re-grouped into the canonical
  * video-block/overlay-block order (`normalizeTrackOrder`), exactly as
  * `moveItemAcrossTracks` leaves a single-item move. Surviving track objects
  * keep their own id and settings. One difference: when the whole base track is
@@ -263,6 +264,7 @@ export function moveSelectionToTrack(
   selectedIds: readonly string[],
   targetTrackIdx: number,
   preferKind?: 'video' | 'overlay',
+  prune = true,
 ): Project | null {
   const targets = new Set(selectedIds)
   if (targets.size === 0) return project
@@ -316,7 +318,13 @@ export function moveSelectionToTrack(
   const landedIdx = finalTracks.findIndex(track => track.items.some(item => movingIds.has(item.id)))
   if (!landsLegally(finalTracks[landedIdx].items, movingIds, landedIdx === 0)) return null
 
-  return { ...normalized, tracks: finalTracks }
+  if (prune) return { ...normalized, tracks: finalTracks }
+  // A drag's transient frame (`prune` false): judged on the pruned list above,
+  // but every emptied track goes back at the index it had, so the rows under
+  // the pointer do not shift until the drop prunes them (`pruneEmptiedTracks`).
+  const unpruned = [...(normalizeTrackOrder({ ...normalized, tracks: placed.filter(track => track.items.length > 0) }).tracks ?? [])]
+  placed.forEach((track, i) => { if (track.items.length === 0) unpruned.splice(Math.min(i, unpruned.length), 0, track) })
+  return { ...normalized, tracks: unpruned }
 }
 
 /**
