@@ -261,3 +261,33 @@ test('real ffmpeg: an image keeps its own transparency; the blur never fills a h
     assert.ok(near(px(f, W / 2 + 2, H / 2), [0, 0, 0], 6), `the hole stays clear: ${px(f, W / 2 + 2, H / 2)}`)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+// A clip whose transparent pixels are WHITE (straight alpha: ProRes 4444 and
+// PNG keep whatever colour sits under alpha 0). The blur must not bleed that
+// white into the opaque side. item-blur.js relies on ffmpeg's implicit
+// straight -> premultiplied conversion before `unpremultiply` (measured on
+// 8.1); a build that skipped it would blur the white in and show a halo here.
+test('real ffmpeg: transparent white under a clip\'s alpha does not halo the opaque side', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'blur-'))
+  try {
+    const vf = `format=rgba,geq=r='if(gte(X,${W / 2}),255,192)':g='if(gte(X,${W / 2}),255,64)':b='if(gte(X,${W / 2}),255,32)':a='if(gte(X,${W / 2}),0,255)'`
+    const png = join(dir, 'white.png')
+    let g = spawnSync(FFMPEG, ['-y', '-v', 'error', '-f', 'lavfi', '-i', `color=c=0xc04020:s=${W}x${H}`, '-vf', vf, '-frames:v', '1', png])
+    assert.equal(g.status, 0, String(g.stderr))
+    const mov = join(dir, 'white.mov')
+    g = spawnSync(FFMPEG, ['-y', '-v', 'error', '-f', 'lavfi', '-i', `color=c=0xc04020:s=${W}x${H}:r=30:d=1`,
+      '-vf', vf + ',format=yuva444p10le', '-c:v', 'prores_ks', '-profile:v', '4444', '-pix_fmt', 'yuva444p10le', mov])
+    assert.equal(g.status, 0, String(g.stderr))
+    const items = {
+      png: { type: 'image', src: png, start: 0, end: 0.4, trackIdx: 1, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, blur: 120 },
+      prores: { type: 'video', src: mov, start: 0, end: 0.4, inPoint: 0, trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0,
+        opacity: 1, muted: true, blur: 120, probedWidth: W, probedHeight: H, probedAlpha: true },
+    }
+    for (const [name, item] of Object.entries(items)) {
+      const f = await render(dir, [item], name)
+      assert.ok(near(px(f, W / 2 - 3, H / 2), RED, 12), `${name}: opaque side at the edge stays red: ${px(f, W / 2 - 3, H / 2)}`)
+      assert.ok(near(px(f, W / 2 + 3, H / 2), [0, 0, 0], 8), `${name}: the transparent side stays clear: ${px(f, W / 2 + 3, H / 2)}`)
+      assert.ok(near(px(f, 0, H / 2), RED, 12), `${name}: far side: ${px(f, 0, H / 2)}`)
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

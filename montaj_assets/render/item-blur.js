@@ -32,6 +32,14 @@
 // frame edge) is ignored by Chromium (measured: identical to "none"), hence
 // the renormalised blur in both engines.
 //
+// RELIANCE (ffmpeg 8.1, measured): a straight-alpha source (PNG, ProRes 4444)
+// keeps whatever colour sits under alpha 0, often white. The straight ->
+// premultiplied conversion happens IMPLICITLY, ahead of `unpremultiply`, when
+// ffmpeg wires the format filters, so that colour is zeroed before the blur
+// and does not bleed into the opaque side. Nothing here asks for it. The test
+// "transparent white under a clip's alpha does not halo" in
+// test/item-blur.test.mjs fails if a build stops doing so.
+//
 // WHERE (encode-segment.js): on the fitted picture, before the box's
 // transparent padding (a video's `pad`, an image's `contain` pad), so the
 // picture's edges are the edges it renormalises at.
