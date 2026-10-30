@@ -45,7 +45,7 @@ def fake_node(monkeypatch, overlay):
                             "-frames:v", "1", p], check=True)
             pngs.append(p)
         return {"pngs": pngs, "tileWidth": 160, "tileHeight": 284,
-                "inputs": [[str(overlay / "o.jsx"), 1.0], [str(overlay / "helper.js"), 1.0]]}
+                "inputs": [[str(f), f.stat().st_mtime * 1000] for f in (overlay / "o.jsx", overlay / "helper.js")]}
 
     monkeypatch.setattr(fs, "run_overlay_strip_node", fake)
     monkeypatch.setattr(fs, "_render_dir", lambda: "/render")
@@ -198,6 +198,109 @@ def test_locked_index_json_returns_the_valid_one_already_there(fake_node, overla
     out = tmp_path / "out"
     first = build(overlay, out)
     index = [p for p in out.glob("*/index.json")][0]
+    held = dict(first, interval=9.0)  # what another process wrote
+    index.write_text(json.dumps(held))
+    real = fs.os.replace
+    def locked(src, dst):
+        if str(dst).endswith("index.json"):
+            raise PermissionError("EPERM")
+        return real(src, dst)
+    monkeypatch.setattr(fs.os, "replace", locked)
+    got = fs._write_json_atomic(str(index), first, valid=lambda d: bool(d and d.get("sheets")))
+    assert got == held
+    assert json.loads(index.read_text()) == held
+    assert not list(index.parent.glob("*.tmp"))
+    assert len(fake_node) == 1
+
+
+def test_editing_the_jsx_changes_the_key(fake_node, overlay, tmp_path):
+    out = tmp_path / "out"
+    build(overlay, out)
+    (overlay / "o.jsx").write_text(JSX + "// edit\n")
+    build(overlay, out)
+    assert len(fake_node) == 2
+
+
+def test_editing_an_imported_file_changes_the_key(fake_node, overlay, tmp_path):
+    out = tmp_path / "out"
+    build(overlay, out)
+    assert len(fake_node) == 1
+    (overlay / "helper.js").write_text("export const helper = () => 'b'\n")
+    build(overlay, out)
+    assert len(fake_node) == 2
+    build(overlay, out)
+    assert len(fake_node) == 2
+
+
+def test_overlay_requires_duration(overlay, tmp_path):
+    proc = run_step("filmstrip.py", "--input", str(overlay / "o.jsx"), "--out-dir", str(tmp_path / "o"))
+    assert proc.returncode != 0
+    assert "duration" in proc.stderr
+
+
+def test_video_path_unchanged(tmp_path):
+    vid = tmp_path / "v.mp4"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=gray:s=320x240:d=4",
+                    "-r", "30", "-pix_fmt", "yuv420p", str(vid)], check=True)
+    proc = run_step("filmstrip.py", "--input", str(vid), "--out-dir", str(tmp_path / "o"), "--max-tiles", "4")
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout)
+    assert set(data) == {"sheets", "interval", "tileWidth"}
+    assert len(data["sheets"][0]["tiles"]) == 4
+
+
+def test_real_overlay_strip_three_tiles(overlay, tmp_path):
+    if not shutil.which("node"):
+        pytest.skip("node not available")
+    try:
+        render = fs._render_dir()
+    except Exception as e:  # noqa: BLE001
+        pytest.skip(f"render runtime not resolvable: {e}")
+    if not (__import__("pathlib").Path(render) / "node_modules" / "puppeteer").exists():
+        pytest.skip("render runtime has no puppeteer")
+    out = tmp_path / "real"
+    t0 = time.time()
+    # the read boundary admits the workspace; the fixture folder stands in for it
+    proc = run_step_env("filmstrip.py", {"MONTAJ_WORKSPACE_DIR": str(tmp_path.resolve())},
+                        "--input", str(overlay / "o.jsx"), "--out-dir", str(out),
+                        "--duration", "3", "--tile-width", "108", "--timeout", "120")
+    if proc.returncode != 0 and "chrom" in proc.stderr.lower():
+        pytest.skip(f"Chromium not launchable headless: {proc.stderr[-200:]}")
+    assert proc.returncode == 0, proc.stderr
+    print(f"3-tile render took {time.time() - t0:.1f}s")
+    data = json.loads(proc.stdout)
+    assert len(data["sheets"][0]["tiles"]) == 3
+    assert data["tileWidth"] == 108 and data["tileHeight"] == 192
+    assert (out / data["sheets"][0]["path"].split("/")[-2] / "index.json").exists()
+
+
+def test_key_is_stable_across_path_separators(monkeypatch):
+    # content reads are a host concern; the pure key code sees only the (normalised) path text
+    monkeypatch.setattr(fs, "_file_sha", lambda p: "same")
+    posix = "C:/Users/x/ov/a.js"
+    win = "C:\\Users\\x\\ov\\a.js"
+    assert fs.overlay_key("base", [posix]) == fs.overlay_key("base", [win])
+    assert fs._norm("C:\\Users\\x\\o.jsx") == "C:/Users/x/o.jsx"
+
+
+def test_rename_failure_over_a_valid_target_is_a_hit(tmp_path, monkeypatch):
+    target = tmp_path / "index.json"
+    target.write_text(json.dumps({"sheets": [1]}))
+    def boom(*a):
+        raise PermissionError("EPERM")
+    monkeypatch.setattr(fs.os, "replace", boom)
+    fs._write_json_atomic(str(target), {"sheets": [2]}, valid=lambda d: bool(d and d.get("sheets")))
+    assert json.loads(target.read_text()) == {"sheets": [1]}
+    assert not list(tmp_path.glob("*.tmp"))
+    target.write_text("junk")
+    with pytest.raises(PermissionError):
+        fs._write_json_atomic(str(target), {"sheets": [2]}, valid=lambda d: bool(d and d.get("sheets")))
+
+
+def test_locked_index_json_returns_the_valid_one_already_there(fake_node, overlay, tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    first = build(overlay, out)
+    index = [p for p in out.glob("*/index.json")][0]
     index.unlink()
     held = dict(first, interval=9.0)  # what another process wrote
     index.write_text(json.dumps(held))
@@ -213,3 +316,78 @@ def test_locked_index_json_returns_the_valid_one_already_there(fake_node, overla
         pass
     got = fs._write_json_atomic(str(index), first, valid=lambda d: bool(d and d.get("sheets")))
     assert got == held
+
+
+def test_edit_during_the_render_is_not_cached(overlay, tmp_path, monkeypatch, fake_node):
+    out = tmp_path / "out"
+    inner = fs.run_overlay_strip_node
+
+    def edits_then_returns(cmd, timeout):
+        got = inner(cmd, timeout)
+        (overlay / "helper.js").write_text("export const helper = () => 'edited mid-render'\n")
+        return got
+
+    monkeypatch.setattr(fs, "run_overlay_strip_node", edits_then_returns)
+    idx = build(overlay, out)
+    assert idx["sheets"] and all(__import__("os").path.isfile(s["path"]) for s in idx["sheets"])
+    assert not list(out.glob("*/imports.json")) and not list(out.glob("*/index.json"))
+    # nothing was cached, so the next build renders again and does cache
+    monkeypatch.setattr(fs, "run_overlay_strip_node", inner)
+    build(overlay, out)
+    assert len(fake_node) == 2
+    assert list(out.glob("*/index.json"))
+    build(overlay, out)
+    assert len(fake_node) == 2
+
+
+def test_edit_of_the_jsx_during_the_render_is_not_cached(overlay, tmp_path, monkeypatch, fake_node):
+    out = tmp_path / "out"
+    inner = fs.run_overlay_strip_node
+
+    def edits_then_returns(cmd, timeout):
+        got = inner(cmd, timeout)
+        (overlay / "o.jsx").write_text(JSX + "// edit\n")
+        return got
+
+    monkeypatch.setattr(fs, "run_overlay_strip_node", edits_then_returns)
+    build(overlay, out)
+    assert not list(out.glob("*/index.json"))
+
+
+def test_a_stat_that_moved_is_stale(overlay, monkeypatch):
+    jsx = str(overlay / "o.jsx")
+    sha = fs._file_sha(jsx)
+    mt = (overlay / "o.jsx").stat().st_mtime * 1000
+    assert fs._inputs_changed(jsx, sha, [[jsx, mt]]) is False
+    assert fs._inputs_changed(jsx, sha, [[jsx, mt + 0.5]]) is False  # inside the 1 ms tolerance
+    assert fs._inputs_changed(jsx, sha, [[jsx, mt + 5]]) is True
+    assert fs._inputs_changed(jsx, sha, [[str(overlay / "gone.js"), 1.0]]) is True
+
+
+def test_node_timeout_fails_cleanly(overlay, tmp_path, monkeypatch, capsys):
+    def boom(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, 1)
+    monkeypatch.setattr(fs.subprocess, "run", boom)
+    monkeypatch.setattr(fs, "_render_dir", lambda: "/render")
+    out = tmp_path / "out"
+    with pytest.raises(SystemExit):
+        build(overlay, out)
+    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert err == {"error": "timeout", "message": "Overlay strip timed out"}
+    assert not list(out.glob(".strip_*"))
+
+
+def test_work_dir_is_gone_and_sheets_sit_under_the_key(fake_node, overlay, tmp_path):
+    out = tmp_path / "out"
+    idx = build(overlay, out)
+    assert not list(out.glob(".strip_*"))
+    index_dir = [p for p in out.glob("*/index.json")][0].parent
+    assert __import__("pathlib").Path(idx["sheets"][0]["path"]).parent == index_dir
+
+
+def test_montaj_version_is_in_the_key(fake_node, overlay, tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    build(overlay, out)
+    monkeypatch.setattr(fs, "_montaj_version", lambda: "9.9.9")
+    build(overlay, out)
+    assert len(fake_node) == 2

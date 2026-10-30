@@ -129,11 +129,22 @@ def _file_sha(path: str) -> str:
         return "missing"
 
 
-def overlay_base_key(jsx, props, fonts, duration, fps, timestamps, tile_width, width, height, cols, tiles_per_sheet) -> str:
+def _montaj_version() -> str:
+    """The installed montaj version (a new release may change the renderer), or "dev" from a checkout."""
+    try:
+        from importlib.metadata import version as pkg_version
+        return pkg_version("montaj")
+    except Exception:
+        return "dev"
+
+
+def overlay_base_key(jsx, props, fonts, duration, fps, timestamps, tile_width, width, height, cols, tiles_per_sheet,
+                     jsx_sha=None) -> str:
     """Hash of everything but the overlay's imports: the JSX content, props (canonical), fonts, length, fps,
-    the time grid, tile size and the version. Names the folder that holds the import list."""
+    the time grid, tile size, the montaj version and the strip version. Names the folder that holds the import list.
+    `jsx_sha` is the content hash when the caller already took it (so it can later check the file did not move)."""
     raw = json.dumps({
-        "jsx": _file_sha(jsx), "props": props, "fonts": fonts, "duration": duration, "fps": fps,
+        "jsx": jsx_sha if jsx_sha is not None else _file_sha(jsx), "mv": _montaj_version(), "props": props, "fonts": fonts, "duration": duration, "fps": fps,
         "times": [round(t, 3) for t in timestamps], "tile": tile_width, "canvas": [width, height],
         "cols": cols, "perSheet": tiles_per_sheet, "v": OVERLAY_STRIP_VERSION,
     }, sort_keys=True, separators=(",", ":"))
@@ -198,7 +209,10 @@ def cached_overlay_strip(out_dir: str, base_key: str):
 def run_overlay_strip_node(cmd: list, timeout: int):
     """Run the node strip sampler; returns its parsed stdout JSON. A seam for tests."""
     from common import node_child_env
-    r = subprocess.run(cmd, capture_output=True, env=node_child_env(), timeout=timeout)
+    try:
+        r = subprocess.run(cmd, capture_output=True, env=node_child_env(), timeout=timeout)  # kills the child on timeout
+    except subprocess.TimeoutExpired:
+        fail("timeout", "Overlay strip timed out")
     if r.returncode != 0:
         tail = (r.stderr or b"").decode("utf-8", errors="replace").strip().splitlines()[-1:] or ["no output"]
         fail("unexpected_error", f"Overlay strip failed: {tail[0]}")
@@ -216,6 +230,31 @@ def flatten_tile(png: str, dest: str, w: int, h: int, timeout: int):
     check_output(dest)
 
 
+def _inputs_changed(jsx: str, jsx_sha: str, inputs: list) -> bool:
+    """True when the overlay or anything it imported changed since the render read it: a strip rendered from
+    one version must not be cached under the key of another."""
+    if _file_sha(jsx) != jsx_sha:
+        return True
+    for entry in inputs:
+        try:
+            path, mtime_ms = entry[0], float(entry[1])
+            if abs(os.stat(path).st_mtime * 1000 - mtime_ms) > 1:
+                return True
+        except (OSError, ValueError, IndexError, TypeError):
+            return True
+    return False
+
+
+def _move_into(src: str, dest: str):
+    """Rename a finished file into place. On Windows a rename over an existing file can fail; the file there
+    is the same key's, so it stands."""
+    try:
+        os.replace(src, dest)
+    except OSError:
+        if not os.path.isfile(dest):
+            raise
+
+
 def build_overlay(jsx, duration, out_dir, max_tiles, min_interval, cols, tile_width, tiles_per_sheet, timeout,
                   props="{}", google_fonts=None, fps=30, width=1080, height=1920):
     out_dir = os.path.abspath(out_dir)
@@ -229,7 +268,9 @@ def build_overlay(jsx, duration, out_dir, max_tiles, min_interval, cols, tile_wi
 
     interval = max(duration / max_tiles, min_interval)
     timestamps = tile_timestamps(duration, interval)
-    base = overlay_base_key(jsx, props_obj, google_fonts or "", duration, fps, timestamps, tile_width, width, height, cols, tiles_per_sheet)
+    jsx_sha = _file_sha(jsx)
+    base = overlay_base_key(jsx, props_obj, google_fonts or "", duration, fps, timestamps, tile_width, width, height, cols, tiles_per_sheet,
+                            jsx_sha=jsx_sha)
 
     hit = cached_overlay_strip(out_dir, base)
     if hit:
@@ -246,9 +287,8 @@ def build_overlay(jsx, duration, out_dir, max_tiles, min_interval, cols, tile_wi
         if google_fonts:
             cmd += ["--google-fonts", google_fonts]
         got = run_overlay_strip_node(cmd, timeout)
-        imports = sorted({p for p, _ in got.get("inputs", [])} | {jsx})
-        os.makedirs(os.path.join(out_dir, base), exist_ok=True)
-        _write_json_atomic(os.path.join(out_dir, base, "imports.json"), imports, valid=lambda d: isinstance(d, list))
+        inputs = got.get("inputs", [])
+        imports = sorted({p for p, _ in inputs} | {jsx})
         key_dir = os.path.join(out_dir, overlay_key(base, imports))
         os.makedirs(key_dir, exist_ok=True)
 
@@ -259,13 +299,21 @@ def build_overlay(jsx, duration, out_dir, max_tiles, min_interval, cols, tile_wi
             os.makedirs(tiles_dir)
             for i in range(len(chunk)):
                 flatten_tile(got["pngs"][offset + i], os.path.join(tiles_dir, f"f_{i + 1:04d}.jpg"), tile_width, tile_height, timeout)
-            sheet_path = os.path.join(key_dir, f"sheet_{sheet_no + 1:02d}.jpg")
-            tile_sheet(tiles_dir, len(chunk), cols, sheet_path, timeout)
+            name = f"sheet_{sheet_no + 1:02d}.jpg"
+            built = os.path.join(work, name)
+            tile_sheet(tiles_dir, len(chunk), cols, built, timeout)
+            sheet_path = os.path.join(key_dir, name)
+            _move_into(built, sheet_path)
             sheets.append({
                 "path": sheet_path, "cols": cols, "rows": (len(chunk) + cols - 1) // cols,
                 "tiles": [{"t": round(t, 3), "row": i // cols, "col": i % cols} for i, t in enumerate(chunk)],
             })
         index = {"sheets": sheets, "interval": round(interval, 3), "tileWidth": tile_width, "tileHeight": tile_height}
+        # An edit landed while the strip rendered: it is a fine picture of the old file, but no entry for the new key.
+        if _inputs_changed(jsx, jsx_sha, inputs):
+            return index
+        os.makedirs(os.path.join(out_dir, base), exist_ok=True)
+        _write_json_atomic(os.path.join(out_dir, base, "imports.json"), imports, valid=lambda d: isinstance(d, list))
         # last, so a hit never sees half a strip
         return _write_json_atomic(os.path.join(key_dir, "index.json"), index, valid=lambda d: isinstance(d, dict) and bool(d.get("sheets")))
     finally:
