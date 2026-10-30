@@ -1875,6 +1875,9 @@ export interface TimelineScene {
    *  into, highlighted on its background (`drawDropTargetLane`). Absent/null
    *  → no highlight. */
   dropTargetLane?: number | null
+  /** A dragged clip's id: the visual row holding it is highlighted as the
+   *  drop target, the same way as `dropTargetLane`. Absent/null → none. */
+  dropTargetItem?: string | null
 }
 
 export interface DrawStats {
@@ -2225,6 +2228,9 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
   let rowShadeIdx = 0
   for (const row of layout.rows) {
     drawRowBackground(ctx, { x: 0, y: row.y, width: surfaceWidth, height: row.height }, rowShadeIdx++ % 2 === 0 ? themePalette.colors.rowBackground : themePalette.colors.rowBackgroundAlt, themePalette)
+    if (scene.dropTargetItem && row.items.some(i => i.id === scene.dropTargetItem)) {
+      drawDropTargetLane(ctx, { x: 0, y: row.y, width: surfaceWidth, height: row.height }, themePalette)
+    }
 
     // A SKIPPED track is drawn faded: it still draws, and stays selectable and
     // editable; only playback and export leave it out.

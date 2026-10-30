@@ -557,6 +557,8 @@ export default function TimelineCanvas({
   // The audio lane a dragged bar will drop into (the machine's `dropLane`
   // effect), highlighted on the content layer, where lane backgrounds are drawn.
   const dropLaneRef = useRef<number | null>(null)
+  // The clip whose row a visual drag will drop it on (the `dropTrack` effect).
+  const dropItemRef = useRef<string | null>(null)
 
   // The trim handle under the resting pointer, so the painter can light it up.
   // Held as a ref for the usual reason, but redrawn through `requestRedraw`
@@ -648,6 +650,7 @@ export default function TimelineCanvas({
           pins: scene.pins,
           missingClips: scene.missingClips,
           dropTargetLane: dropLaneRef.current,
+          dropTargetItem: dropItemRef.current,
         })
       }
     }
@@ -926,6 +929,10 @@ export default function TimelineCanvas({
           break
         case 'dropLane':
           dropLaneRef.current = effect.laneIndex
+          requestRedraw('content')
+          break
+        case 'dropTrack':
+          dropItemRef.current = effect.itemId
           requestRedraw('content')
           break
         case 'holdLanes':

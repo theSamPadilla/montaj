@@ -222,6 +222,11 @@ export type PointerEffect =
    *  rows under it up beneath the pointer. The press-time lanes at the start of
    *  a move, null at its end. See `computeTimelineLayout`'s `holdLanes`. */
   | { type: 'holdLanes'; lanes: number[] | null }
+  /** A dragged clip whose row to highlight as the drop target (the visual
+   *  sibling of `dropLane`): set while the clip sits on a track other than the
+   *  one it was pressed on, a new one included; null takes it down. Emitted
+   *  only when it changes. */
+  | { type: 'dropTrack'; itemId: string | null }
 
 /** The host's record of which diamond is selected. A diamond is a time on an
  *  item — the props at that time are derived when acted on, never stored here. */
@@ -350,6 +355,9 @@ export type MachineState =
       /** `audio-move` only: the lane highlighted as the drop target, or null.
        *  See the `dropLane` effect. */
       dropLane?: number | null
+      /** `move` only: the clip whose row is highlighted, or null. See the
+       *  `dropTrack` effect. */
+      dropTrack?: string | null
     }
 
 export function initialMachineState(): MachineState {
@@ -842,6 +850,9 @@ interface Applied {
   /** `audio-move` only: the lane to highlight as the drop target, or null.
    *  Like `guide`, the reducer diffs it and emits a `dropLane` on a change. */
   dropLane?: number | null
+  /** `move` only: the clip whose row to highlight as the drop target, or null.
+   *  Diffed by the reducer like `dropLane`. */
+  dropTrack?: string | null
 }
 
 function noChange(snap: SnapState, lastProject: Project): Applied {
@@ -944,7 +955,26 @@ function applyGroupMove(
   // nothing (`pointerUp` commits only a project that differs from it).
   const moved = moveSelectionToTrack(next, selection, target.idx, preferKind, false)
   if (moved === null) return change(press.baseProject, lastProject, snapped.state, null)
-  return change(moved, lastProject, snapped.state, guide)
+  return { ...change(moved, lastProject, snapped.state, guide), dropTrack: movedTrackItem(press.baseProject, moved, [dragged.id, ...selection]) }
+}
+
+/** The first of `ids` that sits on a different visual track (by id) in `next`
+ *  than in `base`, a new track included, or null: the clip whose row a drag
+ *  highlights as its drop target. */
+function movedTrackItem(base: Project, next: Project, ids: readonly string[]): string | null {
+  const trackOf = (p: Project) => {
+    const map = new Map<string, string>()
+    for (const t of normalizeTracks(p).tracks ?? []) for (const i of t.items) map.set(i.id, t.id)
+    return map
+  }
+  const before = trackOf(base)
+  const after = trackOf(next)
+  for (const id of ids) {
+    const was = before.get(id)
+    const now = after.get(id)
+    if (was !== undefined && now !== undefined && was !== now) return id
+  }
+  return null
 }
 
 /** Where a group drag lands: a visual track (an index in normalized order, one
@@ -1164,7 +1194,7 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
       prune: false,
     }),
   }
-  return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next, guide }
+  return { effects: [{ type: 'projectChange', project: next }], snap: snapped.state, lastProject: next, guide, dropTrack: movedTrackItem(press.baseProject, next, [item.id]) }
 }
 
 function applyTrim(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean): Applied {
@@ -1903,6 +1933,13 @@ function releaseHeldLanes(state: MachineState, effects: PointerEffect[]): Pointe
     : effects
 }
 
+/** Append a `dropTrack` effect when, and only when, the highlighted clip
+ *  changes. Same contract as `dropLaneEffects`. */
+function dropTrackEffects(previous: string | null | undefined, next: string | null | undefined, effects: PointerEffect[]): PointerEffect[] {
+  if ((previous ?? null) === (next ?? null)) return effects
+  return [...effects, { type: 'dropTrack', itemId: next ?? null }]
+}
+
 /** The drop lane the surface is currently highlighting. */
 function currentDropLane(state: MachineState): number | null {
   return state.kind === 'dragging' ? state.dropLane ?? null : null
@@ -1926,7 +1963,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
     return withCursor(
       { kind: 'idle', cursor: state.cursor },
       initialMachineState().cursor,
-      releaseHeldLanes(state, dropLaneEffects(currentDropLane(state), null, guideEffects(currentGuide(state), null, cancelled))),
+      releaseHeldLanes(state, dropTrackEffects(state.kind === 'dragging' ? state.dropTrack : null, null, dropLaneEffects(currentDropLane(state), null, guideEffects(currentGuide(state), null, cancelled)))),
     )
   }
 
@@ -1951,8 +1988,9 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         escaped,
         keyframeT: applied.keyframeLandedT ?? state.keyframeT,
         dropLane: applied.dropLane ?? null,
+        dropTrack: applied.dropTrack ?? null,
       },
-      effects: dropLaneEffects(state.dropLane, applied.dropLane, guideEffects(state.guide, applied.guide, applied.effects)),
+      effects: dropTrackEffects(state.dropTrack, applied.dropTrack, dropLaneEffects(state.dropLane, applied.dropLane, guideEffects(state.guide, applied.guide, applied.effects))),
     }
   }
 
@@ -2083,10 +2121,11 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         keyframeT: applied.keyframeLandedT,
         leftPressedRow,
         dropLane: applied.dropLane ?? null,
+        dropTrack: applied.dropTrack ?? null,
       }
       const hold = heldLanes(gesture, state.press)
       const held: PointerEffect[] = hold ? [{ type: 'holdLanes', lanes: hold }] : []
-      return withCursor(next, cursorForGesture(gesture), dropLaneEffects(null, applied.dropLane, guideEffects(null, applied.guide, [...held, ...selectFirst, ...applied.effects])))
+      return withCursor(next, cursorForGesture(gesture), dropTrackEffects(null, applied.dropTrack, dropLaneEffects(null, applied.dropLane, guideEffects(null, applied.guide, [...held, ...selectFirst, ...applied.effects]))))
     }
 
     case 'pointerUp': {
@@ -2233,7 +2272,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         return withCursor(
           { kind: 'idle', cursor: state.cursor },
           cursorForHit(hit),
-          releaseHeldLanes(state, dropLaneEffects(state.dropLane, null, guideEffects(state.guide, null, effects))),
+          releaseHeldLanes(state, dropTrackEffects(state.dropTrack, null, dropLaneEffects(state.dropLane, null, guideEffects(state.guide, null, effects)))),
         )
       }
 

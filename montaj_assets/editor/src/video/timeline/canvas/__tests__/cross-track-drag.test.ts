@@ -414,3 +414,61 @@ describe('the base track survives its only clip being dragged above the top row'
     expect(trackIdOf(committed, 'c1')).not.toBe('base')
   })
 })
+
+// ── Visual drop-target highlight ─────────────────────────────────────────
+
+describe('the visual row a drag will drop on is highlighted, a new row included', () => {
+  const project = () => ({
+    id: 'p',
+    tracks: [
+      { id: 'trk-0', items: [{ id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 10, inPoint: 0, outPoint: 10, sourceDuration: 20 }] },
+      { id: 'trk-1', items: [{ id: 'o1', type: 'overlay', start: 0, end: 2 }] },
+      { id: 'trk-2', items: [{ id: 'o2', type: 'overlay', start: 5, end: 7 }] },
+    ],
+  }) as unknown as Project
+  const dropTracks = (effects: PointerEffect[]) =>
+    effects.filter((e): e is Extract<PointerEffect, { type: 'dropTrack' }> => e.type === 'dropTrack').map(e => e.itemId)
+
+  it('onto another track: highlighted while there, taken down on release', () => {
+    const p = project()
+    expect(dropTracks(drag(p, { x: 100, y: rowMid(p, 1) }, { x: 100, y: rowMid(p, 2) }).effects)).toEqual(['o1', null])
+  })
+
+  it('staying on its own track highlights nothing', () => {
+    const p = project()
+    expect(dropTracks(drag(p, { x: 100, y: rowMid(p, 1) }, { x: 300, y: rowMid(p, 1) }).effects)).toEqual([])
+  })
+
+  it('above the top row: the new row it opens is the one highlighted', () => {
+    const p = project()
+    const top = computeTimelineLayout(p).rows[0]
+    const { effects } = drag(p, { x: 100, y: rowMid(p, 1) }, { x: 100, y: top.y - 4 })
+    expect(dropTracks(effects)).toEqual(['o1', null])
+    const frames = effects.filter((e): e is Extract<PointerEffect, { type: 'projectChange' }> => e.type === 'projectChange')
+    const last = frames[frames.length - 1].project
+    const row = computeTimelineLayout(last).rows.find(r => r.items.some(i => i.id === 'o1'))!
+    expect(normalizeTracks(last).tracks![row.trackIdx].id).not.toMatch(/^trk-[0-2]$/)
+  })
+
+  it('below the last audio row: the new lane it opens is the one highlighted', () => {
+    const p = audioProject([
+      { id: 'x', src: 'x.mp3', start: 0, end: 2, lane: 0 },
+      { id: 'y', src: 'y.mp3', start: 4, end: 6, lane: 5 },
+    ] as AudioTrack[])
+    const lane5 = computeTimelineLayout(p).lanes.find(l => l.laneIndex === 5)!
+    const { effects } = drag(p, { x: 100, y: laneMid(p, 0) }, { x: 100, y: laneMid(p, 0) + ROW_STRIDE(lane5) * 3 })
+    const drops = effects.filter((e): e is Extract<PointerEffect, { type: 'dropLane' }> => e.type === 'dropLane').map(e => e.laneIndex)
+    expect(drops[drops.length - 2]).toBe(6)
+    expect(drops[drops.length - 1]).toBeNull()
+  })
+
+  it('the painter outlines the row holding the dragged clip, in the accent', () => {
+    const p = project()
+    const layout = computeTimelineLayout(p)
+    const row = layout.rows.find(r => r.trackIdx === 2)!
+    const { ctx, calls } = recorder()
+    drawTimelineContent(ctx, { project: p, viewport: VIEWPORT, layout, selectedIds: [], surfaceWidth: 1000, surfaceHeight: layout.height, dropTargetItem: 'o2' })
+    const outlines = calls.filter(c => c.method === 'strokeRect' && c.args[1] === row.y + 0.5).map(c => c.strokeStyle)
+    expect(outlines).toEqual([DARK_TIMELINE_PALETTE.colors.rowDivider, DARK_TIMELINE_PALETTE.colors.snapGuide])
+  })
+})
