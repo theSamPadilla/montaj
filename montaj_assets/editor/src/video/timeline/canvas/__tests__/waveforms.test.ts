@@ -370,6 +370,25 @@ describe('drawAudioLaneWaveform gainAt passthrough', () => {
     expect(r.of('fill')).toHaveLength(1)
     expect(r.of('set:fillStyle').map(c => c.args[0])).toEqual([WAVEFORM_COLORS.audioLane])
   })
+
+  it('bars sit on a grid anchored at the clip start, so a pan by a non-multiple of the pitch keeps them clip-relative', () => {
+    const rel = (originX: number) => {
+      const r = recordingContext()
+      drawAudioLaneWaveform(r.ctx, rect({ x: 0, y: 0, width: 70, height: 20 }), [{ min: -1, max: 1 }], undefined, undefined, originX)
+      return roundedPaths(r.calls).map(b => b.x - originX)
+    }
+    for (const origin of [-30, -35, -41.5, 12]) {
+      const xs = rel(origin)
+      expect(xs.length).toBeGreaterThan(0)
+      // every bar is a whole number of pitches from the clip start
+      for (const d of xs) expect(Math.abs(d / 7 - Math.round(d / 7))).toBeLessThan(1e-9)
+    }
+    // And the bars really moved with the clip: a 5px pan shifts each bar 5px (mod pitch).
+    const a = recordingContext(); drawAudioLaneWaveform(a.ctx, rect({ x: 0, y: 0, width: 70, height: 20 }), [{ min: -1, max: 1 }], undefined, undefined, -30)
+    const b = recordingContext(); drawAudioLaneWaveform(b.ctx, rect({ x: 0, y: 0, width: 70, height: 20 }), [{ min: -1, max: 1 }], undefined, undefined, -35)
+    const xa = roundedPaths(a.calls)[0].x, xb = roundedPaths(b.calls)[0].x
+    expect(((xa - xb) % 7 + 7) % 7).toBeCloseTo(5, 6)
+  })
 })
 
 describe('clipWaveformBand', () => {

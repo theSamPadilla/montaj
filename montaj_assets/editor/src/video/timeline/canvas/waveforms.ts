@@ -245,7 +245,11 @@ export const LIGHT_WAVEFORM_COLORS: WaveformColors = {
  *  (`fade-curve.ts`'s `fadeGain`, via `makeFadeGainAt`). Absent — the
  *  default — draws exactly as before: full amplitude everywhere, the
  *  contract every existing caller (clip waveforms, an audio bar with no
- *  fade) still gets. */
+ *  fade) still gets.
+ *
+ *  `originX` (bar mode) is the UNCLAMPED x of the clip's own start. Bars sit on
+ *  a grid anchored there, so panning slides them with the clip instead of
+ *  re-laying them out from the visible edge. Absent → anchored at `rect.x`. */
 export function drawWaveformBars(
   ctx: DrawContext,
   rect: Rect,
@@ -253,6 +257,7 @@ export function drawWaveformBars(
   color: string,
   gainAt?: (x: number) => number,
   bars?: WaveformBarStyle,
+  originX?: number,
 ): void {
   if (rect.width <= 0 || rect.height <= 0 || columns.length === 0) return
   const centerY = rect.y + rect.height / 2
@@ -261,7 +266,7 @@ export function drawWaveformBars(
 
   ctx.fillStyle = color
   if (bars) {
-    drawRoundedBars(ctx, rect, columns, gainAt, bars)
+    drawRoundedBars(ctx, rect, columns, gainAt, bars, originX)
     return
   }
   for (let i = 0; i < columns.length; i++) {
@@ -286,9 +291,12 @@ function drawRoundedBars(
   columns: WaveformColumn[],
   gainAt: ((x: number) => number) | undefined,
   bars: WaveformBarStyle,
+  originX: number = rect.x,
 ): void {
   const pitch = bars.width + bars.gap
-  const count = Math.floor((rect.width + bars.gap) / pitch)
+  // First bar on the clip-anchored grid at or after the visible left edge.
+  const first = rect.x + ((((originX - rect.x) % pitch) + pitch) % pitch)
+  const count = Math.floor((rect.x + rect.width - first + bars.gap) / pitch)
   if (count <= 0) return
   const centerY = rect.y + rect.height / 2
   const halfHeight = rect.height / 2
@@ -298,7 +306,7 @@ function drawRoundedBars(
 
   ctx.beginPath()
   for (let k = 0; k < count; k++) {
-    const x = rect.x + k * pitch
+    const x = first + k * pitch
     const i0 = Math.min(columns.length - 1, Math.floor((x - rect.x) / colWidth))
     const i1 = Math.max(i0 + 1, Math.min(columns.length, Math.ceil((x + bars.width - rect.x) / colWidth)))
     let hi = -Infinity
@@ -344,6 +352,7 @@ export function drawClipWaveform(
   columns: WaveformColumn[],
   muted = false,
   colors: WaveformColors = WAVEFORM_COLORS,
+  originX?: number,
 ): void {
   const band = clipWaveformBand(rect)
   if (band.height <= 0 || band.width <= 0) return
@@ -352,7 +361,7 @@ export function drawClipWaveform(
   const insetX = Math.min(CLIP_WAVEFORM_BAR_INSET_X_PX, band.width / 4)
   const insetY = Math.min(CLIP_WAVEFORM_BAR_INSET_Y_PX, band.height / 4)
   const barsRect = { x: band.x + insetX, y: band.y + insetY, width: band.width - insetX * 2, height: band.height - insetY * 2 }
-  drawWaveformBars(ctx, barsRect, columns, muted ? colors.clipMuted : colors.clip, undefined, CLIP_WAVEFORM_BARS)
+  drawWaveformBars(ctx, barsRect, columns, muted ? colors.clipMuted : colors.clip, undefined, CLIP_WAVEFORM_BARS, originX)
 }
 
 /** Full-bar audio-lane waveform. `rect` is already the fetched window's
@@ -370,8 +379,9 @@ export function drawAudioLaneWaveform(
   columns: WaveformColumn[],
   gainAt?: (x: number) => number,
   colors: WaveformColors = WAVEFORM_COLORS,
+  originX?: number,
 ): void {
-  drawWaveformBars(ctx, rect, columns, colors.audioLane, gainAt, AUDIO_WAVEFORM_BARS)
+  drawWaveformBars(ctx, rect, columns, colors.audioLane, gainAt, AUDIO_WAVEFORM_BARS, originX)
 }
 
 // ── Fetch-state store ────────────────────────────────────────────────────

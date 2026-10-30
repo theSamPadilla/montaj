@@ -2396,7 +2396,7 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
       const drawContent = (filmstripTiles || clipWaveform)
         ? (c: DrawContext, r: Rect) => {
             if (filmstripTiles) drawFilmstripTiles(c, filmstripTiles)
-            if (clipWaveform) drawClipWaveform(c, r, clipWaveform, itemMuted, themePalette.waveform)
+            if (clipWaveform) drawClipWaveform(c, r, clipWaveform, itemMuted, themePalette.waveform, x)
           }
         : undefined
       const itemSelected = selectedIds.includes(item.id)
@@ -2546,7 +2546,7 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
         fadeOutCurve,
         fadeSpanX: fullBody.x,
         fadeSpanWidth: fullBody.width,
-        drawContent: audioWaveform ? (c) => drawAudioLaneWaveform(c, audioWaveform.rect, audioWaveform.columns, gainAt, themePalette.waveform) : undefined,
+        drawContent: audioWaveform ? (c) => drawAudioLaneWaveform(c, audioWaveform.rect, audioWaveform.columns, gainAt, themePalette.waveform, fullBody.x) : undefined,
       }, themePalette)
       if (selectedIds.includes(track.id)) {
         laneHandleRects.push({ rect: body, hoveredEdge: hoveredHandle?.itemId === track.id ? hoveredHandle.edge : null })
