@@ -50,15 +50,21 @@ import { assertSegmentHasVideo } from './segment-check.js'
 import { opacityFilterStep } from './item-opacity.js'
 import { planItemMask, writeItemMask, maskFilterParts } from './item-mask.js'
 import { blendCompositeParts } from './item-blend.js'
+import { blurFilterStep, blurPixelFormat } from './item-blur.js'
 import { pMap } from './p-map.js'
 import {
   geometryFor, geometryAt, toRotatedPixelBox, toPixelBox, compileTrackExprInfo,
   transitionProgress, hasCropKeyframes, imageFitFor, isFullFrameCrop, CROP_KEYFRAME_PROPS, blendModeOf,
+  blurSigmaPx,
 } from '@bycrux/timeline-core'
 
 // Stall limit for an encode: silence (no stderr progress) this long kills it.
 export const FFMPEG_STALL_MS = 300_000
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp|bmp|tiff?)$/i
+// A video's blur runs on the footage before an upscale only when its sigma
+// there is at least this many footage pixels; below it the upscale's own
+// interpolation is a visible part of the result, so it blurs after the scale.
+const PRE_SCALE_BLUR_MIN_SIGMA = 2
 
 /**
  * How far ahead of the wanted instant a two-stage seek jumps with `-ss` before
@@ -1277,17 +1283,28 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   const cropStep = !cropAnim?.chain && isFiniteCrop(stillCrop) && stillCrop.w > 0 && stillCrop.h > 0 && !isFullFrameCrop(stillCrop)
     ? `crop=w='round(iw*${stillCrop.w})':h='round(ih*${stillCrop.h})':x='round(iw*${stillCrop.x})':y='round(ih*${stillCrop.y})':exact=1,`
     : ''
+  // A blur (item-blur.js) runs on the fitted picture, before a `contain`
+  // fit's transparent pad, so its edges stay opaque; every fit is RGBA by
+  // then, so it needs no format pin. On an animated box it runs at the peak
+  // box with a per-frame sigma. '' (and every string below unchanged) without one.
+  const blur = blurFilterStep(item, {
+    vw, vh,
+    animated: anim?.needsAnimatedChain
+      ? { kind: 'image', peakW: anim.peakW, peakH: anim.peakH, offset: imgOffset, duration, fps: opts?.fps ?? 30, name: 'bl' + idx }
+      : undefined,
+  })
   let fitChain
   if (fit === 'contain') {
-    fitChain = `scale=${fitW}:${fitH}:force_original_aspect_ratio=decrease,format=rgba,`
+    fitChain = `scale=${fitW}:${fitH}:force_original_aspect_ratio=decrease,format=rgba,${blur ? blur + ',' : ''}`
              + `pad=${fitW}:${fitH}:(ow-iw)/2:(oh-ih)/2:color=black@0.0`
   } else if (fit === 'fill') {
-    fitChain = `scale=${fitW}:${fitH},format=rgba`
+    fitChain = `scale=${fitW}:${fitH},format=rgba${blur ? ',' + blur : ''}`
   } else { // 'cover' (default)
     fitChain = `scale=${fitW}:${fitH}:force_original_aspect_ratio=increase,`
-             + `crop=${fitW}:${fitH},format=rgba`
+             + `crop=${fitW}:${fitH},format=rgba${blur ? ',' + blur : ''}`
   }
-  fitChain = cropAnim?.chain ?? (cropStep + fitChain)
+  // A keyframed crop's chain always covers the box (animatedImageCrop).
+  fitChain = cropAnim?.chain ? `${cropAnim.chain}${blur ? ',' + blur : ''}` : (cropStep + fitChain)
   // No alpha pin on the rotate: all three fit chains already run through
   // `format=rgba`, so the transparent pad and `c=black@0.0` corners are
   // representable exactly as the static path assumes.
@@ -1701,6 +1718,40 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     transparentPad = padW - fit.width > 1 || padH - fit.height > 1
   }
   const padAlphaFmt = (conversionStep || isHdr(projectColorSpace)) ? 'yuva444p10le' : 'yuva420p'
+
+  // ── The blur (item-blur.js) ───────────────────────────────────────────────
+  //
+  // On the fitted footage, before the pad, so the transparent pad never
+  // reaches the picture and its edges stay opaque; after the conversion, so it
+  // blurs the colours the canvas gets. Pinned to 4:4:4 first: gblur blurs a
+  // subsampled chroma plane twice as far. With nothing between them but the
+  // scale (no conversion, no graded cutout) and the scale an UPSCALE of known
+  // footage, it runs on the footage before the scale instead, at the sigma
+  // scaled down by the same factor: blurring then upscaling is the same
+  // picture as upscaling then blurring once the blur is a couple of footage
+  // pixels or more, and the footage is the smaller frame (the 960x540 clip a
+  // 1080x1920 card blows up to 3456x1944 is 13 times fewer pixels). '' for
+  // both, and the chain unchanged, without a blur.
+  let preBlur = ''
+  let postBlur = ''
+  if (blurSigmaPx(item, vw, vh) > 0) {
+    const format = blurPixelFormat({
+      tenBit: Boolean(conversionStep) || isHdr(projectColorSpace),
+      alpha: item.probedAlpha === true || Boolean(skipConversionForAlpha) || Boolean(cutoutGrade),
+    })
+    const animated = anim?.needsAnimatedChain
+      ? { kind: 'video', peakW: anim.peakW, peakH: anim.peakH, offset: seekOffset, duration, fps: opts.fps ?? 30, name: 'bl' + idx }
+      : undefined
+    const fitted = footageW && footageH && !conversionStep && !cutoutGrade
+      ? decreaseFitSize(footageW, footageH, padW, padH, 1) : null
+    const unitX = fitted ? footageW / fitted.width : 1
+    const unitY = fitted ? footageH / fitted.height : 1
+    if (fitted && unitX < 1 && unitY < 1 && blurSigmaPx(item, vw, vh) * Math.max(unitX, unitY) >= PRE_SCALE_BLUR_MIN_SIGMA) {
+      preBlur = `${blurFilterStep(item, { vw, vh, format, unitX, unitY, animated })},`
+    } else {
+      postBlur = `${blurFilterStep(item, { vw, vh, format, animated })},`
+    }
+  }
   const padStep = transparentPad
     ? `format=${padAlphaFmt},pad=${padW}:${padH}:(ow-iw)/2:(oh-ih)/2:color=black@0.0`
     : `pad=${padW}:${padH}:(ow-iw)/2:(oh-ih)/2`
@@ -1712,7 +1763,7 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // the static branch below is byte-for-byte what it has always been; the frozen
   // goldens say so.
   // trimStep first: it counts in source seconds, before the speed setpts.
-  const head = `[${idx}:v]${trimStep}${untaggedTag}${ptsStep},${cropStep}` +
+  const head = `[${idx}:v]${trimStep}${untaggedTag}${ptsStep},${cropStep}${preBlur}` +
     (anim?.needsAnimatedChain
       ? `scale=${anim.peakW}:${anim.peakH}:force_original_aspect_ratio=decrease${divisibleBy},`
       : `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease${divisibleBy},`)
@@ -1750,10 +1801,10 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
       `${head}format=yuva444p12le,split=2[c${idx}][ca${idx}]`,
       `[ca${idx}]alphaextract[al${idx}]`,
       `[c${idx}]${cutoutGrade}[cg${idx}]`,
-      `[cg${idx}][al${idx}]alphamerge,${tail}${chainOut}`,
+      `[cg${idx}][al${idx}]alphamerge,${postBlur}${tail}${chainOut}`,
     )
   } else {
-    filterParts.push(`${head}${conversionStep}${tail}${chainOut}`)
+    filterParts.push(`${head}${conversionStep}${postBlur}${tail}${chainOut}`)
   }
   filterParts.push(...maskParts)
   let src = `[vid${idx}]`
