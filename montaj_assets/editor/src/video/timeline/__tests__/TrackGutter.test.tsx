@@ -121,7 +121,7 @@ describe('TrackGutter', () => {
   })
 
   it('labels an empty track rather than rendering a blank cell', () => {
-    render(<TrackGutter project={project({ tracks: [{ id: 'trk-0', items: [] }] } as Partial<Project>)} />)
+    render(<TrackGutter project={project({ tracks: [{ id: 'trk-0', items: [] }] } as unknown as Partial<Project>)} />)
     expect(screen.getByLabelText('Track')).toBeTruthy()
   })
 
@@ -453,7 +453,7 @@ describe('TrackGutter — timeline look B (quiet rail)', () => {
   })
 
   it('a short video row with skip, mute and gear lays icon and controls out as a 2-column grid', () => {
-    const p = project({ tracks: [[video('c0')], [video('c1')]] } as Partial<Project>)
+    const p = project({ tracks: [[video('c0')], [video('c1')]] } as unknown as Partial<Project>)
     const base = computeTimelineLayout(p)
     const layout = { ...base, rows: base.rows.map(r => ({ ...r, height: 48 })) }
     const { container } = render(<TrackGutter project={p} layout={layout} mode="dark" {...allWired} />)
