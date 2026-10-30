@@ -161,13 +161,16 @@ def _write_json_atomic(path: str, obj, valid=None):
         json.dump(obj, f)
     try:
         os.replace(tmp, path)
+        return obj
     except OSError:
         try:
             os.remove(tmp)
         except OSError:
             pass
-        if not (os.path.isfile(path) and (valid is None or valid(_read_json(path)))):
+        held = _read_json(path) if os.path.isfile(path) else None
+        if held is None or not (valid is None or valid(held)):
             raise
+        return held  # another process holds the file and it is valid: that is the hit
 
 
 def _read_json(path):
@@ -264,8 +267,7 @@ def build_overlay(jsx, duration, out_dir, max_tiles, min_interval, cols, tile_wi
             })
         index = {"sheets": sheets, "interval": round(interval, 3), "tileWidth": tile_width, "tileHeight": tile_height}
         # last, so a hit never sees half a strip
-        _write_json_atomic(os.path.join(key_dir, "index.json"), index, valid=lambda d: isinstance(d, dict) and bool(d.get("sheets")))
-        return index
+        return _write_json_atomic(os.path.join(key_dir, "index.json"), index, valid=lambda d: isinstance(d, dict) and bool(d.get("sheets")))
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

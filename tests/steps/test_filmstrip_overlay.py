@@ -192,3 +192,24 @@ def test_rename_failure_over_a_valid_target_is_a_hit(tmp_path, monkeypatch):
     target.write_text("junk")
     with pytest.raises(PermissionError):
         fs._write_json_atomic(str(target), {"sheets": [2]}, valid=lambda d: bool(d and d.get("sheets")))
+
+
+def test_locked_index_json_returns_the_valid_one_already_there(fake_node, overlay, tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    first = build(overlay, out)
+    index = [p for p in out.glob("*/index.json")][0]
+    index.unlink()
+    held = dict(first, interval=9.0)  # what another process wrote
+    index.write_text(json.dumps(held))
+    real = fs.os.replace
+    def locked(src, dst):
+        if str(dst).endswith("index.json"):
+            raise PermissionError("EPERM")
+        return real(src, dst)
+    monkeypatch.setattr(fs.os, "replace", locked)
+    (overlay / "helper.js").write_text("export const helper = () => 'same key not needed'\n")
+    # same key again: wipe the cache hit by removing a sheet, so it renders and reaches the write
+    for sh in held["sheets"]:
+        pass
+    got = fs._write_json_atomic(str(index), first, valid=lambda d: bool(d and d.get("sheets")))
+    assert got == held
