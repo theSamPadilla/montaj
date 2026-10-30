@@ -272,6 +272,30 @@ def _files_under(folder: str) -> set:
     return out
 
 
+def _unique_stem_name(folder: str, name: str) -> str:
+    """§631 adopt: *name* with its stem made unique among the folder's files. Normalize, proxy and the
+    sidecars (.json, .srt, .shots.json) are named from a clip's STEM, so a new `a.mov` beside a source
+    `a.mp4` would write over that source's `a_normalized_*`, `a_proxy_*` and `a.json`. A stem is taken when
+    a file is named `<stem>.` or `<stem>_` (compared case-insensitively: Windows and macOS folders are).
+    The stem gets `-2`, `-3`, ... until none is."""
+    stem, ext = os.path.splitext(name)
+    try:
+        held = [n.lower() for n in os.listdir(folder)]
+    except OSError:
+        return name
+
+    def taken(s: str) -> bool:
+        s = s.lower()
+        return any(n.startswith(s + ".") or n.startswith(s + "_") for n in held)
+
+    if not taken(stem):
+        return name
+    n = 2
+    while taken(f"{stem}-{n}"):
+        n += 1
+    return f"{stem}-{n}{ext}"
+
+
 def _safe_clip_ext(path: str) -> str:
     """A clip's extension, kept only when it is an ordinary short alphanumeric one (`.mov`, `.mp4`); anything
     odd is dropped. Used to name a symlinked clip `clip-<n><ext>` without carrying a source's hostile name."""
@@ -921,6 +945,8 @@ def _main():
         """Thin wrapper around the module-level helper, bound to workspace_dir."""
         if not link:
             _CREATED["copied_from"].append(os.path.abspath(src))
+        if seed is not None and os.path.dirname(os.path.abspath(src)) != workspace_dir:
+            name = _unique_stem_name(workspace_dir, name or os.path.basename(src))
         dest = _copy_into_workspace(src, workspace_dir, prefix, link=link, name=name)
         if seed is not None:
             _CREATED["adopt"]["files"].append(dest)

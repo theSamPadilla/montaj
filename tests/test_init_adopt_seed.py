@@ -292,3 +292,41 @@ def test_the_atomic_writer_retries_a_held_file(tmp_path, monkeypatch):
     data = init_mod._replace_project_json(str(pj), {"a": 1})
     assert pj.read_bytes() == data == json.dumps({"a": 1}, indent=2).encode("utf-8")
     assert len(calls) == 3
+
+
+@pytest.mark.parametrize("new_name", ["a.mov", "A.mov"])
+def test_a_new_clip_never_shares_a_stem_with_a_file_already_there(ws, tmp_path, monkeypatch, capsys, new_name):
+    from lib.normalize import normalized_output_path
+    from lib.proxy import proxy_path_for
+    folder, seed_id = _make_seed(ws, tmp_path, monkeypatch, capsys)
+    a = folder / "a.mp4"
+    _make_clip(a)
+    pj = folder / "project.json"
+    project = json.loads(pj.read_text())
+    project["sources"].append({"id": "clip-1", "type": "video", "src": str(a), "start": 0.0, "end": 0.0})
+    pj.write_text(json.dumps(project, indent=2))
+    derived = [
+        Path(normalized_output_path(str(a), "sdr_bt709", tonemapped=False)),
+        Path(proxy_path_for(str(a))),
+        folder / "a.json",
+    ]
+    for i, d in enumerate(derived):
+        assert d.parent == folder
+        d.write_bytes(b"existing-%d" % i)
+    before = _hashes(folder, skip_git=True)
+    before.pop("project.json")
+
+    new_clip = tmp_path / new_name
+    _make_clip(new_clip)
+    exc, out, err = _adopt(monkeypatch, capsys, seed_id, "--clips", str(new_clip))
+    assert exc is None, err
+
+    after = _hashes(folder, skip_git=True)
+    after.pop("project.json")
+    assert {k: after.get(k) for k in before} == before            # every pre-existing file untouched
+    added = sorted(set(after) - set(before))
+    assert len(added) == 1
+    stem = os.path.splitext(added[0])[0].lower()
+    assert stem not in {"a", os.path.splitext(a.name)[0].lower()}
+    assert not any(n.lower().startswith(stem + "_") for n in before)
+    assert json.loads(pj.read_text())["sources"][-1]["src"] == str(folder / added[0])
