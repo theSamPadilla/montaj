@@ -1351,6 +1351,9 @@ export declare function blurOf(item: { blur?: unknown } | null | undefined): num
  */
 export declare function blurSigmaPx(item: { blur?: unknown } | null | undefined, canvasW: number, canvasH: number): number
 
+/** The widest sigma worth drawing on a canvas: a third of its longer side (src/blur.js). */
+export declare function blurSigmaCapPx(canvasW: number, canvasH: number): number
+
 /**
  * The rect a `srcW` x `srcH` picture fills when contain-fitted, centred, in a
  * `boxW` x `boxH` box, as fractions of the box. The whole box when a size is unknown.

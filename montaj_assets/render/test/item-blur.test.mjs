@@ -61,6 +61,18 @@ test('an animated box: the sigma follows peak / box per frame, through sendcmd; 
   assert.match(step, /1\.000000 gblur@bl3 sigma 10\.0000,gblur@bl3 sigmaV 10\.0000'/)
 })
 
+test('a pop-in from a tiny box: the sigma is capped at a third of the longer side, so the margin stays under the picture', () => {
+  // scale 0.01 -> 1 with blur 20 on 1080x1920: uncapped, peak / box would send
+  // the sigma to gblur's 1024 and the margin to 3073 px on every side.
+  const item = { blur: 20, keyframes: [{ prop: 'scale', points: [{ t: 0, value: 0.01 }, { t: 0.5, value: 1 }] }] }
+  const step = blurFilterStep(item, { ...O,
+    animated: { kind: 'image', peakW: 1080, peakH: 1920, offset: 0, duration: 0.5, fps: 30 } })
+  const m = Number(/pad=w=iw\+(\d+)/.exec(step)[1]) / 2
+  assert.ok(m <= 1920, `margin ${m}`)
+  assert.match(step, /gblur@bl3=sigma=639\.6667:sigmaV=639\.6667:steps=3/)
+  for (const v of step.matchAll(/sigma(?:V)? ([\d.]+)/g)) assert.ok(Number(v[1]) <= 639.67, v[0])
+})
+
 // ── Placement in the export graph ───────────────────────────────────────────
 
 const video = (over = {}) => ({ type: 'video', src: '/clip.mp4', start: 0, end: 2, inPoint: 0, trackIdx: 0,

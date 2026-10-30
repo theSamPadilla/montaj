@@ -56,7 +56,7 @@
 // (encode-segment.js `animatedGeometry`), so a blur on the peak box would
 // shrink with the box. Its sigma is sampled per frame, scaled by peak / box,
 // and sent with `sendcmd`, as a keyframed opacity is (item-opacity.js).
-import { blurSigmaPx, geometryAt, toPixelBox } from '@bycrux/timeline-core'
+import { blurSigmaCapPx, blurSigmaPx, geometryAt, toPixelBox } from '@bycrux/timeline-core'
 
 /** gblur's passes. See the header. */
 export const BLUR_STEPS = 3
@@ -64,8 +64,7 @@ export const BLUR_STEPS = 3
 /** gblur's own ceiling on sigma. */
 const GBLUR_MAX_SIGMA = 1024
 
-const clampSigma = (s) => Math.min(GBLUR_MAX_SIGMA, Math.max(0, s))
-const fmt = (s) => clampSigma(s).toFixed(4)
+const clampSigma = (s, cap = GBLUR_MAX_SIGMA) => Math.min(GBLUR_MAX_SIGMA, cap, Math.max(0, s))
 
 /** The same format without its alpha plane: yuva444p16le -> yuv444p16le, gbrap16le -> gbrp16le. */
 function withoutAlpha(format) {
@@ -97,21 +96,31 @@ export function blurFilterStep(item, { vw, vh, format, alpha = false, name, unit
   const sigma = blurSigmaPx(item, vw, vh)
   if (!(sigma > 0)) return ''
 
+  // An animated box scales the sigma by peak / box, which blows up on a box
+  // near 0 (a pop-in from scale 0.01): the margin below is 3 sigma, so an
+  // uncapped sigma makes a frame several times the picture. A blur a third of
+  // the picture's longer side wide is a flat average, so it is capped there,
+  // in the pixel space the blur runs in (pre-scale footage is smaller).
+  const capCanvas = blurSigmaCapPx(vw, vh)
+  const capX = capCanvas * unitX
+  const capY = capCanvas * unitY
+  const fmtX = (s) => clampSigma(s, capX).toFixed(4)
+  const fmtY = (s) => clampSigma(s, capY).toFixed(4)
   let blur
   let maxSigma
   if (!animated) {
-    const sx = fmt(sigma * unitX)
-    const sy = fmt(sigma * unitY)
+    const sx = fmtX(sigma * unitX)
+    const sy = fmtY(sigma * unitY)
     blur = `gblur=sigma=${sx}${sy !== sx ? `:sigmaV=${sy}` : ''}:steps=${BLUR_STEPS}`
-    maxSigma = clampSigma(Math.max(sigma * unitX, sigma * unitY))
+    maxSigma = Math.max(clampSigma(sigma * unitX, capX), clampSigma(sigma * unitY, capY))
   } else {
     const { kind, peakW, peakH, offset, duration, fps } = animated
     const target = `gblur@${name}`
     const at = (k) => {
       const b = toPixelBox(geometryAt(item, kind, offset + k / fps), vw, vh)
-      const x = b.width > 0 ? sigma * unitX * peakW / b.width : sigma * unitX
-      const y = b.height > 0 ? sigma * unitY * peakH / b.height : sigma * unitY
-      return { x, y, sx: fmt(x), sy: fmt(y) }
+      const x = clampSigma(b.width > 0 ? sigma * unitX * peakW / b.width : sigma * unitX, capX)
+      const y = clampSigma(b.height > 0 ? sigma * unitY * peakH / b.height : sigma * unitY, capY)
+      return { x, y, sx: x.toFixed(4), sy: y.toFixed(4) }
     }
     const first = at(0)
     maxSigma = Math.max(first.x, first.y)
@@ -127,7 +136,6 @@ export function blurFilterStep(item, { vw, vh, format, alpha = false, name, unit
     }
     const head = cmds.length ? `sendcmd=c='${cmds.join(';')}',` : ''
     blur = `${head}${target}=sigma=${first.sx}:sigmaV=${first.sy}:steps=${BLUR_STEPS}`
-    maxSigma = clampSigma(maxSigma)
   }
 
   // A transparent margin past every edge, wide enough that the Gaussian's

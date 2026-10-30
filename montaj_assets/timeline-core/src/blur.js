@@ -67,6 +67,23 @@ export function blurSigmaPx(item, canvasW, canvasH) {
 }
 
 /**
+ * The widest sigma worth drawing on a `canvasW` x `canvasH` canvas: a third of
+ * its longer side. A Gaussian that wide is a flat average of the picture, and
+ * the export pads the picture by 3 sigma on every side, so past this the
+ * padded frame grows without the result changing. The held-to-{@link BLUR_MAX}
+ * sigma of a still box is always under it (200/1080 of the short edge); only
+ * an animated box's per-frame sigma (scaled up as the box shrinks) can reach it.
+ *
+ * @param {number} canvasW
+ * @param {number} canvasH
+ * @returns {number}
+ */
+export function blurSigmaCapPx(canvasW, canvasH) {
+  const long = Math.max(canvasW, canvasH)
+  return Number.isFinite(long) && long > 0 ? (long - 1) / 3 : 0
+}
+
+/**
  * The rect a `srcW` x `srcH` picture fills when it is contain-fitted, centred,
  * into a `boxW` x `boxH` box, as fractions of the box: the render's
  * `scale=…:force_original_aspect_ratio=decrease` then `pad` for a video, and an
