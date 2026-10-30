@@ -109,7 +109,8 @@
 //     plan simply takes fewer taps (encode-segment.js runs it there always).
 //   - A picture of unknown size (a contain fit with no probe) is planned on
 //     its whole box, which needs at least the taps any picture in it does, and
-//     placed by perspective's own W and H.
+//     placed by perspective's own W and H. encode-segment.js warns once per
+//     item (warnBlurOnBox), so a slow export can be explained.
 //
 // A box whose SIZE animates is fitted at its peak and resized after
 // (encode-segment.js `animatedGeometry`), so a blur on the peak box would

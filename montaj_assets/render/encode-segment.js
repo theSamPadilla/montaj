@@ -1043,6 +1043,28 @@ function movingCropChain(item, SW, SH, boxW, boxH, sampled, timeOffset, onCap, b
   }
 }
 
+/** Items already warned about by {@link warnBlurOnBox}: once per item and kind per process, not per segment. */
+const blurOnBoxWarned = new Set()
+
+/**
+ * One line for an operator reading the logs: why a spin, zoom or linear
+ * blur's export is slow. Its picture's size is unknown, so it is planned on
+ * the whole box after the scale (item-blur.js: correct, but a box many times
+ * the footage's pixels, with the taps that size needs).
+ */
+export function warnBlurOnBox(kind, item, box) {
+  const type = blurTypeOf(item)
+  if (type === 'uniform') return
+  const key = `${kind}:${item.id ?? item.src ?? ''}`
+  if (blurOnBoxWarned.has(key)) return
+  blurOnBoxWarned.add(key)
+  console.warn(
+    `[montaj] ${kind} item ${item.id ?? item.src ?? '(unnamed)'}: its picture's size is unknown`
+    + `${kind === 'video' ? ' (no sourceWidth/sourceHeight, not probed)' : ' (the image could not be probed)'}, `
+    + `so its ${type} blur runs on the whole ${box.w}x${box.h} box after the scale; the export may be much slower.`,
+  )
+}
+
 /** One line for an operator reading the logs: why a keyframed crop looks soft. */
 function warnCropDownscaled(kind, item, m, budgetPx) {
   console.warn(
@@ -1305,6 +1327,7 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
       picture = { w: f.width, h: f.height, exact: true }
     }
   }
+  if (radialBlur && !picture.exact) warnBlurOnBox('image', item, { w: fitW, h: fitH })
   const blurCore = blurFilterStep(item, {
     vw, vh, format: IMAGE_BLUR_FORMAT, alpha: true, name: 'bl' + idx,
     picture,
@@ -1794,6 +1817,7 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     } else {
       const fit = footageW && footageH ? decreaseFitSize(footageW, footageH, padW, padH, divisibleBy ? 2 : 1) : null
       const picture = fit ? { w: fit.width, h: fit.height, exact: true } : { w: padW, h: padH, exact: false }
+      if (!fit) warnBlurOnBox('video', item, box)
       const step = blurFilterStep(item, { vw, vh, format, alpha, name, animated, picture, box })
       postBlur = step ? `${step},` : ''
     }

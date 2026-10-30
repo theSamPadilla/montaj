@@ -607,3 +607,29 @@ test('real ffmpeg: transparent white under a clip\'s alpha does not halo through
     }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+test('video: a spin, zoom or linear blur on footage of unknown size warns once (planned on the box, slow); uniform and known footage do not', (t) => {
+  const warn = t.mock.method(console, 'warn', () => {})
+  const build = (over) => buildVideoItemFilterParts(video({ scale: 3.2, ...over }), 1080, 1920, 1, '[canvas]', vOpts)
+  build({ id: 'u1', blur: 40 })
+  build({ id: 'k1', blur: 30, blurType: 'spin', probedWidth: 960, probedHeight: 540 })
+  assert.equal(warn.mock.callCount(), 0)
+  build({ id: 's1', blur: 30, blurType: 'spin' })
+  build({ id: 's1', blur: 30, blurType: 'spin' })
+  build({ id: 'l1', blur: 40, blurType: 'linear', blurAngle: 30 })
+  assert.equal(warn.mock.callCount(), 2)
+  const msg = warn.mock.calls[0].arguments[0]
+  assert.match(msg, /video item s1: its picture's size is unknown .*spin blur runs on the whole 3456x6144 box/)
+  assert.match(warn.mock.calls[1].arguments[0], /video item l1: .*linear blur/)
+})
+
+test('image: a contain spin or zoom whose image cannot be probed warns once; a cover fit does not', (t) => {
+  const warn = t.mock.method(console, 'warn', () => {})
+  const build = (over) => buildImageItemFilterParts(image({ src: '/no/such/still.png', ...over }), 1080, 1920, 1, '[canvas]', 2, 0)
+  build({ id: 'ic', fit: 'cover', blur: 30, blurType: 'zoom' })
+  assert.equal(warn.mock.callCount(), 0)
+  build({ id: 'ik', fit: 'contain', blur: 30, blurType: 'zoom' })
+  build({ id: 'ik', fit: 'contain', blur: 30, blurType: 'zoom' })
+  assert.equal(warn.mock.callCount(), 1)
+  assert.match(warn.mock.calls[0].arguments[0], /image item ik: its picture's size is unknown \(the image could not be probed\), so its zoom blur/)
+})
