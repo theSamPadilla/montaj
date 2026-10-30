@@ -509,11 +509,16 @@ describe('left out of the editor', () => {
           mask: { shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5 }, blendMode: 'screen', blur: 30,
           keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 1, value: 1 }] },
             { prop: 'maskW', points: [{ t: 0, value: 0.2 }, { t: 1, value: 0.6 }] }] },
-        { id: 'plain', type: 'video', src: '/abs/p.mp4', start: 2, end: 4, inPoint: 0, outPoint: 2, blendMode: 'normal', blur: 0 },
+        { id: 'plain', type: 'video', src: '/abs/p.mp4', start: 2, end: 4, inPoint: 0, outPoint: 2, blendMode: 'normal', blur: 0,
+          blurType: 'linear', blurAngle: 30 },
+        { id: 'streak', type: 'video', src: '/abs/s.mp4', start: 4, end: 6, inPoint: 0, outPoint: 2, blur: 30,
+          blurType: 'linear', blurAngle: 30 },
       ] }],
     })
     assert.deepEqual(clip(tl, 'm').unsupported, ['keyframes:opacity', 'keyframes:maskW', 'mask', 'blendMode:screen', 'blur'])
     assert.deepEqual(clip(tl, 'plain').unsupported, [])
+    // A linear blur is a blur: the same one entry, and nothing for a type without an amount.
+    assert.deepEqual(clip(tl, 'streak').unsupported, ['blur'])
   })
 
   test('a path mask with a morph track lists the mask and keyframes:maskPoints (array values do not crash)', () => {
