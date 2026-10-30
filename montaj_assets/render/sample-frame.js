@@ -203,6 +203,8 @@ const SHORT_EDGE_TARGET = 1080
  *    item-blur.js draws them). 25's entries hold such a clip blurred evenly.
  * 27: spin and zoom blurs show in the still (item-blur.js draws them about
  *    `blurX`, `blurY`). 26's entries hold such a clip sharp.
+ * 28: on an HDR canvas spin and zoom move their copies in about 16 bits
+ *    (item-blur.js, precise); 27's entries hold such a still from 8-bit copies.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -210,7 +212,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 27
+const SAMPLE_CACHE_VERSION = 28
 
 // The still's composite canvas (`format=rgba`), which a blend mode converts from and back to.
 const SAMPLE_CANVAS_PIX_FMT = 'rgba'
