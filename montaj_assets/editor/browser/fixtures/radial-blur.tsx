@@ -15,6 +15,7 @@ declare global {
     __ready: boolean
     __webgl2: boolean
     __compare: typeof compare
+    __preview: typeof preview
     __timing: typeof timing
     __videoSurface: typeof videoSurface
     __videoState: typeof videoState
@@ -139,6 +140,38 @@ function compare(c: CompareCase) {
   }
 }
 
+/**
+ * The preview's pixels for one case, for the export parity test: the picture
+ * (RGBA, straight, its own size) and what the pass drew over the box (RGBA as
+ * getImageData reads it), both as plain arrays.
+ */
+function preview(c: CompareCase) {
+  const pic = picture(c.pic.w, c.pic.h, !!c.alpha)
+  const pictureRect: FracRect = { x: c.at.x / c.box.w, y: c.at.y / c.box.h, w: c.pic.w / c.box.w, h: c.pic.h / c.box.h }
+  let source: HTMLCanvasElement = pic
+  let sourceRect: FracRect | undefined
+  if (c.source === 'engine') {
+    source = document.createElement('canvas')
+    source.width = c.box.w
+    source.height = c.box.h
+    const ctx = source.getContext('2d')!
+    ctx.fillStyle = '#000'
+    ctx.fillRect(0, 0, c.box.w, c.box.h)
+    ctx.drawImage(pic, c.at.x, c.at.y)
+    sourceRect = pictureRect
+  }
+  const target = document.createElement('canvas')
+  target.width = c.box.w
+  target.height = c.box.h
+  const res = drawRadialBlur({ source, target, type: c.type, amount: c.amount, center: c.center, pictureRect, sourceRect })
+  if (res !== 'drawn') return { res }
+  return {
+    res,
+    picture: Array.from(pic.getContext('2d')!.getImageData(0, 0, c.pic.w, c.pic.h).data),
+    got: Array.from(target.getContext('2d')!.getImageData(0, 0, c.box.w, c.box.h).data),
+  }
+}
+
 // ── The React surface ───────────────────────────────────────────────────────
 
 const status: boolean[] = []
@@ -217,6 +250,7 @@ function videoState() {
 }
 
 window.__compare = compare
+window.__preview = preview
 window.__videoSurface = videoSurface
 window.__videoState = videoState
 window.__video = () => videoEl

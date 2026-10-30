@@ -3,7 +3,8 @@
 // The preview's spin and zoom blur (src/video/preview/radialBlurGL.ts, the
 // shared WebGL2 pass, and RadialBlurSurface.tsx) against timeline-core's CPU
 // reference (radialBlurReference), the contract the export meets too, in a
-// real Chromium. Not yet export parity: that test lands with the export.
+// real Chromium; and against the export itself (render item-blur.js's graph
+// run through ffmpeg) on the same pictures.
 //
 // The fixture (fixtures/radial-blur.tsx) is bundled with esbuild into a temp
 // dir and opened from file://. The browser is render's puppeteer and its
@@ -25,6 +26,11 @@ import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
+import { spawnSync } from 'node:child_process'
+import { blurFilterStep, IMAGE_BLUR_FORMAT, VIDEO_BLUR_FORMAT } from '../../render/item-blur.js'
+import { buildImageItemFilterParts } from '../../render/encode-segment.js'
+import { FFMPEG } from '../../render/ffmpeg-bin.js'
+import { radialBlurPlan, radialBlurReference } from '../../timeline-core/index.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const requireFromRender = createRequire(join(HERE, '..', '..', 'render', 'package.json'))
@@ -133,6 +139,114 @@ test('WebGL pass against the CPU reference: within a few codes, alpha kept, noth
       assert.ok(r.moved > (c.amount < 10 ? 1 : 4), `${label}: only ${r.moved.toFixed(2)} codes from the sharp picture`)
     }
     t.diagnostic(`all cases: worst ${worstAll}, largest mean ${meanMax.toFixed(2)} codes`)
+    assert.deepEqual(errors, [])
+  } finally { await page.close() }
+})
+
+// ── Preview against export ──────────────────────────────────────────────────
+//
+// The same picture through the preview's pass (in Chromium) and through the
+// export's graph (ffmpeg): the image graph (RGB, the picture's size known)
+// for a picture alone; the real image builder for a letterboxed one (a
+// contain fit, its size probed from the file), which an engine-style canvas
+// source must match too; and the
+// video graph (YUV) once. Compared inside the picture where the preview reads
+// colour back (alpha 128 or more: getImageData unpremultiplies 8 bits), and
+// away from pixels the reference covers under 1/16, where the export fades to
+// the source (render item-blur.js). Measured (headless shell 127, ANGLE Metal,
+// ffmpeg 8.1.2): RGB worst 7, mean under 0.65; the YUV graph worst 8, mean
+// under 1. Both renderers must plan on the same picture size: near the
+// picture's edges a pass drops what it moves outside (deviation 2), so a plan
+// with other tap counts lands differently there (measured: the export planned
+// on the box rather than the picture, 58 codes at the worst edge pixel).
+
+/** Runs an export chain (from [0:v] to [o]) over raw RGBA bytes. */
+function exportRgba(rgba, w, h, chain) {
+  const r = spawnSync(FFMPEG, ['-v', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${w}x${h}`, '-i', '-',
+    '-filter_complex', chain, '-map', '[o]', '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-'],
+  { input: Buffer.from(rgba), maxBuffer: 1 << 26 })
+  assert.equal(r.status, 0, String(r.stderr).slice(-1500))
+  return r.stdout
+}
+
+const PARITY = [
+  ['spin 30, centre inside', CASES[1][1]],
+  ['spin 120, centre inside', CASES[2][1]],
+  ['spin 30, centre on the left edge', CASES[3][1]],
+  ['spin 60, centre outside', CASES[4][1]],
+  ['zoom 40, centre inside', CASES[6][1]],
+  ['zoom 180, centre inside', CASES[7][1]],
+  ['zoom 80, centre outside', CASES[9][1]],
+  ['spin 45, letterboxed', CASES[10][1]],
+  ['zoom 50, letterboxed, centre above the picture', CASES[11][1]],
+  ['spin 45, engine canvas', CASES[12][1]],
+  ['zoom 70, engine canvas', CASES[13][1]],
+  ['spin 50, picture with alpha', CASES[14][1]],
+  ['zoom 60, picture with alpha', CASES[15][1]],
+  ['spin 30, video graph (YUV)', { ...CASES[1][1], yuv: true }],
+]
+
+test('preview (WebGL) against export (ffmpeg): within a few codes inside the picture', { timeout: 180_000 }, async (t) => {
+  const { page, errors } = await open()
+  try {
+    if (!(await page.evaluate(() => window.__webgl2))) { t.skip(`no WebGL2 in this Chromium with ${GL_ARGS.join(' ')}`); return }
+    let worstAll = 0
+    let meanMax = 0
+    for (const [label, c] of PARITY) {
+      const p = await page.evaluate((c) => window.__preview(c), c)
+      assert.equal(p.res, 'drawn', `${label}: ${p.res}`)
+      const { pic, box, at } = c
+      const item = { blur: c.amount, blurType: c.type, blurX: c.center.x, blurY: c.center.y }
+      let exp
+      let ew
+      let ey
+      if (box.h === pic.h && box.w === pic.w) {
+        const format = c.yuv ? VIDEO_BLUR_FORMAT : IMAGE_BLUR_FORMAT
+        const step = blurFilterStep(item, { vw: pic.w, vh: pic.h, format, alpha: !c.yuv, name: 'q',
+          picture: { w: pic.w, h: pic.h, exact: true }, box: { w: pic.w, h: pic.h } })
+        exp = exportRgba(p.picture, pic.w, pic.h, `[0:v]${step},format=rgba[o]`)
+        ew = pic.w
+        ey = 0
+      } else {
+        // The builder probes the image's size (a contain fit), so it gets a real file.
+        const png = join(workDir, `parity-${PARITY.findIndex(([l]) => l === label)}.png`)
+        const wr = spawnSync(FFMPEG, ['-y', '-v', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${pic.w}x${pic.h}`, '-i', '-',
+          '-frames:v', '1', png], { input: Buffer.from(p.picture) })
+        assert.equal(wr.status, 0, String(wr.stderr))
+        const full = { type: 'image', src: png, start: 0, end: 1, fit: 'contain', scale: 1, offsetX: 0, offsetY: 0, opacity: 1, ...item }
+        const chain = buildImageItemFilterParts(full, box.w, box.h, 0, '[canvas]', 1, 0).filterParts[0]
+        exp = exportRgba(p.picture, pic.w, pic.h, `${chain.slice(0, -'[img0]'.length)},format=rgba[o]`)
+        assert.equal(exp.length, box.w * box.h * 4)
+        ew = box.w
+        ey = at.y
+      }
+      // The reference's coverage, for the thin pixels the export fades to the source.
+      const center = [c.center.x * box.w - at.x, c.center.y * box.h - at.y]
+      const plan = radialBlurPlan({ type: c.type, amount: c.amount, center, rect: pic })
+      const { coverage } = radialBlurReference({ data: p.picture, width: pic.w, height: pic.h }, { type: c.type, plan, center })
+      let worst = 0
+      let sum = 0
+      let n = 0
+      for (let j = 0; j < pic.h; j++) for (let i = 0; i < pic.w; i++) {
+        if (coverage[j * pic.w + i] < 1 / 16) continue
+        const g = ((j + at.y) * box.w + (i + at.x)) * 4
+        const e = ((j + ey) * ew + i + (ew === box.w ? at.x : 0)) * 4
+        if (p.got[g + 3] < 128) continue
+        for (let ch = 0; ch < 3; ch++) {
+          const d = Math.abs(p.got[g + ch] - exp[e + ch])
+          worst = Math.max(worst, d)
+          sum += d
+          n++
+        }
+      }
+      const mean = sum / Math.max(1, n)
+      t.diagnostic(`${label}: worst ${worst}, mean ${mean.toFixed(2)} codes`)
+      worstAll = Math.max(worstAll, worst)
+      meanMax = Math.max(meanMax, mean)
+      assert.ok(worst <= 10, `${label}: worst ${worst} codes`)
+      assert.ok(mean < 2, `${label}: mean ${mean.toFixed(2)} codes`)
+    }
+    t.diagnostic(`preview against export, all cases: worst ${worstAll}, largest mean ${meanMax.toFixed(2)} codes`)
     assert.deepEqual(errors, [])
   } finally { await page.close() }
 })
