@@ -346,7 +346,10 @@ if (isMain) {
       '    --out <path>   one 3D alone; --scene \'\' is the project\'s own\n' +
       '  sample-frame.js --mode frame --project <path> --at <seconds> --no-captions --out <path>\n' +
       '  sample-frame.js --mode frame --project <path> --at <s> --at <s> ... --frames-dir <dir>\n' +
-      '  sample-frame.js --mode measure --jobs <file.json> [--lanes N]\n'
+      '  sample-frame.js --mode measure --jobs <file.json> [--lanes N]\n' +
+      '  sample-frame.js --mode overlay-strip --component <path> --times \'[0,1,2]\' --duration <frames>\n' +
+      '    [--fps N] [--width W] [--height H] [--props \'...\'] [--google-fonts f1,f2]\n' +
+      '    --tile-width N --out-dir <dir>   one browser, one small PNG per time (t_0000.png...)\n'
     )
     process.exit(1)
   }
@@ -379,6 +382,9 @@ if (isMain) {
   let jobsArg       = null
   let projectDirArg = null
   let lanesArg      = null
+  let timesArg      = null
+  let tileWidthArg  = null
+  let outDirArg     = null
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -406,12 +412,15 @@ if (isMain) {
     if (a === '--jobs')         { jobsArg       = argv[++i]; continue }
     if (a === '--project-dir')  { projectDirArg = argv[++i]; continue }
     if (a === '--lanes')        { lanesArg      = parseInt(argv[++i], 10); continue }
+    if (a === '--times')        { try { timesArg = JSON.parse(argv[++i]) } catch { fail('invalid_times', '--times is not valid JSON') }; continue }
+    if (a === '--tile-width')   { tileWidthArg  = parseInt(argv[++i], 10); continue }
+    if (a === '--out-dir')      { outDirArg     = argv[++i]; continue }
   }
 
   if (!mode) fail('missing_argument', '--mode overlay|frame|measure is required')
   const manyTimes = mode === 'frame' && atArgs.length > 1
   if (manyTimes && !framesDirArg) fail('missing_argument', '--frames-dir <dir> is required with several --at')
-  if (!outArg && !manyTimes && mode !== 'measure') fail('missing_argument', '--out <path> is required')
+  if (!outArg && !manyTimes && mode !== 'measure' && mode !== 'overlay-strip') fail('missing_argument', '--out <path> is required')
 
   // Validate against the manifest here rather than letting look.js throw deep
   // inside the extract: a typo'd curve id should be a clean CLI error, not a
@@ -493,6 +502,29 @@ if (isMain) {
       process.stderr.write(JSON.stringify({ error, message: err.message }) + '\n')
       process.exit(1)
     })
+  } else if (mode === 'overlay-strip') {
+    if (!componentArg) fail('missing_argument', '--component <path> is required for --mode overlay-strip')
+    if (!outDirArg) fail('missing_argument', '--out-dir <dir> is required for --mode overlay-strip')
+    if (!Array.isArray(timesArg) || !timesArg.length || !timesArg.every(Number.isFinite)) fail('invalid_times', '--times is a non-empty JSON list of seconds')
+    if (!Number.isFinite(durationArg) || durationArg < 1) fail('missing_argument', '--duration <frames> is required for --mode overlay-strip')
+    if (!Number.isFinite(tileWidthArg) || tileWidthArg < 1) fail('missing_argument', '--tile-width is required for --mode overlay-strip')
+    sampleOverlayStrip({
+      componentPath: resolve(componentArg),
+      props: propsArg,
+      times: timesArg,
+      fps: fpsArg,
+      durationFrames: durationArg,
+      width: widthArg,
+      height: heightArg,
+      googleFonts: googleFontsArg,
+      tileWidth: tileWidthArg,
+      outDir: resolve(outDirArg),
+    }).then(result => {
+      process.stdout.write(JSON.stringify(result) + '\n', () => process.exit(0))
+    }).catch(err => {
+      process.stderr.write(JSON.stringify({ error: err.sampleError || 'sample_failed', message: err.message }) + '\n')
+      process.exit(1)
+    })
   } else if (mode === 'measure') {
     // PL89g: look's pass, every overlay in one call. --jobs: a JSON file of [{component, props, frame, fps, width, height,
     // googleFonts, duration, out}]; stdout: {results, browsers}.
@@ -510,7 +542,7 @@ if (isMain) {
       process.exit(1)
     })
   } else {
-    fail('invalid_mode', `--mode must be 'overlay', 'frame' or 'measure', got '${mode}'`)
+    fail('invalid_mode', `--mode must be 'overlay', 'frame', 'measure' or 'overlay-strip', got '${mode}'`)
   }
 }
 
@@ -686,7 +718,7 @@ export async function sampleInSessions({ count, sampleWith, order = [...Array(co
  * fontFailures, workDir, recordedInputs }. With a session the browser is the session's (createSampleSession) and stays
  * open; without one it is this page's own, and the caller closes it. On a failure what it opened is closed.
  */
-async function openOverlayPage({ componentPath, props, fps, effectiveDuration, width, height, googleFonts, projectDir, session = null }) {
+async function openOverlayPage({ componentPath, props, fps, effectiveDuration, width, height, googleFonts, projectDir, session = null, deviceScaleFactor = 1 }) {
   const { htmlPath, workDir, inputs: bundleInputs, boundary, needsGoogleFonts } = await bundleComponent({
     componentPath,
     props,
@@ -718,7 +750,7 @@ async function openOverlayPage({ componentPath, props, fps, effectiveDuration, w
     browser = session ? await session.browserFor(needsGoogleFonts ? 'fonts' : 'plain', launch) : await launch()
 
     page = await browser.newPage()
-    await page.setViewport({ width, height, deviceScaleFactor: 1 })
+    await page.setViewport({ width, height, deviceScaleFactor })
 
     // Before the page loads: what it may read, and that it sends nothing out.
     const guard = await installPageGuard(page, { boundary, propsCache, needsGoogleFonts })
@@ -1196,6 +1228,45 @@ export async function sampleOverlay({
     return { pngPath: outPath, measurements, inputs: recordedInputs, degraded, warnings }
   }
   return { pngPath: outPath, inputs: recordedInputs, degraded, warnings }
+}
+
+/** The frame each strip time shows: seconds to frames at `fps`, inside the overlay's `durationFrames`. */
+export function stripFrames(times, fps, durationFrames) {
+  return times.map((t) => Math.min(Math.max(0, Math.round(t * fps)), Math.max(0, durationFrames - 1)))
+}
+
+/**
+ * Filmstrip of an overlay: one small PNG per time, from ONE browser and ONE page (bundled and mounted once), painted
+ * at tile size (deviceScaleFactor = tileWidth / width, never the full canvas scaled down). Writes
+ * outDir/t_0000.png... in the order of `times`; touches no sample cache. Returns { pngs, tileWidth, tileHeight, inputs }
+ * where inputs are the files the overlay was built from ([[path, mtimeMs]]).
+ */
+export async function sampleOverlayStrip({ componentPath, props = {}, times, fps = 30, durationFrames, width = 1080, height = 1920, googleFonts = [], tileWidth, outDir, projectDir = null }) {
+  if (!componentPath) throw Object.assign(new Error('componentPath is required'), { sampleError: 'missing_argument' })
+  const scale = tileWidth / width
+  const frames = stripFrames(times, fps, durationFrames)
+  mkdirSync(outDir, { recursive: true })
+  const key = JSON.stringify([componentPath, props, fps, durationFrames, width, height, googleFonts, projectDir, 'strip'])
+  const session = createSampleSession()
+  const pngs = []
+  let inputs = []
+  try {
+    const open = () => openOverlayPage({ componentPath, props, fps, effectiveDuration: Math.max(1, durationFrames), width, height, googleFonts, projectDir, session, deviceScaleFactor: scale })
+    for (let k = 0; k < frames.length; k++) {
+      const outPath = join(outDir, `t_${String(k).padStart(4, '0')}.png`)
+      try {
+        const got = await session.sample(key, open, (ctx) => captureOverlay({ ...ctx, componentPath, frame: frames[k], measure: false, width, height, outPath }))
+        inputs = got.ctx.recordedInputs
+      } catch (err) {
+        if (!err.sampleError && err.message) err.sampleError = isThreeFrameBlank(err) ? 'three_frame_blank' : 'overlay_eval_failed'
+        throw err
+      }
+      pngs.push(outPath)
+    }
+  } finally {
+    await session.close()
+  }
+  return { pngs, tileWidth, tileHeight: Math.round(height * scale), inputs }
 }
 
 /**

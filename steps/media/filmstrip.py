@@ -17,10 +17,14 @@ full cols*rows grid of input frames and stalls waiting for frames that will
 never arrive if the last chunk is partial (fewer tiles than cols*rows), so
 nb_frames is always set explicitly to the actual chunk size.
 """
-import json, math, os, sys, argparse, shutil, tempfile
+import json, math, os, sys, argparse, shutil, tempfile, hashlib, subprocess
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import ffmpeg_error_tail, fail, require_file, run, check_output, get_duration, ffmpeg_bin
+
+MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+# Bump when the overlay strip's pixels or index shape change, so cached strips retire.
+OVERLAY_STRIP_VERSION = 1
 
 
 # How far back to retry when a seek lands past the last decodable frame.
@@ -113,6 +117,147 @@ def build(src, duration, out_dir, max_tiles, min_interval, cols, tile_width, til
     return {"sheets": sheets, "interval": round(interval, 3), "tileWidth": tile_width}
 
 
+# ---------------------------------------------------------------------------
+# Overlay (.jsx) input
+# ---------------------------------------------------------------------------
+
+def _file_sha(path: str) -> str:
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return "missing"
+
+
+def overlay_base_key(jsx, props, fonts, duration, fps, timestamps, tile_width, width, height, cols, tiles_per_sheet) -> str:
+    """Hash of everything but the overlay's imports: the JSX content, props (canonical), fonts, length, fps,
+    the time grid, tile size and the version. Names the folder that holds the import list."""
+    raw = json.dumps({
+        "jsx": _file_sha(jsx), "props": props, "fonts": fonts, "duration": duration, "fps": fps,
+        "times": [round(t, 3) for t in timestamps], "tile": tile_width, "canvas": [width, height],
+        "cols": cols, "perSheet": tiles_per_sheet, "v": OVERLAY_STRIP_VERSION,
+    }, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def overlay_key(base_key: str, imports: list) -> str:
+    """The cache key: the base key plus the content of every file the overlay imports, so an edit to one retires it."""
+    h = hashlib.sha256(base_key.encode())
+    for p in sorted(imports):
+        h.update(b"\0" + p.encode() + b"\0" + _file_sha(p).encode())
+    return h.hexdigest()
+
+
+def _read_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def cached_overlay_strip(out_dir: str, base_key: str):
+    """The cached index for this base key, or None. A hit needs the import list, an index under the full key
+    and every sheet it names."""
+    imports = _read_json(os.path.join(out_dir, base_key, "imports.json"))
+    if not isinstance(imports, list):
+        return None
+    index = _read_json(os.path.join(out_dir, overlay_key(base_key, imports), "index.json"))
+    if not isinstance(index, dict) or not index.get("sheets"):
+        return None
+    if not all(os.path.isfile(s.get("path", "")) for s in index["sheets"]):
+        return None
+    return index
+
+
+def run_overlay_strip_node(cmd: list, timeout: int):
+    """Run the node strip sampler; returns its parsed stdout JSON. A seam for tests."""
+    from common import node_child_env
+    r = subprocess.run(cmd, capture_output=True, env=node_child_env(), timeout=timeout)
+    if r.returncode != 0:
+        tail = (r.stderr or b"").decode("utf-8", errors="replace").strip().splitlines()[-1:] or ["no output"]
+        fail("unexpected_error", f"Overlay strip failed: {tail[0]}")
+    try:
+        return json.loads(r.stdout.decode("utf-8", errors="replace").strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        fail("unexpected_error", "Overlay strip printed no result")
+
+
+def flatten_tile(png: str, dest: str, w: int, h: int, timeout: int):
+    """A transparent overlay frame over the strip's dark ground, as the JPEG tile_sheet reads."""
+    run([ffmpeg_bin(), "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=0x101B2C:s={w}x{h}",
+         "-i", png, "-filter_complex", f"[1:v]scale={w}:{h}[o];[0:v][o]overlay=shortest=1,format=yuvj420p",
+         "-frames:v", "1", dest, "-y"], timeout=timeout)
+    check_output(dest)
+
+
+def build_overlay(jsx, duration, out_dir, max_tiles, min_interval, cols, tile_width, tiles_per_sheet, timeout,
+                  props="{}", google_fonts=None, fps=30, width=1080, height=1920):
+    out_dir = os.path.abspath(out_dir)
+    os.makedirs(out_dir, exist_ok=True)
+    try:
+        props_obj = json.loads(props or "{}")
+    except ValueError:
+        fail("invalid_param", "--props is not valid JSON")
+    if not isinstance(props_obj, dict):
+        fail("invalid_param", "--props must be a JSON object")
+
+    interval = max(duration / max_tiles, min_interval)
+    timestamps = tile_timestamps(duration, interval)
+    base = overlay_base_key(jsx, props_obj, google_fonts or "", duration, fps, timestamps, tile_width, width, height, cols, tiles_per_sheet)
+
+    hit = cached_overlay_strip(out_dir, base)
+    if hit:
+        return hit
+
+    tile_height = max(2, round(height * tile_width / width / 2) * 2)
+    work = tempfile.mkdtemp(prefix=".strip_", dir=out_dir)
+    try:
+        cmd = ["node", os.path.join(_render_dir(), "sample-frame.js"), "--mode", "overlay-strip",
+               "--component", jsx, "--times", json.dumps([round(t, 4) for t in timestamps]),
+               "--fps", str(fps), "--duration", str(max(1, round(duration * fps))),
+               "--width", str(width), "--height", str(height), "--props", json.dumps(props_obj, sort_keys=True),
+               "--tile-width", str(tile_width), "--out-dir", work]
+        if google_fonts:
+            cmd += ["--google-fonts", google_fonts]
+        got = run_overlay_strip_node(cmd, timeout)
+        imports = sorted({p for p, _ in got.get("inputs", [])} | {jsx})
+        os.makedirs(os.path.join(out_dir, base), exist_ok=True)
+        with open(os.path.join(out_dir, base, "imports.json"), "w") as f:
+            json.dump(imports, f)
+        key_dir = os.path.join(out_dir, overlay_key(base, imports))
+        os.makedirs(key_dir, exist_ok=True)
+
+        sheets = []
+        for sheet_no, offset in enumerate(range(0, len(timestamps), tiles_per_sheet)):
+            chunk = timestamps[offset:offset + tiles_per_sheet]
+            tiles_dir = os.path.join(work, f"sheet_{sheet_no}")
+            os.makedirs(tiles_dir)
+            for i in range(len(chunk)):
+                flatten_tile(got["pngs"][offset + i], os.path.join(tiles_dir, f"f_{i + 1:04d}.jpg"), tile_width, tile_height, timeout)
+            sheet_path = os.path.join(key_dir, f"sheet_{sheet_no + 1:02d}.jpg")
+            tile_sheet(tiles_dir, len(chunk), cols, sheet_path, timeout)
+            sheets.append({
+                "path": sheet_path, "cols": cols, "rows": (len(chunk) + cols - 1) // cols,
+                "tiles": [{"t": round(t, 3), "row": i // cols, "col": i % cols} for i, t in enumerate(chunk)],
+            })
+        index = {"sheets": sheets, "interval": round(interval, 3), "tileWidth": tile_width, "tileHeight": tile_height}
+        tmp = os.path.join(key_dir, "index.json.tmp")
+        with open(tmp, "w") as f:
+            json.dump(index, f)
+        os.replace(tmp, os.path.join(key_dir, "index.json"))  # last, so a hit never sees half a strip
+        return index
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _render_dir() -> str:
+    if MONTAJ_ROOT not in sys.path:
+        sys.path.insert(0, MONTAJ_ROOT)
+    from cli.deps import render_runtime_dir
+    return render_runtime_dir()
+
+
 def main():
     p = argparse.ArgumentParser(description="Tile a video into a uniform time-grid filmstrip with an index JSON")
     p.add_argument("--input", required=True, help="Source video file (all-intra proxy expected)")
@@ -124,6 +269,12 @@ def main():
     p.add_argument("--tile-width", type=int, default=160, help="Tile width in pixels")
     p.add_argument("--tiles-per-sheet", type=int, default=100, help="Tiles per sheet before splitting into another sheet")
     p.add_argument("--timeout", type=int, default=600, help="Per-ffmpeg-call timeout in seconds")
+    p.add_argument("--props", default="{}", help="Overlay only: props JSON object")
+    p.add_argument("--google-fonts", default=None, help="Overlay only: Google Fonts, a comma list or JSON array")
+    p.add_argument("--fps", type=int, default=30, help="Overlay only: frame rate of the fps global")
+    p.add_argument("--duration", type=float, default=None, help="Overlay only (required): length in seconds")
+    p.add_argument("--width", type=int, default=1080, help="Overlay only: canvas width")
+    p.add_argument("--height", type=int, default=1920, help="Overlay only: canvas height")
     args = p.parse_args()
 
     src = os.path.abspath(args.input)
@@ -138,6 +289,18 @@ def main():
         fail("invalid_param", "--tile-width must be at least 1")
     if args.tiles_per_sheet < 1:
         fail("invalid_param", "--tiles-per-sheet must be at least 1")
+
+    if src.lower().endswith(".jsx"):
+        if args.duration is None or args.duration <= 0:
+            fail("invalid_param", "--duration (seconds) is required for an overlay .jsx")
+        if args.fps < 1 or args.width < 1 or args.height < 1:
+            fail("invalid_param", "--fps, --width and --height must be at least 1")
+        result = build_overlay(src, args.duration, args.out_dir, args.max_tiles, args.min_interval,
+                               args.cols, args.tile_width, args.tiles_per_sheet, args.timeout,
+                               props=args.props, google_fonts=args.google_fonts, fps=args.fps,
+                               width=args.width, height=args.height)
+        print(json.dumps(result))
+        return
 
     duration = get_duration(src)
     result = build(src, duration, os.path.abspath(args.out_dir), args.max_tiles, args.min_interval,

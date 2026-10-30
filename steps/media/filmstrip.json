@@ -1,13 +1,13 @@
 {
   "name": "filmstrip",
-  "description": "Tile a uniform time-grid of frames into filmstrip contact sheets, with an index JSON mapping every tile to its timestamp. Pure ffmpeg. Feeds a timeline scrubber thumbnail strip — unlike shot_sheet this samples on a fixed time grid, not per detected shot.",
+  "description": "Tile a uniform time-grid of frames into filmstrip contact sheets, with an index JSON mapping every tile to its timestamp. Input is a video (pure ffmpeg) or an overlay .jsx (one Chromium session). Feeds a timeline scrubber thumbnail strip — unlike shot_sheet this samples on a fixed time grid, not per detected shot.",
   "input": {
-    "type": "video",
-    "description": "Source video file (all-intra proxy expected for cheap per-tile seeking)"
+    "type": "video_or_jsx",
+    "description": "Source video file (all-intra proxy expected for cheap per-tile seeking), or an overlay .jsx (needs duration)"
   },
   "output": {
     "type": "json",
-    "description": "{sheets:[{path, cols, rows, tiles:[{t, row, col}]}], interval, tileWidth}"
+    "description": "{sheets:[{path, cols, rows, tiles:[{t, row, col}]}], interval, tileWidth}; an overlay adds tileHeight and is cached under out-dir"
   },
   "params": [
     { "name": "out-dir", "type": "string", "required": true, "description": "Directory to write sheet images into" },
@@ -16,6 +16,12 @@
     { "name": "cols", "type": "int", "default": 10, "min": 1, "max": 20, "description": "Tiles per row per sheet" },
     { "name": "tile-width", "type": "int", "default": 160, "min": 32, "max": 800, "description": "Tile width in pixels" },
     { "name": "tiles-per-sheet", "type": "int", "default": 100, "min": 1, "description": "Tiles per sheet before splitting into another sheet" },
+    { "name": "props", "type": "string", "default": "{}", "description": "Overlay only: props JSON object" },
+    { "name": "google-fonts", "type": "string", "description": "Overlay only: Google Fonts, a comma list or JSON array" },
+    { "name": "fps", "type": "int", "default": 30, "min": 1, "description": "Overlay only: frame rate of the fps global" },
+    { "name": "duration", "type": "float", "min": 0.01, "description": "Overlay only, required: length in seconds" },
+    { "name": "width", "type": "int", "default": 1080, "min": 1, "description": "Overlay only: canvas width; with height sets the tile aspect" },
+    { "name": "height", "type": "int", "default": 1920, "min": 1, "description": "Overlay only: canvas height" },
     { "name": "timeout", "type": "int", "default": 600, "description": "Per-ffmpeg-call timeout in seconds" }
   ]
 }
