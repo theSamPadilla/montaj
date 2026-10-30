@@ -16,6 +16,12 @@ describe('CroppedImage (PV55)', () => {
     expect(img.style.objectFit).toBe('cover')
     expect(img.parentElement).toBe(container)
   })
+  it('loads with anonymous CORS, cropped or not, so a spin or zoom blur may read it into WebGL', () => {
+    const plain = render(<CroppedImage src="https://cdn.example/a.jpg" crop={undefined} fit="cover" boxWidth={1080} boxHeight={1920} />)
+    expect(plain.container.querySelector('img')!.getAttribute('crossorigin')).toBe('anonymous')
+    const cropped = render(<CroppedImage src="https://cdn.example/a.jpg" crop={{ x: 0.5, y: 0, w: 0.25, h: 1 }} fit="cover" boxWidth={1080} boxHeight={1920} />)
+    expect(cropped.container.querySelector('img')!.getAttribute('crossorigin')).toBe('anonymous')
+  })
   it('with a crop: hidden until loaded, then placed inside an overflow-hidden clip box', () => {
     const { container } = render(<CroppedImage src="a.jpg" crop={{ x: 0.5, y: 0, w: 0.25, h: 1 }} fit="cover" boxWidth={1080} boxHeight={1920} />)
     const img = container.querySelector('img')!

@@ -8,6 +8,11 @@ type Crop = { x: number; y: number; w: number; h: number }
  * crop (or the full frame) it renders the exact <img> it replaced, so an
  * uncropped image's DOM is unchanged. The natural size comes from the loaded
  * <img>, EXIF orientation applied, as ffmpeg's decode applies it.
+ *
+ * Loaded with anonymous CORS, as the video slots are: a spin or zoom blur
+ * reads the <img> into WebGL (radialBlurGL.ts), which refuses a cross-origin
+ * picture without CORS (a hosted image on R2, which sends
+ * Access-Control-Allow-Origin, would otherwise show unblurred, 'blocked').
  */
 export default function CroppedImage({ src, crop, fit, boxWidth, boxHeight }: {
   src: string
@@ -22,7 +27,7 @@ export default function CroppedImage({ src, crop, fit, boxWidth, boxHeight }: {
     ? sourceCropImageStyle({ crop, sourceWidth: size?.w ?? 0, sourceHeight: size?.h ?? 0, boxWidth, boxHeight, fit })
     : null
   if (!style) {
-    return <img src={src} draggable={false} className="absolute inset-0 w-full h-full pointer-events-none" style={{ objectFit: fit }} />
+    return <img src={src} crossOrigin="anonymous" draggable={false} className="absolute inset-0 w-full h-full pointer-events-none" style={{ objectFit: fit }} />
   }
   const record = (el: HTMLImageElement) => {
     if (el.naturalWidth > 0 && el.naturalHeight > 0 && (size?.w !== el.naturalWidth || size?.h !== el.naturalHeight)) {
@@ -33,6 +38,7 @@ export default function CroppedImage({ src, crop, fit, boxWidth, boxHeight }: {
     <div className="pointer-events-none" style={style.clip}>
       <img
         src={src}
+        crossOrigin="anonymous"
         draggable={false}
         // An already-cached image may be complete before React attaches onLoad.
         ref={(el) => { if (el?.complete) record(el) }}
