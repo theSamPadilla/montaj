@@ -8,9 +8,13 @@ import PreviewPlayer from '../PreviewPlayer'
 import { createPlaybackClock } from '../../playback-clock'
 import { blurFilterSpec, pictureSizeFor } from '../itemBlur'
 
-// A clip's blur in the preview: an SVG feGaussianBlur on the clip's media box,
-// its sigma the export's (design pixels on the 1080 short edge) at the scale on
-// screen, its region the picture's rect in the box, its edges duplicated.
+// A clip's blur in the preview: an SVG filter on the clip's media box that cuts
+// the source to the picture's rect, blurs it, renormalises by the blurred alpha
+// (feColorMatrix alpha = 1) and keeps the picture's alpha; its sigma the
+// export's (design pixels on the 1080 short edge) at the scale on screen.
+// Chromium's pixels against the export's are measured in
+// render/test/item-blur-preview-parity.test.mjs; this file pins what the
+// editor writes.
 //
 // On-screen parity with the export: the export blurs at
 // `blur * min(outW, outH) / 1080` output pixels (timeline-core blurSigmaPx).
@@ -35,12 +39,17 @@ describe('blurFilterSpec', () => {
     expect(spec.rect.w).toBe(1)
     expect(spec.rect.h).toBeCloseTo(h, 10)
     expect(spec.rect.y).toBeCloseTo((1 - h) / 2, 10)
+    // A uniform media box is the frame in its own pixels.
+    expect(spec.box).toEqual({ w: 270, h: 480 })
   })
 
   it('a per-axis clip: the screen sigma as is (net scale 1)', () => {
     const spec = blurFilterSpec({ item, renderScale: 0.25, ...CANVAS, scaleX: 0.8, scaleY: 0.5 }, null)!
     expect(spec.sigma).toBeCloseTo(10, 10)
     expect(spec.rect).toEqual({ x: 0, y: 0, w: 1, h: 1 })
+    // A per-axis media box is the clip's box.
+    expect(spec.box.w).toBeCloseTo(270 * 0.8, 10)
+    expect(spec.box.h).toBeCloseTo(480 * 0.5, 10)
   })
 
   it('no blur: null', () => {
@@ -120,7 +129,7 @@ describe('OverlayItemsLayer — a clip\'s blur', () => {
     )
   }
 
-  it('a blurred video: feGaussianBlur on its media box at the scaled sigma, region the footage, edges duplicated, sRGB', () => {
+  it('a blurred video: the filter on its media box, cut to the footage, renormalised, at the scaled sigma, in sRGB', () => {
     const card = { id: 'bg', type: 'video', src: 'bg.mp4', start: 0, end: 10, inPoint: 0, scale: 3.2, blur: 40,
       sourceWidth: 960, sourceHeight: 540 } as VisualItem
     const { container } = renderLayer([card])
@@ -133,10 +142,23 @@ describe('OverlayItemsLayer — a clip\'s blur', () => {
     expect(Number(f.getAttribute('width'))).toBe(1)
     expect(Number(f.getAttribute('height'))).toBeCloseTo(h, 3)
     expect(Number(f.getAttribute('y'))).toBeCloseTo((1 - h) / 2, 3)
-    const blur = f.querySelector('feGaussianBlur')!
-    expect(blur.getAttribute('edgeMode')).toBe('duplicate')
+    // The primitives, in order: cut to the picture, blur, renormalise, alpha back.
+    expect([...f.children].map(c => c.tagName)).toEqual(['feFlood', 'feComposite', 'feGaussianBlur', 'feColorMatrix', 'feComposite'])
+    const [flood, cut, blur, renorm, back] = [...f.children]
+    // The footage's rect in the media box's own pixels (the frame, 216 x 384).
+    expect(Number(flood.getAttribute('x'))).toBe(0)
+    expect(Number(flood.getAttribute('width'))).toBeCloseTo(216, 3)
+    expect(Number(flood.getAttribute('y'))).toBeCloseTo(384 * (1 - h) / 2, 3)
+    expect(Number(flood.getAttribute('height'))).toBeCloseTo(384 * h, 3)
+    expect(flood.getAttribute('flood-color')).toBe('#fff')
+    expect([cut.getAttribute('in'), cut.getAttribute('in2'), cut.getAttribute('operator')])
+      .toEqual(['SourceGraphic', flood.getAttribute('result'), 'in'])
+    expect(blur.getAttribute('in')).toBe(cut.getAttribute('result'))
     // 40 design px at 0.2 screen px each, under the wrapper's scale(3.2).
     expect(Number(blur.getAttribute('stdDeviation'))).toBeCloseTo(40 * RENDER_SCALE / 3.2, 4)
+    expect(renorm.getAttribute('values')!.split(/\s+/).map(Number)).toEqual([1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1])
+    expect([back.getAttribute('in'), back.getAttribute('in2'), back.getAttribute('operator')])
+      .toEqual([renorm.getAttribute('result'), cut.getAttribute('result'), 'in'])
     // The SVG renders after the media, inside the box.
     expect(mediaBox.lastElementChild?.tagName.toLowerCase()).toBe('svg')
   })

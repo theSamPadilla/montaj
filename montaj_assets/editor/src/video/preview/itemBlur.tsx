@@ -1,25 +1,40 @@
-// A clip's blur in the preview: the `blur` the export draws with ffmpeg's
-// `gblur` (montaj_assets/render/item-blur.js), here an SVG `feGaussianBlur`
-// referenced from the clip's media box as a CSS `filter`.
+// A clip's blur in the preview: the `blur` the export draws with ffmpeg
+// (montaj_assets/render/item-blur.js), here an SVG filter referenced from the
+// clip's media box as a CSS `filter`.
 //
-// Three things make the two agree:
+// What both compute: a Gaussian blur that averages only the picture's own
+// pixels. Near an edge the weights falling outside the picture are dropped and
+// the rest renormalised, so the edges stay opaque and keep their own colour,
+// and the clip's alpha is kept as it was. The filter:
 //
-//   - THE SIGMA. `blur` is a standard deviation in design-canvas pixels (1080
-//     on the short edge, timeline-core `blurOf`). On screen that is
-//     `blur * renderScale`. The filter runs in the media box's own CSS pixels,
-//     and a uniform clip's media box sits under the wrapper's `scale(s)`
-//     (`mediaBoxStyle`), so its sigma is divided by `s` to land on screen at
-//     the same size. A per-axis clip's media box is counter-scaled to a net
-//     scale of 1 and takes the screen sigma as is.
-//   - THE EDGES. The export blurs the fitted picture before its transparent pad
-//     and reads past the picture's edge as the edge pixel again. Here the
-//     filter region is the picture's rect in the box (timeline-core
-//     `pictureRectInBox`: a contain-fitted video or image, the whole box for a
-//     cover or fill image) and `edgeMode="duplicate"` repeats the edge pixel,
-//     so a clip that fills the frame never shows dark or see-through edges.
-//     CSS `filter: blur()` cannot do this: it blurs transparent pixels in.
-//   - THE COLOURS. `color-interpolation-filters="sRGB"`: an SVG filter blurs in
-//     linear light by default, and the export blurs the encoded values.
+//   1. cuts the source to the picture's rect in the box (an feFlood over that
+//      rect, composited `in`): a contain-fitted video or image, the whole box
+//      for a cover or fill image (timeline-core `pictureRectInBox`). Whatever
+//      is around the picture, a transparent letterbox or the engine canvas's
+//      black bars, then weighs nothing. The filter region alone does not cut
+//      the source (measured in Chromium: the bars were blurred in);
+//   2. blurs it (`feGaussianBlur`, on premultiplied pixels, so colour and
+//      alpha blur alike);
+//   3. sets alpha to 1 with `feColorMatrix`, which works on unpremultiplied
+//      colour: that divides the blurred colour by the blurred alpha, the
+//      renormalisation;
+//   4. takes the cut source's alpha back (`feComposite in`).
+//
+// `edgeMode="duplicate"` on feGaussianBlur would repeat the edge pixel instead;
+// Chromium ignores it. Measured against the export's graph in Chromium: within
+// 10 codes, mean under 2, edge rows equal, on a transparent letterbox and on
+// black bars (render/test/item-blur-preview-parity.test.mjs).
+//
+// THE SIGMA. `blur` is a standard deviation in design-canvas pixels (1080 on
+// the short edge, timeline-core `blurOf`). On screen that is
+// `blur * renderScale`. The filter runs in the media box's own CSS pixels, and
+// a uniform clip's media box sits under the wrapper's `scale(s)`
+// (`mediaBoxStyle`), so its sigma is divided by `s` to land on screen at the
+// same size (measured: identical pixels). A per-axis clip's media box is
+// counter-scaled to a net scale of 1 and takes the screen sigma as is.
+//
+// THE COLOURS. `color-interpolation-filters="sRGB"`: an SVG filter blurs in
+// linear light by default, and the export blurs the encoded values.
 //
 // The filter goes on the media box, the element that also carries the mask:
 // CSS applies an element's filter before its mask, and the export blurs before
@@ -56,10 +71,12 @@ export interface ItemBlurInput {
   knownSize?: Size | null
 }
 
-/** The SVG filter for a blur: its sigma in the media box's own pixels and its region in the box. */
+/** The SVG filter for a blur: its sigma in the media box's own pixels, the
+ *  picture's rect as fractions of the box, and the box in its own pixels. */
 export interface BlurFilterSpec {
   sigma: number
   rect: { x: number; y: number; w: number; h: number }
+  box: Size
 }
 
 const drawable = (s: number) => s > 0 && Number.isFinite(s)
@@ -96,7 +113,12 @@ export function blurFilterSpec(input: Omit<ItemBlurInput, 'src' | 'knownSize'>, 
   const local = uniform && drawable(sx) ? sx : 1
   const sigma = (b * input.renderScale) / local
   const rect = pictureRectInBox(input.canvasW * sx, input.canvasH * sy, picture?.w, picture?.h)
-  return { sigma, rect }
+  // The media box in its own pixels: the frame under a uniform scale, the
+  // clip's box (frame times the scale) on a per-axis one.
+  const frameW = input.canvasW * input.renderScale
+  const frameH = input.canvasH * input.renderScale
+  const box = uniform ? { w: frameW, h: frameH } : { w: frameW * sx, h: frameH * sy }
+  return { sigma, rect, box }
 }
 
 const fmt = (n: number) => String(Math.round(n * 10000) / 10000)
@@ -119,7 +141,7 @@ export function useItemBlur(input: ItemBlurInput | null): { style: CSSProperties
   const natural = item?.type === 'image' ? imageSize : (known(videoSize) ? videoSize : input.knownSize)
   const spec = blurFilterSpec(input, pictureSizeFor(input.item, input.crop, input.fit, natural))
   if (!spec) return { style: {}, defs: null }
-  const { sigma, rect } = spec
+  const { sigma, rect, box } = spec
   return {
     style: { filter: `url(#${id})` },
     defs: (
@@ -134,7 +156,12 @@ export function useItemBlur(input: ItemBlurInput | null): { style: CSSProperties
           height={fmt(rect.h)}
           colorInterpolationFilters="sRGB"
         >
-          <feGaussianBlur stdDeviation={fmt(sigma)} edgeMode="duplicate" />
+          <feFlood floodColor="#fff" x={fmt(rect.x * box.w)} y={fmt(rect.y * box.h)}
+            width={fmt(rect.w * box.w)} height={fmt(rect.h * box.h)} result="picture-rect" />
+          <feComposite in="SourceGraphic" in2="picture-rect" operator="in" result="picture" />
+          <feGaussianBlur in="picture" stdDeviation={fmt(sigma)} result="blurred" />
+          <feColorMatrix in="blurred" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0 1" result="renormalised" />
+          <feComposite in="renormalised" in2="picture" operator="in" />
         </filter>
       </svg>
     ),
