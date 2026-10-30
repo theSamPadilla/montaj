@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { BLUR_MAX, blurOf, blurSigmaPx, pictureRectInBox } from '../index.js'
+import { BLUR_MAX, BLUR_TYPES, blurAngleOf, blurOf, blurSigmaPx, blurTypeOf, pictureRectInBox } from '../index.js'
 
 test('blurOf: a finite number above 0, held to BLUR_MAX; anything else is 0', () => {
   assert.equal(BLUR_MAX, 200)
@@ -40,4 +40,28 @@ test('pictureRectInBox: contain-fit, centred, as fractions of the box', () => {
   assert.deepEqual(pictureRectInBox(1080, 1920, 540, 960), { x: 0, y: 0, w: 1, h: 1 })
   assert.deepEqual(pictureRectInBox(1080, 1920, null, 960), { x: 0, y: 0, w: 1, h: 1 })
   assert.deepEqual(pictureRectInBox(0, 1920, 100, 100), { x: 0, y: 0, w: 1, h: 1 })
+})
+
+test('blurTypeOf: linear only when it says so; uniform otherwise', () => {
+  assert.deepEqual(BLUR_TYPES, ['uniform', 'linear'])
+  assert.equal(blurTypeOf(null), 'uniform')
+  assert.equal(blurTypeOf({}), 'uniform')
+  assert.equal(blurTypeOf({ blurType: 'uniform' }), 'uniform')
+  assert.equal(blurTypeOf({ blurType: 'Linear' }), 'uniform')
+  assert.equal(blurTypeOf({ blurType: 'linear' }), 'linear')
+})
+
+test('blurAngleOf: degrees mod 180, in [0, 180); not a finite number is 0', () => {
+  assert.equal(blurAngleOf(null), 0)
+  assert.equal(blurAngleOf({}), 0)
+  assert.equal(blurAngleOf({ blurAngle: '30' }), 0)
+  assert.equal(blurAngleOf({ blurAngle: NaN }), 0)
+  assert.equal(blurAngleOf({ blurAngle: Infinity }), 0)
+  assert.equal(blurAngleOf({ blurAngle: 30 }), 30)
+  assert.equal(blurAngleOf({ blurAngle: 180 }), 0)
+  assert.equal(blurAngleOf({ blurAngle: 210 }), 30)
+  assert.equal(blurAngleOf({ blurAngle: -30 }), 150)
+  assert.equal(blurAngleOf({ blurAngle: -180 }), 0)
+  assert.equal(blurAngleOf({ blurAngle: -1e-17 }), 0)
+  assert.equal(blurAngleOf({ blurAngle: 719.5 }), 179.5)
 })

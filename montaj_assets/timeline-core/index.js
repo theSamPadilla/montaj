@@ -85,7 +85,8 @@ export * from './src/transitions.js'
 export * from './src/mask.js'
 
 // A clip's blur (blurOf, blurSigmaPx: a Gaussian sigma on the 1080-short-edge
-// design canvas; pictureRectInBox: where the blurred picture sits in its box,
+// design canvas; blurTypeOf, blurAngleOf: uniform or linear and its direction;
+// pictureRectInBox: where the blurred picture sits in its box,
 // the preview's filter region). See the src/blur.js header.
 export * from './src/blur.js'
 

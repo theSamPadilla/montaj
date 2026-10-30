@@ -1351,6 +1351,18 @@ export declare function blurOf(item: { blur?: unknown } | null | undefined): num
  */
 export declare function blurSigmaPx(item: { blur?: unknown } | null | undefined, canvasW: number, canvasH: number): number
 
+/** The blur types, the default first (src/blur.js). */
+export declare const BLUR_TYPES: readonly ['uniform', 'linear']
+
+/** The item's blur type: `linear` when its `blurType` says so, else `uniform`. */
+export declare function blurTypeOf(item: { blurType?: unknown } | null | undefined): 'uniform' | 'linear'
+
+/**
+ * A linear blur's direction in degrees, in [0, 180): its `blurAngle` mod 180
+ * (0 along x, positive clockwise on screen); 0 when that is not a finite number.
+ */
+export declare function blurAngleOf(item: { blurAngle?: unknown } | null | undefined): number
+
 /** The widest sigma worth drawing on a canvas: a third of its longer side (src/blur.js). */
 export declare function blurSigmaCapPx(canvasW: number, canvasH: number): number
 

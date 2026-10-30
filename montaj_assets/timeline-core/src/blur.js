@@ -28,10 +28,22 @@
 //   3. 0, absent or anything that is not a finite number is no blur. Above
 //      {@link BLUR_MAX} is held to it (save refuses it: lib/overlay_validation.py).
 //
+//   4. THE TYPE, `blurType`: `uniform` (the default, and anything that is not
+//      `linear`) blurs every direction alike; `linear` blurs along one
+//      direction only, `blurAngle` degrees ({@link blurAngleOf}): 0 runs along
+//      the picture's x axis (horizontal streaks), positive turns it clockwise
+//      on screen, as a clip's `rotation` does, taken mod 180. `blur` is then
+//      the sigma along that direction and there is no blur across it. The
+//      angle is the picture's own, so it turns with the clip's rotation.
+//      Both are static.
+//
 // Pure like the rest of the package: no DOM, no I/O, no dependency.
 
 /** The largest blur, in design-canvas pixels. lib/overlay_validation.py mirrors it. */
 export const BLUR_MAX = 200
+
+/** The blur types, the default first. lib/overlay_validation.py mirrors them. */
+export const BLUR_TYPES = /** @type {const} */ (['uniform', 'linear'])
 
 /** The short edge of the design canvas the blur is measured on. */
 const DESIGN_SHORT_EDGE = 1080
@@ -47,6 +59,30 @@ export function blurOf(item) {
   const b = item?.blur
   if (typeof b !== 'number' || !Number.isFinite(b) || b <= 0) return 0
   return Math.min(BLUR_MAX, b)
+}
+
+/**
+ * The item's blur type: `linear` when its `blurType` says so, else `uniform`.
+ *
+ * @param {{ blurType?: unknown } | null | undefined} item
+ * @returns {'uniform' | 'linear'}
+ */
+export function blurTypeOf(item) {
+  return item?.blurType === 'linear' ? 'linear' : 'uniform'
+}
+
+/**
+ * A linear blur's direction in degrees, in [0, 180): its `blurAngle` mod 180
+ * (0 along x, positive clockwise on screen); 0 when that is not a finite number.
+ *
+ * @param {{ blurAngle?: unknown } | null | undefined} item
+ * @returns {number}
+ */
+export function blurAngleOf(item) {
+  const a = item?.blurAngle
+  if (typeof a !== 'number' || !Number.isFinite(a)) return 0
+  const r = ((a % 180) + 180) % 180
+  return r >= 180 ? 0 : r
 }
 
 /**
