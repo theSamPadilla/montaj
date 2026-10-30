@@ -200,10 +200,10 @@ describe('computeTimelineLayout', () => {
     expect(layout.height).toBe(layout.lanes[1].y + AUDIO_LANE_HEIGHT_PX)
   })
 
-  it('row sizes: overlay rows 40, gap 4, ruler 18, audio lanes 76 (the audio drag stride too)', () => {
-    expect([VISUAL_ROW_RENDER_HEIGHT_PX, ROW_GAP_PX, RULER_HEIGHT_PX, AUDIO_LANE_HEIGHT_PX]).toEqual([40, 4, 18, 76])
+  it('row sizes: overlay rows 40, gap 4, ruler 18, audio lanes 70 (the audio drag stride too)', () => {
+    expect([VISUAL_ROW_RENDER_HEIGHT_PX, ROW_GAP_PX, RULER_HEIGHT_PX, AUDIO_LANE_HEIGHT_PX]).toEqual([40, 4, 18, 70])
     const p = project({ audio: { tracks: [audio({ id: 'm', lane: 0 })] } } as unknown as Partial<Project>)
-    expect(computeTimelineLayout(p).lanes[0].height).toBe(76)
+    expect(computeTimelineLayout(p).lanes[0].height).toBe(70)
   })
 
   it('gives every VIDEO-kind track the tall base row height, not just trackIdx 0 — an overlay track stays short', () => {
@@ -462,24 +462,24 @@ describe('drawClipRect', () => {
   it('dark: every clip wears a faint 1px white outline, not its track hue', () => {
     const plain = recordingContext()
     drawClipRect(plain.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, palette: TRACK_PALETTE[1], selected: false, label: 'x' })
-    expect(TIMELINE_COLORS.clipOutline).toBe('rgba(255,255,255,0.07)')
+    expect(TIMELINE_COLORS.clipOutline).toBe('rgba(255,255,255,0.16)')
     const strokes = plain.of('set:strokeStyle').map(c => c.args[0])
     expect(strokes).toEqual([TIMELINE_COLORS.clipOutline])
     expect(strokes).not.toContain(TRACK_PALETTE[1].border)
     expect(plain.calls.some(c => c.method === 'set:lineWidth' && c.args[0] === 1)).toBe(true)
   })
 
-  it('dark: a selected clip gets a 2px gold ring drawn inside it', () => {
+  it('dark: a selected clip gets a 3px gold ring drawn inside it', () => {
     const picked = recordingContext()
     drawClipRect(picked.ctx, { rect: { x: 0, y: 0, width: 100, height: 40 }, palette: TRACK_PALETTE[0], selected: true, label: 'x' })
     expect(TIMELINE_COLORS.clipSelectedOutline).toBe('#F5C87B')
-    expect(CLIP_SELECTED_BORDER_PX).toBe(2)
+    expect(CLIP_SELECTED_BORDER_PX).toBe(3)
     expect(picked.of('set:strokeStyle').map(c => c.args[0])).toEqual([TIMELINE_COLORS.clipSelectedOutline])
-    expect(picked.calls.some(c => c.method === 'set:lineWidth' && c.args[0] === 2)).toBe(true)
+    expect(picked.calls.some(c => c.method === 'set:lineWidth' && c.args[0] === 3)).toBe(true)
     // Inside: the ring's path is inset by half its width from the body.
     const body = { x: CLIP_GUTTER_PX, y: 0, width: 100 - CLIP_GUTTER_PX * 2, height: 40 }
     const moves = picked.of('moveTo'); const start = moves[moves.length - 1].args as number[]
-    expect(start[1]).toBe(body.y + 1)
+    expect(start[1]).toBe(body.y + 1.5)
     expect(picked.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TRACK_PALETTE[0].fillSelected)).toBe(true)
   })
 
@@ -754,12 +754,12 @@ describe('drawAudioItem', () => {
     drawAudioItem(r.ctx, { rect: { x: 10, y: 4, width: 300, height: 32 }, selected: true, muted: false, label: 'Voiceover' })
     expect(r.calls.some(c => c.method === 'set:fillStyle' && c.args[0] === TIMELINE_COLORS.audioFill)).toBe(true)
     expect(r.calls.some(c => c.method === 'set:strokeStyle' && c.args[0] === TIMELINE_COLORS.audioRing)).toBe(true)
-    // Dark: the same 2px gold ring a selected clip gets, inside the bar.
+    // Dark: the same 3px gold ring a selected clip gets, inside the bar.
     expect(TIMELINE_COLORS.audioRing).toBe(TIMELINE_COLORS.clipSelectedOutline)
-    expect(r.calls.some(c => c.method === 'set:lineWidth' && c.args[0] === 2)).toBe(true)
-    const ringAt = r.calls.findIndex(c => c.method === 'set:lineWidth' && c.args[0] === 2)
+    const ringAt = r.calls.findIndex(c => c.method === 'set:lineWidth' && c.args[0] === 3)
+    expect(ringAt).toBeGreaterThan(-1)
     const ringStart = r.calls.slice(ringAt).find(c => c.method === 'moveTo')!
-    expect((ringStart.args as number[])[1]).toBe(4 + 1)
+    expect((ringStart.args as number[])[1]).toBe(4 + 1.5)
     // Indented past the in-handle: a selected bar grows a 6px pill on each
     // end, and a label starting under one would lose its first glyph.
     expect(r.of('fillText')[0].args).toEqual(['Voiceover', 16 + AUDIO_HANDLE_WIDTH_PX, 20])

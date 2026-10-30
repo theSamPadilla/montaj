@@ -275,7 +275,7 @@ export const TIMELINE_COLORS = {
   clipSelectedOutline: '#F5C87B',
   /** Every visual clip's 1px edge: a faint white, so the frames carry the
    *  clip and the edge only bounds it. Light uses each track's own border. */
-  clipOutline: 'rgba(255,255,255,0.07)',
+  clipOutline: 'rgba(255,255,255,0.16)',
   /** `bg-yellow-400` — the preview-axis cursor: the line that tracks the
    *  pointer while the axis is on. Yellow so it can never be mistaken for the
    *  red playback line it moves independently of; it inherits the colour of
@@ -616,15 +616,14 @@ export const ROW_RADIUS_PX = 4           // Tailwind `rounded`
 export const CLIP_GUTTER_PX = 2
 /** Corner radius on a clip body. */
 export const CLIP_RADIUS_PX = 4
-/** Weight of the selected-clip ring (dark), drawn inside the clip. The gold,
- *  not the weight, is what says "selected". */
-export const CLIP_SELECTED_BORDER_PX = 2
+/** Weight of the selected-clip ring (dark), drawn inside the clip. */
+export const CLIP_SELECTED_BORDER_PX = 3
 /** The light selected-clip outline. Thick on purpose: near-black has to read
  *  over filmstrip frames of any brightness. */
 export const LIGHT_CLIP_SELECTED_BORDER_PX = 3
 /** The selected audio bar's ring: dark matches the clip ring, light keeps its
  *  1px. */
-export const AUDIO_SELECTED_BORDER_PX = 2
+export const AUDIO_SELECTED_BORDER_PX = 3
 export const LIGHT_AUDIO_SELECTED_BORDER_PX = 1
 /** Drawn width of a visual clip's trim handle. Equal to
  *  `VISUAL_EDGE_TOLERANCE_PX` in hit-test.ts ON PURPOSE — the pill you see is

@@ -24,10 +24,10 @@ export const VISUAL_ROW_HEIGHT_PX = 24
  *  magnet, and the volume gear share one vertical column (TrackGutter's
  *  RailCell), and three 14px buttons plus their gaps need ~58px — at the old
  *  40px the third control (the volume gear) was clipped below the fold once the
- *  magnet was added. 76 rather than 64 gives the bars' waveform room to read.
+ *  magnet was added. 70 rather than 64 gives the bars' waveform room to read.
  *  With `ROW_GAP_PX` it is also the audio drag's row stride, so drag travel and
  *  the drawn rows stay coincident. */
-export const AUDIO_LANE_HEIGHT_PX = 76
+export const AUDIO_LANE_HEIGHT_PX = 70
 
 /** Rendered height of a non-base visual track row — 40px. Held at that height
  *  on purpose: these rows carry overlays, which have no waveform and no
@@ -349,13 +349,14 @@ function overlayText(props: Record<string, unknown> | undefined): string | null 
  * "always blank" — that reintroduces the blank-block bug for the whole
  * proxy-encoding window.
  *
- * A 3D item (`../scene3d.ts`) is a neutral `3D`: never its reserved `src` and
- * never the id of the 3D it shows, which the user never meets.
+ * A 3D item (`../scene3d.ts`) carries no label: its scene frames identify it,
+ * and the track header says 3D. Never its reserved `src` and never the id of
+ * the 3D it shows, which the user never meets.
  */
 export function visualItemLabel(item: VisualItem): string {
   if (item.type === 'video') return item.proxySrc ? '' : (item.src ? stem(item.src) : 'video')
   if (item.type === 'image') return item.src ? stem(item.src) : 'image'
-  if (isScene3dItem(item)) return '3D'
+  if (isScene3dItem(item)) return ''
 
   const kind = item.src ? stem(item.src) : 'overlay'
   const text = overlayText(item.props)
