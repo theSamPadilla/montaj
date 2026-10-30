@@ -15,7 +15,7 @@ import {
   RectangleHorizontal,
   RotateCcw,
 } from 'lucide-react'
-import { BLEND_MODES, BLUR_TYPES, MASK_FIELD_OF, MASK_POINTS_PROP, MASK_SHAPES, blendModeOf, blurAngleOf, blurCenterOf, blurMaxOf, blurOf, blurTypeOf, maskAt } from '@bycrux/timeline-core'
+import { BLEND_MODES, BLUR_CENTER_LIMIT, BLUR_TYPES, MASK_FIELD_OF, MASK_POINTS_PROP, MASK_SHAPES, blendModeOf, blurAngleOf, blurCenterOf, blurMaxOf, blurOf, blurTypeOf, maskAt } from '@bycrux/timeline-core'
 import type { BlendMode, BlurType, ItemMask, KeyframeProp, MaskKeyframeProp, TransformKeyframeProp, VisualItem } from '../schema'
 import {
   KEYFRAME_TIME_EPSILON,
@@ -172,8 +172,8 @@ const BLUR_TYPE_LABEL: Record<BlurType, string> = { uniform: 'Uniform', linear: 
 const BLUR_ANGLE_ROW: CellSpec = { name: 'Blur angle', step: 1 }
 /** Spin and zoom's centre boxes, in percent of the clip's box (stored as fractions, like the mask's). */
 const BLUR_CENTER_ROWS: { x: CellSpec; y: CellSpec } = {
-  x: { name: 'Blur center X', step: 1 },
-  y: { name: 'Blur center Y', step: 1 },
+  x: { name: 'Blur center X', step: 1, min: -BLUR_CENTER_LIMIT * 100, max: BLUR_CENTER_LIMIT * 100 },
+  y: { name: 'Blur center Y', step: 1, min: -BLUR_CENTER_LIMIT * 100, max: BLUR_CENTER_LIMIT * 100 },
 }
 /** What the Blur switch turns on at when the panel has no earlier amount. */
 const BLUR_DEFAULT = 20
@@ -943,7 +943,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   function withBlurCenter(axis: 'x' | 'y', percent: number): VisualItem {
     if (!Number.isFinite(percent)) return target
     const c = blurCenterOf(target)
-    const v = percent / 100
+    const v = Math.min(BLUR_CENTER_LIMIT, Math.max(-BLUR_CENTER_LIMIT, percent / 100))
     return { ...target, blurX: axis === 'x' ? v : c.x, blurY: axis === 'y' ? v : c.y }
   }
 

@@ -65,6 +65,8 @@ test('blurCenterOf: blurX and blurY as fractions of the box, 0.5 (the centre) by
   assert.deepEqual(blurCenterOf(null), { x: 0.5, y: 0.5 })
   assert.deepEqual(blurCenterOf({}), { x: 0.5, y: 0.5 })
   assert.deepEqual(blurCenterOf({ blurX: 0.25, blurY: 1.2 }), { x: 0.25, y: 1.2 })
+  // Held to ten boxes either side (validation refuses beyond).
+  assert.deepEqual(blurCenterOf({ blurX: 1e22, blurY: -40 }), { x: 10, y: -10 })
   assert.deepEqual(blurCenterOf({ blurX: '0.25', blurY: NaN }), { x: 0.5, y: 0.5 })
   assert.deepEqual(blurCenterOf({ blurX: 0 }), { x: 0, y: 0.5 })
 })

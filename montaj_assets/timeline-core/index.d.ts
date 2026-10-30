@@ -1420,6 +1420,8 @@ export declare const BLUR_SPIN_MAX: number
 
 /** Zoom's largest amount, in percent. */
 export declare const BLUR_ZOOM_MAX: number
+/** How far spin and zoom's centre (blurX, blurY) may sit from the box, in boxes either way: blurCenterOf holds it to [-10, 10]. */
+export declare const BLUR_CENTER_LIMIT: number
 
 /** The largest amount a blur type takes: BLUR_MAX px, BLUR_SPIN_MAX degrees or BLUR_ZOOM_MAX percent. */
 export declare function blurMaxOf(type: BlurType): number
@@ -1429,7 +1431,7 @@ export declare function blurTypeOf(item: { blurType?: unknown } | null | undefin
 
 /**
  * A spin or zoom blur's centre, fractions of the clip's box as a mask's `x`,
- * `y`: `blurX`, `blurY` where finite, else 0.5 (the box's centre).
+ * `y`: `blurX`, `blurY` where finite (held to [-10, 10]), else 0.5 (the box's centre).
  */
 export declare function blurCenterOf(item: { blurX?: unknown; blurY?: unknown } | null | undefined): { x: number; y: number }
 

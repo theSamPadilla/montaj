@@ -136,7 +136,9 @@ def test_a_bad_blur_angle_is_refused_naming_the_prop(make, angle):
 def test_the_blur_amount_range_follows_the_type(make, blur_type, ok, bad):
     assert _errs(make(blur=ok, blurType=blur_type)) == []
     errors = _errs(make(blur=bad, blurType=blur_type))
-    assert len(errors) == 1 and f".blur must be a number from 0 to {ok} " in errors[0], errors
+    assert f".blur must be a number from 0 to {ok} " in errors[0], errors
+    # An explicit type is named too (see the type-change test below).
+    assert len(errors) == (2 if blur_type else 1), errors
 
 
 def test_a_bad_type_judges_the_amount_as_uniform():
@@ -152,10 +154,30 @@ def test_a_blur_centre_passes(make, x, y):
 
 @pytest.mark.parametrize("make", [_img, _vid])
 @pytest.mark.parametrize("field", ["blurX", "blurY"])
-@pytest.mark.parametrize("value", ["0.5", True, float("nan"), float("inf"), [0.5]])
+@pytest.mark.parametrize("value", ["0.5", True, float("nan"), float("inf"), [0.5], 10.5, -11, 1e22])
 def test_a_bad_blur_centre_is_refused_naming_the_prop(make, field, value):
     errors = _errs(make(blur=40, blurType="spin", **{field: value}))
-    assert len(errors) == 1 and f".{field} must be a finite number" in errors[0], errors
+    assert len(errors) == 1 and f".{field} must be a number from -10 to 10" in errors[0], errors
+
+
+@pytest.mark.parametrize("make", [_img, _vid])
+@pytest.mark.parametrize("field", ["blurX", "blurY"])
+def test_a_blur_centre_up_to_ten_boxes_away_passes(make, field):
+    assert _errs(make(blur=40, blurType="spin", **{field: 10})) == []
+    assert _errs(make(blur=40, blurType="spin", **{field: -10})) == []
+
+
+def test_a_type_change_that_puts_the_amount_out_of_range_is_refused():
+    # Only blurType changes (uniform 190 -> spin, whose ceiling is 180): the
+    # amount's error is filed under blurType too, so the changed-fields rule keeps it.
+    prior = _vid(id="c", blur=190)
+    errors = _errs(_vid(id="c", blur=190, blurType="spin"), prior=prior)
+    assert len(errors) == 1 and ".blurType spin takes a blur from 0 to 180 (degrees of sweep), not 190" in errors[0], errors
+
+
+def test_an_unchanged_out_of_range_amount_under_an_unchanged_type_is_not_rechecked():
+    prior = _vid(id="c", blur=190, blurType="spin", opacity=1)
+    assert _errs(_vid(id="c", blur=190, blurType="spin", opacity=0.5), prior=prior) == []
 
 
 def test_unchanged_bad_item_is_not_rechecked():

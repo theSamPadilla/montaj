@@ -61,6 +61,9 @@ export const BLUR_SPIN_MAX = 180
 /** Zoom's largest amount, in percent. lib/overlay_validation.py mirrors it. */
 export const BLUR_ZOOM_MAX = 200
 
+/** How far spin and zoom's centre may sit from the box, in boxes either way. lib/overlay_validation.py mirrors it. */
+export const BLUR_CENTER_LIMIT = 10
+
 /** The short edge of the design canvas the blur is measured on. */
 const DESIGN_SHORT_EDGE = 1080
 
@@ -105,13 +108,14 @@ export function blurTypeOf(item) {
 /**
  * A spin or zoom blur's centre, as fractions of the clip's box (a mask's `x`,
  * `y` convention): its `blurX`, `blurY` where each is a finite number, else
- * 0.5, the box's centre.
+ * 0.5, the box's centre; held to [-BLUR_CENTER_LIMIT, BLUR_CENTER_LIMIT].
  *
  * @param {{ blurX?: unknown, blurY?: unknown } | null | undefined} item
  * @returns {{ x: number, y: number }}
  */
 export function blurCenterOf(item) {
-  const f = (/** @type {unknown} */ v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0.5)
+  const f = (/** @type {unknown} */ v) => (typeof v === 'number' && Number.isFinite(v)
+    ? Math.min(BLUR_CENTER_LIMIT, Math.max(-BLUR_CENTER_LIMIT, v)) : 0.5)
   return { x: f(item?.blurX), y: f(item?.blurY) }
 }
 

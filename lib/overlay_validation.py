@@ -75,6 +75,9 @@ BLUR_LIMITS = {
     "spin": (180, "degrees of sweep"),
     "zoom": (200, "percent"),
 }
+# Spin and zoom's centre (``blurX``, ``blurY``), fractions of the box: up to ten
+# boxes away either side. Mirrors timeline-core's BLUR_CENTER_LIMIT.
+BLUR_CENTER_LIMIT = 10
 
 REQUIRED_STRING = ("src",)
 REQUIRED_NUMBER = ("start", "end")
@@ -199,6 +202,11 @@ def _visual_item_errors(item: dict, strict: bool = True) -> list[tuple[str, str]
     blur_max, blur_unit = BLUR_LIMITS[blur_type if type_ok and blur_type is not None else "uniform"]
     if blur is not None and not (_finite(blur) and 0 <= blur <= blur_max):
         err("blur", f"must be a number from 0 to {blur_max} ({blur_unit})")
+        # Filed under the type too: a save that changes only the type (a
+        # uniform 190 made a spin) changes the range the amount must meet, and
+        # the changed-fields rule reports only fields that changed.
+        if type_ok and blur_type is not None:
+            err("blurType", f"{blur_type} takes a blur from 0 to {blur_max} ({blur_unit}), not {blur!r}")
 
     blur_angle = item.get("blurAngle")
     if blur_angle is not None and not _finite(blur_angle):
@@ -207,8 +215,9 @@ def _visual_item_errors(item: dict, strict: bool = True) -> list[tuple[str, str]
     # Spin and zoom's centre: a mask's x and y convention (fractions of the box).
     for field in ("blurX", "blurY"):
         v = item.get(field)
-        if v is not None and not _finite(v):
-            err(field, "must be a finite number (a fraction of the clip's box, 0.5 = its centre)")
+        if v is not None and not (_finite(v) and -BLUR_CENTER_LIMIT <= v <= BLUR_CENTER_LIMIT):
+            err(field, f"must be a number from -{BLUR_CENTER_LIMIT} to {BLUR_CENTER_LIMIT}"
+                " (a fraction of the clip's box, 0.5 = its centre)")
 
     mask = item.get("mask")
     if mask is not None:
