@@ -157,3 +157,45 @@ describe('VideoEditor — ripple-delete densifies caption lanes (FIX 3)', () => 
     expect(adapter.saveCalls.length).toBe(1)
   })
 })
+
+describe('VideoEditor — ripple-delete never moves an untouched audio clip to another row', () => {
+  it('Shift+Delete on a base clip shifts the audio after it, every clip staying on the row it was drawn on', async () => {
+    const adapter = makeFakeAdapter()
+    // Lane-less voice X[0,3], Z[2.5,5], Y[4,6]: X and Y share a row, Z overlaps X so it has its own. The ripple of
+    // clip-A (0-2) moves Z and Y 2 s left; packed afresh, Y would land on a third row.
+    const initial = makeVideoProject({
+      tracks: [{
+        id: 'trk-0',
+        items: [
+          { id: 'clip-A', type: 'video', src: 'a.mp4', start: 0, end: 2, inPoint: 0, outPoint: 2 },
+          { id: 'clip-B', type: 'video', src: 'a.mp4', start: 2, end: 8, inPoint: 2, outPoint: 8 },
+        ],
+      }],
+      audio: {
+        tracks: [
+          { id: 'X', type: 'voiceover', src: 'x.wav', start: 0, end: 3 },
+          { id: 'Z', type: 'voiceover', src: 'z.wav', start: 2.5, end: 5 },
+          { id: 'Y', type: 'voiceover', src: 'y.wav', start: 4, end: 6 },
+        ],
+      },
+    } as unknown as Partial<Project>)
+
+    onTestFinished(installCanvasHarness())
+    const { container } = render(
+      <VideoEditor project={initial} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />,
+    )
+    selectCanvasItem(container, initial, { id: 'clip-A' })
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', shiftKey: true }))
+    })
+    await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThan(0))
+
+    const saved = adapter.saveCalls[0].project
+    const lane = (id: string) => saved.audio!.tracks.find(t => t.id === id)!
+    expect(lane('Z')).toMatchObject({ start: 0.5, end: 3 })
+    expect(lane('Y')).toMatchObject({ start: 2, end: 4 })
+    expect(lane('Y').lane).toBe(lane('X').lane)
+    expect(lane('Z').lane).not.toBe(lane('X').lane)
+  })
+})
+

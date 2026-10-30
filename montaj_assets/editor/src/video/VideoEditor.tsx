@@ -1806,7 +1806,7 @@ function ReviewSurface<P extends Project>({
     // owns it. Folded into the same transient gesture, so the speed change and
     // the gap it closed undo as one step.
     if (clipDurationChangedRef.current && rippleMode) {
-      sync.mutateTransient(p => collapseGaps(p))
+      sync.mutateTransient(p => collapseGaps(stampAudioLanes(p)))
     }
     clipDurationChangedRef.current = false
     void sync.commit()
@@ -1966,8 +1966,11 @@ function ReviewSurface<P extends Project>({
     setEditFocusId(prev => nextEditFocus(prev, id))
   }, [handleSelectCaption])
 
+  // Edits that move audio clips start from the project with its drawn rows
+  // written down (`stampAudioLanes`), so no clip the edit did not touch moves
+  // to another row: re-packing after the edit can swap them.
   function handleSplit(at?: number) {
-    const base = syncProjectRef.current
+    const base = stampAudioLanes(syncProjectRef.current)
     const time = at ?? clock.get()
     // With nothing selected, split ONLY the main video track (tracks[0]) at
     // `time` — NOT every track under it. Passing `null` to `splitAtTime`
@@ -2088,7 +2091,7 @@ function ReviewSurface<P extends Project>({
     const next = !rippleMode
     setRippleMode(next)
     if (next) {
-      const base = syncProjectRef.current
+      const base = stampAudioLanes(syncProjectRef.current)
       const collapsed = collapseGaps(base)
       if (collapsed !== base) void sync.mutate(() => collapsed as P)
     }
@@ -2101,7 +2104,7 @@ function ReviewSurface<P extends Project>({
   // handleRippleToggle above).
   function handleRippleDelete() {
     if (!primarySelectedId) return
-    const base = syncProjectRef.current
+    const base = stampAudioLanes(syncProjectRef.current)
     let updated = rippleDelete(base, primarySelectedId)
     if (updated === base) return
     // `rippleDelete` reaches `applyCutToCaptions`, which DROPS caption segments

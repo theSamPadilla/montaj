@@ -41,7 +41,7 @@ import { createPortal } from 'react-dom'
 import { NumberField, stepValue } from '../ui'
 import type { AudioPolishAnalysis, EditorAdapter, Project } from '../types'
 import type { VisualItem, VisualTrack } from '../schema'
-import { normalizeTracks } from './timeline/timeline-model'
+import { normalizeTracks, stampAudioLanes } from './timeline/timeline-model'
 import {
   buildDraft,
   captionWordsInSourceTime,
@@ -291,9 +291,12 @@ export default function AudioPolishModal<P extends Project = Project>({
   onClose,
   mode = 'dark',
 }: AudioPolishModalProps<P>) {
-  // The polish baseline: the project as it was when the modal opened. Every
-  // draft is rebuilt from this, never from the previous draft.
-  const baselineRef = useRef<P>(project)
+  // The polish baseline: the project as it was when the modal opened, with its
+  // drawn audio rows written down (`stampAudioLanes`), so cutting a clip never
+  // moves another to a different row. Every draft is rebuilt from this, never
+  // from the previous draft.
+  const baselineRef = useRef<P | null>(null)
+  if (baselineRef.current === null) baselineRef.current = stampAudioLanes(project)
   const baseline = baselineRef.current
 
   const [pieces, setPieces] = useState<Record<Piece, boolean>>(DEFAULT_PIECES)

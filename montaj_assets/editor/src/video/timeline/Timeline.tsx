@@ -16,7 +16,7 @@ import { computeTimelineLayout, timelinePalette, type TimelineLayout, type Timel
 import { DEFAULT_FADE_CURVE, fadeCurveIconPoints, type FadeCurve } from './canvas/fade-curve'
 import { VISUAL_EDGE_TOLERANCE_PX } from './canvas/hit-test'
 import { keyframeUnionTimes } from './canvas/keyframe-strip'
-import { mapTrackItems, normalizeTracks, updateAudioTrack } from './timeline-model'
+import { mapTrackItems, normalizeTracks, stampAudioLanes, updateAudioTrack } from './timeline-model'
 import { deleteSelection, toggleSelection } from './multiSelectOps'
 import { removeMarkers } from './markers'
 import { computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, trackItems } from './timeline-model'
@@ -355,6 +355,13 @@ const EASING_LABELS: Record<EasingName, string> = {
 
 export default function Timeline({ project, clock, onProjectChange, onOverlayEdit, selectedIds = [], onSelectIds, onInspectClip, onInspectAudio, onEditCaption, rippleMode = false, previewAxis = false, onHoverScrub, onScrubDrag, resolveFilePath, getWaveformPeaks, getFilmstrip, regenEnabled, isClipQueued, renderSubcutRegen, modalOpen = false, onOpenGoToTime, actionsRef, mode = 'dark', onImportFilesToTimeline, pendingDrops, pins, onPinClick }: TimelineProps) {
 
+  // What the rail and keymap edits (delete, lane mute, volume, magnet, fade
+  // shape) start from: the project with its drawn audio rows written down
+  // (`stampAudioLanes`), so an edit never moves an untouched clip to another
+  // row by re-packing around what it changed. The same object when every
+  // track already has a lane.
+  const editBase = useMemo(() => stampAudioLanes(project), [project])
+
   // Click/shift-click handler — additive selection on shift or meta (cmd/ctrl).
   // Under D1, captions share `selectedIds` with everything else, so there is
   // no separate caption-clearing step here anymore: a plain (non-additive)
@@ -456,7 +463,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
    */
   function handleSetLaneVolume(trackIds: string[], volume: number, commit: boolean) {
     if (!onProjectChange) return
-    let next = project
+    let next = editBase
     for (const id of trackIds) next = updateAudioTrack(next, id, { volume })
     onProjectChange(next)
     if (commit) onOverlayEdit?.(next)
@@ -464,7 +471,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
 
   function handleSetLaneMuted(trackIds: string[], muted: boolean) {
     if (!onProjectChange) return
-    let next = project
+    let next = editBase
     for (const id of trackIds) next = updateAudioTrack(next, id, { muted })
     onProjectChange(next)
     onOverlayEdit?.(next)
@@ -480,7 +487,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
    */
   function handleSetLaneMagnet(trackIds: string[], magnetic: boolean) {
     if (!onProjectChange) return
-    let next = project
+    let next = editBase
     for (const id of trackIds) next = updateAudioTrack(next, id, { magnetic })
     if (magnetic) next = reflowMagneticLanes(next)
     onProjectChange(next)
@@ -506,7 +513,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
   function handleSetFadeCurve(trackId: string, side: 'in' | 'out', curve: FadeCurve) {
     setFadeCurveMenu(null)
     if (!onProjectChange) return
-    const next = updateAudioTrack(project, trackId, side === 'in' ? { fadeInCurve: curve } : { fadeOutCurve: curve })
+    const next = updateAudioTrack(editBase, trackId, side === 'in' ? { fadeInCurve: curve } : { fadeOutCurve: curve })
     onProjectChange(next)
     onOverlayEdit?.(next)
   }
@@ -877,7 +884,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
       guard: () => selectedIds.length > 0 && !!rootRef.current?.contains(document.activeElement),
       action: () => {
         if (!onProjectChange) return
-        let updated = deleteSelection(project, selectedIds)
+        let updated = deleteSelection(editBase, selectedIds)
         // `deleteSelection` only knows tracks/audio vocabulary (see
         // multiSelectOps.ts) — captions never lived in project.tracks, so a
         // selected caption segment needs its own strip here, folded into the
