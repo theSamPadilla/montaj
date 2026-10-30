@@ -197,6 +197,26 @@ function RailCell({ height, accent, icon, label, controls = [], dimmed, settings
     // arrangement (see `QUIET_ROW_MIN_COLUMN_PX` / `quietColumnFits`).
     const inline = height < QUIET_ROW_MIN_COLUMN_PX
     const wrap = !inline && !quietColumnFits(height, all.length)
+    // A short row whose icon and controls would not fit side by side in the
+    // gutter lays them out as a two-column grid instead (36 x 36 for three
+    // controls), so nothing is clipped.
+    if (inline && QUIET_ICON_PX + 4 + all.length * (QUIET_CONTROL_PX + 4) > GUTTER_WIDTH_PX) {
+      return (
+        <div
+          data-rail-cell="quiet"
+          data-rail-layout="grid"
+          className={`grid grid-cols-2 gap-1 select-none place-content-center place-items-center overflow-hidden transition-opacity ${dimmed ? 'opacity-40' : ''}`}
+          style={{ height }}
+        >
+          <Tooltip label={label}>
+            <span aria-label={label} className="flex h-4 w-4 items-center justify-center" style={{ color: QUIET_ICON_COLOR }}>
+              {icon}
+            </span>
+          </Tooltip>
+          {all}
+        </div>
+      )
+    }
     return (
       <div
         data-rail-cell="quiet"
@@ -737,6 +757,7 @@ export default function TrackGutter({
           hidden={menuHidden}
           hideLabel={menu.kind === 'audio' ? (menuHidden ? 'Unmute track' : 'Mute track') : undefined}
           removeDisabled={!menuCanRemove}
+          canRemove={menu.kind === 'visual' ? !!onRemoveTrack : !!onRemoveAudioLane}
           onClose={() => setMenu(null)}
           onHide={() => {
             if (!menuCanHide) return

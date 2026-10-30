@@ -138,4 +138,13 @@ describe('TrackGutter right-click menu', () => {
     fireEvent.contextMenu(f.cells()[0])
     expect(screen.getByRole('menu').style.background).toContain('--editor-surface')
   })
+
+  it('a read-only gutter (no remove callbacks) offers no Remove', () => {
+    const utils = render(<TrackGutter project={project()} mode="dark" onToggleTrackEnabled={vi.fn()} onSetLaneMuted={vi.fn()} />)
+    const cell = utils.container.querySelectorAll('[data-rail-cell]')[0] as HTMLElement
+    fireEvent.contextMenu(cell)
+    expect(screen.getByRole('menuitem', { name: /Hide track/ })).toBeTruthy()
+    expect(screen.queryByRole('menuitem', { name: 'Remove track' })).toBeNull()
+    expect(screen.queryByRole('separator')).toBeNull()
+  })
 })

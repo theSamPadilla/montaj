@@ -55,4 +55,30 @@ describe('ConfirmDialog', () => {
     setup({ cancelLabel: 'Keep' })
     expect(screen.getByRole('button', { name: 'Keep' })).toBeTruthy()
   })
+
+  it('keeps every key except Tab away from listeners behind it', () => {
+    const seen = vi.fn()
+    document.addEventListener('keydown', seen)
+    setup()
+    fireEvent.keyDown(document.body, { key: 'Delete' })
+    fireEvent.keyDown(document.body, { key: ' ' })
+    expect(seen).not.toHaveBeenCalled()
+    fireEvent.keyDown(document.body, { key: 'Tab' })
+    expect(seen).toHaveBeenCalledTimes(1)
+    document.removeEventListener('keydown', seen)
+  })
+
+  it('a scrim click cancels without reaching the page behind', () => {
+    const behind = vi.fn()
+    const host = document.createElement('div')
+    host.addEventListener('click', behind)
+    document.body.appendChild(host)
+    const f = setup()
+    const scrim = screen.getByRole('dialog').parentElement!
+    expect(scrim.parentElement).toBe(document.body)
+    fireEvent.click(scrim)
+    expect(f.onCancel).toHaveBeenCalledTimes(1)
+    expect(behind).not.toHaveBeenCalled()
+    host.remove()
+  })
 })

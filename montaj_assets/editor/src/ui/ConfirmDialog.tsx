@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { Trash2 } from 'lucide-react'
 
 // In-page confirm. No native dialogs.
@@ -27,9 +28,23 @@ export default function ConfirmDialog({
     if (open) cancelRef.current?.focus()
   }, [open])
 
+  // Hand focus back to the opener when the dialog closes.
   useEffect(() => {
     if (!open) return
+    const opener = document.activeElement as HTMLElement | null
+    return () => {
+      if (opener && opener !== document.body && opener.isConnected) opener.focus({ preventScroll: true })
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    // Capture phase on window: every key except Tab stays inside the dialog,
+    // so Delete or Space never reaches the editor's keymap behind the scrim.
     const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Tab') return
+      e.stopPropagation()
+      e.stopImmediatePropagation()
       if (e.key === 'Escape') {
         e.preventDefault()
         live.current.onCancel()
@@ -38,19 +53,21 @@ export default function ConfirmDialog({
         live.current.onConfirm()
       }
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
   }, [open])
 
   if (!open) return null
 
   const confirmBg = danger ? (dark ? '#F16890' : '#BE185D') : 'var(--editor-accent)'
   const confirmFg = danger ? (dark ? '#2A0614' : '#fff') : '#fff'
-  return (
+  if (typeof document === 'undefined') return null
+  return createPortal(
     <div
       className="fixed inset-0 z-[70] flex items-center justify-center"
       style={{ background: dark ? 'rgba(2,7,16,0.55)' : 'rgba(15,23,42,0.35)' }}
-      onClick={onCancel}
+      onClick={(e) => { e.stopPropagation(); onCancel() }}
+      onMouseDown={(e) => e.stopPropagation()}
     >
       <div
         role="dialog"
@@ -99,6 +116,7 @@ export default function ConfirmDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

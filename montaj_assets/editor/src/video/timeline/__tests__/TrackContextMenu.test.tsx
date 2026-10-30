@@ -51,4 +51,52 @@ describe('TrackContextMenu', () => {
     fireEvent.mouseDown(document.body)
     expect(f.onClose).toHaveBeenCalledTimes(2)
   })
+
+  it('closes on scroll, wheel and resize, and removes the listeners after', () => {
+    const f = setup()
+    fireEvent.scroll(window)
+    fireEvent.wheel(window)
+    fireEvent(window, new Event('resize'))
+    expect(f.onClose).toHaveBeenCalledTimes(3)
+    cleanup()
+    fireEvent.scroll(window)
+    expect(f.onClose).toHaveBeenCalledTimes(3)
+  })
+
+  it('an element blur does not close it (a click moves focus)', () => {
+    const f = setup()
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    input.focus()
+    input.blur()
+    expect(f.onClose).not.toHaveBeenCalled()
+    input.remove()
+  })
+
+  it('Escape does not reach other keydown listeners', () => {
+    const seen = vi.fn()
+    document.addEventListener('keydown', seen)
+    setup()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    document.removeEventListener('keydown', seen)
+    expect(seen).not.toHaveBeenCalled()
+  })
+
+  it('renders in document.body, and clicks inside do not bubble out', () => {
+    const outer = vi.fn()
+    const host = document.createElement('div')
+    host.addEventListener('click', outer)
+    document.body.appendChild(host)
+    setup()
+    expect(screen.getByRole('menu').parentElement).toBe(document.body)
+    fireEvent.click(screen.getByRole('menu'))
+    expect(outer).not.toHaveBeenCalled()
+    host.remove()
+  })
+
+  it('omits Remove and the separator when canRemove is false', () => {
+    setup({ canRemove: false })
+    expect(screen.getAllByRole('menuitem').map(e => e.textContent)).toEqual(['Hide track'])
+    expect(screen.queryByRole('separator')).toBeNull()
+  })
 })

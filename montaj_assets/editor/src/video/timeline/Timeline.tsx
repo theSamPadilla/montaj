@@ -1106,8 +1106,8 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
               onSetLaneVolume={handleSetLaneVolume}
               onSetLaneMuted={handleSetLaneMuted}
               onSetLaneMagnet={handleSetLaneMagnet}
-              onRemoveTrack={handleRemoveTrack}
-              onRemoveAudioLane={handleRemoveAudioLane}
+              onRemoveTrack={onProjectChange ? handleRemoveTrack : undefined}
+              onRemoveAudioLane={onProjectChange ? handleRemoveAudioLane : undefined}
             />
             {/* `relative` makes this column the positioning context for the
                 per-clip HTML chrome below — see `CanvasClipChrome`. It holds

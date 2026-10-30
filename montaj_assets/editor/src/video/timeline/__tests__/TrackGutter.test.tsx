@@ -452,6 +452,21 @@ describe('TrackGutter — timeline look B (quiet rail)', () => {
     expect(audioCell.querySelector('.flex-wrap')).toBeTruthy()
   })
 
+  it('a short video row with skip, mute and gear lays icon and controls out as a 2-column grid', () => {
+    const p = project({ tracks: [[video('c0')], [video('c1')]] } as Partial<Project>)
+    const base = computeTimelineLayout(p)
+    const layout = { ...base, rows: base.rows.map(r => ({ ...r, height: 48 })) }
+    const { container } = render(<TrackGutter project={p} layout={layout} mode="dark" {...allWired} />)
+    const grids = [...container.querySelectorAll('[data-rail-layout="grid"]')] as HTMLElement[]
+    expect(grids.length).toBeGreaterThan(0)
+    const g = grids[0]
+    expect(g.className).toMatch(/grid-cols-2/)
+    expect(parseInt(g.style.height, 10)).toBeLessThan(50)
+    // icon + three controls, none dropped
+    expect(g.querySelector('[aria-label]')).toBeTruthy()
+    expect(g.querySelectorAll('button').length).toBe(3)
+  })
+
   it('light keeps the boxed cell with its accent bar', () => {
     const { container } = render(<TrackGutter project={project()} mode="light" {...allWired} />)
     const cells = [...container.querySelectorAll('[data-rail-cell]')] as HTMLElement[]

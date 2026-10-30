@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Eye, EyeOff, Trash2 } from 'lucide-react'
 
 // Right-click menu on a track header: hide/show, then remove.
@@ -12,6 +13,8 @@ export interface TrackContextMenuProps {
   onHide: () => void
   onRemove: () => void
   removeDisabled?: boolean
+  /** False → no Remove entry at all (a read-only timeline). Default true. */
+  canRemove?: boolean
   hidden?: boolean
   /** Overrides the hide item's text (audio lanes say Mute/Unmute). */
   hideLabel?: string
@@ -19,7 +22,7 @@ export interface TrackContextMenuProps {
 }
 
 export default function TrackContextMenu({
-  x, y, onClose, onHide, onRemove, removeDisabled, hidden, hideLabel, mode = 'dark',
+  x, y, onClose, onHide, onRemove, removeDisabled, canRemove = true, hidden, hideLabel, mode = 'dark',
 }: TrackContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState({ left: x, top: y })
@@ -37,16 +40,45 @@ export default function TrackContextMenu({
     })
   }, [x, y])
 
+  // Hand focus back to whatever had it when the menu opened.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') live.current() }
+    const opener = document.activeElement as HTMLElement | null
+    return () => {
+      if (opener && opener !== document.body && opener.isConnected) opener.focus({ preventScroll: true })
+    }
+  }, [])
+
+  useEffect(() => {
+    // Capture phase on window, so the editor's own key handling never sees
+    // the Escape that closes the menu.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopPropagation()
+      e.stopImmediatePropagation()
+      live.current()
+    }
     const onDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) live.current()
     }
-    window.addEventListener('keydown', onKey)
-    window.addEventListener('mousedown', onDown)
+    // Anything that moves the page out from under the menu closes it.
+    const close = () => live.current()
+    // Only the window losing focus; an element blur (a click on a menu item
+    // moves focus) must not close the menu before the click lands.
+    const onBlur = (e: FocusEvent) => { if (e.target === window) live.current() }
+    window.addEventListener('keydown', onKey, true)
+    window.addEventListener('mousedown', onDown, true)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('wheel', close, true)
+    window.addEventListener('resize', close, true)
+    window.addEventListener('blur', onBlur, true)
     return () => {
-      window.removeEventListener('keydown', onKey)
-      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('mousedown', onDown, true)
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('wheel', close, true)
+      window.removeEventListener('resize', close, true)
+      window.removeEventListener('blur', onBlur, true)
     }
   }, [])
 
@@ -73,11 +105,15 @@ export default function TrackContextMenu({
     </button>
   )
 
-  return (
+  if (typeof document === 'undefined') return null
+
+  return createPortal(
     <div
       ref={ref}
       role="menu"
       onContextMenu={(e) => e.preventDefault()}
+      onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
       style={{
         position: 'fixed', left: pos.left, top: pos.top, zIndex: 60, minWidth: 160, padding: 5,
         borderRadius: 11,
@@ -87,8 +123,13 @@ export default function TrackContextMenu({
       }}
     >
       {item(hideLabel ?? (hidden ? 'Show track' : 'Hide track'), hidden ? <Eye size={14} /> : <EyeOff size={14} />, onHide)}
-      <div role="separator" style={{ height: 1, margin: '4px 2px', background: dark ? '#2B3E52' : 'var(--editor-border)' }} />
-      {item('Remove track', <Trash2 size={14} />, onRemove, { disabled: removeDisabled, color: dark ? '#F7A3BD' : '#BE185D' })}
-    </div>
+      {canRemove && (
+        <>
+          <div role="separator" style={{ height: 1, margin: '4px 2px', background: dark ? '#2B3E52' : 'var(--editor-border)' }} />
+          {item('Remove track', <Trash2 size={14} />, onRemove, { disabled: removeDisabled, color: dark ? '#F7A3BD' : '#BE185D' })}
+        </>
+      )}
+    </div>,
+    document.body,
   )
 }
