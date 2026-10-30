@@ -55,7 +55,7 @@ import { pMap } from './p-map.js'
 import {
   geometryFor, geometryAt, toRotatedPixelBox, toPixelBox, compileTrackExprInfo,
   transitionProgress, hasCropKeyframes, imageFitFor, isFullFrameCrop, CROP_KEYFRAME_PROPS, blendModeOf,
-  blurSigmaPx, blurTypeOf,
+  blurOf, blurSigmaPx, blurTypeOf,
 } from '@bycrux/timeline-core'
 
 // Stall limit for an encode: silence (no stderr progress) this long kills it.
@@ -1288,11 +1288,26 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   // image's own alpha put back, then RGBA again, so every fit still ends in
   // `format=rgba`. On an animated box it runs at the peak box with a
   // per-frame sigma. '' (and every string below unchanged) without one.
+  // A linear blur's picture: the box itself after a cover or fill fit (and a
+  // keyframed crop's chain), anything the box holds after a contain fit. A
+  // spin or zoom's plan depends on the picture's size (its taps, and so what
+  // each pass keeps at the picture's edges), so a contain fit gets it from
+  // the image's own size (one cached probe), as the preview knows it.
+  let picture = { w: fitW, h: fitH, exact: fit !== 'contain' || Boolean(cropAnim?.chain) }
+  const radialBlur = blurOf(item) > 0 && (blurTypeOf(item) === 'spin' || blurTypeOf(item) === 'zoom')
+  if (radialBlur && !picture.exact) {
+    const size = probeImageDisplaySize(item.src)
+    if (size) {
+      const c = isFiniteCrop(stillCrop) && stillCrop.w > 0 && stillCrop.h > 0 && !isFullFrameCrop(stillCrop) ? stillCrop : null
+      const iw = c ? Math.round(size.width * c.w) : size.width
+      const ih = c ? Math.round(size.height * c.h) : size.height
+      const f = decreaseFitSize(iw, ih, fitW, fitH)
+      picture = { w: f.width, h: f.height, exact: true }
+    }
+  }
   const blurCore = blurFilterStep(item, {
     vw, vh, format: IMAGE_BLUR_FORMAT, alpha: true, name: 'bl' + idx,
-    // A linear blur's picture: the box itself after a cover or fill fit (and a
-    // keyframed crop's chain), anything the box holds after a contain fit.
-    picture: { w: fitW, h: fitH, exact: fit !== 'contain' || Boolean(cropAnim?.chain) },
+    picture,
     // Spin and zoom's centre is a fraction of this box.
     box: { w: fitW, h: fitH },
     animated: anim?.needsAnimatedChain

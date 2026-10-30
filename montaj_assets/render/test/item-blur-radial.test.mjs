@@ -20,9 +20,9 @@
 
 // Cases:
 //   - the image format (gbrap16le, alpha put back), the picture's size known;
-//   - a contain-fitted picture in a taller box through the real image builder
-//     (letterboxed: the size is not known to the graph, so it is planned on
-//     the box and placed by perspective's W and H);
+//   - a contain-fitted picture in a taller box (letterboxed) through the real
+//     image builder, which probes the image's size; and through the step with
+//     the size unknown (planned on the box, placed by perspective's W and H);
 //   - the video format (yuva444p16le, opaque);
 //   - holes in the alpha (transparent white under them, which must not leak).
 
@@ -142,11 +142,12 @@ test('spin and zoom: the export graph meets radialBlurReference (picture size kn
   }
 })
 
-test('spin and zoom: a letterboxed contain picture through the image builder meets the reference planned on its box', (t) => {
+test('spin and zoom: a letterboxed contain picture meets the reference, its size probed by the builder or unknown', (t) => {
   // A 96x64 picture contain-fitted into a 96x160 box at scale 1: no
-  // resampling, 48 transparent rows above and below. The graph does not know
-  // the picture's size, so it plans on the box (the reference takes that plan)
-  // and places the centre from perspective's own W and H.
+  // resampling, 48 transparent rows above and below. Through the real image
+  // builder, which probes the image's size, so the plan is the picture's own.
+  // And through the step with the size unknown: planned on the box (the
+  // reference takes that plan) and placed by perspective's W and H.
   const BW = 96
   const BH = 160
   const dir = mkdtempSync(join(tmpdir(), 'radial-'))
@@ -162,26 +163,43 @@ test('spin and zoom: a letterboxed contain picture through the image builder mee
       assert.equal(top, 48)
       const alphaOf = run(src, PW, PH, `[0:v]format=${IMAGE_BLUR_FORMAT},format=rgba[o]`)
       for (const [type, amount, x, y] of [['spin', 30, 0.5, 0.5], ['spin', 60, 0.2, 0.25], ['zoom', 40, 0.5, 0.4], ['zoom', 100, 0.9, 0.1]]) {
-        const item = { type: 'image', src: png, start: 0, end: 1, fit: 'contain', scale: 1, offsetX: 0, offsetY: 0, opacity: 1,
-          blur: amount, blurType: type, blurX: x, blurY: y }
-        const chain = buildImageItemFilterParts(item, BW, BH, 0, '[canvas]', 1, 0).filterParts[0]
-        assert.ok(chain.startsWith('[0:v]') && chain.endsWith('[img0]'), chain.slice(0, 80))
-        assert.match(chain, /perspective=x0=[^:]*W/)
-        const out = run(src, PW, PH, `${chain.slice(0, -'[img0]'.length)},format=rgba[o]`)
-        assert.equal(out.length, BW * BH * 4)
-        const plan = radialBlurPlan({ type, amount, center: [x * BW, y * BH], rect: { w: BW, h: BH } })
         const center = radialCenterInPicture({ x, y }, rect, PW, PH)
-        const ref = radialBlurReference({ data: src, width: PW, height: PH }, { type, plan, center })
-        const r = compare(out, BW, top, ref, src, alphaOf)
-        const label = `letterbox, ${type} ${amount} at (${x}, ${y})${holes ? ', holes' : ''}`
-        t.diagnostic(`${label}: worst ${r.worst}, mean ${r.mean.toFixed(2)}; ${r.thin} thin px within ${r.thinWorst}`)
-        assert.ok(r.thinWorst <= 40, `${label}: thinly covered pixels ${r.thinWorst} codes off`)
-        assert.equal(r.alpha, 0, `${label}: the alpha is the clip's own`)
-        assert.ok(r.worst <= 6, `${label}: worst ${r.worst} codes`)
-        assert.ok(r.mean < 1, `${label}: mean ${r.mean.toFixed(2)} codes`)
-        // The letterbox stays transparent.
-        for (const row of [0, top - 1, top + PH, BH - 1]) {
-          for (let i = 0; i < BW; i++) assert.equal(out[(row * BW + i) * 4 + 3], 0, `${label}: row ${row} is transparent`)
+        for (const known of [true, false]) {
+          let out
+          let plan
+          let oy
+          if (known) {
+            const item = { type: 'image', src: png, start: 0, end: 1, fit: 'contain', scale: 1, offsetX: 0, offsetY: 0, opacity: 1,
+              blur: amount, blurType: type, blurX: x, blurY: y }
+            const chain = buildImageItemFilterParts(item, BW, BH, 0, '[canvas]', 1, 0).filterParts[0]
+            assert.ok(chain.startsWith('[0:v]') && chain.endsWith('[img0]'), chain.slice(0, 80))
+            assert.doesNotMatch(chain, /perspective=x0=[^:]*W/, 'the probed size: numbers, not W and H')
+            out = run(src, PW, PH, `${chain.slice(0, -'[img0]'.length)},format=rgba[o]`)
+            assert.equal(out.length, BW * BH * 4)
+            plan = radialBlurPlan({ type, amount, center, rect: { w: PW, h: PH } })
+            oy = top
+          } else {
+            const step = blurFilterStep({ blur: amount, blurType: type, blurX: x, blurY: y }, { vw: BW, vh: BH,
+              format: IMAGE_BLUR_FORMAT, alpha: true, name: 'q', picture: { w: BW, h: BH }, box: { w: BW, h: BH } })
+            assert.match(step, /perspective=x0=[^:]*W/)
+            out = run(src, PW, PH, `[0:v]${step},format=rgba[o]`)
+            plan = radialBlurPlan({ type, amount, center: [x * BW, y * BH], rect: { w: BW, h: BH } })
+            oy = 0
+          }
+          const ref = radialBlurReference({ data: src, width: PW, height: PH }, { type, plan, center })
+          const r = compare(out, BW === PW ? PW : BW, oy, ref, src, alphaOf)
+          const label = `letterbox (${known ? 'size probed' : 'size unknown'}), ${type} ${amount} at (${x}, ${y})${holes ? ', holes' : ''}`
+          t.diagnostic(`${label}: worst ${r.worst}, mean ${r.mean.toFixed(2)}; ${r.thin} thin px within ${r.thinWorst}`)
+          assert.equal(r.alpha, 0, `${label}: the alpha is the clip's own`)
+          assert.ok(r.worst <= 6, `${label}: worst ${r.worst} codes`)
+          assert.ok(r.mean < 1, `${label}: mean ${r.mean.toFixed(2)} codes`)
+          assert.ok(r.thinWorst <= 40, `${label}: thinly covered pixels ${r.thinWorst} codes off`)
+          if (known) {
+            // The letterbox stays transparent.
+            for (const row of [0, top - 1, top + PH, BH - 1]) {
+              for (let i = 0; i < BW; i++) assert.equal(out[(row * BW + i) * 4 + 3], 0, `${label}: row ${row} is transparent`)
+            }
+          }
         }
       }
     }
