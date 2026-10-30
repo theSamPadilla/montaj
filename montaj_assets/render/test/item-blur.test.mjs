@@ -96,9 +96,9 @@ test('linear at 0 and 90: gblur on its own axis, the margin along it only, no tu
 test('linear at an angle: turned by -angle into a larger transparent canvas, blurred along x, turned back onto its own size', () => {
   // A 1080x1920 picture at 30 degrees spans 1895 x 2203 turned: +2 slack, +121 margin across.
   const step = blurFilterStep(lin(30), { ...O, format: 'yuva444p16le', picture: { w: 1080, h: 1920, exact: true } })
-  assert.equal(step, 'format=yuva444p16le,rotate=a=-0.523598776:ow=iw+1062:oh=ih+288:c=black@0,'
+  assert.equal(step, 'format=yuva444p16le,pad=w=iw+4:h=ih+4:x=2:y=2:color=black@0,rotate=a=-0.523598776:ow=iw+1062:oh=ih+288:c=black@0,'
     + 'gblur=sigma=40.0000:sigmaV=0:steps=3,rotate=a=0.523598776:ow=iw-1062:oh=ih-288:c=black@0,'
-    + 'unpremultiply=inplace=1,format=yuv444p16le')
+    + 'unpremultiply=inplace=1,crop=w=iw-4:h=ih-4:x=2:y=2,format=yuv444p16le')
   // -30 is 150: turned the other way.
   assert.match(blurFilterStep(lin(-30), { ...O, format: 'yuva444p16le' }), /rotate=a=-2\.617993878:.*rotate=a=2\.617993878:/)
 })
@@ -112,7 +112,7 @@ test('linear: a picture only known by its box gets the canvas any picture in it 
 
 test('linear: an image format rotate cannot take blurs in yuva444p16le, alpha put back the same way', () => {
   const step = blurFilterStep(lin(30), { ...O, format: IMAGE_BLUR_FORMAT, alpha: true, picture: { w: 1080, h: 1920, exact: true } })
-  assert.ok(step.startsWith('format=yuva444p16le,split=2[bl3a][bl3b];[bl3b]rotate=a=-0.523598776:'), step)
+  assert.ok(step.startsWith('format=yuva444p16le,split=2[bl3a][bl3b];[bl3b]pad=w=iw+4:h=ih+4:x=2:y=2:color=black@0,rotate=a=-0.523598776:'), step)
   assert.ok(step.endsWith('[bl3c][bl3a]mergeplanes=map0s=0:map0p=0:map1s=0:map1p=1:map2s=0:map2p=2:map3s=1:map3p=3:format=yuva444p16le'), step)
   // At 0 there is no turn, so the image keeps its own format.
   assert.ok(blurFilterStep(lin(0), { ...O, format: IMAGE_BLUR_FORMAT, alpha: true }).startsWith('format=gbrap16le,split=2'))
@@ -424,7 +424,8 @@ test('real ffmpeg: a linear blur streaks along its angle, clockwise from x, and 
       let m = 0, mx = 0, my = 0
       const w = []
       for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
-        const v = Math.max(0, out.stdout[y * S + x] - 128)
+        // Past the grey's own code and its one code of 16-bit rounding.
+        const v = Math.max(0, out.stdout[y * S + x] - 129)
         if (v) { w.push([x, y, v]); m += v; mx += v * x; my += v * y }
       }
       mx /= m; my /= m

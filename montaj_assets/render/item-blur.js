@@ -63,9 +63,9 @@
 // LINEAR (`blurType: 'linear'`, timeline-core blurAngleOf): a Gaussian along
 // one direction only. gblur blurs along x alone with `sigmaV=0` (measured on
 // 8.1: no vertical change at all), so the picture is turned by -angle
-// (`rotate`, into a larger canvas filled transparent), blurred along x with
-// the same transparent margin, turned back by +angle onto its own size, and
-// then unpremultiplied. Every step is linear on premultiplied pixels (rotate
+// (`rotate`, into a larger canvas filled transparent, after two pixels of
+// transparent pad), blurred along x with the same transparent margin, turned
+// back by +angle onto its own size, and then unpremultiplied. Every step is linear on premultiplied pixels (rotate
 // takes any alpha mode, so ffmpeg premultiplies once at the head, as above),
 // so the division still gives the average over the picture's own pixels. The
 // canvas is sized from the picture's size where the caller knows it (o.picture
@@ -279,8 +279,16 @@ function linearBlurStep(item, sigma, { vw, vh, format, alpha, name, unitX, unitY
   const dh = Math.max(0, Math.ceil(growH / 2)) + 2
   const ang = r.toFixed(9)
   const turnFormat = ROTATE_FORMATS.has(format) ? format : LINEAR_TURN_FORMAT
-  return wrapCore(`rotate=a=-${ang}:ow=iw+${2 * dw}:oh=ih+${2 * dh}:c=black@0,${blur},`
-    + `rotate=a=${ang}:ow=iw-${2 * dw}:oh=ih-${2 * dh}:c=black@0,unpremultiply=inplace=1`, turnFormat, alpha, name)
+  // Two pixels of transparent pad first. rotate's bilinear read clamps the
+  // pixel index but not the fraction, so a sample within a pixel left of or
+  // above the first one reads the first TWO pixels, and one past the last
+  // row or column repeats it (vf_rotate.c, measured on 8.1): the picture's
+  // edge moved, its edge rows 6 to 7 codes (mean) off a true directional
+  // blur. Two transparent pixels on every side make both edges fade into
+  // transparency alike: 3 at the top and left, 2 at the bottom and right.
+  return wrapCore(`pad=w=iw+4:h=ih+4:x=2:y=2:color=black@0,rotate=a=-${ang}:ow=iw+${2 * dw}:oh=ih+${2 * dh}:c=black@0,`
+    + `${blur},rotate=a=${ang}:ow=iw-${2 * dw}:oh=ih-${2 * dh}:c=black@0,unpremultiply=inplace=1,crop=w=iw-4:h=ih-4:x=2:y=2`,
+  turnFormat, alpha, name)
 }
 
 /** The format a video item's blur runs in. See the header. */
