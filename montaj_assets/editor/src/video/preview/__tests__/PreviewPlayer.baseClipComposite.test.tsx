@@ -19,6 +19,7 @@ import PreviewPlayer from '../PreviewPlayer'
 import { createPlaybackClock } from '../../playback-clock'
 import { __setEngineCapabilityForTests } from '../../../engine/eligibility'
 import type { EditorProject as Project, VisualItem } from '../../../schema'
+import { mediaBoxOf } from './mediaBox'
 
 vi.mock('../../../engine', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../engine')>()
@@ -76,7 +77,7 @@ function renderPreview(tracks: VisualItem[][], engine = false) {
 
 /** The picture surface's media box and transform container. */
 function baseLayers(surface: HTMLElement) {
-  const mediaBox = surface.parentElement as HTMLElement
+  const mediaBox = mediaBoxOf(surface)
   return { mediaBox, container: mediaBox.parentElement as HTMLElement }
 }
 
@@ -161,7 +162,7 @@ describe('PreviewPlayer — the base clip composites (§616)', () => {
     const { container } = renderPreview([[item], [upper]])
     const frame = container.querySelector('[data-montaj-preview-frame]') as HTMLElement
     const base = baseLayers(container.querySelector('video') as HTMLElement).container
-    const wrapper = (container.querySelector('img[src="up.png"]') as HTMLElement).parentElement!.parentElement as HTMLElement
+    const wrapper = mediaBoxOf(container.querySelector('img[src="up.png"]') as HTMLElement).parentElement as HTMLElement
 
     expect(base.parentElement).toBe(frame)
     expect(wrapper.parentElement).toBe(frame)

@@ -20,6 +20,7 @@ import PreviewPlayer from '../PreviewPlayer'
 import { createPlaybackClock } from '../../playback-clock'
 import { __setEngineCapabilityForTests } from '../../../engine/eligibility'
 import type { EditorProject as Project } from '../../../schema'
+import { mediaBoxOf } from './mediaBox'
 
 vi.mock('../../../engine', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../engine')>()
@@ -147,7 +148,7 @@ describe('PreviewPlayer engine branch', () => {
     // The canvas sits where the active slot sat: z-index 1, in the media box
     // inside the transform container, which is itself inside the isolate root.
     expect(canvas.style.zIndex).toBe('1')
-    const transformContainer = canvas.parentElement!.parentElement!
+    const transformContainer = mediaBoxOf(canvas).parentElement!
     expect(transformContainer.className).toBe('absolute inset-0')
     const root = transformContainer.parentElement!
     expect(root.style.isolation).toBe('isolate')

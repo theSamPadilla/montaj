@@ -135,6 +135,9 @@ export function previewPlacement(
   let parent = { w: frameW, h: frameH }
   let box: Rect = { x: 0, y: 0, w: frameW, h: frameH }
   for (const el of chain) {
+    // `display: contents` makes no box (the blur's inert wrappers, itemBlur.tsx):
+    // its children lay out in its parent's.
+    if (el.style.display === 'contents' && el !== media) continue
     box = layoutBox(el, parent.w, parent.h)
     toFrame = compose(toFrame, transformOf(el, box))
     // From here on, coordinates are this element's own (its box at the origin).

@@ -22,7 +22,7 @@ import { usePlaybackTime, type PlaybackClock } from '../playback-clock'
 import { gateTimeSink, handOverToHover, useHoverScrubTime, type HoverScrub } from '../hover-scrub'
 import { sourceCropVideoStyle } from './sourceCropStyle'
 import { compositeParts } from './itemComposite'
-import { useItemBlur } from './itemBlur'
+import { BlurWrappers, useItemBlur } from './itemBlur'
 import MaskGizmo from './MaskGizmo'
 import { clientToBox, type MaskChanges } from './maskGizmoMath'
 import { FIT_PARENT_STYLE, fitBoxStyle } from './fitBox'
@@ -835,6 +835,9 @@ function PreviewSurface({
         // a uniform and a per-axis clip never remounts the slots or the canvas.
         <div className="absolute inset-0" style={transformContainerStyle}>
           <div style={mediaBox}>
+            {/* The blur's wrappers (itemBlur.tsx), always rendered: a linear
+                blur turns them, and neither the slots nor the canvas ever remount. */}
+            <BlurWrappers blur={baseBlur}>
             {playback.mode === 'engine' ? (
               <EngineSurface
                 attach={playback.attachCanvas}
@@ -889,6 +892,7 @@ function PreviewSurface({
                 />
               </>
             )}
+            </BlurWrappers>
             {baseBlur.defs}
           </div>
         </div>

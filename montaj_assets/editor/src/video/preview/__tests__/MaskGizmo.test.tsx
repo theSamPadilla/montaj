@@ -7,6 +7,7 @@ import type { OverlayFactory } from '../../../types'
 import { applyOverlayChanges, useDragOverlay, type OverlayChanges, type OverlayCommitOptions } from '../useDragOverlay'
 import { trackFor } from '../../keyframeOps'
 import OverlayItemsLayer from '../OverlayItemsLayer'
+import { mediaBoxOf } from './mediaBox'
 
 // §616 U2: the on-canvas mask gizmo on a selected video or image clip, through
 // the real OverlayItemsLayer and the real commit (`applyOverlayChanges`, the
@@ -235,7 +236,7 @@ describe('mask gizmo: hit priority', () => {
   it('a press outside the outline still moves the clip', () => {
     const { container } = render(<Host initial={clip()} />)
     // The image sits in its media box, inside its wrapper (the clip's drag target).
-    const wrapper = container.querySelector('img[src="c.png"]')!.parentElement!.parentElement!
+    const wrapper = mediaBoxOf(container.querySelector('img[src="c.png"]')!).parentElement!
     fireEvent.mouseDown(wrapper, { clientX: 5, clientY: 5 })
     expect(dragStateSpy).toHaveBeenCalledWith(expect.objectContaining({ id: 'c', type: 'move' }))
   })
@@ -262,7 +263,7 @@ describe('mask gizmo: gestures', () => {
     const live = maskPolygon(maskAt(clip({ mask: { ...MASK, x: 0.6 } }), LOCAL_T)!, BOX_W, BOX_H)
     expect(pointsOf(outline)[0][0]).toBeCloseTo(live[0][0], 2)
     // The picture's mask follows too: the media box's mask image is the live one.
-    const mediaBox = container.querySelector('img[src="c.png"]')!.parentElement as HTMLElement
+    const mediaBox = mediaBoxOf(container.querySelector('img[src="c.png"]')!)
     expect(mediaBox.style.maskImage).toContain(encodeURIComponent(`${Math.round(live[0][0] * 100) / 100},`))
     fireEvent.pointerUp(move, { clientX: 54 + 0.1 * BOX_W, clientY: 96, pointerId: 1 })
     expect(commits).toHaveLength(1)

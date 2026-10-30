@@ -5,6 +5,7 @@ import type { EditorProject, VisualItem } from '../../../schema'
 import type { OverlayFactory } from '../../../types'
 import type { OverlayChanges } from '../useDragOverlay'
 import OverlayItemsLayer from '../OverlayItemsLayer'
+import { mediaBoxOf } from './mediaBox'
 
 // T1.2 (SP9b Phase 1) — the preview samples curve-aware geometry through
 // @bycrux/timeline-core's `geometryAt`, for overlays and, since SP9d, for
@@ -439,7 +440,7 @@ function renderLayeredClips(overlayItems: VisualItem[], currentTime: number) {
   // Each clip's <img> sits in its media box, inside its own wrapper div — the
   // wrapper is where `opacity` actually lands (OverlayItemsLayer.tsx's `wrapperStyle`).
   const styleOf = (src: string) =>
-    (utils.container.querySelector(`img[src="${src}"]`) as HTMLElement).parentElement!.parentElement!.style
+    mediaBoxOf(utils.container.querySelector(`img[src="${src}"]`) as HTMLElement).parentElement!.style
   return { ...utils, styleOf }
 }
 

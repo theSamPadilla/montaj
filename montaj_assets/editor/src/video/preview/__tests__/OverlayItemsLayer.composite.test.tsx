@@ -4,6 +4,7 @@ import { maskAt, maskSvg, opacityAt } from '@bycrux/timeline-core'
 import type { EditorProject, VisualItem } from '../../../schema'
 import type { OverlayFactory } from '../../../types'
 import OverlayItemsLayer from '../OverlayItemsLayer'
+import { mediaBoxOf } from './mediaBox'
 
 // §616 — a clip's keyframed opacity, its mask (with feather) and its blend
 // mode in the preview, through the real OverlayItemsLayer. Every expected
@@ -66,7 +67,7 @@ function renderProject(tracks: VisualItem[][], currentTime: number) {
   // An image or video sits in its media box, inside its wrapper.
   const mediaOf = (sel: string) => {
     const el = utils.container.querySelector(sel) as HTMLElement
-    const mediaBox = el.parentElement as HTMLElement
+    const mediaBox = mediaBoxOf(el)
     return { mediaBox, wrapper: mediaBox.parentElement as HTMLElement }
   }
   return { ...utils, mediaOf }

@@ -39,9 +39,33 @@
 // The filter goes on the media box, the element that also carries the mask:
 // CSS applies an element's filter before its mask, and the export blurs before
 // it masks too.
+//
+// LINEAR (`blurType: 'linear'`, `blurAngle`): a Gaussian along one direction.
+// An SVG filter blurs along its own x only (`stdDeviation="s 0"`), so it runs
+// in a frame turned by the angle. The media box's children sit in two
+// wrappers, always rendered so a blur turning on or changing type never
+// remounts the media (a base clip's <video> carries its audio routing):
+//
+//   media box     clip-path: the picture's rect (axis-aligned, so the
+//                 picture's edges stay hard), and the mask, as ever
+//     turn        rotate(+angle), filter: blur along its x (the direction),
+//                 renormalise (feColorMatrix), the cut source's alpha grown
+//                 by a screen pixel (feMorphology) put back, so the turn's
+//                 antialiased edge does not fade the picture's edge rows
+//       back      rotate(-angle), filter: the source cut to the picture's
+//                 rect (as step 1), in the media's own frame: cut there,
+//                 not in the turned one, so black bars around the picture
+//                 never bleed into its turned edge
+//         media
+//
+// Every filter runs in its element's own frame, before its transform, and
+// before the media box's mask. Without a linear blur the wrappers are
+// `display: contents`: no box, nothing drawn differently. Measured against
+// the export in Chromium at 0, 30, 90 and 135 degrees: within 13 codes, mean
+// under 1.6, edge rows within 3 (render/test/item-blur-preview-parity.test.mjs).
 
 import { useId, type CSSProperties, type ReactNode } from 'react'
-import { blurOf, blurTypeOf, pictureRectInBox } from '@bycrux/timeline-core'
+import { blurAngleOf, blurOf, blurTypeOf, pictureRectInBox } from '@bycrux/timeline-core'
 import type { VisualItem } from '../../schema'
 import { useVideoNaturalSize } from '../useVideoNaturalSize'
 import { useImageNaturalSize } from '../useImageNaturalSize'
@@ -77,6 +101,10 @@ export interface BlurFilterSpec {
   sigma: number
   rect: { x: number; y: number; w: number; h: number }
   box: Size
+  /** The media box's own pixels per screen pixel (1 over the wrapper's uniform scale; 1 per axis). */
+  perScreenPx: number
+  /** A linear blur's direction in degrees (timeline-core blurAngleOf); null for a uniform blur. */
+  angle: number | null
 }
 
 const drawable = (s: number) => s > 0 && Number.isFinite(s)
@@ -132,17 +160,101 @@ export function blurFilterSpec(input: Omit<ItemBlurInput, 'src' | 'knownSize'>, 
   const frameW = input.canvasW * input.renderScale
   const frameH = input.canvasH * input.renderScale
   const box = uniform ? { w: frameW, h: frameH } : { w: frameW * sx, h: frameH * sy }
-  return { sigma, rect, box }
+  const angle = blurTypeOf(input.item) === 'linear' ? blurAngleOf(input.item) : null
+  return { sigma, rect, box, perScreenPx: 1 / local, angle }
+}
+
+/**
+ * A linear blur's filter region on the turned wrapper, as fractions of its
+ * box (the media box, `box` pixels): the picture's rect as that wrapper sees
+ * it, turned by -`deg` about the box's centre, its bounds plus 2 pixels.
+ */
+export function linearBlurRegion(rect: BlurFilterSpec['rect'], box: Size, deg: number): BlurFilterSpec['rect'] {
+  const r = (deg * Math.PI) / 180
+  const c = Math.cos(r)
+  const s = Math.sin(r)
+  const xs: number[] = []
+  const ys: number[] = []
+  for (const [fx, fy] of [[rect.x, rect.y], [rect.x + rect.w, rect.y], [rect.x, rect.y + rect.h], [rect.x + rect.w, rect.y + rect.h]]) {
+    const x = (fx - 0.5) * box.w
+    const y = (fy - 0.5) * box.h
+    xs.push(x * c + y * s + box.w / 2)
+    ys.push(-x * s + y * c + box.h / 2)
+  }
+  const x0 = Math.min(...xs) - 2
+  const y0 = Math.min(...ys) - 2
+  return { x: x0 / box.w, y: y0 / box.h, w: (Math.max(...xs) + 2 - x0) / box.w, h: (Math.max(...ys) + 2 - y0) / box.h }
+}
+
+/** The wrappers' style when there is no linear blur: no box of their own. */
+const INERT: CSSProperties = { display: 'contents' }
+
+/** What {@link useItemBlur} hands its layer: the media box's style, the two
+ *  wrappers' (see the header; inert without a linear blur), and the SVG. */
+export interface ItemBlurParts {
+  style: CSSProperties
+  turnStyle: CSSProperties
+  backStyle: CSSProperties
+  defs: ReactNode
+}
+
+const NONE: ItemBlurParts = { style: {}, turnStyle: INERT, backStyle: INERT, defs: null }
+
+/**
+ * The media box's children inside the two blur wrappers. Always render it,
+ * blur or not, so the media never remounts.
+ */
+export function BlurWrappers({ blur, children }: { blur: ItemBlurParts; children: ReactNode }) {
+  return (
+    <div data-montaj-blur-turn="" style={blur.turnStyle}>
+      <div data-montaj-blur-back="" style={blur.backStyle}>{children}</div>
+    </div>
+  )
 }
 
 const fmt = (n: number) => String(Math.round(n * 10000) / 10000)
 
 /**
- * The clip's blur as a style for its media box (`filter: url(#…)`) and the
- * SVG that defines the filter, to render inside that box. `{}` and null for a
- * clip with no blur. Always call it (it holds hooks); pass null for no clip.
+ * A linear blur's parts (see the header): the media box cut to the picture,
+ * the turned wrapper's blur, the turned-back wrapper's cut.
  */
-export function useItemBlur(input: ItemBlurInput | null): { style: CSSProperties; defs: ReactNode } {
+function linearParts(id: string, spec: BlurFilterSpec): ItemBlurParts {
+  const { sigma, rect, box, perScreenPx } = spec
+  const angle = spec.angle ?? 0
+  const pct = (n: number) => `${fmt(n * 100)}%`
+  const region = linearBlurRegion(rect, box, angle)
+  return {
+    style: { clipPath: `inset(${pct(rect.y)} ${pct(1 - rect.x - rect.w)} ${pct(1 - rect.y - rect.h)} ${pct(rect.x)})` },
+    turnStyle: { position: 'absolute', inset: 0, transform: `rotate(${fmt(angle)}deg)`, filter: `url(#${id})` },
+    backStyle: { position: 'absolute', inset: 0, transform: `rotate(${fmt(-angle)}deg)`, filter: `url(#${id}-cut)` },
+    defs: (
+      <svg aria-hidden="true" width="0" height="0" style={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden' }}>
+        <filter id={`${id}-cut`} data-montaj-blur-cut="" filterUnits="objectBoundingBox"
+          x={fmt(rect.x)} y={fmt(rect.y)} width={fmt(rect.w)} height={fmt(rect.h)} colorInterpolationFilters="sRGB">
+          <feFlood floodColor="#fff" x={fmt(rect.x * box.w)} y={fmt(rect.y * box.h)}
+            width={fmt(rect.w * box.w)} height={fmt(rect.h * box.h)} result="picture-rect" />
+          <feComposite in="SourceGraphic" in2="picture-rect" operator="in" />
+        </filter>
+        <filter id={id} data-montaj-blur="" data-montaj-blur-angle={fmt(angle)} filterUnits="objectBoundingBox"
+          x={fmt(region.x)} y={fmt(region.y)} width={fmt(region.w)} height={fmt(region.h)} colorInterpolationFilters="sRGB">
+          <feGaussianBlur in="SourceGraphic" stdDeviation={`${fmt(sigma)} 0`} result="blurred" />
+          <feColorMatrix in="blurred" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0 1" result="renormalised" />
+          <feMorphology in="SourceGraphic" operator="dilate" radius={fmt(perScreenPx)} result="picture" />
+          <feComposite in="renormalised" in2="picture" operator="in" />
+        </filter>
+      </svg>
+    ),
+  }
+}
+
+/**
+ * The clip's blur as a style for its media box (`filter: url(#…)`, or for a
+ * linear blur the cut to the picture), the two wrappers' styles
+ * ({@link BlurWrappers}) and the SVG that defines the filters, to render
+ * inside that box. Inert for a clip with no blur. Always call it (it holds
+ * hooks); pass null for no clip.
+ */
+export function useItemBlur(input: ItemBlurInput | null): ItemBlurParts {
   const id = 'montaj-blur-' + useId().replace(/[^A-Za-z0-9_-]/g, '')
   const wants = !!input && drawsBlur(input.item)
   const item = input?.item
@@ -151,12 +263,15 @@ export function useItemBlur(input: ItemBlurInput | null): { style: CSSProperties
   const needsImage = wants && item?.type === 'image' && input?.fit === 'contain'
   const videoSize = useVideoNaturalSize(needsVideo ? input?.src : undefined)
   const imageSize = useImageNaturalSize(needsImage ? input?.src : undefined)
-  if (!input || !wants) return { style: {}, defs: null }
+  if (!input || !wants) return NONE
   const natural = item?.type === 'image' ? imageSize : (known(videoSize) ? videoSize : input.knownSize)
   const spec = blurFilterSpec(input, pictureSizeFor(input.item, input.crop, input.fit, natural))
-  if (!spec) return { style: {}, defs: null }
+  if (!spec) return NONE
   const { sigma, rect, box } = spec
+  if (spec.angle !== null) return linearParts(id, spec)
   return {
+    turnStyle: INERT,
+    backStyle: INERT,
     style: { filter: `url(#${id})` },
     defs: (
       <svg aria-hidden="true" width="0" height="0" style={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden' }}>

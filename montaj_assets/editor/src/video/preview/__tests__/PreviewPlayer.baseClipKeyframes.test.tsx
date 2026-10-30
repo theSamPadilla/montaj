@@ -18,6 +18,7 @@ import { createPlaybackClock } from '../../playback-clock'
 import { applyOverlayChanges, type OverlayChanges, type OverlayCommitOptions } from '../useDragOverlay'
 import { trackFor } from '../../keyframeOps'
 import type { EditorProject as Project, KeyframeTrack, VisualItem } from '../../../schema'
+import { mediaBoxOf } from './mediaBox'
 
 // start = 2, deliberately non-zero: keyframe `t` is item-relative.
 const PLAYHEAD = 6 // localT = 4
@@ -62,7 +63,7 @@ function Host({ initial }: { initial: VisualItem }) {
 
 function mount(initial: VisualItem) {
   const utils = render(<Host initial={initial} />)
-  const picture = () => ((utils.container.querySelector('video') as HTMLElement).parentElement as HTMLElement).parentElement as HTMLElement
+  const picture = () => mediaBoxOf(utils.container.querySelector('video') as HTMLElement).parentElement as HTMLElement
   const moveBox = () => Array.from(utils.container.querySelectorAll<HTMLElement>('div')).find(d => d.style.cursor === 'move') as HTMLElement
   const cornerSE = () => Array.from(utils.container.querySelectorAll<HTMLElement>('div')).filter(d => d.style.cursor === 'nwse-resize')[3]
   return { ...utils, picture, moveBox, cornerSE }

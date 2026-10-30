@@ -24,6 +24,7 @@ import type { EditorProject, VisualItem } from '../../../schema'
 import type { OverlayFactory } from '../../../types'
 import OverlayItemsLayer from '../OverlayItemsLayer'
 import { exportPlacement, expectPlacementClose, previewPlacement } from './placementModel'
+import { mediaBoxOf } from './mediaBox'
 
 const W = 1080
 const H = 1920
@@ -158,7 +159,7 @@ describe('uniform scale renders exactly as before (regression guard)', () => {
   it('the media box of a uniform item is the plain full box, and the media element is untouched', () => {
     const item = { id: 'u', type: 'image', src: 'u.png', start: 0, end: 4, fit: 'cover', scale: 0.5, offsetX: 10, offsetY: -5 } as VisualItem
     const { media } = renderLayer(item)
-    const box = media.parentElement as HTMLElement
+    const box = mediaBoxOf(media)
     expect(box.style.transform).toBe('')
     expect([box.style.left, box.style.top, box.style.width, box.style.height]).toEqual(['0px', '0px', '100%', '100%'])
     expect(media.className).toBe('absolute inset-0 w-full h-full pointer-events-none')

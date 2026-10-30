@@ -6,7 +6,8 @@ import type { OverlayFactory } from '../../../types'
 import OverlayItemsLayer from '../OverlayItemsLayer'
 import PreviewPlayer from '../PreviewPlayer'
 import { createPlaybackClock } from '../../playback-clock'
-import { blurFilterSpec, pictureSizeFor } from '../itemBlur'
+import { blurFilterSpec, linearBlurRegion, pictureSizeFor } from '../itemBlur'
+import { mediaBoxOf } from './mediaBox'
 
 // A clip's blur in the preview: an SVG filter on the clip's media box that cuts
 // the source to the picture's rect, blurs it, renormalises by the blurred alpha
@@ -55,6 +56,27 @@ describe('blurFilterSpec', () => {
   it('no blur: null', () => {
     expect(blurFilterSpec({ item: { ...item, blur: 0 }, renderScale: 0.25, ...CANVAS, scaleX: 1, scaleY: 1 }, null)).toBeNull()
     expect(blurFilterSpec({ item: { ...item, blur: undefined }, renderScale: 0.25, ...CANVAS, scaleX: 1, scaleY: 1 }, null)).toBeNull()
+  })
+
+  it('a linear clip: the angle (mod 180) rides the spec, and the local pixels per screen pixel; uniform has none', () => {
+    const lin = { ...item, blurType: 'linear', blurAngle: 210 } as VisualItem
+    const spec = blurFilterSpec({ item: lin, renderScale: 0.25, ...CANVAS, scaleX: 2, scaleY: 2 }, null)!
+    expect(spec.angle).toBe(30)
+    expect(spec.perScreenPx).toBe(0.5)
+    expect(blurFilterSpec({ item, renderScale: 0.25, ...CANVAS, scaleX: 2, scaleY: 2 }, null)!.angle).toBeNull()
+  })
+
+  it('linearBlurRegion: the picture\'s rect turned by -angle about the box centre, plus 2 px', () => {
+    const box = { w: 200, h: 100 }
+    const whole = { x: 0, y: 0, w: 1, h: 1 }
+    const r0 = linearBlurRegion(whole, box, 0)
+    expect([r0.x * 200, r0.y * 100, r0.w * 200, r0.h * 100].map(v => Math.round(v * 1000) / 1000)).toEqual([-2, -2, 204, 104])
+    // At 90 degrees the 200 x 100 picture stands 100 wide and 200 tall, about the same centre.
+    const r90 = linearBlurRegion(whole, box, 90)
+    expect(r90.w * 200).toBeCloseTo(104, 6)
+    expect(r90.h * 100).toBeCloseTo(204, 6)
+    expect(r90.x * 200).toBeCloseTo(50 - 2, 6)
+    expect(r90.y * 100).toBeCloseTo(-50 - 2, 6)
   })
 
   // PLACEHOLDER: spin and zoom are not drawn yet (itemBlur.tsx `drawsBlur`),
@@ -142,7 +164,7 @@ describe('OverlayItemsLayer — a clip\'s blur', () => {
     const card = { id: 'bg', type: 'video', src: 'bg.mp4', start: 0, end: 10, inPoint: 0, scale: 3.2, blur: 40,
       sourceWidth: 960, sourceHeight: 540 } as VisualItem
     const { container } = renderLayer([card])
-    const mediaBox = (container.querySelector('video[src="bg.mp4"]') as HTMLElement).parentElement as HTMLElement
+    const mediaBox = mediaBoxOf(container.querySelector('video[src="bg.mp4"]') as HTMLElement)
     const f = filterOf(mediaBox)
     expect(f.getAttribute('filterUnits')).toBe('objectBoundingBox')
     expect(f.getAttribute('color-interpolation-filters')).toBe('sRGB')
@@ -175,17 +197,74 @@ describe('OverlayItemsLayer — a clip\'s blur', () => {
   it('a blurred cover image: the whole box is the region', () => {
     const img = { id: 'im', type: 'image', src: 'im.png', start: 0, end: 10, scaleX: 0.8, scaleY: 0.5, blur: 25 } as VisualItem
     const { container } = renderLayer([img])
-    const mediaBox = (container.querySelector('img[src="im.png"]') as HTMLElement).parentElement as HTMLElement
+    const mediaBox = mediaBoxOf(container.querySelector('img[src="im.png"]') as HTMLElement)
     const f = filterOf(mediaBox)
     expect([f.getAttribute('x'), f.getAttribute('y'), f.getAttribute('width'), f.getAttribute('height')]).toEqual(['0', '0', '1', '1'])
     // Per-axis: net scale 1, the screen sigma as is.
     expect(Number(f.querySelector('feGaussianBlur')!.getAttribute('stdDeviation'))).toBeCloseTo(25 * RENDER_SCALE, 4)
   })
 
+  it('a linear blur: the media box cuts to the picture; the turned wrapper blurs along its x; the turned-back one cuts the source', () => {
+    const card = { id: 'bg', type: 'video', src: 'bg.mp4', start: 0, end: 10, inPoint: 0, scale: 0.5, blur: 40,
+      blurType: 'linear', blurAngle: 30, sourceWidth: 1920, sourceHeight: 1080 } as VisualItem
+    const { container } = renderLayer([card])
+    const video = container.querySelector('video[src="bg.mp4"]') as HTMLElement
+    const mediaBox = mediaBoxOf(video)
+    const turn = mediaBox.querySelector('[data-montaj-blur-turn]') as HTMLElement
+    const back = turn.querySelector('[data-montaj-blur-back]') as HTMLElement
+    expect(back.contains(video)).toBe(true)
+    // No filter on the media box itself: the cut to the 16:9 band, axis-aligned.
+    expect(mediaBox.style.filter).toBe('')
+    const h = (9 / 16) / (16 / 9)
+    const top = Math.round(((1 - h) / 2) * 1e6) / 1e4
+    expect(mediaBox.style.clipPath).toBe(`inset(${top}% 0% ${top}% 0%)`)
+    expect(turn.style.transform).toBe('rotate(30deg)')
+    expect(back.style.transform).toBe('rotate(-30deg)')
+    const blur = filterOf(turn)
+    expect(blur.getAttribute('data-montaj-blur-angle')).toBe('30')
+    // Along x only, at the screen sigma over the wrapper's scale (0.5).
+    const sd = blur.querySelector('feGaussianBlur')!.getAttribute('stdDeviation')!.split(' ').map(Number)
+    expect(sd[0]).toBeCloseTo(40 * RENDER_SCALE / 0.5, 4)
+    expect(sd[1]).toBe(0)
+    expect(blur.querySelector('feColorMatrix')!.getAttribute('values')).toBe('1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0 1')
+    expect(blur.querySelector('feMorphology')!.getAttribute('radius')).toBe('2')
+    const cut = filterOf(back)
+    expect(cut.querySelector('feFlood')).not.toBeNull()
+    expect(Number(cut.getAttribute('height'))).toBeCloseTo(h, 3)
+  })
+
+  it('the wrappers are always there, inert without a linear blur, and the media never remounts as the blur changes', () => {
+    const base = { id: 'bg', type: 'video', src: 'bg.mp4', start: 0, end: 10, inPoint: 0, scale: 0.5 } as VisualItem
+    const { container, rerender } = renderLayer([base])
+    const video = container.querySelector('video[src="bg.mp4"]') as HTMLElement
+    const turn = () => container.querySelector('[data-montaj-blur-turn]') as HTMLElement
+    expect(turn().style.display).toBe('contents')
+    expect((turn().firstElementChild as HTMLElement).style.display).toBe('contents')
+    const again = (item: VisualItem) => {
+      const tracks = [[{ id: 'base', type: 'video', src: 'base.mp4', start: 0, end: 10, inPoint: 0 } as VisualItem], [item]]
+      const project = { id: 'p', status: 'draft', settings: { resolution: [1080, 1920], fps: 30 }, tracks } as unknown as EditorProject
+      rerender(
+        <OverlayItemsLayer project={project} currentTime={5} isPlaying={false} isCanvasProject={false}
+          overlayTracks={tracks.slice(1)} tracks0NonVideo={[]} renderScale={RENDER_SCALE} selectedOverlayId={undefined}
+          containerRef={{ current: document.createElement('div') }} dragState={null} setDragState={vi.fn()}
+          liveOffset={null} liveScale={null} liveRotation={null} snapGuides={emptySnap} snapRotation={null}
+          compileOverlay={vi.fn(async (): Promise<OverlayFactory> => () => null)} fileUrl={(pth: string) => pth} />,
+      )
+    }
+    again({ ...base, blur: 40 })
+    expect(container.querySelector('video[src="bg.mp4"]')).toBe(video)
+    again({ ...base, blur: 40, blurType: 'linear', blurAngle: 45 })
+    expect(container.querySelector('video[src="bg.mp4"]')).toBe(video)
+    expect(turn().style.transform).toBe('rotate(45deg)')
+    again(base)
+    expect(container.querySelector('video[src="bg.mp4"]')).toBe(video)
+    expect(turn().style.display).toBe('contents')
+  })
+
   it('spin and zoom (not drawn yet): no filter and no SVG, as with no blur', () => {
     const card = { id: 'bg', type: 'video', src: 'bg.mp4', start: 0, end: 10, inPoint: 0, scale: 0.5, blur: 40, blurType: 'zoom' } as VisualItem
     const { container } = renderLayer([card])
-    const mediaBox = (container.querySelector('video[src="bg.mp4"]') as HTMLElement).parentElement as HTMLElement
+    const mediaBox = mediaBoxOf(container.querySelector('video[src="bg.mp4"]') as HTMLElement)
     expect(mediaBox.style.filter).toBe('')
     expect(container.querySelector('filter[data-montaj-blur]')).toBeNull()
   })
@@ -193,7 +272,7 @@ describe('OverlayItemsLayer — a clip\'s blur', () => {
   it('no blur: no filter and no SVG (unchanged)', () => {
     const card = { id: 'bg', type: 'video', src: 'bg.mp4', start: 0, end: 10, inPoint: 0, scale: 0.5 } as VisualItem
     const { container } = renderLayer([card])
-    const mediaBox = (container.querySelector('video[src="bg.mp4"]') as HTMLElement).parentElement as HTMLElement
+    const mediaBox = mediaBoxOf(container.querySelector('video[src="bg.mp4"]') as HTMLElement)
     expect(mediaBox.style.filter).toBe('')
     expect(container.querySelector('filter[data-montaj-blur]')).toBeNull()
   })
@@ -231,10 +310,29 @@ describe('PreviewPlayer — the base clip\'s blur', () => {
     const { container } = render(
       <PreviewPlayer project={project} clock={createPlaybackClock(1)} compileOverlay={async () => (() => null) as never} fileUrl={(p) => p} />,
     )
-    const mediaBox = (container.querySelector('video') as HTMLElement).parentElement as HTMLElement
+    const mediaBox = mediaBoxOf(container.querySelector('video') as HTMLElement)
     const f = filterOf(mediaBox)
     // renderScale = 270 / 1080 = 0.25: 40 design px are 10 screen px, 3.125 under scale(3.2).
     expect(Number(f.querySelector('feGaussianBlur')!.getAttribute('stdDeviation'))).toBeCloseTo(40 * (FRAME_W / 1080) / 3.2, 4)
     expect(Number(f.getAttribute('height'))).toBeCloseTo((9 / 16) / (16 / 9), 3)
+  })
+
+  it('a linear base clip turns its wrappers around the slots, the media box cut to the footage', () => {
+    const item = { id: 'c0', type: 'video', src: 'a.mp4', start: 0, end: 10, inPoint: 0, scale: 3.2, blur: 40,
+      blurType: 'linear', blurAngle: 120, sourceWidth: 960, sourceHeight: 540 } as VisualItem
+    const project = { id: 'p', status: 'draft', settings: { resolution: [1080, 1920], fps: 30 }, tracks: [[item]] } as unknown as EditorProject
+    const { container } = render(
+      <PreviewPlayer project={project} clock={createPlaybackClock(1)} compileOverlay={async () => (() => null) as never} fileUrl={(p) => p} />,
+    )
+    const videos = container.querySelectorAll('video')
+    expect(videos).toHaveLength(2)
+    const mediaBox = mediaBoxOf(videos[0])
+    expect(mediaBoxOf(videos[1])).toBe(mediaBox)
+    expect(mediaBox.style.clipPath).toMatch(/^inset\(/)
+    const turn = mediaBox.querySelector('[data-montaj-blur-turn]') as HTMLElement
+    expect(turn.style.transform).toBe('rotate(120deg)')
+    const sd = filterOf(turn).querySelector('feGaussianBlur')!.getAttribute('stdDeviation')!.split(' ').map(Number)
+    expect(sd[0]).toBeCloseTo(40 * (FRAME_W / 1080) / 3.2, 4)
+    expect(sd[1]).toBe(0)
   })
 })

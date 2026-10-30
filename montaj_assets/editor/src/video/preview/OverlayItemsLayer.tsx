@@ -4,7 +4,7 @@ import { isProxyUsable, markProxyFailed } from './proxySupport'
 import { mediaBoxStyle, perAxisRatio } from './transformStyle'
 import { sourceCropVideoStyle } from './sourceCropStyle'
 import { compositeParts, type MaskStyle } from './itemComposite'
-import { useItemBlur, type ItemBlurInput } from './itemBlur'
+import { BlurWrappers, useItemBlur, type ItemBlurInput } from './itemBlur'
 import CroppedImage from './CroppedImage'
 import type { EditorProject as Project, VisualItem, VisualTrack } from '../../schema'
 import type { OverlayFactory } from '../../types'
@@ -139,8 +139,9 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlayi
 // It also carries a clip's MASK (§616, `itemComposite.ts`): its CSS box is the
 // clip's own box, the one the mask's fractions and feather are relative to.
 // And its BLUR (`itemBlur.tsx`), filtered before the mask as the export blurs
-// before it masks; the filter's SVG renders after the media, so the media
-// keeps its place among the children and a blur turning on never remounts it.
+// before it masks; the media sits in the blur's two wrappers (always there, a
+// linear blur's turn; `BlurWrappers`) and the filter's SVG renders after them,
+// so a blur turning on or changing type never remounts the media.
 function MediaBox({ scaleX, scaleY, mask, blur, children }: {
   scaleX: number; scaleY: number; mask?: MaskStyle; blur?: ItemBlurInput | null; children: React.ReactNode
 }) {
@@ -148,7 +149,7 @@ function MediaBox({ scaleX, scaleY, mask, blur, children }: {
   const box = mediaBoxStyle({ scaleX, scaleY })
   return (
     <div className="pointer-events-none" style={mask || filter.defs ? { ...box, ...mask, ...filter.style } : box}>
-      {children}
+      <BlurWrappers blur={filter}>{children}</BlurWrappers>
       {filter.defs}
     </div>
   )

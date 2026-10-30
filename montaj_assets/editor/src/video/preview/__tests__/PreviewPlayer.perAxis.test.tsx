@@ -17,6 +17,7 @@ import { __setEngineCapabilityForTests } from '../../../engine/eligibility'
 import { drawPlanFor } from '../../../engine/scheduler'
 import type { EditorProject as Project, VisualItem } from '../../../schema'
 import { exportPlacement, expectPlacementClose, previewPlacement } from './placementModel'
+import { mediaBoxOf } from './mediaBox'
 
 vi.mock('../../../engine', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../engine')>()
@@ -138,7 +139,7 @@ describe('PreviewPlayer — uniform scale is unchanged (regression guard)', () =
 
   it('keeps the same container transform, with an inert media box inside it', () => {
     const { container } = renderPreview(clip({ scale: 0.5, offsetX: 10, offsetY: -5 }))
-    const box = (container.querySelector('video') as HTMLElement).parentElement as HTMLElement
+    const box = mediaBoxOf(container.querySelector('video') as HTMLElement)
     expect(box.style.transform).toBe('')
     expect([box.style.left, box.style.top, box.style.width, box.style.height]).toEqual(['0px', '0px', '100%', '100%'])
     expect((box.parentElement as HTMLElement).style.transform).toBe('translate(10%, -5%) scale(0.5, 0.5)')
