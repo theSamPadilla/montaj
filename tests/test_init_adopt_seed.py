@@ -330,3 +330,99 @@ def test_a_new_clip_never_shares_a_stem_with_a_file_already_there(ws, tmp_path, 
     assert stem not in {"a", os.path.splitext(a.name)[0].lower()}
     assert not any(n.lower().startswith(stem + "_") for n in before)
     assert json.loads(pj.read_text())["sources"][-1]["src"] == str(folder / added[0])
+
+
+# ---------------------------------------------------------------------------
+# Review fixes
+# ---------------------------------------------------------------------------
+
+def _case_insensitive(folder: Path) -> bool:
+    probe = folder / "take-a.mp4"
+    return probe.is_file() and (folder / "TAKE-A.MP4").exists()
+
+
+def test_a_take_passed_in_another_case_is_used_in_place(ws, tmp_path, monkeypatch, capsys):
+    """A take already in the seed's folder, its path spelled in another case
+    (folder and name), is not copied again under a renamed stem."""
+    folder, seed_id = _make_seed(ws, tmp_path, monkeypatch, capsys)
+    if not _case_insensitive(folder):
+        pytest.skip("case-sensitive filesystem")
+    before = _hashes(folder, skip_git=True)
+    before.pop("project.json")
+    spelled = folder.parent / folder.name.upper() / "TAKE-A.MP4"
+
+    exc, _, err = _adopt(monkeypatch, capsys, seed_id, "--clips", str(spelled))
+    assert exc is None, err
+    after = _hashes(folder, skip_git=True)
+    after.pop("project.json")
+    assert after == before                                          # nothing copied in
+    added = json.loads((folder / "project.json").read_text())["sources"][-1]
+    assert added["src"] == str(folder / "take-a.mp4")              # the folder's own spelling
+
+
+def test_a_failed_adopt_never_removes_a_take_named_in_another_case(ws, tmp_path, monkeypatch, capsys):
+    folder, seed_id = _make_seed(ws, tmp_path, monkeypatch, capsys)
+    if not _case_insensitive(folder):
+        pytest.skip("case-sensitive filesystem")
+    before = _hashes(folder, skip_git=True)
+    real, calls = init_mod._read_project_type, []
+
+    def read_type(workflow):
+        calls.append(workflow)
+        if len(calls) == 2:
+            init_mod.fail("boom", "no")
+        return real(workflow)
+    monkeypatch.setattr(init_mod, "_read_project_type", read_type)
+
+    exc, _, err = _adopt(monkeypatch, capsys, seed_id, "--clips", str(folder / "TAKE-A.MP4"))
+    assert isinstance(exc, SystemExit) and _error_code(err) == "boom"
+    assert _hashes(folder, skip_git=True) == before                 # the take is still there
+
+
+@pytest.mark.parametrize("where", ["second_type_read", "before_replace"])
+def test_a_late_failure_in_eager_mode_with_proxies_undoes_only_the_new_clip(
+        ws, tmp_path, monkeypatch, capsys, where):
+    """The undo, proved where it has the most to undo: eager normalize (an SDR clip
+    into an HLG project is converted: `normalizedSrc`) with proxies on, and the
+    failure late, after every file is written. Every file in the folder is as it
+    was: the new clip's copy, conversion and proxy are gone, and the take's own
+    derived files (its proxy, its transcript) are untouched."""
+    from lib.proxy import proxy_path_for
+    folder, seed_id = _make_seed(ws, tmp_path, monkeypatch, capsys)
+    take_proxy = Path(proxy_path_for(str(folder / "take-a.mp4")))
+    assert take_proxy.parent == folder
+    take_proxy.write_bytes(b"the take's proxy")
+    new_clip = tmp_path / "broll.mp4"
+    _make_clip(new_clip)
+    before = _hashes(folder, skip_git=True)
+    seen = []
+
+    def snapshot():
+        seen.extend(p.name for p in folder.iterdir())
+
+    if where == "second_type_read":
+        real, calls = init_mod._read_project_type, []
+
+        def read_type(workflow):
+            calls.append(workflow)
+            if len(calls) == 2:
+                snapshot()
+                init_mod.fail("boom", "late")
+            return real(workflow)
+        monkeypatch.setattr(init_mod, "_read_project_type", read_type)
+    else:
+        def replace(*_a, **_k):
+            snapshot()
+            init_mod.fail("boom", "late")
+        monkeypatch.setattr(init_mod, "_replace_project_json", replace)
+
+    exc, _, err = _run(monkeypatch, capsys, "--prompt", "make it good", "--workflow", "overlays",
+                       "--id", seed_id, "--adopt-seed", "--normalize", "eager",
+                       "--color-space", "hdr_hlg", "--clips", str(new_clip))
+    assert isinstance(exc, SystemExit) and exc.code == 1, err
+    assert _error_code(err) == "boom"
+    new_files = sorted(set(seen) - {Path(k).name for k in before} - {".git"})
+    assert any("_normalized_" in n for n in new_files), new_files   # a conversion was written
+    assert any("_proxy_" in n for n in new_files), new_files        # and a proxy
+    assert _hashes(folder, skip_git=True) == before
+    assert new_clip.is_file()

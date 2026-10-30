@@ -262,14 +262,62 @@ def _norm(path: str) -> str:
     return os.path.normcase(os.path.abspath(path))
 
 
+def _file_id(path: str):
+    """(device, inode) of *path* itself (a link is not followed), or None. One
+    file has one id however its path is spelled (case on macOS and Windows)."""
+    try:
+        st = os.stat(path, follow_symlinks=False)
+    except (OSError, ValueError):
+        return None
+    return (st.st_dev, st.st_ino) if st.st_ino else None
+
+
 def _files_under(folder: str) -> set:
-    """Every file under *folder* (`.git` left out), as `_norm` paths."""
+    """Every file under *folder* (`.git` left out), as `_norm` paths and as
+    `_file_id`s, so a later check knows a file that was there before however
+    the path naming it is spelled."""
     out = set()
     for root, dirs, files in os.walk(folder):
         dirs[:] = [d for d in dirs if d != ".git"]
         for name in files:
-            out.add(_norm(os.path.join(root, name)))
+            path = os.path.join(root, name)
+            out.add(_norm(path))
+            fid = _file_id(path)
+            if fid is not None:
+                out.add(fid)
     return out
+
+
+def _in_folder(path: str, folder: str) -> bool:
+    """True when *path*'s parent is *folder*, compared without regard to case
+    where the filesystem ignores it (the same directory, by identity)."""
+    parent = os.path.dirname(os.path.abspath(path))
+    if _norm(parent) == _norm(folder):
+        return True
+    try:
+        return os.path.samefile(parent, folder)
+    except (OSError, ValueError):
+        return False
+
+
+def _folder_spelling(folder: str, path: str) -> str:
+    """*path* (a file in *folder*) as *folder* plus the name the folder lists it
+    under, so a path spelled in another case names the file as it is stored."""
+    base = os.path.basename(path)
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        names = []
+    if base not in names:
+        for n in names:
+            if n.lower() == base.lower():
+                try:
+                    if os.path.samefile(os.path.join(folder, n), path):
+                        base = n
+                        break
+                except (OSError, ValueError):
+                    pass
+    return os.path.join(folder, base)
 
 
 def _unique_stem_name(folder: str, name: str) -> str:
@@ -945,8 +993,13 @@ def _main():
         """Thin wrapper around the module-level helper, bound to workspace_dir."""
         if not link:
             _CREATED["copied_from"].append(os.path.abspath(src))
-        if seed is not None and os.path.dirname(os.path.abspath(src)) != workspace_dir:
-            name = _unique_stem_name(workspace_dir, name or os.path.basename(src))
+        if seed is not None:
+            if _in_folder(src, workspace_dir):
+                # Already in the seed's folder (spelled in another case, maybe):
+                # the folder's own spelling, so it is used in place, never re-copied.
+                src = _folder_spelling(workspace_dir, src)
+            else:
+                name = _unique_stem_name(workspace_dir, name or os.path.basename(src))
         dest = _copy_into_workspace(src, workspace_dir, prefix, link=link, name=name)
         if seed is not None:
             _CREATED["adopt"]["files"].append(dest)
@@ -1715,6 +1768,8 @@ def _undo_adopt() -> None:
             p = _norm(path)
             if p in state["before"] or not p.startswith(folder_n + os.sep):
                 continue
+            if _file_id(p) in state["before"]:
+                continue  # a file that was there before, named in another case
             try:
                 if os.path.islink(p) or os.path.isfile(p):
                     os.unlink(p)
