@@ -670,11 +670,11 @@ Independent audio tracks, mixed into the video in a final pass. Every audio sour
 | `inPoint` / `outPoint` | number | Slice of the **source** file to use. Optional. The track stops at whichever of `end`, `outPoint` and the end of the file comes first, in the editor preview and the export alike. |
 | `fadeIn` / `fadeOut` | number | Fade durations in seconds. **Auto-managed on overlap** — see "Automatic crossfade" below before setting these by hand. |
 | `fadeInCurve` / `fadeOutCurve` | string | `'linear' \| 'log' \| 'exp'`. Absent means `'exp'`, which is also the shape every fade rendered before curves existed, so an un-set project looks unchanged. Maps to ffmpeg `afade`'s `curve=`. |
-| `lane` | integer | Which timeline **row** this track renders in. Absent means "give me my own row": the editor assigns one auto-incrementing lane per unlabelled track, so **N tracks with no `lane` render as N separate rows.** Give several tracks the same `lane` to stack them in one row — that is how a multi-clip music bed reads as a single element rather than a pile of rows. Purely visual: the mix is unaffected by lane, and every track is summed regardless of which row it sits in. |
+| `lane` | integer | Which timeline **row** this track renders in. An explicit `lane` is kept as written. Tracks with no `lane` are packed into rows above the highest explicit one, by kind (`type`, absent meaning `audio`; music, sfx and voice never share a row): each clip goes into the first row of its kind it does not overlap, so back-to-back clips share a row and overlapping ones get separate rows. The editor writes the packed rows down as explicit lanes the next time the project is edited. Purely visual: the mix is unaffected by lane, and every track is summed regardless of which row it sits in. |
 | `magnetic` | bool | When set, this track's whole **lane** is kept gapless — no gaps and **no overlaps**. Fanned out across the lane like `muted`: a lane counts as magnetic only when every track in it sets it, so toggling it makes the whole row magnetic at once. **A magnetic lane can never crossfade**, because a crossfade requires the overlap magnetism removes. Dragging a track onto a magnetic row in the editor makes it inherit that row's magnet state. |
 | `ducking` | object | `{ enabled, depth, attack, release }` — see below. |
 
-**Automatic crossfade.** When two audio tracks overlap **sequentially** (the
+**Automatic crossfade.** When two audio tracks on the **same row and of the same kind** overlap **sequentially** (the
 earlier starts first and ends first, `a.start < b.start` and `a.end < b.end`),
 the editor sets the outgoing track's `fadeOut` and the incoming track's `fadeIn`
 to the overlap duration (rounded to 0.1s), producing a symmetric crossfade.
@@ -685,9 +685,9 @@ audio change with no user gesture, so **a hand-authored fade on an overlapping
 pair will be overwritten** — write the overlap you want and let the fades be
 derived, rather than authoring mismatched fades and expecting them to survive.
 Non-overlapping fades (a track's outer fade-in at the top of the timeline, or
-fade-out at the end) are left alone. The pairing is computed across all audio
-tracks sorted by `start`, independent of `lane`, so tracks on different rows
-still crossfade with each other when their overlap is sequential. Muted tracks are skipped. Implemented by
+fade-out at the end) are left alone. The row is the drawn row (see `lane`), so
+two overlapping tracks with no `lane` sit on separate rows and get **no** fade:
+to crossfade, put both on the same explicit `lane`. Muted tracks are skipped. Implemented by
 `computeAutoCrossfade` in the editor; the render side needs nothing special,
 since `mix-audio.js` emits a per-track `afade` either way and the sum of two
 complementary fades *is* the crossfade.

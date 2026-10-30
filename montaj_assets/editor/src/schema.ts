@@ -40,7 +40,7 @@ export interface AudioTrack {
   fadeInCurve?: 'linear' | 'log' | 'exp'
   fadeOutCurve?: 'linear' | 'log' | 'exp'
   sourceDuration?: number  // intrinsic duration of the source file in seconds
-  lane?: number            // visual grouping — tracks sharing a lane render in the same row
+  lane?: number            // the row it renders in, kept as written; lane-less tracks pack by kind (packAudioLanes)
   magnetic?: boolean       // when set, this clip's LANE is kept gapless (no gaps/overlaps). Fanned out across the lane like `muted`.
 }
 
@@ -70,12 +70,11 @@ export interface CaptionSegment {
   // simultaneous and all render, each getting its own row in the timeline and
   // preview. Absent ⇒ lane 0, and NOT auto-incremented.
   //
-  // This deliberately diverges from `AudioTrack.lane` / `groupAudioLanes`
-  // (timeline/timeline-model.ts), which mint a fresh lane for every lane-less
-  // track: every caption segment written before lanes existed is lane-less,
-  // so applying that same rule here would explode every existing project's
-  // captions into one row per caption on first open, instead of the single
-  // row they've always rendered as.
+  // This deliberately diverges from `AudioTrack.lane` / `packAudioLanes`
+  // (timeline/timeline-model.ts), which pack lane-less audio into rows by
+  // kind and overlap: every caption segment written before lanes existed is
+  // lane-less, and a caption row must hold exactly the lane-0 segments it
+  // always has, never a re-packing of them.
   //
   // Invariant: lanes are dense from 0 (no holes). Read and write this field
   // through `video/captionLanes.ts` rather than touching it directly, so that
