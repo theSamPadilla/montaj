@@ -10,9 +10,13 @@ export const STANDARD_RESOLUTION_TIERS = [720, 1080, 1440, 2160] as const
 
 export const STANDARD_FPS_TIERS = [24, 30, 60] as const
 
-/** The lowest short side the resolution choices are capped at when no footage
- *  dims say otherwise: the design size a project starts at. */
+/** The lowest short side the resolution choices are capped at when clips carry
+ *  no dims to say otherwise: the design size a project starts at. */
 const NO_SOURCE_CAP_FLOOR = 1080
+
+/** The cap for a project with no video item at all (overlays, text, 3D,
+ *  images): overlays and 3D render at density and stay sharp at any tier. */
+const NO_FOOTAGE_CAP = 2160
 
 // ── Internal helpers ────────────────────────────────────────────────────────
 
@@ -38,9 +42,9 @@ function maxSourceShortSide(project: Project): number | undefined {
 /** Whether the project has any video item at all (regardless of whether its
  *  source dims are known). Canvas/animation projects — overlays, images,
  *  audio, no footage — have no source fps to protect and render cleanly at
- *  any fps, so `availableFpsTiers` uses this (not `maxSourceShortSide`, which
- *  also returns undefined for a video item with unknown dims) to decide
- *  whether the fps cap applies at all. */
+ *  any fps or resolution, so `availableFpsTiers` and `availableResolutionTiers`
+ *  use this (not `maxSourceShortSide`, which also returns undefined for a
+ *  video item with unknown dims) to decide whether a cap applies at all. */
 function hasVideoItem(project: Project): boolean {
   for (const items of trackItems(project)) {
     for (const item of items) {
@@ -86,16 +90,19 @@ export function maxExportFps(project: Project): number {
 }
 
 /** Every resolution tier offerable in the export dialog, as [w,h] preserving
- *  project aspect, filtered to the source cap and ordered ascending. Always
- *  non-empty — falls back to the project's current resolution when the source
- *  is below every standard tier. */
+ *  project aspect, filtered to the source cap and ordered ascending. A project
+ *  with no video item offers every tier. Always non-empty — falls back to the
+ *  project's current resolution when the source is below every standard tier. */
 export function availableResolutionTiers(project: Project): Array<[number, number]> {
   const maxShort = maxSourceShortSide(project)
-  // No footage dims to cap at (a canvas project, or clips with unknown dims):
-  // the project's own resolution, but never below 1080. The export dialog
-  // writes the chosen tier into `settings.resolution`, so a cap taken from it
-  // alone was one-way: pick 720p once and 1080p was gone for good (§199).
-  const capShort = maxShort ?? Math.max(Math.min(...project.settings.resolution), NO_SOURCE_CAP_FLOOR)
+  // No video item at all: every tier up to 4K, whatever the canvas. Clips with
+  // unknown dims: the project's own resolution, but never below 1080. The
+  // export dialog writes the chosen tier into `settings.resolution`, so a cap
+  // taken from it alone was one-way: pick 720p once and 1080p was gone for
+  // good (§199). Images neither raise nor lower the cap.
+  const capShort = maxShort ?? (hasVideoItem(project)
+    ? Math.max(Math.min(...project.settings.resolution), NO_SOURCE_CAP_FLOOR)
+    : NO_FOOTAGE_CAP)
 
   const tiers = STANDARD_RESOLUTION_TIERS.filter(t => t <= capShort).map(t => tierToResolution(t, project))
   return tiers.length > 0 ? tiers : [project.settings.resolution]

@@ -157,21 +157,50 @@ describe('availableResolutionTiers', () => {
     },
   )
 
-  it('filters against the project own short-side when there are no video clips', () => {
-    const p = makeProject({ settings: { resolution: [1080, 1920] }, tracks: vtracks([]) })
-    const tiers = availableResolutionTiers(p)
-    expect(tiers.every(([w, h]) => Math.min(w, h) <= 1080)).toBe(true)
-    expect(tiers.some(([w, h]) => Math.min(w, h) === 1080)).toBe(true)
-    expect(tiers.some(([w, h]) => Math.min(w, h) === 1440)).toBe(false)
+  // Overlays, text and 3D render at density, so a project with no footage has
+  // nothing to protect from upscaling: every tier up to 4K, whatever the canvas.
+  it.each([[1920, 1080, [3840, 2160]], [1080, 1920, [2160, 3840]]] as Array<[number, number, [number, number]]>)(
+    'a project with no footage on a %ix%i canvas offers every tier up to 4K',
+    (w, h, fourK) => {
+      const p = makeProject({ settings: { resolution: [w, h] }, tracks: vtracks([]) })
+      const tiers = availableResolutionTiers(p)
+      expect(tiers.map(([tw, th]) => Math.min(tw, th))).toEqual([720, 1080, 1440, 2160])
+      expect(tiers[tiers.length - 1]).toEqual(fourK)
+      expect(currentResolutionTier(p)).toEqual([w, h])
+    },
+  )
+
+  it('images neither raise nor lower the cap: an images-only project offers 4K', () => {
+    const p = makeProject({
+      settings: { resolution: [1920, 1080] },
+      tracks: vtracks([{ id: 'i1', type: 'image', start: 0, end: 5 } as VisualItem]),
+    })
+    expect(availableResolutionTiers(p).map(([w, h]) => Math.min(w, h))).toEqual([720, 1080, 1440, 2160])
+  })
+
+  it('footage at 1080 on a 1920x1080 canvas caps at 1080', () => {
+    const p = makeProject({
+      settings: { resolution: [1920, 1080] },
+      tracks: vtracks([videoClip({ sourceWidth: 1920, sourceHeight: 1080 })]),
+    })
+    expect(availableResolutionTiers(p)).toEqual([[1280, 720], [1920, 1080]])
+  })
+
+  it('footage at 2160 on a 1920x1080 canvas offers 4K', () => {
+    const p = makeProject({
+      settings: { resolution: [1920, 1080] },
+      tracks: vtracks([videoClip({ sourceWidth: 3840, sourceHeight: 2160 })]),
+    })
+    expect(availableResolutionTiers(p).slice(-1)).toEqual([[3840, 2160]])
   })
 
   // §199: the export dialog writes the chosen tier into settings.resolution, so a
-  // cap taken from that setting alone was one-way: pick 720p once on a project
-  // with no footage dims and 1080p was gone from the choices for good.
-  it('a canvas project lowered to 720p still offers 1080p, so the choice can be undone', () => {
+  // cap taken from that setting alone was one-way: pick 720p once and 1080p was
+  // gone from the choices for good.
+  it('a canvas project lowered to 720p still offers every tier, so the choice can be undone', () => {
     const p = makeProject({ settings: { resolution: [720, 1280] }, tracks: vtracks([]) })
     const shorts = availableResolutionTiers(p).map(([w, h]) => Math.min(w, h))
-    expect(shorts).toEqual([720, 1080])
+    expect(shorts).toEqual([720, 1080, 1440, 2160])
     expect(currentResolutionTier(p)).toEqual([720, 1280])
   })
 
