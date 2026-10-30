@@ -75,3 +75,33 @@ def test_null_out_and_end_are_read_as_absent(tmp_path):
     lifted, lift = ss.lift(p, "audio:voiceover", str(tmp_path))
     (it,) = lifted["tracks"][-1]["items"]
     assert it["outPoint"] > 0 and it["end"] == pytest.approx(it["outPoint"])
+
+
+def test_a_type_key_still_finds_its_items_after_the_editor_stamps_their_row_as_a_lane(tmp_path):
+    """A cut planned on lane-less voiceover ("audio:voiceover") applies after the person's next edit wrote the
+    packed row down as `lane`, and lowering keeps that lane. A sound of another type on that row is not taken."""
+    vo = str(tmp_path / "vo.mp4")
+    a = [{"id": "v1", "type": "voiceover", "lane": 2, "src": vo, "start": 0.0, "end": 1.5, "inPoint": 0.0, "outPoint": 1.5},
+         {"id": "v2", "type": "voiceover", "lane": 2, "src": vo, "start": 1.5, "end": 3.0, "inPoint": 1.5, "outPoint": 3.0},
+         {"id": "s", "type": "sfx", "lane": 2, "src": vo, "start": 3.0, "end": 4.0}]
+    p = project(tmp_path, a)
+    lifted, lift = ss.lift(p, "audio:voiceover", str(tmp_path))
+    assert [it["id"] for it in lifted["tracks"][-1]["items"]] == ["v1", "v2"]
+    assert [e["id"] for e in lifted["audio"]["tracks"]] == ["s"]
+    assert lift.lower(lifted)["audio"]["tracks"] == p["audio"]["tracks"]
+
+
+def test_a_type_spread_over_two_lanes_is_not_guessed(tmp_path):
+    vo = str(tmp_path / "vo.mp4")
+    a = [{"id": "v1", "type": "voiceover", "lane": 1, "src": vo, "start": 0.0, "end": 1.5},
+         {"id": "v2", "type": "voiceover", "lane": 2, "src": vo, "start": 1.5, "end": 3.0}]
+    with pytest.raises(SystemExit):
+        ss.lift(project(tmp_path, a), "audio:voiceover", str(tmp_path))
+
+
+def test_choose_accepts_a_type_key_whose_row_was_stamped(tmp_path):
+    vo = str(tmp_path / "vo.mp4")
+    a = [{"id": "v1", "type": "voiceover", "lane": 4, "src": vo, "start": 0.0, "end": 1.5}]
+    assert ss.choose(project(tmp_path, a), str(tmp_path), "audio:voiceover") == "audio:voiceover"
+    with pytest.raises(SystemExit):
+        ss.choose(project(tmp_path, a), str(tmp_path), "audio:music")
