@@ -244,3 +244,113 @@ test('spin and zoom: where little of the average falls on the picture the source
   assert.ok(bare[corner + 3] < 255 / 16, `the bare graph's far corner: ${[...bare.slice(corner, corner + 4)]}`)
   assert.ok(Math.abs(bare[corner + 1] - 200) > 3, `the bare graph's far corner: ${[...bare.slice(corner, corner + 4)]}`)
 })
+
+// ── The precise path (a 10-bit, HDR canvas) ─────────────────────────────────
+//
+// perspective rounds each copy to 8 bits, which bands a 10-bit picture (a
+// 10-bit ramp came out in plateaus of 4 codes). On a 10-bit canvas each
+// pass's input is split into its high and low bytes, both moved, and summed
+// back in the mix (perspective is linear), so each copy keeps about 16 bits.
+
+/** A 16-bit ramp in every colour plane (10-bit code 200 + x/2, a code every 2 px), opaque, as raw `fmt` planes. */
+function ramp16(w, h) {
+  const b = Buffer.alloc(w * h * 8)
+  for (let p = 0; p < 4; p++) for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    b.writeUInt16LE(p === 3 ? 65535 : Math.round((200 + i / 2) * 64), ((p * h + j) * w + i) * 2)
+  }
+  return b
+}
+
+function run16(planes, w, h, fmt, chain) {
+  const r = spawnSync(FFMPEG, ['-v', 'error', '-f', 'rawvideo', '-pix_fmt', fmt, '-s', `${w}x${h}`, '-i', '-',
+    '-filter_complex', `[0:v]${chain},format=${fmt}[o]`, '-map', '[o]', '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', fmt, '-'],
+  { input: planes, maxBuffer: 1 << 26 })
+  assert.equal(r.status, 0, String(r.stderr).slice(-2000))
+  return r.stdout
+}
+
+/** The longest run of pixels on one 10-bit code. */
+function longestPlateau(row) {
+  let best = 1
+  let len = 1
+  for (let i = 1; i < row.length; i++) {
+    len = Math.round(row[i] / 64) === Math.round(row[i - 1] / 64) ? len + 1 : 1
+    best = Math.max(best, len)
+  }
+  return best
+}
+
+test('spin and zoom, precise (a 10-bit canvas): no banding on a 10-bit ramp, within about a 10-bit code of the reference', (t) => {
+  const W = 512
+  const H = 48
+  const src = ramp16(W, H)
+  // The reference on plane 0 as grey (0..255 floats).
+  const data = new Float32Array(W * H * 4)
+  for (let k = 0; k < W * H; k++) { data[k * 4] = data[k * 4 + 1] = data[k * 4 + 2] = src.readUInt16LE(k * 2) / 257; data[k * 4 + 3] = 255 }
+  for (const fmt of [IMAGE_BLUR_FORMAT, VIDEO_BLUR_FORMAT]) {
+    for (const [type, amount, x, y] of [['zoom', 40, 0.5, 0.5], ['spin', 30, 0.5, 0.3]]) {
+      const item = { blur: amount, blurType: type, blurX: x, blurY: y }
+      const o = { vw: W, vh: H, format: fmt, alpha: fmt === IMAGE_BLUR_FORMAT, name: 'q', picture: { w: W, h: H, exact: true }, box: { w: W, h: H } }
+      const center = [x * W, y * H]
+      const plan = radialBlurPlan({ type, amount, center, rect: { w: W, h: H } })
+      const ref = radialBlurReference({ data, width: W, height: H }, { type, plan, center })
+      const measure = (out) => {
+        let plateau = 0
+        let refPlateau = 0
+        let worst = 0
+        let sum = 0
+        let n = 0
+        for (let j = 6; j < H - 6; j++) {
+          const row = []
+          const rr = []
+          for (let i = 16; i < W - 16; i++) {
+            row.push(out.readUInt16LE((j * W + i) * 2))
+            rr.push(ref.data[(j * W + i) * 4] * 65535)
+          }
+          plateau = Math.max(plateau, longestPlateau(row))
+          refPlateau = Math.max(refPlateau, longestPlateau(rr))
+          for (let i = 0; i < row.length; i++) { const d = Math.abs(row[i] - rr[i]) / 64; worst = Math.max(worst, d); sum += d; n++ }
+        }
+        return { plateau, refPlateau, worst, mean: sum / n }
+      }
+      const fast = measure(run16(src, W, H, fmt, blurFilterStep(item, o)))
+      const precise = measure(run16(src, W, H, fmt, blurFilterStep(item, { ...o, precise: true })))
+      const label = `${fmt}, ${type} ${amount}`
+      t.diagnostic(`${label}: longest plateau precise ${precise.plateau} px, 8-bit ${fast.plateau}, reference ${precise.refPlateau} `
+        + `(the ramp: 2); 10-bit codes from the reference: precise worst ${precise.worst.toFixed(2)}, mean ${precise.mean.toFixed(2)}; `
+        + `8-bit worst ${fast.worst.toFixed(2)}, mean ${fast.mean.toFixed(2)}`)
+      // The reference's own plateaus are the ramp's step stretched by the blur; precise adds at most 2 px.
+      assert.ok(precise.plateau <= precise.refPlateau + 2, `${label}: plateau ${precise.plateau} px against the reference's ${precise.refPlateau}`)
+      assert.ok(precise.worst <= 2 && precise.mean < 0.3, `${label}: worst ${precise.worst.toFixed(2)}, mean ${precise.mean.toFixed(2)} codes`)
+      // The control: the 8-bit path bands.
+      assert.ok(fast.plateau >= precise.refPlateau + 4, `${label}: the 8-bit path's plateau ${fast.plateau} px`)
+    }
+  }
+})
+
+test('spin and zoom, precise: the graph meets the reference on the detailed picture (alpha, holes, centres outside)', (t) => {
+  for (const holes of [false, true]) {
+    const src = picture(PW, PH, holes)
+    const alphaOf = run(src, PW, PH, `[0:v]format=${IMAGE_BLUR_FORMAT},format=rgba[o]`)
+    for (const [type, amount, x, y] of CASES) {
+      const item = { blur: amount, blurType: type, blurX: x, blurY: y }
+      for (const format of [IMAGE_BLUR_FORMAT, VIDEO_BLUR_FORMAT]) {
+        const alpha = format === IMAGE_BLUR_FORMAT
+        if (!alpha && holes) continue
+        const step = blurFilterStep(item, { vw: PW, vh: PH, format, alpha, name: 'q', precise: true,
+          picture: { w: PW, h: PH, exact: true }, box: { w: PW, h: PH } })
+        assert.ok(step.includes(`lut=c0='bitand(val,65280)'`), 'the precise graph')
+        const out = run(src, PW, PH, `[0:v]${step},format=rgba[o]`)
+        const center = [x * PW, y * PH]
+        const plan = radialBlurPlan({ type, amount, center, rect: { w: PW, h: PH } })
+        const ref = radialBlurReference({ data: src, width: PW, height: PH }, { type, plan, center })
+        const r = compare(out, PW, 0, ref, src, alpha ? alphaOf : src)
+        const label = `precise ${alpha ? 'RGB' : 'YUV'}, ${type} ${amount} at (${x}, ${y})${holes ? ', holes' : ''}`
+        t.diagnostic(`${label}: worst ${r.worst}, mean ${r.mean.toFixed(2)}; ${r.thin} thin px within ${r.thinWorst}`)
+        assert.equal(r.alpha, 0, `${label}: the alpha is the clip's own`)
+        assert.ok(r.worst <= (alpha ? 3 : 8), `${label}: worst ${r.worst} codes`)
+        assert.ok(r.mean < (alpha ? 0.6 : 1.2), `${label}: mean ${r.mean.toFixed(2)} codes`)
+      }
+    }
+  }
+})

@@ -1331,6 +1331,8 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   const blurCore = blurFilterStep(item, {
     vw, vh, format: IMAGE_BLUR_FORMAT, alpha: true, name: 'bl' + idx,
     picture,
+    // A 10-bit (HDR) canvas moves spin and zoom's copies in 16 bits (item-blur.js).
+    precise: Boolean(opts?.toHdr),
     // Spin and zoom's centre is a fraction of this box.
     box: { w: fitW, h: fitH },
     animated: anim?.needsAnimatedChain
@@ -1809,16 +1811,18 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     // they can (their sweep is in degrees and percent, the same at any size).
     const radial = blurTypeOf(item) === 'spin' || blurTypeOf(item) === 'zoom'
     const box = { w: padW, h: padH }
+    // A 10-bit (HDR) canvas moves spin and zoom's copies in 16 bits (item-blur.js).
+    const precise = isHdr(projectColorSpace)
     if (fitted && unitX < 1 && unitY < 1
       && (radial || blurSigmaPx(item, vw, vh) * Math.max(unitX, unitY) >= PRE_SCALE_BLUR_MIN_SIGMA)) {
       const picture = { w: footageW, h: footageH, exact: true }
-      const step = blurFilterStep(item, { vw, vh, format, alpha, name, unitX, unitY, animated, picture, box })
+      const step = blurFilterStep(item, { vw, vh, format, alpha, name, unitX, unitY, animated, picture, box, precise })
       preBlur = step ? `${step},` : ''
     } else {
       const fit = footageW && footageH ? decreaseFitSize(footageW, footageH, padW, padH, divisibleBy ? 2 : 1) : null
       const picture = fit ? { w: fit.width, h: fit.height, exact: true } : { w: padW, h: padH, exact: false }
       if (!fit) warnBlurOnBox('video', item, box)
-      const step = blurFilterStep(item, { vw, vh, format, alpha, name, animated, picture, box })
+      const step = blurFilterStep(item, { vw, vh, format, alpha, name, animated, picture, box, precise })
       postBlur = step ? `${step},` : ''
     }
   }

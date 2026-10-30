@@ -100,6 +100,24 @@
 //     copies' 8-bit rounding is why the export lands a few codes off the
 //     reference (test/item-blur-radial.test.mjs: RGB worst 5, YUV worst 12
 //     in a thinly covered pixel, 8 elsewhere).
+//   - PRECISE (a 10-bit, HDR canvas: `precise`). Those 8-bit copies band a
+//     10-bit picture (a 10-bit ramp came out in plateaus of 4 codes, up to
+//     10 px long against the ramp's 2). So there each pass's input is split
+//     into its high and low bytes (lut: bitand(val,65280) and
+//     bitand(val,255)*256, multiples of 256, so the 8-bit conversion is
+//     exact), both are moved by every tap, and the mix sums them back, the
+//     low copies weighted 1/256 (`scale=1`): perspective is linear, so the
+//     sum is the 16-bit copy, off only by the high copy's own rounding where
+//     it straddles a step. The frame is first reinterpreted as gbrap16le
+//     (mergeplanes, the planes copied unchanged) because lut clips a YUV
+//     format's colour planes to the limited range and swscale scales YUV
+//     alpha by 257 but colour by 256; the premultiply then runs in RGB terms,
+//     with no offsets, which averages exactly as the YUV one does (the offset
+//     cancels between premultiply and unpremultiply). It costs the perspective
+//     work twice. Measured: plateaus as the reference's, within 1.7 10-bit
+//     codes of it on the ramp; RGB worst 3, YUV worst 8 (in a thinly covered
+//     pixel) on the detailed picture. SDR graphs are the 8-bit ones, byte for
+//     byte.
 //   - The premultiply is explicit (premultiply, then setparams relabels the
 //     frames straight so perspective and mix, which take straight alpha only,
 //     get no conversion; relabelled premultiplied before unpremultiply).
@@ -157,12 +175,16 @@ function withoutAlpha(format) {
  * @param {{ w: number, h: number, exact?: boolean }} [o.picture] A linear blur's picture, in the pixels the
  *   blur runs in: its size (`exact`), or the box it is contain-fitted in. Sizes the turned canvas only.
  *   The canvas (vw x vh, times the units) when absent.
+ * @param {{ w: number, h: number }} [o.box] Spin and zoom: the clip's box in the blur's pixels (their centre is
+ *   a fraction of it).
+ * @param {boolean} [o.precise] Spin and zoom: move each copy in about 16 bits rather than 8 (a 10-bit, HDR
+ *   canvas; see the header). Off, every graph is the 8-bit one.
  * @returns {string}
  */
-export function blurFilterStep(item, { vw, vh, format, alpha = false, name, unitX = 1, unitY = 1, animated, picture, box } = {}) {
+export function blurFilterStep(item, { vw, vh, format, alpha = false, name, unitX = 1, unitY = 1, animated, picture, box, precise = false } = {}) {
   const type = blurTypeOf(item)
   if (type === 'spin' || type === 'zoom') {
-    return radialBlurStep(item, type, { vw, vh, format, alpha, name, unitX, unitY, picture, box })
+    return radialBlurStep(item, type, { vw, vh, format, alpha, name, unitX, unitY, picture, box, precise })
   }
   const sigma = blurSigmaPx(item, vw, vh)
   if (!(sigma > 0)) return ''
@@ -351,6 +373,60 @@ export const RADIAL_THIN_INVERSE = Math.round(1 / RADIAL_THIN_COVERAGE)
 /** The 8-bit format `perspective` runs in for each blur format (it takes no 16-bit format). */
 const PERSPECTIVE_FORMATS = { yuva444p16le: 'yuva444p', yuva444p10le: 'yuva444p', gbrap16le: 'gbrap', yuva444p: 'yuva444p', gbrap: 'gbrap' }
 
+/** The blur formats the precise (16-bit) spin and zoom path takes: 16 bits a plane, four planes. */
+const PRECISE_FORMATS = new Set(['yuva444p16le', 'gbrap16le'])
+
+/** Reinterprets a frame's four 16-bit planes as `fmt`, copying them unchanged (no conversion). */
+const asPlanes = (fmt) => `mergeplanes=map0s=0:map0p=0:map1s=0:map1p=1:map2s=0:map2p=2:map3s=0:map3p=3:format=${fmt}`
+
+/** lut expressions: a 16-bit value's high byte and low byte, each as a multiple of 256 (exact to 8 bits). */
+const HIGH_BYTE = 'bitand(val,65280)'
+const LOW_BYTE = 'bitand(val,255)*256'
+
+/** A weight for the graph, 9 significant digits (a low byte's weights are 1/256 of the plan's). */
+const wnum = (v) => String(Number(v.toPrecision(9)))
+
+/**
+ * The precise path's core (see the header, SPIN AND ZOOM, PRECISE): from the
+ * straight 16-bit `format` frame to the unpremultiplied blurred one, cropped
+ * to the picture, in `format` again.
+ */
+function preciseRadialCore(plan, { format, name, padM, cropM, perspective }) {
+  const lut = (e) => `lut=c0='${e}':c1='${e}':c2='${e}':c3='${e}'`
+  let core = `${format === 'gbrap16le' ? '' : `${asPlanes('gbrap16le')},`}`
+    + 'setparams=alpha_mode=straight,premultiply=inplace=1,setparams=alpha_mode=straight,'
+  plan.passes.forEach((pass, k) => {
+    const n = pass.taps.length
+    const lab = (s, j) => `[${name}r${k}${s}${j}]`
+    const all = (s) => pass.taps.map((_, j) => lab(s, j)).join('')
+    const moved = (s, t) => pass.taps.map((tap, j) => `${lab(s, j)}${perspective(tap)},format=gbrap16le${lab(t, j)}`).join(';')
+    const weights = [...pass.taps.map((t) => wnum(t.weight)), ...pass.taps.map((t) => wnum(t.weight / 256))].join(' ')
+    core += `${k ? `${cropM},` : ''}${padM},split=2[${name}r${k}hi][${name}r${k}lo];`
+      + `[${name}r${k}hi]${lut(HIGH_BYTE)},format=gbrap,split=${n}${all('h')};`
+      + `[${name}r${k}lo]${lut(LOW_BYTE)},format=gbrap,split=${n}${all('l')};`
+      + `${moved('h', 'H')};${moved('l', 'L')};`
+      + `${all('H')}${all('L')}mix=inputs=${2 * n}:weights='${weights}':scale=1,`
+  })
+  return `${core}setparams=alpha_mode=premultiplied,unpremultiply=inplace=1,${cropM}`
+    + `${format === 'gbrap16le' ? '' : `,${asPlanes(format)}`}`
+}
+
+/**
+ * The 8-bit path's core: from the straight `format` frame to the
+ * unpremultiplied blurred one, cropped to the picture. Every SDR graph is this.
+ */
+function eightBitRadialCore(plan, { format, name, padM, cropM, perspective, pfmt }) {
+  let core = 'premultiply=inplace=1,setparams=alpha_mode=straight,'
+  plan.passes.forEach((pass, k) => {
+    const lab = (s, j) => `[${name}r${k}${s}${j}]`
+    const moved = pass.taps.map((t, j) => `${lab('s', j)}${perspective(t)},format=${format}${lab('t', j)}`).join(';')
+    const weights = pass.taps.map((t) => num(t.weight)).join(' ')
+    core += `${k ? `${cropM},` : ''}${padM},format=${pfmt},split=${pass.taps.length}${pass.taps.map((_, j) => lab('s', j)).join('')};`
+      + `${moved};${pass.taps.map((_, j) => lab('t', j)).join('')}mix=inputs=${pass.taps.length}:weights='${weights}',`
+  })
+  return `${core}setparams=alpha_mode=premultiplied,unpremultiply=inplace=1,${cropM}`
+}
+
 /** A number for the graph: 6 decimals, no trailing zeros, no '-0'. */
 function num(v) {
   const s = (Math.round(v * 1e6) / 1e6).toFixed(6).replace(/\.?0+$/, '')
@@ -380,7 +456,7 @@ function linExpr(kw, kh, k0) {
  * @param {object} o blurFilterStep's options.
  * @returns {string}
  */
-function radialBlurStep(item, type, { vw, vh, format, alpha, name, unitX, unitY, picture, box }) {
+function radialBlurStep(item, type, { vw, vh, format, alpha, name, unitX, unitY, picture, box, precise }) {
   const amount = blurOf(item)
   if (!(amount > 0)) return ''
   const center = blurCenterOf(item)
@@ -428,20 +504,17 @@ function radialBlurStep(item, type, { vw, vh, format, alpha, name, unitX, unitY,
   const pfmt = PERSPECTIVE_FORMATS[format] ?? 'yuva444p'
   const padM = `pad=w=iw+${2 * m}:h=ih+${2 * m}:x=${m}:y=${m}:color=black@0`
   const cropM = `crop=w=iw-${2 * m}:h=ih-${2 * m}:x=${m}:y=${m}`
-  let core = 'premultiply=inplace=1,setparams=alpha_mode=straight,'
-  plan.passes.forEach((pass, k) => {
-    const lab = (s, j) => `[${name}r${k}${s}${j}]`
-    const moved = pass.taps.map((t, j) => {
-      const [a, b] = radialTapInverse(type, t.offset)
-      const c = [corner(a, b, 0, 0), corner(a, b, 1, 0), corner(a, b, 0, 1), corner(a, b, 1, 1)]
-      return `${lab('s', j)}perspective=x0=${c[0][0]}:y0=${c[0][1]}:x1=${c[1][0]}:y1=${c[1][1]}`
-        + `:x2=${c[2][0]}:y2=${c[2][1]}:x3=${c[3][0]}:y3=${c[3][1]},format=${format}${lab('t', j)}`
-    }).join(';')
-    const weights = pass.taps.map((t) => num(t.weight)).join(' ')
-    core += `${k ? `${cropM},` : ''}${padM},format=${pfmt},split=${pass.taps.length}${pass.taps.map((_, j) => lab('s', j)).join('')};`
-      + `${moved};${pass.taps.map((_, j) => lab('t', j)).join('')}mix=inputs=${pass.taps.length}:weights='${weights}',`
-  })
-  core += `setparams=alpha_mode=premultiplied,unpremultiply=inplace=1,${cropM}`
+  const perspective = (t) => {
+    const [a, b] = radialTapInverse(type, t.offset)
+    const c = [corner(a, b, 0, 0), corner(a, b, 1, 0), corner(a, b, 0, 1), corner(a, b, 1, 1)]
+    return `perspective=x0=${c[0][0]}:y0=${c[0][1]}:x1=${c[1][0]}:y1=${c[1][1]}`
+      + `:x2=${c[2][0]}:y2=${c[2][1]}:x3=${c[3][0]}:y3=${c[3][1]}`
+  }
+  // The 8-bit path; a 10-bit canvas's precise one (preciseRadialCore) splits
+  // each pass's input into its high and low bytes, so each copy keeps 16 bits.
+  const core = precise && PRECISE_FORMATS.has(format)
+    ? preciseRadialCore(plan, { format, name, padM, cropM, perspective })
+    : eightBitRadialCore(plan, { format, name, padM, cropM, perspective, pfmt })
 
   // Where little of the average fell on the picture (the summed alpha, the
   // reference's `coverage`, under 1/16: the far corners of a wide spin, a

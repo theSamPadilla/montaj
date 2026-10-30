@@ -633,3 +633,20 @@ test('image: a contain spin or zoom whose image cannot be probed warns once; a c
   assert.equal(warn.mock.callCount(), 1)
   assert.match(warn.mock.calls[0].arguments[0], /image item ik: its picture's size is unknown \(the image could not be probed\), so its zoom blur/)
 })
+
+test('spin and zoom take the precise (16-bit copies) path on an HDR canvas only; SDR graphs are the 8-bit ones', () => {
+  const radial = { blur: 30, blurType: 'spin', scale: 3.2, probedWidth: 960, probedHeight: 540 }
+  const sdr = graphOf(buildVideoItemFilterParts(video(radial), 1080, 1920, 1, '[canvas]', vOpts))
+  const hdr = graphOf(buildVideoItemFilterParts(video({ ...radial, colorTransfer: 'arib-std-b67' }), 1080, 1920, 1, '[canvas]',
+    { ...vOpts, projectColorSpace: 'hdr_hlg' }))
+  assert.ok(!sdr.includes('bitand(val'), sdr.slice(0, 400))
+  assert.ok(sdr.includes(',format=yuva444p,split='), 'the 8-bit copies')
+  assert.ok(hdr.includes("lut=c0='bitand(val,65280)'") && hdr.includes("lut=c0='bitand(val,255)*256'"), 'the precise copies')
+  assert.ok(hdr.includes('mergeplanes=map0s=0:map0p=0:map1s=0:map1p=1:map2s=0:map2p=2:map3s=0:map3p=3:format=gbrap16le'))
+  const img = (opts) => graphOf(buildImageItemFilterParts(image({ fit: 'cover', blur: 40, blurType: 'zoom' }), 1080, 1920, 1, '[canvas]', 2, 0, opts))
+  assert.ok(!img().includes('bitand(val'))
+  assert.ok(img({ toHdr: 'hdr_hlg', dryRun: true }).includes('bitand(val,65280)'))
+  // Uniform and linear blurs are unchanged on HDR (gblur and rotate work in 16 bits already).
+  const uni = graphOf(buildVideoItemFilterParts(video({ blur: 40 }), 1080, 1920, 1, '[canvas]', { ...vOpts, projectColorSpace: 'hdr_hlg' }))
+  assert.ok(!uni.includes('bitand(val'))
+})
