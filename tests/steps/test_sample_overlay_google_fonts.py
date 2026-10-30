@@ -69,3 +69,11 @@ def test_jobs_pick_the_mode(fake_node_env, tmp_path, extra, mode):
     argv = json.loads(proc.stdout)
     assert argv[argv.index("--mode") + 1] == mode
     assert argv[argv.index("--jobs") + 1] == str(jobs) and argv[argv.index("--lanes") + 1] == "2"
+
+
+def test_serve_runs_node_on_the_callers_stdin_and_stdout(fake_node_env):
+    # caption_ink keeps one sampler for a whole run: --serve hands stdin/stdout to sample-frame.js --mode overlays --serve
+    proc = run_step_env(STEP, fake_node_env, "--serve", "--lanes", "3")
+    assert proc.returncode == 0, proc.stderr
+    argv = json.loads(proc.stdout)
+    assert argv[argv.index("--mode") + 1] == "overlays" and "--serve" in argv and argv[argv.index("--lanes") + 1] == "3"

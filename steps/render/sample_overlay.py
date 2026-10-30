@@ -46,7 +46,15 @@ def main():
     parser.add_argument("--no-measure",   action="store_true",
                         help="With --jobs: render each job's PNG only (no measurements), a page per overlay kept open "
                              "across its frames. Prints {results: [{pngPath} | {error, message}], browsers}.")
+    parser.add_argument("--serve",        action="store_true",
+                        help="Keep running: read a JSON list of jobs (as --jobs holds) per stdin line and answer each "
+                             "with a line of {results, browsers}, rendering PNGs only, the browsers and each overlay's "
+                             "page kept open between lines. Ends when stdin closes.")
     args = parser.parse_args()
+    if args.serve:
+        # stdin and stdout are the protocol: node reads and answers them directly
+        sys.exit(subprocess.run(["node", SAMPLE_FRAME_JS, "--mode", "overlays", "--serve", "--lanes", str(args.lanes)],
+                                check=False, env=node_child_env()).returncode)
     if args.jobs:
         _run_node(["node", SAMPLE_FRAME_JS, "--mode", "overlays" if args.no_measure else "measure", "--jobs", args.jobs,
                    "--lanes", str(args.lanes)])

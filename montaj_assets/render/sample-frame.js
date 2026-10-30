@@ -35,6 +35,7 @@ import { fileURLToPath } from 'url'
 import { spawnSync } from 'child_process'
 import { tmpdir } from 'os'
 import { createHash } from 'crypto'
+import { createInterface } from 'readline'
 
 import { bundleComponent, cleanupBundle, resolveFilePath } from './bundle.js'
 import { overlayPageLaunchOptions, installPageGuard, prefetchPropsUrls } from './page-guard.js'
@@ -214,6 +215,8 @@ export const SESSION_MAX_PAGES = 4
 // PL89g: the longest one overlay's measure may take in measureOverlays before its browser is dropped and the rest go on
 // in a new one.
 export const MEASURE_JOB_TIMEOUT_MS = 60_000
+// --serve: the fewest jobs a lane takes, so a call of a few frames stays in the first lane on the pages it has open.
+export const SERVE_MIN_PER_LANE = 4
 // PL89: the longest one frame of a session may take before it is sampled alone instead (sampleInSessions). A 3D frame
 // over overlays takes about 8 s; a capture that never returns otherwise waits out the 300 s protocolTimeout.
 export const SESSION_FRAME_TIMEOUT_MS = 60_000
@@ -348,6 +351,7 @@ if (isMain) {
       '  sample-frame.js --mode frame --project <path> --at <seconds> --no-captions --out <path>\n' +
       '  sample-frame.js --mode frame --project <path> --at <s> --at <s> ... --frames-dir <dir>\n' +
       '  sample-frame.js --mode measure|overlays --jobs <file.json> [--lanes N]\n' +
+      '  sample-frame.js --mode overlays --serve [--lanes N]   a JSON list of jobs per stdin line, a line of results each\n' +
       '  sample-frame.js --mode overlay-strip --component <path|engine:scene3d> --times \'[0,1,2]\' --duration <frames> [--project-dir <dir>]\n' +
       '    [--fps N] [--width W] [--height H] [--props \'...\'] [--google-fonts f1,f2] [--deadline-ms N]\n' +
       '    --tile-width N --out-dir <dir>   one browser, one small PNG per time (t_0000.png...)\n'
@@ -383,6 +387,7 @@ if (isMain) {
   let jobsArg       = null
   let projectDirArg = null
   let lanesArg      = null
+  let serveArg      = false
   let timesArg      = null
   let tileWidthArg  = null
   let outDirArg     = null
@@ -414,6 +419,7 @@ if (isMain) {
     if (a === '--jobs')         { jobsArg       = argv[++i]; continue }
     if (a === '--project-dir')  { projectDirArg = argv[++i]; continue }
     if (a === '--lanes')        { lanesArg      = parseInt(argv[++i], 10); continue }
+    if (a === '--serve')        { serveArg      = true; continue }
     if (a === '--times')        { try { timesArg = JSON.parse(argv[++i]) } catch { fail('invalid_times', '--times is not valid JSON') }; continue }
     if (a === '--tile-width')   { tileWidthArg  = parseInt(argv[++i], 10); continue }
     if (a === '--out-dir')      { outDirArg     = argv[++i]; continue }
@@ -546,18 +552,20 @@ if (isMain) {
       process.stderr.write(JSON.stringify({ error: err.sampleError || 'sample_failed', message: err.message }) + '\n')
       process.exit(1)
     })
+  } else if (mode === 'overlays' && serveArg) {
+    serveOverlayJobs({ lanes: lanesArg || 3 }).then(() => process.exit(0)).catch((err) => {
+      process.stderr.write(JSON.stringify({ error: 'sample_failed', message: err.message }) + '\n')
+      process.exit(1)
+    })
   } else if (mode === 'measure' || mode === 'overlays') {
     // PL89g: look's pass, every overlay in one call. --jobs: a JSON file of [{component, props, frame, fps, width, height,
     // googleFonts, duration, out}]; stdout: {results, browsers}. --mode overlays renders each job's PNG only, a page per
     // overlay kept open across its frames (caption_ink).
-    if (!jobsArg) fail('missing_argument', `--jobs <file> is required for --mode ${mode}`)
+    if (!jobsArg) fail('missing_argument', `--jobs <file> (or --serve with --mode overlays) is required for --mode ${mode}`)
     let jobs
     try { jobs = JSON.parse(readFileSync(resolve(jobsArg), 'utf8')) } catch { fail('invalid_jobs', '--jobs is not a readable JSON list') }
     if (!Array.isArray(jobs)) fail('invalid_jobs', '--jobs is a JSON list of overlays to measure')
-    measureOverlays(jobs.map((j) => ({
-      componentPath: resolve(j.component), props: j.props || {}, frame: j.frame || 0, fps: j.fps || 30, width: j.width || 1080,
-      height: j.height || 1920, googleFonts: j.googleFonts || [], durationFrames: j.duration ?? null, outPath: resolve(j.out),
-    })), { lanes: lanesArg || 3, measure: mode === 'measure' }).then((out) => {
+    measureOverlays(jobs.map(overlayJob), { lanes: lanesArg || 3, measure: mode === 'measure' }).then((out) => {
       process.stdout.write(JSON.stringify(out) + '\n')
     }).catch((err) => {
       process.stderr.write(JSON.stringify({ error: 'sample_failed', message: err.message }) + '\n')
@@ -1092,14 +1100,17 @@ async function captureOverlay({ page, guard, pageErrors, fontFailures, component
  * With `measure: false` (--mode overlays, caption_ink's frames) each job is only rendered to its PNG, and a lane keeps one
  * page per overlay (component and props) open across its frames, setting each frame and capturing it: many frames of
  * one overlay cost one bundle and one page load per lane. Results are then [{pngPath} | {error, message}].
+ * With `sessions` (an array, one per lane: --serve) the lanes use those and leave them open for the next call, so a
+ * caller asking for frames round after round starts its browsers and loads its pages once; a lane then takes at least
+ * `minPerLane` jobs, so a call of a few frames stays in the first lane, on the pages it already has open.
  */
-export async function measureOverlays(jobs, { lanes = 3, jobTimeoutMs = MEASURE_JOB_TIMEOUT_MS, measure = true, newSession = () => createSampleSession({ keepLoadErrors: !measure }) } = {}) {
+export async function measureOverlays(jobs, { lanes = 3, jobTimeoutMs = MEASURE_JOB_TIMEOUT_MS, measure = true, newSession = () => createSampleSession({ keepLoadErrors: !measure }), sessions = null, minPerLane = 1 } = {}) {
   const results = new Array(jobs.length)
-  const n = Math.max(1, Math.min(lanes, jobs.length))
+  const n = Math.max(1, Math.min(sessions ? sessions.length : lanes, Math.ceil(jobs.length / Math.max(1, minPerLane))))
   const size = Math.ceil(jobs.length / n)
   let browsers = 0
-  const lane = async (from, to) => {
-    let session = newSession()
+  const lane = async (index, from, to) => {
+    let session = sessions ? sessions[index] : newSession()
     try {
       for (let k = from; k < to; k++) {
         let timer
@@ -1115,6 +1126,7 @@ export async function measureOverlays(jobs, { lanes = 3, jobTimeoutMs = MEASURE_
             browsers += session.launched()
             await session.abort()
             session = newSession()
+            if (sessions) sessions[index] = session
           }
         } finally {
           clearTimeout(timer)
@@ -1122,13 +1134,48 @@ export async function measureOverlays(jobs, { lanes = 3, jobTimeoutMs = MEASURE_
       }
     } finally {
       browsers += session.launched()
-      await session.close()
+      if (!sessions) await session.close()
     }
   }
   const runs = []
-  for (let from = 0; from < jobs.length; from += size) runs.push(lane(from, Math.min(jobs.length, from + size)))
+  for (let from = 0; from < jobs.length; from += size) runs.push(lane(runs.length, from, Math.min(jobs.length, from + size)))
   await Promise.all(runs)
   return { results, browsers }
+}
+
+/**
+ * --serve: --mode overlays kept running for a caller that asks round after round (caption_ink). Reads one JSON list of
+ * jobs (as --jobs holds) per line of `input` and answers each with one line of {results, browsers} on `output`, in
+ * order, through `lanes` sessions that stay open between lines (measureOverlays with `sessions`), so the browsers start
+ * and each overlay's page loads once for the whole run. A line that is not a JSON list answers {error}. Closes the
+ * sessions when `input` ends.
+ */
+export async function serveOverlayJobs({ input = process.stdin, output = process.stdout, lanes = 3, minPerLane = SERVE_MIN_PER_LANE, newSession = () => createSampleSession({ keepLoadErrors: true }) } = {}) {
+  const sessions = Array.from({ length: Math.max(1, lanes) }, () => newSession())
+  const write = (obj) => new Promise((done) => output.write(JSON.stringify(obj) + '\n', done))
+  try {
+    for await (const line of createInterface({ input, crlfDelay: Infinity })) {
+      if (!line.trim()) continue
+      let jobs
+      try { jobs = JSON.parse(line) } catch { jobs = null }
+      if (!Array.isArray(jobs)) {
+        await write({ error: 'invalid_jobs', message: 'each line is a JSON list of overlay jobs' })
+        continue
+      }
+      const out = await measureOverlays(jobs.map(overlayJob), { measure: false, sessions, minPerLane, newSession })
+      await write(out)
+    }
+  } finally {
+    for (const session of sessions) await session.close()
+  }
+}
+
+/** A --jobs entry ({component, props, frame, fps, width, height, googleFonts, duration, out}) as sampleOverlay's arguments. */
+function overlayJob(j) {
+  return {
+    componentPath: resolve(j.component), props: j.props || {}, frame: j.frame || 0, fps: j.fps || 30, width: j.width || 1080,
+    height: j.height || 1920, googleFonts: j.googleFonts || [], durationFrames: j.duration ?? null, outPath: resolve(j.out),
+  }
 }
 
 /**

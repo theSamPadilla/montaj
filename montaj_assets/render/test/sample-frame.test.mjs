@@ -33,7 +33,8 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 
-import { sampleOverlay, sampleFrame, clampAtToEnd, buildFrameCacheKey, buildOverlayCacheKey, SAMPLE_CACHE_VERSION, measureOverlays } from '../sample-frame.js'
+import { sampleOverlay, sampleFrame, clampAtToEnd, buildFrameCacheKey, buildOverlayCacheKey, SAMPLE_CACHE_VERSION, measureOverlays, serveOverlayJobs } from '../sample-frame.js'
+import { PassThrough } from 'stream'
 import { buildOverlayFilterParts } from '../encode-segment.js'
 import { FFMPEG } from '../ffmpeg-bin.js'
 import { MASTER_LOOK } from '../look.js'
@@ -1881,6 +1882,48 @@ test('measureOverlays with measure: false: many frames of one overlay in one bro
     assert.equal(readPixelRgba(join(dir, 'grow-30.png'), 500, 800).a, 255, 'frame 30 has')
     assert.equal(readPixelRgba(join(dir, 'grow-50.png'), 500, 1900).a, 255, 'frame 50 paints row 1900')
     assert.equal(browsers, 1, 'one browser for the four')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// --serve: caption_ink asks for frames round after round; the browsers and the overlay's page stay open between rounds.
+test('serveOverlayJobs: a line of jobs per round, answered in order, one browser for every round', { timeout: 120_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-serve-'))
+  try {
+    writeFileSync(join(dir, 'grow.jsx'), "export default function T() { return <div style={{ position: 'absolute', left: 0, top: 0, width: 1080, " +
+      "height: frame * 40, background: 'white' }} /> }\n")
+    const job = (frame) => ({ component: join(dir, 'grow.jsx'), frame, fps: 30, width: 1080, height: 1920, duration: 60, out: join(dir, `g-${frame}.png`) })
+    const input = new PassThrough()
+    const output = new PassThrough()
+    const lines = []
+    let pending = ''
+    const got = (n) => new Promise((done) => {
+      const check = () => { if (lines.length >= n) { output.off('data', on); done() } }
+      const on = (chunk) => {
+        pending += chunk
+        const parts = pending.split('\n')
+        pending = parts.pop()
+        lines.push(...parts.filter(Boolean).map((l) => JSON.parse(l)))
+        check()
+      }
+      output.on('data', on)
+      check()
+    })
+    const served = serveOverlayJobs({ input, output, lanes: 3 })
+    input.write(JSON.stringify([job(10)]) + '\n')
+    await got(1)
+    input.write('not json\n')
+    input.write(JSON.stringify([job(30), job(50)]) + '\n')
+    await got(3)
+    input.end()
+    await served
+    assert.equal(lines[0].results[0].pngPath, join(dir, 'g-10.png'))
+    assert.ok(lines[1].error, 'a line that is not a list says so')
+    assert.deepEqual(lines[2].results.map((r) => r.pngPath), [join(dir, 'g-30.png'), join(dir, 'g-50.png')])
+    assert.equal(readPixelRgba(join(dir, 'g-10.png'), 500, 800).a, 0)
+    assert.equal(readPixelRgba(join(dir, 'g-30.png'), 500, 800).a, 255)
+    assert.equal(lines[2].browsers, 1, 'the second round used the browser the first started')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
