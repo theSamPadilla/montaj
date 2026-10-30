@@ -690,7 +690,7 @@ They match the export within 8 codes (12 in a video's thinly covered pixels; mea
 1080x1920 full-frame clip of known footage size: 11.7 s for spin 30 degrees and
 12.3 s for zoom 40%, against 4.6 s unblurred, 5.7 s uniform 40 and 8.6 s linear
 40 (about 25 ms a frame more); a clip whose footage size is unknown blurs after
-its upscale and is far slower (262 s for spin). On the
+its upscale and is far slower (262 s for spin). On an HDR (10-bit) project each copy is moved in about 16 bits so a 10-bit picture does not band: the same clip in HLG took 31.9 s for spin and 30.0 s for zoom against 10.7 s unblurred (SDR in the same session: 9.6 s spin, 3.4 s unblurred). On the
 preview a selected masked clip shows the mask's outline, resize squares, a
 rotate handle and dashed rings marking the feather band; dragging the outer ring
 sets the feather (`preview/MaskGizmo.tsx`). The data is in
