@@ -6,8 +6,9 @@
 //
 //   - the render engine (montaj_assets/render/item-blur.js), as ffmpeg `gblur`
 //     on the fitted picture, before the box is padded
-//   - the editor preview, as an SVG `feGaussianBlur` with `edgeMode="duplicate"`
-//     whose filter region is the picture's rect in its box
+//   - the editor preview, as an SVG filter (`feGaussianBlur` and a
+//     renormalisation) on the clip's media box, cut to the picture's rect in
+//     the box (`pictureRectInBox`)
 //
 // ── Conventions ─────────────────────────────────────────────────────────────
 //
@@ -17,11 +18,12 @@
 //      is `blur * min(w, h) / 1080` ({@link blurSigmaPx}).
 //
 //   2. THE PICTURE is what is blurred: the item's footage or image after its
-//      crop and fit, inside its box, before the box's transparent padding. Its
-//      edges stay hard and opaque: past an edge the blur reads the edge pixel
-//      again (ffmpeg's `gblur` does, measured within 5 codes on a hard step;
-//      the preview's `edgeMode="duplicate"` does by definition). So a blurred
-//      clip that fills the frame never gets dark or see-through edges.
+//      crop and fit, inside its box, before the box's transparent padding. The
+//      blur averages only the picture's own pixels: near an edge the weights
+//      that fall outside it are dropped and the rest renormalised. So its
+//      edges stay opaque and keep their colour (a blurred clip that fills the
+//      frame never gets dark or see-through edges), and the item's own alpha
+//      is kept as it was.
 //
 //   3. 0, absent or anything that is not a finite number is no blur. Above
 //      {@link BLUR_MAX} is held to it (save refuses it: lib/overlay_validation.py).

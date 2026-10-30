@@ -50,7 +50,7 @@ import { assertSegmentHasVideo } from './segment-check.js'
 import { opacityFilterStep } from './item-opacity.js'
 import { planItemMask, writeItemMask, maskFilterParts } from './item-mask.js'
 import { blendCompositeParts } from './item-blend.js'
-import { blurFilterStep, blurPixelFormat } from './item-blur.js'
+import { blurFilterStep, VIDEO_BLUR_FORMAT, IMAGE_BLUR_FORMAT } from './item-blur.js'
 import { pMap } from './p-map.js'
 import {
   geometryFor, geometryAt, toRotatedPixelBox, toPixelBox, compileTrackExprInfo,
@@ -1284,15 +1284,17 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
     ? `crop=w='round(iw*${stillCrop.w})':h='round(ih*${stillCrop.h})':x='round(iw*${stillCrop.x})':y='round(ih*${stillCrop.y})':exact=1,`
     : ''
   // A blur (item-blur.js) runs on the fitted picture, before a `contain`
-  // fit's transparent pad, so its edges stay opaque; every fit is RGBA by
-  // then, so it needs no format pin. On an animated box it runs at the peak
-  // box with a per-frame sigma. '' (and every string below unchanged) without one.
-  const blur = blurFilterStep(item, {
-    vw, vh,
+  // fit's transparent pad, so its edges stay opaque. In planar RGB with the
+  // image's own alpha put back, then RGBA again, so every fit still ends in
+  // `format=rgba`. On an animated box it runs at the peak box with a
+  // per-frame sigma. '' (and every string below unchanged) without one.
+  const blurCore = blurFilterStep(item, {
+    vw, vh, format: IMAGE_BLUR_FORMAT, alpha: true, name: 'bl' + idx,
     animated: anim?.needsAnimatedChain
-      ? { kind: 'image', peakW: anim.peakW, peakH: anim.peakH, offset: imgOffset, duration, fps: opts?.fps ?? 30, name: 'bl' + idx }
+      ? { kind: 'image', peakW: anim.peakW, peakH: anim.peakH, offset: imgOffset, duration, fps: opts?.fps ?? 30 }
       : undefined,
   })
+  const blur = blurCore ? `${blurCore},format=rgba` : ''
   let fitChain
   if (fit === 'contain') {
     fitChain = `scale=${fitW}:${fitH}:force_original_aspect_ratio=decrease,format=rgba,${blur ? blur + ',' : ''}`
@@ -1721,10 +1723,11 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
 
   // ── The blur (item-blur.js) ───────────────────────────────────────────────
   //
-  // On the fitted footage, before the pad, so the transparent pad never
-  // reaches the picture and its edges stay opaque; after the conversion, so it
-  // blurs the colours the canvas gets. Pinned to 4:4:4 first: gblur blurs a
-  // subsampled chroma plane twice as far. With nothing between them but the
+  // On the fitted footage, before the pad, so the picture's own edges are the
+  // ones it renormalises at and stay opaque; after the conversion, so it blurs
+  // the colours the canvas gets. In 16-bit 4:4:4 with alpha (item-blur.js); a
+  // clip with an alpha of its own gets it back,
+  // any other comes out opaque. With nothing between them but the
   // scale (no conversion, no graded cutout) and the scale an UPSCALE of known
   // footage, it runs on the footage before the scale instead, at the sigma
   // scaled down by the same factor: blurring then upscaling is the same
@@ -1735,21 +1738,20 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   let preBlur = ''
   let postBlur = ''
   if (blurSigmaPx(item, vw, vh) > 0) {
-    const format = blurPixelFormat({
-      tenBit: Boolean(conversionStep) || isHdr(projectColorSpace),
-      alpha: item.probedAlpha === true || Boolean(skipConversionForAlpha) || Boolean(cutoutGrade),
-    })
+    const format = VIDEO_BLUR_FORMAT
+    const alpha = item.probedAlpha === true || Boolean(skipConversionForAlpha) || Boolean(cutoutGrade)
+    const name = 'bl' + idx
     const animated = anim?.needsAnimatedChain
-      ? { kind: 'video', peakW: anim.peakW, peakH: anim.peakH, offset: seekOffset, duration, fps: opts.fps ?? 30, name: 'bl' + idx }
+      ? { kind: 'video', peakW: anim.peakW, peakH: anim.peakH, offset: seekOffset, duration, fps: opts.fps ?? 30 }
       : undefined
     const fitted = footageW && footageH && !conversionStep && !cutoutGrade
       ? decreaseFitSize(footageW, footageH, padW, padH, 1) : null
     const unitX = fitted ? footageW / fitted.width : 1
     const unitY = fitted ? footageH / fitted.height : 1
     if (fitted && unitX < 1 && unitY < 1 && blurSigmaPx(item, vw, vh) * Math.max(unitX, unitY) >= PRE_SCALE_BLUR_MIN_SIGMA) {
-      preBlur = `${blurFilterStep(item, { vw, vh, format, unitX, unitY, animated })},`
+      preBlur = `${blurFilterStep(item, { vw, vh, format, alpha, name, unitX, unitY, animated })},`
     } else {
-      postBlur = `${blurFilterStep(item, { vw, vh, format, animated })},`
+      postBlur = `${blurFilterStep(item, { vw, vh, format, alpha, name, animated })},`
     }
   }
   const padStep = transparentPad
