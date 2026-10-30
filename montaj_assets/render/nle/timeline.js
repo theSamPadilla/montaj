@@ -103,6 +103,7 @@
  *                        listed on every clip.
  *   'mask'               a clip's mask (non-graphic clips).
  *   'blendMode:<mode>'   a blend mode other than normal (non-graphic clips).
+ *   'blur'               a clip's blur (non-graphic clips).
  *   'loop'               a looping video (the editor preview loops it).
  *   'remove_bg'          background removal with no cutout file yet: the
  *                        original, background and all, is linked.
@@ -130,6 +131,7 @@ import {
   MASK_KEYFRAME_PROPS,
   MASK_POINTS_PROP,
   blendModeOf,
+  blurOf,
 } from '@bycrux/timeline-core'
 import { enabledTracks, withEnabledItemTracks, effectiveItemAudio } from '../project-tracks.js'
 import { resolveProjectSrc } from '../project-paths.js'
@@ -683,6 +685,7 @@ function unsupportedOf(entry, motionBlur) {
     if (maskAt(item, 0)) out.push('mask')
     const blend = blendModeOf(item)
     if (blend !== 'normal') out.push(`blendMode:${blend}`)
+    if (blurOf(item) > 0) out.push('blur')
   }
   if (kind === 'video' && item.loop) out.push('loop')
   if (kind === 'video' && item.remove_bg) {

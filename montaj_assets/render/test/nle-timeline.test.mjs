@@ -501,18 +501,18 @@ describe('left out of the editor', () => {
     assert.ok(old.warnings.every((w) => !/drawtext/.test(w)), old.warnings.join(' | '))
   })
 
-  test('a clip with a mask, a blend mode and an opacity curve lists all three as left out', () => {
+  test('a clip with a mask, a blend mode, a blur and an opacity curve lists them all as left out', () => {
     const tl = build({
       id: 'cm', status: 'final', settings: { resolution: [1920, 1080], fps: 30 },
       tracks: [{ id: 'trk-0', items: [
         { id: 'm', type: 'video', src: '/abs/m.mp4', start: 0, end: 2, inPoint: 0, outPoint: 2,
-          mask: { shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5 }, blendMode: 'screen',
+          mask: { shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5 }, blendMode: 'screen', blur: 30,
           keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 1, value: 1 }] },
             { prop: 'maskW', points: [{ t: 0, value: 0.2 }, { t: 1, value: 0.6 }] }] },
-        { id: 'plain', type: 'video', src: '/abs/p.mp4', start: 2, end: 4, inPoint: 0, outPoint: 2, blendMode: 'normal' },
+        { id: 'plain', type: 'video', src: '/abs/p.mp4', start: 2, end: 4, inPoint: 0, outPoint: 2, blendMode: 'normal', blur: 0 },
       ] }],
     })
-    assert.deepEqual(clip(tl, 'm').unsupported, ['keyframes:opacity', 'keyframes:maskW', 'mask', 'blendMode:screen'])
+    assert.deepEqual(clip(tl, 'm').unsupported, ['keyframes:opacity', 'keyframes:maskW', 'mask', 'blendMode:screen', 'blur'])
     assert.deepEqual(clip(tl, 'plain').unsupported, [])
   })
 

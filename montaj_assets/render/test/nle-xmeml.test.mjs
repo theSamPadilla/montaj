@@ -691,7 +691,7 @@ describe('markers', () => {
   id: 'cm', status: 'final', settings: { resolution: [1920, 1080], fps: 30 },
   tracks: [{ id: 'trk-0', items: [
     { id: 'm', type: 'video', src: '/abs/m.mp4', start: 0, end: 2, inPoint: 0, outPoint: 2,
-      mask: { shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5 }, blendMode: 'screen',
+      mask: { shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5 }, blendMode: 'screen', blur: 30,
       keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 1, value: 1 }] }] },
   ] }],
 })
@@ -699,6 +699,7 @@ describe('markers', () => {
     const names = kids(c, 'marker').map((m) => txt(m, 'name'))
     assert.ok(names.includes('Stays in Montaj: mask'), names.join(' | '))
     assert.ok(names.includes('Stays in Montaj: blend mode'), names.join(' | '))
+    assert.ok(names.includes('Stays in Montaj: blur'), names.join(' | '))
     assert.ok(names.includes('Stays in Montaj: fade'), names.join(' | '))
   })
 
@@ -728,6 +729,7 @@ describe('markers', () => {
     assert.equal(markerLabel('keyframes:maskPoints'), 'Stays in Montaj: moving mask')
     assert.equal(markerLabel('mask'), 'Stays in Montaj: mask')
     assert.equal(markerLabel('blendMode:screen'), 'Stays in Montaj: blend mode')
+    assert.equal(markerLabel('blur'), 'Stays in Montaj: blur')
     assert.equal(markerLabel('keyframes:offsetY'), markerLabel('keyframes:offsetX'))
     assert.equal(markerLabel('keyframes:blur'), 'Stays in Montaj: blur animation')
     assert.equal(markerLabel('fadeOutCurve:log'), 'Stays in Montaj: fade out shape')

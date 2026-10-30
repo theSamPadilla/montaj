@@ -342,11 +342,15 @@ describe('aejsx: the script', () => {
   id: 'cm', status: 'final', settings: { resolution: [1920, 1080], fps: 30 },
   tracks: [{ id: 'trk-0', items: [
     { id: 'm', type: 'video', src: '/abs/m.mp4', start: 0, end: 2, inPoint: 0, outPoint: 2,
-      mask: { shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5 }, blendMode: 'screen',
+      mask: { shape: 'ellipse', x: 0.5, y: 0.5, w: 0.5, h: 0.5 }, blendMode: 'screen', blur: 30,
       keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 1, value: 1 }] }] },
+    { id: 'b', type: 'video', src: '/abs/b.mp4', start: 2, end: 4, inPoint: 0, outPoint: 2, blur: 30 },
   ] }],
 })
-    const w = out.warnings.filter((x) => /its mask, blend mode or opacity animation is not in the timeline/.test(x))
+    const bw = out.warnings.filter((x) => /^b: its mask, blend mode, blur or opacity animation/.test(x))
+    assert.equal(bw.length, 1, out.warnings.join(' | '))
+    assert.ok(out.leftOut.some((l) => l.clip === 'b' && l.label === 'Stays in Montaj: blur'))
+    const w = out.warnings.filter((x) => /^m: its mask, blend mode, blur or opacity animation is not in the timeline/.test(x))
     assert.equal(w.length, 1, out.warnings.join(' | '))
     assert.match(w[0], /^m:/)
     assert.ok(out.leftOut.some((l) => l.clip === 'm' && l.label === 'Stays in Montaj: blend mode'))

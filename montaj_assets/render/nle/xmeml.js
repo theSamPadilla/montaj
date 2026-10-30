@@ -145,6 +145,7 @@ const LABELS = {
   loop: 'Stays in Montaj: loop',
   mask: 'Stays in Montaj: mask',
   blendMode: 'Stays in Montaj: blend mode',
+  blur: 'Stays in Montaj: blur',
   remove_bg: 'Stays in Montaj: background removal',
   'remove_bg:nobg_src': 'Cutout linked, background removed',
   motionBlur: 'Stays in Montaj: motion blur',
