@@ -421,11 +421,12 @@ def test_a_static_overlay_is_rendered_only_at_the_coarse_frames_either_side_of_i
     # Was one render at the middle of the overlay's span for every caption; an overlay is now judged at each caption's
     # own time. 30 fps: the fine grid is 8 frames, the coarse 32. a (mid 1.5 s, frame 48) lies between 32 and 64, b
     # (5.5 s, 168) between 160 and 192, c (8.5 s) is 256, on the coarse grid itself. The anchors agree, so nothing
-    # between them is rendered.
+    # between them is judged; each card's luminance is then read at the caption's own frame (48, 168; 256 is one), which
+    # was the nearest anchor before (a frame that depended on what else the run rendered).
     calls = []
     p = _project([_matte()], [_seg("a", 1, 2), _seg("b", 5, 6), _seg("c", 8, 9)])
     changes, _, _ = _plan2(p, tmp_path, _alpha_png(tmp_path, "m7", window=(60, 300, 1020, 900)), calls=calls)
-    assert sorted(calls) == [("matte", n) for n in (32, 64, 160, 192, 256)], "each frame once"
+    assert sorted(calls) == [("matte", n) for n in (32, 48, 64, 160, 168, 192, 256)], "each frame once"
     assert set(changes) == {("id", "a"), ("id", "b"), ("id", "c")}
 
 
@@ -1146,8 +1147,10 @@ def test_a_caption_straddling_the_moment_the_card_reaches_the_band_is_split(tmp_
     assert ("id", "pre") not in changes and changes[("id", "post")]["ink"] == "dark"
     assert (counts["split"], counts["snapped"], counts["dark"]) == (1, 1, 2) and warnings == []
     # the coarse frames either side of every caption (0..160, 32 apart); 80, where 64 and 96 disagree; 72, the dark
-    # piece's first grid frame, between 64 and 80, which disagree. Nothing else: the card is the same between the rest.
-    assert sorted(calls) == [0, 32, 64, 72, 80, 96, 128, 160]
+    # piece's first grid frame, between 64 and 80, which disagree. Nothing else is judged: the card is the same between
+    # the rest. Then each dark caption's luminance at its own frame: the piece's (96) is rendered, post's (5.0 s, 152)
+    # is rendered for it.
+    assert sorted(calls) == [0, 32, 64, 72, 80, 96, 128, 152, 160]
 
 
 def test_a_rerun_over_an_unchanged_settling_card_renders_nothing_and_says_the_same(tmp_path):
@@ -1156,7 +1159,7 @@ def test_a_rerun_over_an_unchanged_settling_card_renders_nothing_and_says_the_sa
     first = _settle_plan(p, tmp_path, calls)
     rendered = len(calls)
     second = _settle_plan(p, tmp_path, calls)
-    assert rendered == 8 and len(calls) == rendered, "every frame is a cache hit"
+    assert rendered == 9 and len(calls) == rendered, "every frame is a cache hit"
     assert second[0] == first[0] and second[1] == first[1]
 
 
@@ -1215,3 +1218,148 @@ def test_a_snapped_piece_is_read_where_it_will_show_so_a_second_pass_changes_not
     assert ci.apply_changes(fresh, changes, _read_of(p), str(tmp_path))
     again, _, _ = ci.plan(fresh, lambda t: None, W, H, overlay_fn=overlay, project_dir=str(tmp_path))
     assert not ci.apply_changes(copy.deepcopy(fresh), again, _read_of(fresh), str(tmp_path))
+
+
+# -- review fixes: the cache holds a run's working set, a budget per overlay, rounds running out, the frame a card is
+# read at, and overlays that share a label ----------------------------------------------------------------------------
+
+def _long_card_plan(tmp_path, calls, seconds=240):
+    """A card over the whole of a `seconds` project with a caption every second: one frame per second to judge and
+    one per caption to read."""
+    (tmp_path / "overlays").mkdir(exist_ok=True)
+    (tmp_path / "overlays" / "footage-card.jsx").write_text("export default () => null")
+    p = _project([_matte(end=seconds)], [_seg(f"s{i}", i + 0.1, i + 0.9) for i in range(seconds)],
+                 base=_video(end=seconds))
+    card = _alpha_png(tmp_path, "long", window=(60, 300, 1020, 900))
+
+    def overlay(item, n):
+        calls.append(n)
+        return card
+
+    def frame(t):
+        raise AssertionError("a JSX card renders no frame")
+    return ci.plan(p, frame, W, H, overlay_fn=overlay, project_dir=str(tmp_path), cache_path=str(tmp_path / "cache.json"))
+
+
+def test_a_run_needing_more_frames_than_the_cache_cap_renders_nothing_the_second_time(tmp_path, monkeypatch):
+    # Was: 200 entries at most and a hit never re-stamped, so a run needing 226 frames evicted ones it still needed and
+    # every later run rendered about 26 again.
+    monkeypatch.setattr(ci, "MEASURE_BUDGET", 10_000)
+    monkeypatch.setattr(ci, "CACHE_MAX_ENTRIES", 200)
+    calls = []
+    first = _long_card_plan(tmp_path, calls)
+    rendered = len(calls)
+    assert rendered > 200 and first[1]["dark"] == 240
+    second = _long_card_plan(tmp_path, calls)
+    assert len(calls) == rendered, "every frame the run needs is kept"
+    assert second[0] == first[0]
+
+
+def test_an_entry_read_from_the_cache_is_kept_over_older_ones(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr(ci, "CACHE_MAX_ENTRIES", 2)
+    path = str(tmp_path / "c.json")
+    ci.store_cache(path, {"a": {"rows": [1]}})
+    time.sleep(0.01)
+    ci.store_cache(path, {"b": {"rows": [1]}})
+    time.sleep(0.01)
+    ci.store_cache(path, {"c": {"rows": [1]}}, used={"a"})   # a was read this run, b was not
+    assert set(json.loads((tmp_path / "c.json").read_text())["entries"]) == {"a", "c"}
+
+
+def test_a_long_card_costs_at_most_its_budget_and_a_rerun_renders_nothing(tmp_path):
+    calls = []
+    changes, counts, warnings = _long_card_plan(tmp_path, calls)
+    assert len(calls) <= ci.MEASURE_BUDGET + 1, "the budget, and the middle frame"
+    assert counts["dark"] == 240, "the captions past the budget are judged at the card's middle, a card there"
+    assert len(warnings) == 1 and "matte" in warnings[0] and str(ci.MEASURE_BUDGET) in warnings[0]
+    rendered = len(calls)
+    again = _long_card_plan(tmp_path, calls)
+    assert len(calls) == rendered and again == (changes, counts, warnings), "the budget counts hits: the same split"
+
+
+def test_past_its_budget_an_overlay_is_judged_at_its_middle_with_one_warning(tmp_path, monkeypatch):
+    # the settling card (covers the band from frame 78) over 60 s: "pre" (0.2 to 0.8 s) is judged within the budget,
+    # over footage; the captions after it are judged at the middle of the span (30 s), where the card is settled
+    monkeypatch.setattr(ci, "MEASURE_BUDGET", 4)
+    (tmp_path / "overlays").mkdir(exist_ok=True)
+    (tmp_path / "overlays" / "footage-card.jsx").write_text("export default () => null")
+    segs = [_seg("pre", 0.2, 0.8)] + [_seg(f"s{i}", i + 0.1, i + 0.9) for i in range(5, 40, 5)]
+    p = _project([_matte(end=60)], segs, base=_video(end=60))
+    calls = []
+    alpha = _settling(tmp_path)
+
+    def overlay(item, n):
+        calls.append(n)
+        return alpha(item, n)
+    changes, counts, warnings = ci.plan(p, lambda t: None, W, H, overlay_fn=overlay, project_dir=str(tmp_path))
+    assert ("id", "pre") not in changes
+    assert counts["dark"] == 7 and all(changes[("id", f"s{i}")]["ink"] == "dark" for i in range(5, 40, 5))
+    assert len(calls) == len(set(calls)) <= 5 and ci._mid_frame(p["tracks"][1]["items"][0], 30) in calls
+    assert len(warnings) == 1 and "matte" in warnings[0] and "middle" in warnings[0]
+
+
+def test_rounds_running_out_warn_naming_the_captions_left_unchanged(tmp_path, monkeypatch):
+    monkeypatch.setattr(ci, "MEASURE_ROUNDS", 1)   # the anchors only: the straddler's words still disagree
+    p = _settle_project(tmp_path, [_straddler(), _seg("post", 4.5, 5.5)])
+    changes, counts, warnings = _settle_plan(p, tmp_path, cache=False)
+    assert ("id", "a") not in changes and changes[("id", "post")]["ink"] == "dark"
+    assert len(warnings) == 1 and "1 rounds" in warnings[0] and "2.5s left unchanged" in warnings[0], warnings
+
+
+def test_a_card_is_read_at_the_captions_own_frame_not_the_nearest_rendered_one(tmp_path):
+    # The card covers the band throughout and turns from grey to paper at frame 40, inside the coarse cell 32..64. The
+    # caption (1 to 2 s) is frame 48, paper. It was read at the nearer of the frames rendered either side of it (32,
+    # grey), so what it read depended on what else the run had asked for.
+    grey, paper = (0xa6, 0xa4, 0x9e), PAPER[:3]
+    pngs = {}
+    for name, rgb in (("grey", grey), ("paper", paper)):
+        img = Image.new("RGBA", (W // 2, H // 2), (*rgb, 255))
+        img.paste((0, 0, 0, 0), (30, 150, 510, 450))
+        img.save(tmp_path / f"turn-{name}.png")
+        pngs[name] = str(tmp_path / f"turn-{name}.png")
+    p = _settle_project(tmp_path, [_seg("a", 1, 2)])
+    changes, _, _ = ci.plan(p, lambda t: None, W, H, overlay_fn=lambda item, n: pngs["paper" if n >= 40 else "grey"],
+                            project_dir=str(tmp_path))
+    assert changes[("id", "a")]["inkAuto"]["backdrop"] == pytest.approx(_lum(paper), abs=0.002)
+    assert changes[("id", "a")]["ink"] == "dark"
+
+
+def test_two_overlays_with_no_id_on_one_track_are_judged_apart(tmp_path):
+    # Both are "track 1 item": their frames were kept under that label, so frame 48 of the second (6.6 s) was read
+    # from the first's render.
+    (tmp_path / "overlays").mkdir(exist_ok=True)
+    (tmp_path / "overlays" / "footage-card.jsx").write_text("export default () => null")
+    first, second = _matte(start=0, end=5), _matte(start=5, end=10)
+    first.pop("id"), second.pop("id")
+    p = _project([first, second], [_seg("a", 1, 2), _seg("b", 6, 7)])
+    card, clear = _alpha_png(tmp_path, "nid-card", window=(60, 300, 1020, 900)), _alpha_png(tmp_path, "nid-clear", window="all")
+    changes, _, warnings = ci.plan(p, lambda t: None, W, H, project_dir=str(tmp_path),
+                                   overlay_fn=lambda item, n: card if item["start"] == 0 else clear)
+    assert changes[("id", "a")]["inkAuto"]["card"] == "track 1 item" and ("id", "b") not in changes and warnings == []
+
+
+def test_two_overlays_with_no_id_on_the_same_frame_render_to_two_files(tmp_path, monkeypatch):
+    import json
+    (tmp_path / "overlays").mkdir()
+    (tmp_path / "overlays" / "footage-card.jsx").write_text("export default () => null")
+    first, second = _matte(start=0, end=5), _matte(start=5, end=10)
+    first.pop("id"), second.pop("id")
+    p = _project([first, second])
+    seen = []
+
+    def fake(cmd, timeout):
+        jobs = json.loads(Path(cmd[cmd.index("--jobs") + 1]).read_text())
+        for j in jobs:
+            Image.new("RGBA", (4, 4)).save(j["out"])
+        seen.append(cmd)
+        return 0, json.dumps({"results": [{"pngPath": j["out"]} for j in jobs], "browsers": 1}) + "\n", ""
+    monkeypatch.setattr(ci, "_run_group", fake)
+    render = ci.overlay_renderer(p, str(tmp_path), str(tmp_path))
+    refs = [ref for _, _, ref in ci._stack_refs(p, 1)] + [ref for _, _, ref in ci._stack_refs(p, 6)]
+    refs = [r for r in refs if r[0] == "track 1 item"]
+    done, failed = render.many([((refs[0], 8), first), ((refs[1], 8), second)])
+    assert failed == {} and len(seen) == 1 and "--no-measure" in seen[0], "one call for both"
+    paths = [done[(refs[0], 8)], done[(refs[1], 8)]]
+    assert paths[0] != paths[1] and all(Path(x).is_file() for x in paths)
+    assert ci._overlay_png_name(first, 8, refs[0]) != ci._overlay_png_name(first, 8, refs[1])

@@ -21,10 +21,12 @@ below has shrunk into it) is rendered alone at those times, on a grid (`_judge`)
 either side of a caption first, and the frames between, down to MEASURE_FINE_S, only where those two disagree. So an
 overlay whose coverage never changes costs about one frame per second of captions over it, one that changes is split
 where it changes (a dark piece starts or ends where the card reaches or leaves the band, to the fine grid, as it does
-at the card's own start and end), and every frame is a cache hit the next time.
+at the card's own start and end), and every frame is a cache hit the next time. A round's frames are rendered in one
+sample_overlay call (`overlay_renderer`: a page per overlay kept open across its frames), and an overlay is given at
+most MEASURE_BUDGET frames a run: past them, the captions still to judge are judged at its middle frame (one warning).
 
 A 3D item's backdrop is read from one frame of the project without the captions, and a JSX card from the overlay
-rendered alone at the frame that showed it covering the caption; what is read from each (per-row means, see
+rendered alone at the caption's own frame; what is read from each (per-row means, see
 `row_luminances` and `overlay_rows`) is kept in `render/samples/caption-ink-cache.json`, keyed by everything on screen
 and the frame (`backdrop_key`, `overlay_key`): a re-run over an unchanged backdrop renders nothing.
 """
@@ -37,7 +39,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -69,16 +70,21 @@ MIN_PIECE_S = 0.25
 MEASURE_FINE_S = 0.25
 MEASURE_COARSE_S = 1.0
 MEASURE_ROUNDS = 8
+# The most frames of one overlay a plan asks for (cache hits count too, so a re-run decides the same), in time order:
+# past it, the overlay is judged as it was before captions were judged at their own time, by its frame at the middle of
+# its span, for the captions not yet judged, with one warning. A long card never costs minutes.
+MEASURE_BUDGET = 64
 RENDER_TIMEOUT_S = 90
 # The step's own wall clock for the frames: one not started by then counts as failed, so the caller's timeout (serve's
 # 300 s) never has to kill it.
 DEADLINE_S = 240
 LOCK_TIMEOUT = 30.0
 # The 3D backdrop cache: its file name (beside the frames, in <project>/render/samples), a version string that is part of
-# every key (bump it when what a key covers changes), and the most entries kept (the oldest go first).
+# every key (bump it when what a key covers changes), and the most entries kept (the least recently used go first; an
+# entry this plan read is never dropped, however many there are).
 CACHE_FILE = "caption-ink-cache.json"
 CACHE_VERSION = "caption-ink-rows-2"
-CACHE_MAX_ENTRIES = 200
+CACHE_MAX_ENTRIES = 400
 _LUM = (0.2126, 0.7152, 0.0722)   # Rec.709
 
 
@@ -156,8 +162,10 @@ def cards(project):
     return out
 
 
-def _stack(project, t):
-    """[(item, label)] on screen at `t`, top to bottom: the candidate overlays and the footage (video, image)."""
+def _stack_refs(project, t):
+    """[(item, label, ref)] on screen at `t`, top to bottom: the candidate overlays and the footage (video, image). `ref`
+    = (label, drawn track, index in it) tells apart items that share a label (no id, or the same id): what a measured
+    overlay's frames are kept under."""
     rows = lc.drawn_tracks(project)
     pos = lc.layer_positions(rows)
     found = []
@@ -166,9 +174,20 @@ def _stack(project, t):
             if not (lc._num(it.get("start")) <= t < lc._num(it.get("end"))):
                 continue
             if _candidate(it) or it.get("type") in lc.VISUAL:
-                found.append(((pos[ti], k), it, lc._label(it, ti)))
+                label = lc._label(it, ti)
+                found.append(((pos[ti], k), it, label, (label, ti, k)))
     found.sort(key=lambda f: f[0], reverse=True)
-    return [(it, label) for _, it, label in found]
+    return [(it, label, ref) for _, it, label, ref in found]
+
+
+def _stack(project, t):
+    """[(item, label)] on screen at `t`, top to bottom: the candidate overlays and the footage (video, image)."""
+    return [(it, label) for it, label, _ in _stack_refs(project, t)]
+
+
+def _item_of(project, ref):
+    """The item a `ref` (see _stack_refs) names."""
+    return lc.drawn_tracks(project)[ref[1]][ref[2]]
 
 
 def on_screen(project, t):
@@ -245,6 +264,11 @@ def _last_frame(item, fps):
     return max(0, int(round((lc._num(item.get("end")) - lc._num(item.get("start"))) * fps)) - 1)
 
 
+def _mid_frame(item, fps):
+    """The frame at the middle of an overlay's own span: what judges it past MEASURE_BUDGET."""
+    return _frame_at(item, (lc._num(item.get("start")) + lc._num(item.get("end"))) / 2, fps)
+
+
 def _frame_at(item, t, fps):
     """The frame of an overlay's own render that stands for timeline time `t`: (t - start) in frames, rounded to the
     fine grid, within its span (0 .. its last frame)."""
@@ -254,7 +278,7 @@ def _frame_at(item, t, fps):
     return max(0, min(last, int(round(rel / fine)) * fine))
 
 
-def _judge(measured, label, item, t, box, size, fps):
+def _judge(measured, ref, item, t, box, size, fps):
     """Whether a measured overlay covers `box` at `t`: (covers, the frame whose render says so), or (None, [the frames
     to render first]). The overlay is read at `_frame_at(t)` when that frame was rendered. Otherwise its coarse
     anchors (the coarse-grid frames either side, at most MEASURE_COARSE_S apart) are rendered first; where both
@@ -266,20 +290,20 @@ def _judge(measured, label, item, t, box, size, fps):
     last = _last_frame(item, fps)
 
     def read(n):
-        if measured[(label, n)] is None:
-            raise Unmeasured(label)
-        return cover_share(measured[(label, n)], box, size) >= COVER_SHARE
+        if measured[(ref, n)] is None:
+            raise Unmeasured(ref[0])
+        return cover_share(measured[(ref, n)], box, size) >= COVER_SHARE
 
-    if (label, f) in measured:
+    if (ref, f) in measured:
         return read(f), f
     a = f // coarse * coarse
     if a == f:
         return None, [f]   # a coarse frame itself: no anchors either side to agree
     b = min(a + coarse, last)
-    missing = [n for n in (a, b) if (label, n) not in measured]
+    missing = [n for n in (a, b) if (ref, n) not in measured]
     if missing:
         return None, missing
-    done = [n for (lab, n) in measured if lab == label and a <= n <= b]
+    done = [n for (r, n) in measured if r == ref and a <= n <= b]
     lo, hi = max(n for n in done if n <= f), min(n for n in done if n >= f)
     clo, chi = read(lo), read(hi)
     if clo == chi:
@@ -290,31 +314,45 @@ def _judge(measured, label, item, t, box, size, fps):
     return None, [mid if lo < mid < hi else f]
 
 
-def find_card(project, t, box, size, project_dir=None, measured=None, need=None, warn=None):
+def _judge_mid(measured, ref, item, box, size, fps):
+    """_judge past MEASURE_BUDGET: the overlay at the middle of its span decides, (covers, that frame) or (None, [it])."""
+    m = _mid_frame(item, fps)
+    if (ref, m) not in measured:
+        return None, [m]
+    if measured[(ref, m)] is None:
+        raise Unmeasured(ref[0])
+    return cover_share(measured[(ref, m)], box, size) >= COVER_SHARE, m
+
+
+def find_card(project, t, box, size, project_dir=None, measured=None, need=None, warn=None, over=None):
     """The card under `box` (the caption's band) at `t`, or None. Walks the items on screen from the top: footage whose
     box meets the band ends it (the caption is over footage); the first overlay that covers the band is the card (a copy
-    of the item with `id` = its label). An overlay the data cannot judge is judged by `measured`, {(label, frame): a PNG
-    of the overlay alone at that frame of its own span, or None when it could not be rendered}, at `t` (see `_judge`);
-    with no `measured` it covers nothing. The frames still to render are added to `need` ({(label, frame): item}) and
-    the overlay covers nothing there; with no `need` that raises Unmeasured, as does a failed render."""
+    of the item with `id` = its label and `_ref` = its ref, see _stack_refs). An overlay the data cannot judge is judged
+    by `measured`, {(ref, frame): a PNG of the overlay alone at that frame of its own span, or None when it could not be
+    rendered}, at `t` (see `_judge`); one whose ref is in `over` (past MEASURE_BUDGET) by its middle frame where `_judge`
+    would need more. With no `measured` it covers nothing. The frames still to render are added to `need` ({(ref,
+    frame): item}) and the overlay covers nothing there; with no `need` that raises Unmeasured, as does a failed render."""
     warn = warn or (lambda _msg: None)
     fps = int(round(lc._num((project.get("settings") or {}).get("fps"), 30))) or 30
-    for item, label in _stack(project, t):
+    for item, label, ref in _stack_refs(project, t):
         if item.get("type") != "overlay":
             if _footage_hits(item, box, size):
                 return None
             continue
         covers = _data_cover(item, project_dir, warn)
         if covers is None and measured is not None and not str(item.get("src") or "").startswith("engine:"):
-            covers, frames = _judge(measured, label, item, t, box, size, fps)
+            covers, frames = _judge(measured, ref, item, t, box, size, fps)
+            if covers is None and over and ref in over:
+                covers, frames = _judge_mid(measured, ref, item, box, size, fps)
             if covers is None:
                 if need is None:
                     raise Unmeasured(label)
                 for n in frames:
-                    need[(label, n)] = item
+                    need[(ref, n)] = item
         if covers:
             out = dict(item)
             out["id"] = label
+            out["_ref"] = ref
             return out
     return None
 
@@ -391,24 +429,62 @@ def _lum_sum(hist, table):
     return sum(w * sum(h * lin for h, lin in zip(hist[c * 256:(c + 1) * 256], table)) for c, w in enumerate(_LUM))
 
 
+ROW_PLACES = 3   # an overlay row's luminance sums are kept to this many places (a sum over up to a row of pixels)
+
+
+def _row_sums(im, table):
+    """[[pixels with alpha >= COVER_ALPHA, the sum of their relative luminance, the sum of the luminance of every pixel
+    over black]] for each row of an RGBA image, in C: each channel through the linear table to float, summed per row by
+    a box resize to one column. None when this Pillow cannot map a channel to float (the caller reads row by row)."""
+    from PIL import Image, ImageMath
+    w, h = im.size
+    try:
+        def lin(rgb):
+            r, g, b = (ch.point([v * k for v in table], "F") for ch, k in zip(rgb.split(), _LUM))
+            return ImageMath.lambda_eval(lambda a: a["r"] + a["g"] + a["b"], r=r, g=g, b=b)
+        mask = im.getchannel("A").point([0.0 if a < COVER_ALPHA else 1.0 for a in range(256)], "F")
+        lum = lin(im.convert("RGB"))
+        covered = ImageMath.lambda_eval(lambda a: a["l"] * a["m"], l=lum, m=mask)
+        black = lin(Image.alpha_composite(Image.new("RGBA", im.size, (0, 0, 0, 255)), im).convert("RGB"))
+        cols = []
+        for x in (mask, covered, black):
+            col = x.resize((1, h), Image.Resampling.BOX).load()
+            cols.append([col[0, y] for y in range(h)])
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return [[int(round(c * w)), l * w, b * w] for c, l, b in zip(*cols)]
+
+
 def overlay_rows(png_path):
     """What plan reads from an overlay rendered alone, kept per pixel row: {"w": width, "rows": [[pixels with alpha >=
-    COVER_ALPHA, the sum of their relative luminance, the sum of the luminance of every pixel over black]]}, each rounded
-    to 5 places. A band is full width, so any band's cover share and mean luminance (`OverlayRows`) come from its rows."""
+    COVER_ALPHA, the sum of their relative luminance, the sum of the luminance of every pixel over black]]}, the sums
+    rounded to ROW_PLACES, and a run of identical rows kept once as [how many, ...the row] (see OverlayRows): a card's
+    plain rows take a few bytes. A band is full width, so any band's cover share and mean luminance (`OverlayRows`) come
+    from its rows."""
     from PIL import Image
     table = _linear_table()
     with Image.open(png_path) as im:
         im = im.convert("RGBA")
         w, h = im.size
-        mask = im.getchannel("A").point(lambda a: 255 if a >= COVER_ALPHA else 0)
-        rgb = im.convert("RGB")
-        black = Image.alpha_composite(Image.new("RGBA", im.size, (0, 0, 0, 255)), im).convert("RGB")
-        rows = []
-        for y in range(h):
-            line = (0, y, w, y + 1)
-            hist = rgb.crop(line).histogram(mask.crop(line))
-            rows.append([sum(hist[:256]), round(_lum_sum(hist, table), 5),
-                         round(_lum_sum(black.crop(line).histogram(), table), 5)])
+        sums = _row_sums(im, table)
+        if sums is None:
+            mask = im.getchannel("A").point(lambda a: 255 if a >= COVER_ALPHA else 0)
+            rgb = im.convert("RGB")
+            black = Image.alpha_composite(Image.new("RGBA", im.size, (0, 0, 0, 255)), im).convert("RGB")
+            sums = []
+            for y in range(h):
+                line = (0, y, w, y + 1)
+                hist = rgb.crop(line).histogram(mask.crop(line))
+                sums.append([sum(hist[:256]), _lum_sum(hist, table), _lum_sum(black.crop(line).histogram(), table)])
+    rows = []
+    for c, lum, blk in sums:
+        row = [c, round(lum, ROW_PLACES), round(blk, ROW_PLACES)]
+        if rows and rows[-1][-3:] == row:
+            if len(rows[-1]) == 3:
+                rows[-1] = [1, *rows[-1]]
+            rows[-1][0] += 1
+        else:
+            rows.append(row)
     return {"w": w, "rows": rows}
 
 
@@ -426,7 +502,9 @@ class OverlayRows:
     gives, over a full-width band."""
 
     def __init__(self, data):
-        self.w, self.rows = data["w"], data["rows"]
+        self.w, self.rows = data["w"], []
+        for r in data["rows"]:   # [count, lum, black], or [how many rows, count, lum, black] for a run of the same
+            self.rows += [r[1:]] * int(r[0]) if len(r) == 4 else [r]
 
     def cover(self, box, frame):
         y0, y1 = _row_span(len(self.rows), box, frame)
@@ -575,19 +653,25 @@ def load_cache(path):
             if isinstance(v, dict) and isinstance(v.get("rows"), list) and v["rows"] and _timed(v.get("at"))}
 
 
-def store_cache(path, new):
-    """Merge `new` ({key: {"rows": [...], ...}}) into the cache file, keep the CACHE_MAX_ENTRIES newest, write it atomically (a rename,
-    so a reader never sees half a file). A file that cannot be written is no error: the next run just renders again."""
+def store_cache(path, new, used=()):
+    """Merge `new` ({key: {"rows": [...], ...}}) into the cache file, stamp it and the keys in `used` (the entries this
+    plan read from the cache) as just used, keep the CACHE_MAX_ENTRIES most recently used (every entry stamped now, when
+    there are more), write it atomically (a rename, so a reader never sees half a file). A file that cannot be written
+    is no error: the next run just renders again."""
     entries = load_cache(path)
     now = time.time()
     for k, entry in new.items():
         entries[k] = {**entry, "at": now}
-    keep = sorted(entries.items(), key=lambda kv: kv[1]["at"])[-CACHE_MAX_ENTRIES:]
+    for k in used:
+        if k in entries:
+            entries[k]["at"] = now
+    stamped = sum(1 for v in entries.values() if v["at"] == now)
+    keep = sorted(entries.items(), key=lambda kv: kv[1]["at"])[-max(CACHE_MAX_ENTRIES, stamped):]
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix=".caption-ink-cache-", dir=os.path.dirname(path))
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"entries": dict(keep)}, f)
+            json.dump({"entries": dict(keep)}, f, separators=(",", ":"))
         os.replace(tmp, path)
     except OSError:
         pass
@@ -624,36 +708,112 @@ def frame_renderer(project_path, out_dir, deadline=None):
     return render
 
 
+def _overlay_png_name(item, frame, ref=None):
+    """The file an overlay's frame is rendered to: its ref (label, track and index: items with no id or the same id
+    differ) and its content in the name, so two overlays rendered on the same frame never write the same file."""
+    tag = hashlib.sha256(json.dumps([list(ref) if ref else None, item], sort_keys=True, default=str).encode()).hexdigest()
+    return f"ink-overlay-{tag[:20]}-{frame}.png"
+
+
 def overlay_renderer(project, project_dir, out_dir, deadline=None):
-    """overlay_fn(item, frame) -> the path of a transparent PNG of the overlay rendered alone at `frame` (steps/render/
-    sample_overlay.py, as look measures it but without --measure), at the project's design size and fps, over the
-    item's own length. Same time limits as frame_renderer."""
+    """overlay_fn(item, frame, ref=None) -> the path of a transparent PNG of the overlay rendered alone at `frame`
+    (steps/render/sample_overlay.py, as look measures it but without --measure), at the project's design size and fps,
+    over the item's own length. Same time limits as frame_renderer. `overlay_fn.many(jobs)` renders [((ref, frame),
+    item)] in one sample_overlay --jobs --no-measure call (RENDER_WORKERS browsers, a page per overlay kept open across
+    its frames) and answers ({key: path or None}, {key: why} for the failed ones); when that call itself fails, the
+    frames are rendered one process each."""
     width, height = lc.design_size(project)
     fps = int(round(lc._num((project.get("settings") or {}).get("fps"), 30))) or 30
 
-    def render(item, frame):
-        path = lc.overlay_path(item, project_dir)
-        if not path or not os.path.isfile(path):
-            raise RuntimeError("overlay file missing")
+    def left():
+        """The seconds a render may take: RENDER_TIMEOUT_S, or what is left until the deadline when sooner."""
         timeout = RENDER_TIMEOUT_S
         if deadline is not None:
             timeout = min(timeout, deadline - time.monotonic())
             if timeout <= 0:
                 raise RuntimeError("out of time")
-        out = os.path.join(out_dir, f"ink-overlay-{abs(hash((item.get('id'), frame)))}-{frame}.png")
-        span = max(1, int(round((lc._num(item.get("end")) - lc._num(item.get("start"))) * fps)))
-        cmd = [sys.executable, SAMPLE_OVERLAY_PY, "--overlay", path, "--frame", str(frame), "--duration", str(span),
+        return timeout
+
+    def span(item):
+        return max(1, int(round((lc._num(item.get("end")) - lc._num(item.get("start"))) * fps)))
+
+    def fonts(item):
+        return [f for f in item.get("googleFonts") or [] if isinstance(f, str) and f]
+
+    def source(item):
+        path = lc.overlay_path(item, project_dir)
+        if not path or not os.path.isfile(path):
+            raise RuntimeError("overlay file missing")
+        return path
+
+    def render(item, frame, ref=None):
+        path = source(item)
+        timeout = left()
+        out = os.path.join(out_dir, _overlay_png_name(item, frame, ref))
+        cmd = [sys.executable, SAMPLE_OVERLAY_PY, "--overlay", path, "--frame", str(frame), "--duration", str(span(item)),
                "--fps", str(fps), "--width", str(width), "--height", str(height),
                "--props", json.dumps(item.get("props") or {}), "--out", out]
-        for font in item.get("googleFonts") or []:
-            if isinstance(font, str) and font:
-                cmd += ["--google-fonts", font]
+        for font in fonts(item):
+            cmd += ["--google-fonts", font]
         r = _run_group(cmd, timeout)
         if r is None:
             raise RuntimeError("timed out")
         if r[0] != 0 or not os.path.isfile(out):
             raise RuntimeError("sample_overlay failed")
         return out
+
+    def many(jobs):
+        done, failed, batch = {}, {}, []
+        for key, item in jobs:
+            try:
+                path = source(item)
+            except RuntimeError as e:
+                done[key], failed[key] = None, str(e)
+                continue
+            batch.append((key, item, {"component": path, "props": item.get("props") or {}, "frame": key[1], "fps": fps,
+                                      "width": width, "height": height, "duration": span(item), "googleFonts": fonts(item),
+                                      "out": os.path.join(out_dir, _overlay_png_name(item, key[1], key[0]))}))
+        if not batch:
+            return done, failed
+        try:
+            timeout = RENDER_TIMEOUT_S * -(-len(batch) // RENDER_WORKERS)
+            if deadline is not None:
+                timeout = min(timeout, deadline - time.monotonic())
+            if timeout <= 0:
+                raise RuntimeError("out of time")
+        except RuntimeError as e:
+            for key, _, _ in batch:
+                done[key], failed[key] = None, str(e)
+            return done, failed
+        fd, jobs_path = tempfile.mkstemp(prefix="ink-jobs-", suffix=".json", dir=out_dir)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump([job for _, _, job in batch], f)
+        r = _run_group([sys.executable, SAMPLE_OVERLAY_PY, "--jobs", jobs_path, "--lanes", str(RENDER_WORKERS),
+                        "--no-measure"], timeout)
+        if r is None:
+            for key, _, _ in batch:
+                done[key], failed[key] = None, "timed out"
+            return done, failed
+        try:
+            results = json.loads(r[1].strip().splitlines()[-1])["results"] if r[0] == 0 else None
+        except (ValueError, IndexError, KeyError, TypeError):
+            results = None
+        if not isinstance(results, list) or len(results) != len(batch):
+            more, why = _pooled(lambda item, frame, ref: render(item, frame, ref),
+                                [(key, (item, key[1], key[0])) for key, item, _ in batch], deadline)
+            done.update(more)
+            failed.update(why)
+            return done, failed
+        for (key, _, job), res in zip(batch, results):
+            if isinstance(res, dict) and res.get("pngPath") and os.path.isfile(job["out"]):
+                done[key] = job["out"]
+            else:
+                done[key] = None
+                failed[key] = str((res or {}).get("message") or (res or {}).get("error") or "sample_overlay failed")[:80] \
+                    if isinstance(res, dict) else "sample_overlay failed"
+        return done, failed
+
+    render.many = many
     return render
 
 
@@ -760,8 +920,8 @@ def _pixel_judged(item):
     return item.get("opaque") is not True and not str(item.get("src") or "").startswith("engine:")
 
 
-def _coverage_edges(seg, item, label, box, probe, fps):
-    """{"start"|"end": the time}: where a pixel-judged card `item` (`label`) begins or stops covering `box` inside its
+def _coverage_edges(seg, item, ref, box, probe, fps):
+    """{"start"|"end": the time}: where a pixel-judged card `item` (`ref`) begins or stops covering `box` inside its
     own span while `seg` shows, over footage on the other side. Read on the fine grid at the frames from the caption's
     start (end) to its middle: the first (last) frame that shows the card, when the grid frame before (after) it, still
     within the caption, shows footage. The edge lies half a frame before (after) that frame, so the caption is dark
@@ -776,16 +936,16 @@ def _coverage_edges(seg, item, label, box, probe, fps):
     out = {}
     for side, frames in (("start", range(_frame_at(item, s, fps), fm + 1, fine)),
                          ("end", range(_frame_at(item, e - 0.5 / fps, fps), fm - 1, -fine))):
-        seen = []   # (frame, the card there or None) from the caption's edge inward, up to the first showing `label`
+        seen = []   # (frame, the card there or None) from the caption's edge inward, up to the first showing `ref`
         for n in frames:
             known, c = probe(cs + n / fps, box)
             if not known:
                 seen = []
                 break
-            seen.append((n, c["id"] if c else None))
-            if seen[-1][1] == label:
+            seen.append((n, c["_ref"] if c else None))
+            if seen[-1][1] == ref:
                 break
-        if len(seen) < 2 or seen[-1][1] != label or seen[-2][1] is not None:
+        if len(seen) < 2 or seen[-1][1] != ref or seen[-2][1] is not None:
             continue
         n = seen[-1][0]
         edge = round(cs + (n - 0.5 if side == "start" else n + 0.5) / fps, 3)
@@ -863,35 +1023,78 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
     fps = int(round(lc._num((project.get("settings") or {}).get("fps"), 30))) or 30
     use_cache = bool(cache_path and project_dir)
     cached = load_cache(cache_path) if use_cache else {}
-    fresh, memo, lock = {}, {}, threading.Lock()   # fresh: what this plan read, to keep
-    if overlay_fn is not None and use_cache:
-        render_overlay = overlay_fn
+    fresh, used, memo = {}, set(), {}   # fresh: what this plan read, to keep; used: the cache keys it read
+    spent, over = {}, set()   # {ref: the frames asked for}, and the refs past MEASURE_BUDGET
 
-        def overlay_fn(item, frame):   # noqa: F811 — the same call, read from the cache when its key is there
-            key = overlay_key(project, project_dir, item, frame, memo)
-            hit = cached.get(key)
-            if hit and isinstance(hit.get("w"), int):
-                return OverlayRows(hit)
-            data = overlay_rows(render_overlay(item, frame))
-            with lock:
-                fresh[key] = data
-            return OverlayRows(data)
+    def grant(need):
+        """The part of `need` ({(ref, frame): item}) within each overlay's MEASURE_BUDGET, in time order (an overlay's
+        middle frame always: it is what judges it past the budget). An overlay asked for more is put in `over`, once
+        with a warning."""
+        out = {}
+        for (ref, n), item in sorted(need.items(), key=lambda kv: kv[0]):
+            frames = spent.setdefault(ref, set())
+            if n in frames or len(frames) < MEASURE_BUDGET or n == _mid_frame(item, fps):
+                frames.add(n)
+                out[(ref, n)] = item
+            elif ref not in over:
+                over.add(ref)
+                warn(f"overlay {ref[0]} needs more than {MEASURE_BUDGET} frames to judge each caption at its own "
+                     f"time: the captions after {lc.r2(lc._num(item.get('start')) + n / fps)}s are judged at its middle")
+        return out
 
-    def classify(need):
+    def render_overlays(need):
+        """Render (or read from the cache) every frame of `need` into `measured`: an overlay_fn with `many` renders
+        them in one call, any other one at a time (RENDER_WORKERS at once). A frame that fails is None, with a warning."""
+        todo, keys = {}, {}
+        for k, item in need.items():
+            if use_cache:
+                keys[k] = overlay_key(project, project_dir, item, k[1], memo)
+                hit = cached.get(keys[k])
+                if hit and isinstance(hit.get("w"), int):
+                    measured[k] = OverlayRows(hit)
+                    used.add(keys[k])
+                    continue
+            todo[k] = item
+        if not todo:
+            return
+        many = getattr(overlay_fn, "many", None)
+        if many is not None:
+            done, failed = many(sorted(todo.items(), key=lambda kv: kv[0]))
+        else:
+            done, failed = _pooled(overlay_fn, [(k, (it, k[1])) for k, it in todo.items()], deadline)
+        for k in todo:
+            png, why = done.get(k), failed.get(k)
+            if png and use_cache and not isinstance(png, OverlayRows):
+                try:
+                    data = overlay_rows(png)
+                except Exception as e:  # noqa: BLE001
+                    png, why = None, str(e)[:80]
+                else:
+                    fresh[keys[k]] = data
+                    png = OverlayRows(data)
+            measured[k] = png or None
+            if not png:
+                warn(f"overlay {k[0][0]} not rendered ({why or 'no image'}): its captions are unchanged")
+
+    def classify(need, left=None):
         """[{key, seg, pieces (or None), slots}]: each slot {seg, mid, card (an id or None)} is a caption, or a piece,
-        to ink. A caption whose card could not be judged is left out."""
+        to ink. A caption whose card could not be judged is left out. With no `need`, `left` gets the middle of each
+        caption that is left out ("unchanged") or whose coverage edge still needs a frame ("unsnapped")."""
         def card_at(t, box):
-            return find_card(project, t, box, size, project_dir, measured, need if measured is not None else None, warn)
+            return find_card(project, t, box, size, project_dir, measured, need if measured is not None else None,
+                             warn, over)
 
         def probe(t, box):   # (known, card); asks only for frames between two rendered ones that disagree
             scratch = {}
             try:
-                c = find_card(project, t, box, size, project_dir, measured, scratch, warn)
+                c = find_card(project, t, box, size, project_dir, measured, scratch, warn, over)
             except Unmeasured:
                 return False, None
-            if scratch and need is not None and all(n % _grid(fps)[1] and n != _last_frame(it, fps)
-                                                    for (_, n), it in scratch.items()):
-                need.update(scratch)
+            if scratch and all(n % _grid(fps)[1] and n != _last_frame(it, fps) for (_, n), it in scratch.items()):
+                if need is not None:
+                    need.update(scratch)
+                elif left is not None:
+                    left.setdefault("unsnapped", set()).add(lc.r2(mid))
             return not scratch, c
         out = []
         for key, seg, mid, box, i in mine:
@@ -899,10 +1102,10 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
                 pieces = None
                 words = _timed_words(seg) if box is not None and seg.get("id") and seg["id"] not in named else None
                 if words:
-                    labels = []
+                    labels = []   # the card under each word (its ref: two overlays may share a label), or None
                     for w in words:
                         c = card_at((w["start"] + w["end"]) / 2, box)
-                        labels.append(c["id"] if c else None)
+                        labels.append(c["_ref"] if c else None)
                     pieces = split_pieces(seg, labels)
                 if pieces:
                     sub = _with_pieces(project, i, pieces)
@@ -924,12 +1127,14 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
                         sl["over"] = {side: edge for side, (a, b, edge) in _overhangs(sl["seg"], sl["item"]).items()
                                       if _shows_frame(a, b, fps) and card_at((a + b) / 2, sl["box"]) is None}
                         if measured is not None and _pixel_judged(sl["item"]):
-                            edges = _coverage_edges(sl["seg"], sl["item"], sl["card"], sl["box"], probe, fps)
+                            edges = _coverage_edges(sl["seg"], sl["item"], sl["item"]["_ref"], sl["box"], probe, fps)
                             if edges.get("start", -math.inf) > sl["over"].get("start", -math.inf):
                                 sl["over"]["start"] = edges["start"]
                             if edges.get("end", math.inf) < sl["over"].get("end", math.inf):
                                 sl["over"]["end"] = edges["end"]
             except Unmeasured:
+                if need is None and left is not None:
+                    left.setdefault("unchanged", set()).add(lc.r2(mid))
                 continue
             out.append({"key": key, "seg": seg, "pieces": pieces, "slots": slots})
         return out
@@ -941,60 +1146,77 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
         measured = {}
         # Each round renders what the last one asked for: an overlay's coarse anchors, then the frames halving the gap
         # where they disagree (two rounds from MEASURE_COARSE_S down to MEASURE_FINE_S), then a piece's middle, which
-        # may meet an overlay no word's did.
+        # may meet an overlay no word's did. An overlay past its budget asks only for its middle frame.
         for _ in range(MEASURE_ROUNDS):
             need = {}
             entries = classify(need)
             if not need:
                 break
-            samples, failed = _pooled(overlay_fn, [(k, (it, k[1])) for k, it in need.items()], deadline)
-            measured.update(samples)
-            for k, why in failed.items():
-                warn(f"overlay {k[0]} not rendered ({why or 'no image'}): its captions are unchanged")
+            render_overlays(grant(need))
         else:
-            entries = classify(None)
+            left = {}
+            entries = classify(None, left)
+            if left:
+                said = []
+                for what in ("unchanged", "unsnapped"):
+                    if left.get(what):
+                        times = sorted(left[what])
+                        said.append(f"at {', '.join(f'{t}s' for t in times[:5])}"
+                                    f"{f' and {len(times) - 5} more' if len(times) > 5 else ''} "
+                                    f"{'left unchanged' if what == 'unchanged' else 'not snapped to the card edge'}")
+                warn(f"overlay frames still to judge after {MEASURE_ROUNDS} rounds: captions {'; '.join(said)}")
     slots = [sl for e in entries for sl in e["slots"] if sl["card"]]
     # A JSX card (a matte, an opaque overlay) is read from its own render: where it covers the band (alpha >= 0.9, which
     # is what makes it a card) the composite IS the overlay's pixels, so its mean over those pixels is the backdrop's,
     # with no frame composited. An opaque one hides everything below, so its transparent pixels are black. It is read
-    # at the frame that showed it covering this caption's band at the caption's middle (see _judge): the card as it is
-    # while the caption shows, never as it is at some other moment of its span.
-    # An opaque one is a card by its data, so nothing has rendered it yet: it is rendered at the caption's own frame.
+    # at the caption's own frame (`_frame_at` the middle of the span it shows, once snapped, so the next pass reads the
+    # same frame), rendered for it when no word's judgement did: never at whichever frame this run happened to render
+    # near it, so a card whose colour changes within MEASURE_COARSE_S reads the same on every run. Past the overlay's
+    # budget, at its middle frame, where that covers the band.
     jsx = [sl for sl in slots if overlay_fn is not None and not str(sl["item"].get("src") or "").startswith("engine:")]
 
     def lum_frame(sl):
-        # at the middle of the span the caption has once snapped (so the next pass reads the same frame), else of its
-        # own span
-        over = sl.get("over") or {}
+        over_ = sl.get("over") or {}
         times = [sl["mid"]]
-        if over:
-            times.insert(0, (over.get("start", lc._num(sl["seg"].get("start")))
-                             + over.get("end", lc._num(sl["seg"].get("end")))) / 2)
+        if over_:
+            times.insert(0, (over_.get("start", lc._num(sl["seg"].get("start")))
+                             + over_.get("end", lc._num(sl["seg"].get("end")))) / 2)
         if sl["item"].get("opaque") is True:
             return _frame_at(sl["item"], times[0], fps)
+        ref = sl["item"]["_ref"]
         for t in times:
             try:
-                covers, n = _judge(measured, sl["card"], sl["item"], t, sl["box"], size, fps)
+                covers, _ = _judge(measured, ref, sl["item"], t, sl["box"], size, fps)
+                if covers is None and ref in over:
+                    covers, _ = _judge_mid(measured, ref, sl["item"], sl["box"], size, fps)
             except Unmeasured:
                 continue
             if covers is True:
-                return n
+                return _frame_at(sl["item"], t, fps)
         return None
     for sl in jsx:
         sl["frame"] = lum_frame(sl)
-    again = {(sl["card"], sl["frame"]): sl["item"] for sl in jsx
-             if sl["frame"] is not None and (sl["card"], sl["frame"]) not in measured}
-    if again:
-        samples, bad = _pooled(overlay_fn, [(k, (it, k[1])) for k, it in again.items()], deadline)
-        measured.update(samples)
-        for k, why in bad.items():
-            warn(f"overlay {k[0]} not rendered ({why or 'no image'}): its captions are unchanged")
+    asked = {(sl["item"]["_ref"], sl["frame"]): _item_of(project, sl["item"]["_ref"]) for sl in jsx
+             if sl["frame"] is not None and (sl["item"]["_ref"], sl["frame"]) not in measured}
+    granted = grant(asked)
+    for sl in jsx:   # a frame past the budget: the overlay's middle frame instead, where it covers the band
+        ref = sl["item"]["_ref"]
+        if sl["frame"] is not None and (ref, sl["frame"]) in asked and (ref, sl["frame"]) not in granted:
+            sl["frame"] = _mid_frame(sl["item"], fps)
+            sl["at_mid"] = True
+            if (ref, sl["frame"]) not in measured:
+                granted[(ref, sl["frame"])] = _item_of(project, ref)
+    if granted:
+        render_overlays(granted)
     warnings += list(warns)
     for sl in jsx:
-        png = measured.get((sl["card"], sl["frame"])) if sl["frame"] is not None else None
+        png = measured.get((sl["item"]["_ref"], sl["frame"])) if sl["frame"] is not None else None
         if png is None:
             continue
         try:
+            if sl.get("at_mid") and sl["item"].get("opaque") is not True \
+                    and cover_share(png, sl["box"], size) < COVER_SHARE:
+                continue
             sl["lum"] = overlay_read(png, sl["box"], (width, height), sl["item"].get("opaque") is True)
         except Exception as e:  # noqa: BLE001
             warnings.append(f"overlay {sl['card']} unreadable ({str(e)[:60]})")
@@ -1016,6 +1238,7 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
     if use_cache and times:
         keys = {t: backdrop_key(project, project_dir, t, memo) for t in times}
     rows = {t: cached[k]["rows"] for t, k in keys.items() if k in cached}
+    used.update(k for k in keys.values() if k in cached)
     todo = [t for t in times if t not in rows]
     pngs, failed = _pooled(render_fn, [(t, (t,)) for t in todo], deadline) if todo else ({}, {})
     pngs = {t: p for t, p in pngs.items() if p}
@@ -1030,8 +1253,8 @@ def plan(project, render_fn, width, height, deadline=None, overlay_fn=None, proj
             continue
         if t in keys:
             fresh[keys[t]] = {"rows": rows[t]}
-    if fresh:   # only with a cache_path
-        store_cache(cache_path, fresh)
+    if fresh:   # only with a cache_path; a plan that rendered nothing evicts nothing, so it need not stamp what it read
+        store_cache(cache_path, fresh, used)
     for g in groups.values():
         for sl in g:
             if sl["at"] in rows:
