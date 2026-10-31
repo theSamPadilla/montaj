@@ -120,6 +120,8 @@ describe('the base clip blur on the engine path', () => {
     __setEngineCapabilityForTests(true)
     const r = renderAt(p, 1, engine)
     await waitFor(() => expect(r.container.querySelector('canvas[data-montaj-engine-canvas]')).not.toBeNull())
+    // The engine's deps arrive after its canvas mounts; under load that can be a tick later.
+    await waitFor(() => expect(deps).not.toBeNull())
     act(() => deps!.onStatusChange?.({ ...status }))
     return r
   }
@@ -135,9 +137,10 @@ describe('the base clip blur on the engine path', () => {
   })
 
   it('the Preparing placeholder shows with a spin blur: outside the hidden wrapper', async () => {
+    // Mounted first, on real timers: the mount waits on the engine's deps.
+    const { container } = await mounted(engineProject())
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
-      const { container } = await mounted(engineProject())
       act(() => deps!.onStatusChange?.({ ...status, picture: 'preparing' }))
       act(() => { vi.advanceTimersByTime(500) })
       const placeholder = container.querySelector('.montaj-engine-preparing') as HTMLElement
@@ -165,6 +168,8 @@ describe('the base clip blur through an engine crossfade', () => {
     __setEngineCapabilityForTests(true)
     const r = renderAt(project(items, 'px'), t, { enabled: true })
     await waitFor(() => expect(r.container.querySelector('canvas[data-montaj-engine-canvas]')).not.toBeNull())
+    // The engine's deps arrive after its canvas mounts; under load that can be a tick later.
+    await waitFor(() => expect(deps).not.toBeNull())
     act(() => deps!.onStatusChange?.({ ...status }))
     return r
   }
