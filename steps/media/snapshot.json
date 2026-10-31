@@ -1,6 +1,6 @@
 {
   "name": "snapshot",
-  "description": "Look at a video: a grid sheet (default), every frame (frames all), one full frame at a time (at), or one labelled sheet of many times (at repeated, up to 36): find a source's moments in one call. Look at footage in two calls: ONE sheet of all the clips (pass them as `inputs`, at most 12), then one sheet of the moments you pick (`at`, several times).",
+  "description": "Look at a video: a grid sheet (default), every frame (frames all), one full frame at a time (at), or one labelled sheet of many times (at repeated, up to 36): find a source's moments in one call. Look at footage in two calls: sheets of all the clips (pass them as `inputs`: 12 a sheet, more make several sheets, one path per line), then one sheet of the moments you pick (`at`, several times).",
   "input": {
     "type": "video",
     "description": "Source video file",
@@ -14,7 +14,7 @@
     {
       "name": "inputs",
       "type": "path",
-      "description": "Several clips: ONE sheet, a row per clip (cols frames each, default 6), each tile labelled with its name and time. At most 12.",
+      "description": "Several clips: a sheet of up to 12, a row per clip (cols frames each, default 6), each tile labelled with its name and time. More than 12 make several sheets of 12 (the later ones <out>-2.jpg, -3.jpg ...), one path per line.",
       "repeatable": true
     },
     {

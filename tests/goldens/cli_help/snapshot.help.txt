@@ -6,9 +6,10 @@ usage: montaj snapshot [-h] [--input INPUT] [--inputs INPUTS] [--names NAMES]
 options:
   -h, --help       show this help message and exit
   --input INPUT    Source video file
-  --inputs INPUTS  Several clips: ONE sheet, a row per clip (cols frames each,
-                   default 6), each tile labelled with its name and time. At
-                   most 12.
+  --inputs INPUTS  Several clips: a sheet of up to 12, a row per clip (cols
+                   frames each, default 6), each tile labelled with its name
+                   and time. More than 12 make several sheets of 12 (the later
+                   ones <out>-2.jpg, -3.jpg ...), one path per line.
   --names NAMES    A label per inputs clip (its clip id).
   --cols COLS      Grid columns (grid mode, or a sheet of several at)
   --rows ROWS      Grid rows (grid mode)

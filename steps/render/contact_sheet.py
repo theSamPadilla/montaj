@@ -3,7 +3,7 @@
 times (sample_frame.py, no video encode) and tile the frames with a time
 label under each. Small tile widths give the phone view; an explicit --at
 list of consecutive frame times gives a frame strip."""
-import argparse, json, os, subprocess, sys, tempfile
+import argparse, json, math, os, subprocess, sys, tempfile
 from contextlib import nullcontext
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -38,6 +38,22 @@ def grid_times(duration, every):
     n = int(duration / every + 1e-9)
     times = [round(i * every, 4) for i in range(n)]
     return times or [0.0]
+
+
+def default_every(duration):
+    """No --at or --every: about half of MAX_TILES frames across the project, never closer than 1 s."""
+    return float(max(1, math.ceil(duration / (MAX_TILES / 2))))
+
+
+def coarsen_every(duration):
+    """The smallest 0.1 s step that keeps the grid within MAX_TILES."""
+    return math.ceil(duration / MAX_TILES * 10 + 1e-9) / 10
+
+
+def thin(times, limit):
+    """`limit` of `times`, evenly spread, first and last kept."""
+    n = len(times)
+    return [times[round(i * (n - 1) / (limit - 1))] for i in range(limit)]
 
 
 def _sample_frame(project, t, out, raw=False):
@@ -112,18 +128,32 @@ def main():
     require_file(args.project)
     if args.at and args.every:
         fail("invalid_args", "pass --at or --every, not both")
-    if not args.at and not args.every:
-        fail("invalid_args", "pass --at (repeatable) or --every")
     if args.every is not None and args.every <= 0:
         fail("invalid_args", "--every must be > 0")
     if args.cols < 1 or args.tile_width < 16:
         fail("invalid_args", "--cols must be >= 1 and --tile-width >= 16")
-    times = args.at or grid_times(project_duration(args.project), args.every)
-    if len(times) > MAX_TILES:
-        fail("invalid_args", f"{len(times)} samples > {MAX_TILES}; raise --every")
+    duration = project_duration(args.project)
+    note = None
+    if args.at:
+        times = args.at
+        if len(times) > MAX_TILES:
+            times = thin(times, MAX_TILES)
+            note = f"{len(args.at)} times > {MAX_TILES}: sampled {MAX_TILES} of them, evenly."
+    else:
+        every = args.every
+        if not every:
+            every = default_every(duration)
+            note = f"no --at or --every: sampled every {every:g} s."
+        elif duration / every > MAX_TILES:
+            every = coarsen_every(duration)
+            note = f"--every {args.every:g} would make more than {MAX_TILES} samples: sampled every {every:g} s."
+        times = grid_times(duration, every)
     # a frame strip or a raw sheet is a look at footage, not the closing check
     look_fn = None if args.raw or args.frames_dir else _look
-    print(json.dumps(build(args.project, times, args.cols, args.tile_width, args.out, frames_dir=args.frames_dir, raw=args.raw, look_fn=look_fn)))
+    result = build(args.project, times, args.cols, args.tile_width, args.out, frames_dir=args.frames_dir, raw=args.raw, look_fn=look_fn)
+    if note:
+        result["note"] = note
+    print(json.dumps(result))
 
 
 if __name__ == "__main__":

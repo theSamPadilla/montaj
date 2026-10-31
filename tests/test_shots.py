@@ -172,6 +172,19 @@ def test_snapshot_makes_one_sheet_a_row_per_clip(tmp_path):
     assert w > h, "two rows of four"
 
 
+@pytest.mark.parametrize("n,sheets", [(12, 1), (13, 2), (25, 3)])
+def test_snapshot_splits_more_than_twelve_clips_into_sheets(tmp_path, n, sheets):
+    a = make_clip(tmp_path / "a.mp4")
+    out = tmp_path / "clips.jpg"
+    args = [x for i in range(n) for x in ("--inputs", str(a), "--names", f"c{i}")]
+    r = subprocess.run([sys.executable, str(ROOT / "steps" / "media" / "snapshot.py"), *args, "--cols", "2",
+                        "--out", str(out)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    paths = r.stdout.split()
+    assert paths[0] == str(out) and len(paths) == sheets
+    assert all(os.path.isfile(p) for p in paths)
+
+
 def test_snapshot_declares_inputs_and_names_and_serve_passes_them():
     from serve.routes.steps import build_cli_args
     spec = json.loads((ROOT / "steps" / "media" / "snapshot.json").read_text())

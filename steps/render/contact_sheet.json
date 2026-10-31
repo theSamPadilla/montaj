@@ -1,11 +1,11 @@
 {
   "name": "contact_sheet",
-  "description": "Tile a project's frames into one image, each labelled with its time. Answers look's issues too, the closing check (not for --raw or --frames-dir). Pass --every N or --at (repeatable), one of them is required. --every covers the whole project on a grid; --at lists exact times (repeatable), e.g. 12 frame times for a strip. A small --tile-width (360) gives a phone-size view.",
+  "description": "Tile a project's frames into one image, each labelled with its time. Answers look's issues too, the closing check (not for --raw or --frames-dir). With neither --at nor --every it samples every ceil(duration / 60) seconds (at least 1 s, so at most 60 tiles). --every covers the whole project on a grid; --at lists exact times (repeatable), e.g. 12 frame times for a strip. A small --tile-width (360) gives a phone-size view.",
   "output": { "type": "json", "description": "{path, times, cols, tile_width, sheets?: [paths: past 12 frames, 12 or fewer a sheet in 4 columns], sheet_times?, frames?: [abs paths in time order, with frames-dir], look?}" },
   "params": [
     { "name": "project", "type": "path", "required": true, "description": "The project id, its folder, or the absolute path of its project.json" },
-    { "name": "at", "type": "float", "repeatable": true, "required": false, "description": "Sample time in seconds (repeatable)" },
-    { "name": "every", "type": "float", "required": false, "description": "Sample every N seconds across the project (must be > 0; not combined with --at; capped at 120 samples)" },
+    { "name": "at", "type": "float", "repeatable": true, "required": false, "description": "Sample time in seconds (repeatable; more than 120 are thinned evenly to 120, with a note)" },
+    { "name": "every", "type": "float", "required": false, "description": "Sample every N seconds across the project (must be > 0; not combined with --at; one that would pass 120 samples is coarsened to fit, and the answer carries a note)" },
     { "name": "cols", "type": "int", "default": 6, "description": "Tiles per row" },
     { "name": "tile-width", "type": "int", "default": 320, "description": "Tile width in px" },
     { "name": "raw", "type": "bool", "required": false, "default": false, "description": "Tile the untouched SOURCE frame under each time instead of the composite: no crop, zoom, fit, grade, image items, overlays or captions. Use it to read the footage itself without making a stripped copy of the project. A time with no video is black." },

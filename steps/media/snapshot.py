@@ -85,7 +85,7 @@ def main():
     parser = argparse.ArgumentParser(description="Generate a frame grid contact sheet or single-frame extraction from a video")
     parser.add_argument("--input",   default=None, help="Source video file")
     parser.add_argument("--inputs",  action="append", default=None,
-                        help="Several clips (repeat it): ONE sheet, a row per clip (--cols frames each, default 6)")
+                        help="Several clips (repeat it): a sheet of up to 12, a row per clip (--cols frames each, default 6); more than 12 make several sheets, one path per line")
     parser.add_argument("--names",   action="append", default=None, help="A label per --inputs clip (its clip id)")
     parser.add_argument("--cols",    type=int, default=3, help="Grid columns (default: 3)")
     parser.add_argument("--rows",    type=int, default=3, help="Grid rows (default: 3)")
@@ -101,17 +101,20 @@ def main():
     args = parser.parse_args()
 
     if args.inputs:
-        if len(args.inputs) > MAX_CLIPS:
-            fail("invalid_args", f"{len(args.inputs)} clips > {MAX_CLIPS}; name the clips you want.")
         for p in args.inputs:
             require_file(p)
         names = list(args.names or [])
         names += [os.path.splitext(os.path.basename(p))[0] for p in args.inputs[len(names):]]
         cols = args.cols if "--cols" in sys.argv else CLIP_COLS
         out = args.out or f"{os.path.splitext(args.inputs[0])[0]}_clips.jpg"
-        clips_sheet(args.inputs, names, max(1, min(cols, 10)), out)
-        check_output(out)
-        print(out)
+        # More than MAX_CLIPS is several sheets of MAX_CLIPS (the 2nd as <out>-2.jpg ...), one path per line;
+        # up to MAX_CLIPS the answer is the one path, as before.
+        stem, ext = os.path.splitext(out)
+        for k, i in enumerate(range(0, len(args.inputs), MAX_CLIPS)):
+            dest = out if k == 0 else f"{stem}-{k + 1}{ext}"
+            clips_sheet(args.inputs[i:i + MAX_CLIPS], names[i:i + MAX_CLIPS], max(1, min(cols, 10)), dest)
+            check_output(dest)
+            print(dest)
         return
     if not args.input:
         fail("invalid_args", "Pass input (a video), or inputs (several clips, one sheet).")

@@ -57,7 +57,7 @@ For HTTP and CLI, **load skill `native`** — it defines how every `_contract` v
 | Step | What it does | Key params |
 |------|-------------|------------|
 | `probe` | Duration, resolution, fps, codec | — |
-| `snapshot` | Contact sheet grid image. Several clips in ONE sheet: pass them as `inputs` (at most 12) | `--cols 3 --rows 3`; `--at 1.5 --at 9` for a sheet of moments |
+| `snapshot` | Contact sheet grid image. Several clips in ONE sheet: pass them as `inputs`; 12 a sheet, more make several sheets | `--cols 3 --rows 3`; `--at 1.5 --at 9` for a sheet of moments |
 | `virtual_to_original` | Map virtual-timeline timestamps → original file timestamps | `--input spec.json`; positional timestamps; `--inverse`; `--verbose` |
 
 ### Clean

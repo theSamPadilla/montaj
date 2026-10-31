@@ -40,11 +40,34 @@ def test_tiles_are_laid_out_in_rows(tmp_path):
     assert img.size[1] == 3 * (113 + 18) + 4 * 4   # 3 rows of (tile + label) + gutters
 
 
-def test_cli_requires_at_or_every(tmp_path):
-    proc = subprocess.run([sys.executable, str(STEP), "--project", _project(tmp_path),
-                           "--out", str(tmp_path / "s.png")], capture_output=True, text=True)
-    assert proc.returncode != 0
-    assert "invalid_args" in proc.stderr
+def _run_main(monkeypatch, capsys, tmp_path, end, *extra):
+    seen = {}
+
+    def fake_build(project, times, cols, tile_width, out, **kw):
+        seen["times"] = list(times)
+        return {"path": out, "times": list(times)}
+
+    monkeypatch.setattr(contact_sheet, "build", fake_build)
+    monkeypatch.setattr(sys, "argv", ["contact_sheet.py", "--project", _project(tmp_path, end=end),
+                                      "--out", str(tmp_path / "s.png"), *extra])
+    contact_sheet.main()
+    return seen["times"], json.loads(capsys.readouterr().out)
+
+
+def test_no_at_or_every_picks_a_step_that_fits_the_clip(monkeypatch, capsys, tmp_path):
+    times, out = _run_main(monkeypatch, capsys, tmp_path, 4.0)
+    assert times == [0.0, 1.0, 2.0, 3.0]
+    assert "note" in out
+    times, _ = _run_main(monkeypatch, capsys, tmp_path, 3600.0)     # an hour: every 60 s, 60 tiles
+    assert len(times) == 60 and times[1] == 60.0
+    times, _ = _run_main(monkeypatch, capsys, tmp_path, 100000.0)
+    assert len(times) <= contact_sheet.MAX_TILES
+
+
+def test_default_every_never_passes_max_tiles():
+    for d in (0.0, 1.0, 59.0, 61.0, 119.0, 121.0, 7200.0, 86400.0):
+        every = contact_sheet.default_every(d)
+        assert every >= 1 and len(contact_sheet.grid_times(d, every)) <= contact_sheet.MAX_TILES
 
 
 def test_cli_rejects_both_at_and_every(tmp_path):
@@ -71,13 +94,17 @@ def test_cli_rejects_negative_every(tmp_path):
     assert "invalid_args" in proc.stderr
 
 
-def test_cli_rejects_too_many_samples(tmp_path):
-    proc = subprocess.run([sys.executable, str(STEP), "--project", _project(tmp_path, end=200.0),
-                           "--every", "1", "--out", str(tmp_path / "s.png")],
-                          capture_output=True, text=True)
-    assert proc.returncode != 0
-    assert "invalid_args" in proc.stderr
-    assert "raise --every" in proc.stderr
+def test_too_many_samples_are_coarsened_not_refused(monkeypatch, capsys, tmp_path):
+    times, out = _run_main(monkeypatch, capsys, tmp_path, 200.0, "--every", "1")
+    assert 0 < len(times) <= contact_sheet.MAX_TILES
+    assert "--every 1" in out["note"]
+
+
+def test_too_many_at_times_are_thinned_evenly(monkeypatch, capsys, tmp_path):
+    at = [x for t in range(200) for x in ("--at", str(t))]
+    times, out = _run_main(monkeypatch, capsys, tmp_path, 200.0, *at)
+    assert len(times) == contact_sheet.MAX_TILES
+    assert times[0] == 0 and times[-1] == 199 and "note" in out
 
 
 def test_sample_frame_timeout_fails(tmp_path, monkeypatch, capsys):
