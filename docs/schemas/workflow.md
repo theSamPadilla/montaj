@@ -11,18 +11,15 @@ A workflow is a JSON file that describes a suggested editing plan: which steps t
 ```json
 {
   "name": "overlays",
-  "description": "Trim and clean, then apply overlays — silence trim, remove non-speech, transcribe, select best takes, remove fillers, overlays.",
+  "description": "Cut the talk (plan, select takes, apply), then captions, punch-ins and overlays.",
   "project_type": "editing",
   "steps": [
-    { "id": "probe",            "uses": "montaj/probe",          "foreach": "clips" },
-    { "id": "snapshot",         "uses": "montaj/snapshot",       "foreach": "clips" },
-    { "id": "silence",          "uses": "montaj/waveform_trim",  "foreach": "clips",                           "params": { "threshold": "-30", "min-silence": 0.3 } },
-    { "id": "nonspeech",        "uses": "montaj/rm_nonspeech",   "foreach": "clips", "needs": ["silence"],     "params": { "model": "base.en", "max-word-gap": 0.10, "sentence-edge": 0.05 } },
-    { "id": "transcribe",       "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["nonspeech"],   "params": { "model": "base.en" } },
-    { "id": "select-takes",     "uses": "montaj/select-takes",                       "needs": ["transcribe"] },
-    { "id": "fillers",          "uses": "montaj/rm_fillers",     "foreach": "clips", "needs": ["select-takes"], "params": { "model": "base.en" } },
-    { "id": "transcribe_final", "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["fillers"],     "params": { "model": "base.en" } },
-    { "id": "overlays",         "uses": "montaj/overlay",                            "needs": ["transcribe_final"], "params": { "style": "auto" } }
+    { "id": "cut_plan",     "uses": "montaj/cut" },
+    { "id": "select-takes", "uses": "montaj/select-takes",       "needs": ["cut_plan"] },
+    { "id": "cut_apply",    "uses": "montaj/cut",                "needs": ["select-takes"], "params": { "plan": "cut-plan.md" } },
+    { "id": "captions",     "uses": "montaj/generate_captions",  "needs": ["cut_apply"] },
+    { "id": "punch",        "uses": "montaj/push_in",            "needs": ["cut_apply"],    "params": { "style": "punch", "anchor": "face" } },
+    { "id": "overlays",     "uses": "montaj/overlay",            "needs": ["captions", "punch"], "params": { "style": "auto" } }
   ]
 }
 ```
@@ -36,7 +33,7 @@ The workflow is a suggestion, not a mandate. The agent may:
 - Follow the plan as written
 - Reorder steps based on what the prompt and clips call for
 - Adjust param values beyond the defaults
-- Skip steps that don't apply (e.g. skip `rm_fillers` if the prompt says "keep it raw")
+- Skip steps that don't apply (e.g. skip `cut` if the prompt says "keep it raw")
 - Add steps not in the plan (e.g. add `normalize` if audio levels are inconsistent)
 
 
@@ -82,7 +79,7 @@ The flag propagates into `project.json` at init time (see `docs/schemas/project.
 | `params` | object | no | Default param overrides. Keys are param names from the step schema. |
 | `needs` | array | no | IDs of steps that must complete before this one starts. Omit entirely (don't use `[]`) when there are no deps. Drives parallel execution. |
 | `input` | string | no | Dotted identifier path into the project object naming the field this step reads — e.g. `"clips"`, `"voiceover.src"`. Declarative only: like `notes` and `foreach`, the engine doesn't act on it; it tells the agent which source a step applies to. Use it when a workflow has more than one input and the target isn't already implied by `foreach` — `broll` is the case that motivated it, where the `vo_*` chain must run over the voiceover and never over the footage. Same shape rule as `foreach`; validated by `engine/validate.py`. Redundant alongside `foreach` (which already names its collection), so the graph badges it only on non-iterated steps. |
-| `foreach` | string | no | Dotted identifier path into the project object, indicating the step is iterated per entry in that collection. Common values: `"clips"`, `"storyboard.scenes"`, `"storyboard.imageRefs"`, `"storyboard.styleRefs"`. Any value matching `^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$` is accepted — the agent decides what it means to iterate; the engine doesn't auto-execute. For `foreach: "clips"` specifically, steps that output trim specs (e.g. `waveform_trim`, `rm_fillers`) have downstream steps receive the trim spec as their `--input`; steps that accept trim specs (e.g. `transcribe`, `rm_fillers`) detect this automatically by checking for `.json` extension + `input`/`keeps` keys. For `ai_video` storyboard-path foreaches, see `skills/ai-video-plan/SKILL.md` and `skills/ai-video-generate/SKILL.md` for per-item skip rules. |
+| `foreach` | string | no | Dotted identifier path into the project object, indicating the step is iterated per entry in that collection. Common values: `"clips"`, `"storyboard.scenes"`, `"storyboard.imageRefs"`, `"storyboard.styleRefs"`. Any value matching `^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$` is accepted — the agent decides what it means to iterate; the engine doesn't auto-execute. For `foreach: "clips"` specifically, steps that output trim specs have downstream steps receive the trim spec as their `--input`; steps that accept trim specs (e.g. `transcribe`, `crop_spec`) detect this automatically by checking for `.json` extension + `input`/`keeps` keys. For `ai_video` storyboard-path foreaches, see `skills/ai-video-plan/SKILL.md` and `skills/ai-video-generate/SKILL.md` for per-item skip rules. |
 
 ### Step reference prefixes
 
@@ -118,23 +115,20 @@ The `clean_cut`, `broll`, `clips`, `animations`, `explainer` and `floating_head`
 
 ### `overlays`
 
-Multi-clip edit. Silence trim per clip, transcribe, select best takes, remove fillers, caption, overlays, resize to 9:16. Used by `montaj run` when no `--workflow` is specified.
+Multi-clip edit. `cut` plans the talk (silences, fillers, retakes), select-takes edits the plan, `cut` applies it, then captions, punch-ins and overlays. Used by `montaj run` when no `--workflow` is specified.
 
 ```json
 {
   "name": "overlays",
-  "description": "Trim and clean, then apply overlays — silence trim, remove non-speech, transcribe, select best takes, remove fillers, overlays.",
+  "description": "Cut the talk (plan, select takes, apply), then captions, punch-ins and overlays.",
   "project_type": "editing",
   "steps": [
-    { "id": "probe",            "uses": "montaj/probe",          "foreach": "clips" },
-    { "id": "snapshot",         "uses": "montaj/snapshot",       "foreach": "clips" },
-    { "id": "silence",          "uses": "montaj/waveform_trim",  "foreach": "clips",                           "params": { "threshold": "-30", "min-silence": 0.3 } },
-    { "id": "nonspeech",        "uses": "montaj/rm_nonspeech",   "foreach": "clips", "needs": ["silence"],     "params": { "model": "base.en", "max-word-gap": 0.10, "sentence-edge": 0.05 } },
-    { "id": "transcribe",       "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["nonspeech"],   "params": { "model": "base.en" } },
-    { "id": "select-takes",     "uses": "montaj/select-takes",                       "needs": ["transcribe"] },
-    { "id": "fillers",          "uses": "montaj/rm_fillers",     "foreach": "clips", "needs": ["select-takes"], "params": { "model": "base.en" } },
-    { "id": "transcribe_final", "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["fillers"],     "params": { "model": "base.en" } },
-    { "id": "overlays",         "uses": "montaj/overlay",                            "needs": ["transcribe_final"], "params": { "style": "auto" } }
+    { "id": "cut_plan",     "uses": "montaj/cut" },
+    { "id": "select-takes", "uses": "montaj/select-takes",       "needs": ["cut_plan"] },
+    { "id": "cut_apply",    "uses": "montaj/cut",                "needs": ["select-takes"], "params": { "plan": "cut-plan.md" } },
+    { "id": "captions",     "uses": "montaj/generate_captions",  "needs": ["cut_apply"] },
+    { "id": "punch",        "uses": "montaj/push_in",            "needs": ["cut_apply"],    "params": { "style": "punch", "anchor": "face" } },
+    { "id": "overlays",     "uses": "montaj/overlay",            "needs": ["captions", "punch"], "params": { "style": "auto" } }
   ]
 }
 ```
@@ -224,14 +218,14 @@ Steps produce one of three output types:
 | Output type | Format | Examples |
 |-------------|--------|---------|
 | Video file | Absolute path printed to stdout | `resize`, `trim` |
-| Trim spec | JSON `{"input": "...", "keeps": [[s,e],...]}` | `waveform_trim`, `rm_fillers`, `rm_nonspeech` |
+| Trim spec | JSON `{"input": "...", "keeps": [[s,e],...]}` | `crop_spec` |
 | Data | JSON object | `probe`, `transcribe`, `snapshot` |
 
-**Trim specs are the primary data type flowing between editing steps.** A workflow like `silence → transcribe → fillers` passes trim specs from step to step. The trim specs from the final editing step translate directly into `inPoint`/`outPoint`/`start`/`end` on `tracks[0]` items — no encode step in the interactive pipeline.
+**Trim specs are the primary data type flowing between editing steps.** A step that takes a trim spec (`crop_spec`, `materialize_cut`) is fed one written to a file. The trim specs from the final editing step translate directly into `inPoint`/`outPoint`/`start`/`end` on `tracks[0]` items — no encode step in the interactive pipeline.
 
 Steps that accept trim spec input detect it automatically — you do not need to change param names or add special flags. Pass the `.json` output path from one step as the `--input` to the next.
 
-**The engine does not wire this up for you.** `engine/resolve_workflow.py` only resolves each `uses` reference to its executable and schema and merges params — it never runs a step or threads one step's output into the next step's input; `needs` is metadata the agent reads, not something the resolver or any other runtime enforces. A trim-spec step's output is inline JSON on stdout by default, not a file, so there is no `.json` output path to pass along until you make one: write the JSON to a file yourself, or, for `waveform_trim`, pass `--out <path>` and read back `{"path": "<abs path>"}` instead of the spec. Either way, that path becomes the next step's `--input` (e.g. `waveform_trim --out spec.json` → `rm_nonspeech --input spec.json`, the `silence`/`nonspeech` hop in `overlays`).
+**The engine does not wire this up for you.** `engine/resolve_workflow.py` only resolves each `uses` reference to its executable and schema and merges params — it never runs a step or threads one step's output into the next step's input; `needs` is metadata the agent reads, not something the resolver or any other runtime enforces. A trim-spec step's output is inline JSON on stdout by default, not a file, so there is no `.json` output path to pass along until you make one: write the JSON to a file yourself (or pass `--out <path>` where the step has it). That path becomes the next step's `--input`.
 
 ---
 
@@ -247,10 +241,10 @@ Mix built-in and custom steps freely. The agent sees them all the same way.
     { "id": "probe",      "uses": "montaj/probe" },
     { "id": "snapshot",   "uses": "montaj/snapshot" },
     { "id": "transcribe", "uses": "montaj/transcribe" },
-    { "id": "fillers",    "uses": "montaj/rm_fillers",  "needs": ["transcribe"] },
+    { "id": "cut",        "uses": "montaj/cut" },
     { "id": "hook",       "uses": "./steps/viral-hook-detector", "needs": ["transcribe"] },
-    { "id": "watermark",  "uses": "user/my-watermark",  "needs": ["fillers"], "params": { "opacity": 0.8 } },
-    { "id": "caption",    "uses": "montaj/caption",     "needs": ["transcribe", "fillers"] },
+    { "id": "watermark",  "uses": "user/my-watermark",  "needs": ["cut"], "params": { "opacity": 0.8 } },
+    { "id": "caption",    "uses": "montaj/caption",     "needs": ["transcribe", "cut"] },
     { "id": "resize",     "uses": "montaj/resize",      "needs": ["caption", "watermark"], "params": { "ratio": "9:16" } }
   ]
 }

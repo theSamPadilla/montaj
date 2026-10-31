@@ -67,7 +67,7 @@ Built-in steps cover the common operations (trim, transcribe, remove fillers, re
 │  probe                     viral-hook-detector.py                   │
 │  snapshot                  sentiment-analysis.py                    │
 │  transcribe                b-roll-inserter.py                       │
-│  rm_fillers                ...any executable + schema               │
+│  cut                       ...any executable + schema               │
 │  trim, concat, resize                                               │
 │  caption                                                            │
 │  ...                                                                │
@@ -238,7 +238,7 @@ montaj/                         # built-in (ships with montaj)
   steps/
     probe.py + probe.json
     snapshot.py + snapshot.json
-    rm_fillers.py + rm_fillers.json
+    cut.py + cut.json
     transcribe.py + transcribe.json
     ...
   connectors/
@@ -304,24 +304,19 @@ A JSON file that describes a suggested editing plan — which steps to use, thei
 ```json
 {
   "name": "overlays",
-  "description": "Multi-clip edit — silence trim, transcribe, select best takes, remove fillers, concat, caption, overlays, resize to 9:16.",
+  "description": "Cut the talk (plan, select takes, apply), then captions, punch-ins and overlays.",
   "steps": [
-    { "id": "probe",             "uses": "montaj/probe" },
-    { "id": "snapshot",          "uses": "montaj/snapshot" },
-    { "id": "silence",           "uses": "montaj/waveform_trim",  "foreach": "clips", "params": { "threshold": "-30", "min-silence": 0.3 } },
-    { "id": "transcribe",        "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["silence"],           "params": { "model": "base.en" } },
-    { "id": "select_takes",      "uses": "montaj/select_takes",                       "needs": ["transcribe"] },
-    { "id": "fillers",           "uses": "montaj/rm_fillers",     "foreach": "clips", "needs": ["select_takes"],      "params": { "model": "base.en" } },
-    { "id": "concat",            "uses": "montaj/concat",                             "needs": ["fillers"] },
-    { "id": "transcribe_concat", "uses": "montaj/transcribe",                         "needs": ["concat"],            "params": { "model": "base.en" } },
-    { "id": "caption",           "uses": "montaj/caption",                            "needs": ["transcribe_concat"], "params": { "style": "word-by-word" } },
-    { "id": "overlays",          "uses": "montaj/overlay",                            "needs": ["caption"],           "params": { "style": "auto" } },
-    { "id": "resize",            "uses": "montaj/resize",                             "needs": ["overlays"],          "params": { "ratio": "9:16" } }
+    { "id": "cut_plan",     "uses": "montaj/cut" },
+    { "id": "select-takes", "uses": "montaj/select-takes",       "needs": ["cut_plan"] },
+    { "id": "cut_apply",    "uses": "montaj/cut",                "needs": ["select-takes"], "params": { "plan": "cut-plan.md" } },
+    { "id": "captions",     "uses": "montaj/generate_captions",  "needs": ["cut_apply"] },
+    { "id": "punch",        "uses": "montaj/push_in",            "needs": ["cut_apply"],    "params": { "style": "punch", "anchor": "face" } },
+    { "id": "overlays",     "uses": "montaj/overlay",            "needs": ["captions", "punch"], "params": { "style": "auto" } }
   ]
 }
 ```
 
-The agent may call these steps in this order, reorder them, adjust params, skip steps that don't apply, or add steps not in the list — whatever the prompt and content call for. A prompt saying "keep it raw" means the agent skips rm_fillers. A single long incoming clip may prompt the agent to trim before transcribing to reduce cost.
+The agent may call these steps in this order, reorder them, adjust params, skip steps that don't apply, or add steps not in the list — whatever the prompt and content call for. A prompt saying "keep it raw" means the agent skips `cut`.
 
 **Step fields:**
 
@@ -494,9 +489,7 @@ All steps are agent-callable tools. The agent decides which to run, when, and wi
 |------|-------------|
 | `montaj/speech_text` | Read a project's speech track as numbered transcript lines with their pauses |
 | `montaj/speech_edit` | Apply an edited copy of that text to the timeline in one write (`preview` to inspect first) |
-| `montaj/rm_fillers` | Remove filler words (um, uh, hmm) — outputs trim spec JSON |
-| `montaj/rm_nonspeech` | Remove all non-speech (noisy ambient audio) — outputs trim spec JSON |
-| `montaj/waveform_trim` | Waveform silence analysis — outputs trim spec JSON (near-instant, no encode) |
+| `montaj/cut` | Clean talk: plan (silences, fillers, labelled retakes) then apply, in two calls. The one way to clean a talking head |
 | `montaj/crop_spec` | Crop a trim spec to virtual-timeline windows — outputs refined trim spec, no encode |
 | `montaj/virtual_to_original` | Map virtual-timeline timestamps to original-file timestamps (inspect/debug utility) |
 
@@ -555,24 +548,19 @@ Editing steps output **trim specs** — not video files. A trim spec describes w
 
 ### Why this matters
 
-Before this architecture, every editing step re-encoded the full video. A five-clip workflow running silence removal + filler removal produced fifteen video encodes before the final concat. For 4K HEVC footage this caused multi-minute timeouts per step.
+Before this architecture, every editing step re-encoded the full video. A five-clip workflow with three editing passes produced fifteen video encodes before the final concat. For 4K HEVC footage this caused multi-minute timeouts per step.
 
 With trim specs, **no video is decoded or encoded until `concat`**. Editing steps work on audio only (for analysis) and pass timestamps forward. The entire set of cuts — silence boundaries, filler removals, take selections — is accumulated as trim spec refinements and applied in a single ffmpeg filter_complex pass at concat time.
 
 ### Data flow
 
 ```
-waveform_trim(clip.MOV)
-  → {input: "clip.MOV", keeps: [[2.1, 8.4], [9.0, 15.2]]}
-
 transcribe({input: "clip.MOV", keeps: [...]})
   → extracts audio only at keep ranges
   → runs whisper on the joined audio
   → remaps word timestamps back to original timeline
 
-rm_fillers({input: "clip.MOV", keeps: [...]})
-  → extracts audio at keeps, detects fillers
-  → subtracts filler timestamps from keeps
+crop_spec({input: spec.json, keeps: [...]})
   → {input: "clip.MOV", keeps: [[2.1, 7.8], [9.2, 15.2]]}  ← refined
 
 concat({inputs: [spec1.json, spec2.json, ...]})
@@ -581,9 +569,11 @@ concat({inputs: [spec1.json, spec2.json, ...]})
   → final.mp4
 ```
 
+Cleaning talk (silences, fillers, false starts, repeats) is not a trim spec pipeline: `cut` plans it and applies it onto the project in two calls.
+
 ### Rules
 
-- Editing steps (`waveform_trim`, `rm_fillers`, `rm_nonspeech`) always receive the **original source file path**, never a re-encoded intermediate
+- Editing steps always receive the **original source file path**, never a re-encoded intermediate
 - Trim specs chain: each step refines the keeps list, preserving the original `input` path throughout
 - `concat` and `materialize_cut` are the only steps that encode video. `concat` is used for the normal pipeline; `materialize_cut` is used only when a subsequent step (e.g. `remove_bg`) requires a physical video file before the final render
 - Both encoders use input-level seeking (`-ss`/`-t` placed before `-i`) — ffmpeg seeks at the container level so only the requested segment is decoded. Neither uses the `trim` filter, which would force a full file decode regardless of the requested range

@@ -15,7 +15,7 @@ This is a contract written for an LLM reader: it is prose conventions, not a str
 
 Each Montaj interaction is exactly one of these:
 
-- **run step `<name>` with `<args>`** — invoke a Montaj step and use its output. Steps are the core compute units: e.g. `waveform_trim`, `rm_nonspeech`, `transcribe`, `crop_spec`, `virtual_to_original`, `search_images`, `fetch_image`. (Authoring an overlay is NOT a step — overlays are written as files and saved into the project.)
+- **run step `<name>` with `<args>`** — invoke a Montaj step and use its output. Steps are the core compute units: e.g. `cut`, `transcribe`, `crop_spec`, `virtual_to_original`, `search_images`, `fetch_image`. (Authoring an overlay is NOT a step — overlays are written as files and saved into the project.)
 - **read the project** — get the current project state: clips, tracks, settings.
 - **save the project (delta)** — persist only the fields you changed. See the discipline below; this verb is never "save the whole thing I had cached."
 - **write a file `<path>` `<contents>`** — create or overwrite a workspace file (overlay JSX, fetched images, assets).
@@ -42,7 +42,7 @@ Never save from a stale cached body. The operator may be editing the project con
 
 These verbs are sufficient for the Phase-1 domain skills:
 
-- **select-takes** — run step `crop_spec`, run step `virtual_to_original`; read the project; write a file (the trim spec comes back inline from `waveform_trim` and must be on disk before `crop_spec` can take it as `--input`).
+- **select-takes** — run step `crop_spec`, run step `virtual_to_original`; read the project; write a file (a trim spec must be on disk before `crop_spec` can take it as `--input`).
 - **overlay** — read the project; save the project (delta); load skill `write-overlay`.
 - **write-overlay** — save the project (delta); write a file (the JSX); run step `sample_overlay` (the end-of-authoring measure pass, required for any overlay that declares `googleFonts`); reference asset paths via written/read files.
 - **image-search** — run step `search_images`, run step `fetch_image`; write a file / read a file.

@@ -1,6 +1,6 @@
 {
   "name": "rm_nonspeech",
-  "description": "Remove all non-speech regions using whisper word-level timestamps",
+  "description": "Remove all non-speech regions using whisper word-level timestamps. A low-level utility. Not how to clean a talking head: use `cut` (plan, select-takes, apply).",
   "input": {
     "type": "video_or_spec",
     "description": "Source video file or trim spec JSON from a prior step"

@@ -12,7 +12,7 @@ step: true
 
 Right after `cut` plans, before the apply. This section is the whole job; the steps further down are for a project already cut.
 
-The cut's transcripts are made per voiced run and are trustworthy. Never transcribe a window, render one, or re-measure the audio, and never rebuild the cut with `waveform_trim`, `jump_cut`, `speech_text`, `speech_edit` or `mix_timeline` before the apply: each changes the project, and the apply is then refused as stale.
+The cut's transcripts are made per voiced run and are trustworthy. Never transcribe a window, render one, or re-measure the audio, and never rebuild the cut with any other step (`speech_text`, `speech_edit`, `mix_timeline`) before the apply: each changes the project, and the apply is then refused as stale.
 
 1. Read the plan: the cut's answer carries it as `text` (else `read_file` `cut-plan.md`). Silences and fillers are already gone. Every saying is a row of `## Cut`, in recording order, and nothing else is removed. A tag ending in `?` is a label, never a cut:
    - `retake?` / `false-start?`: an earlier take; it names the line and time of the take said after it.
@@ -32,7 +32,7 @@ Not for a cut plan: the section above is the whole job there.
 
 Here the decisions are text: the speech track is read with `speech_text`, edited, and applied with `speech_edit` (format and rules: skill `speech-edit`).
 
-Order: the mechanical pass (`waveform_trim`, `rm_nonspeech`, `rm_fillers`) has already run. Its keeps become the speech track's items (step 0), so the words you read match that cut.
+Order: `cut` has already been applied, so the speech track's items are its keeps and the words you read match that cut. If `tracks[0]` still holds whole clips, the project is not cut: run `cut` (plan, then apply) first.
 
 ## Core Purpose
 
@@ -43,10 +43,6 @@ Every repeated take of the same line is wasted runtime. Find every section of th
 This is the only step with full cross-clip awareness. Use it.
 
 ## Process
-
-### 0. Put every take on the speech track
-
-`speech_text` reads the timeline, so the mechanical pass's keeps must be items first. If `tracks[0]` still holds whole clips, run `jump_cut` once per clip, in order: `{"project-id": ..., "clip-id": ..., "spec": "<path>"}`, where `<path>` is the clip's `rm_fillers` spec saved with `write_file` in the project folder (the step prints it inline). It works on a clip straight from project creation too. It writes one item per keep into the project, packed end to end, and carries each clip's `proxySrc`, source size and `normalizedSrc`. Do not copy keeps into the call or save `tracks` yourself. Then run `speech_text`.
 
 ### 1. Read the whole track
 
@@ -96,7 +92,7 @@ Look for the same phrase (3+ words) twice inside the selected lines: a restarted
 
 Example: `and always on mode, and always on mode called Kyros that basically lets and always on mode called Kyros` keeps only the last `and always on mode called Kyros`.
 
-**Required, not optional.** `rm_fillers` removes only um/uh/hmm; nothing automated catches repeated phrases.
+**Required, not optional.** Fillers are only um/uh/hmm; nothing automated catches every repeated phrase.
 
 ### 6. Edit the file
 

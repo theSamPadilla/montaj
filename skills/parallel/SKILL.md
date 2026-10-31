@@ -24,7 +24,7 @@ wait
 echo "$out0"; echo "$out1"  # parse results after all complete
 ```
 
-Use for any independent `foreach` step: `waveform_trim`, `transcribe`, `rm_fillers`, `probe`, `snapshot`.
+Use for any independent `foreach` step: `transcribe`, `probe`, `snapshot`. (Cleaning talk is not a fan-out: `cut` handles every clip of the project in one plan call.)
 
 **Do NOT use background jobs for encoding steps.** See Encoding steps below.
 
@@ -46,22 +46,6 @@ montaj remove-bg --inputs clip0_cut.mp4 clip1_cut.mp4 clip2_cut.mp4
 ```
 
 **`remove_bg` is long-running** (minutes per clip, CPU only). Always run it in the background when using the Agent tool or HTTP API so the agent remains responsive.
-
-## `waveform_trim` native batch
-
-Preferred over background jobs — pass all clips in a single call:
-
-```bash
-# HTTP
-curl -s -X POST http://localhost:3000/api/steps/waveform_trim \
-  -H "Content-Type: application/json" \
-  -d '{"inputs": ["/path/clip0.mp4", "/path/clip1.mp4", "/path/clip2.mp4"]}'
-# → returns JSON array of trim specs: [{"input": "...", "keeps": [...]}, ...]
-
-# CLI
-montaj waveform-trim clip0.mp4 clip1.mp4 clip2.mp4
-# → JSON array of trim specs printed to stdout
-```
 
 ## Clip-level — multiple steps per clip (swarm)
 
@@ -86,12 +70,10 @@ Workflow steps declare `needs: [step_ids]`. Identify waves of ready steps (all `
 
 | Wave | Steps | Pattern |
 |------|-------|---------|
-| 1 | `probe`, `snapshot`, `waveform_trim` (per clip) | Bash `&` or waveform_trim batch |
-| 2 | `rm_nonspeech` (per clip) | Bash `&` |
-| 3 | `transcribe` (per clip) | Bash `&` |
-| 4 | `select-takes` | Sequential — the fan-in; needs every clip's transcript |
-| 5 | `rm_fillers` (per clip) | Bash `&` |
-| 6 | `transcribe_final` (per clip) | Bash `&` |
-| 7 | `overlay` | Sequential |
+| 1 | `probe` (per clip) | Bash `&` |
+| 2 | `cut` plan (one call, all clips) | Sequential |
+| 3 | `select-takes` | Sequential: edit `cut-plan.md`; needs every clip's takes |
+| 4 | `cut` apply | Sequential |
+| 5 | `overlay` | Sequential |
 
 Assembly is not a wave. The render engine reads the finished `tracks` and encodes once, at render time.

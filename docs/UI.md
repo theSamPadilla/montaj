@@ -96,8 +96,8 @@ Sidebar                    Canvas
 ─────────────────────────────────────────────────────
 Native steps:              ┌──────────┐
   probe                    │  probe   ├──► ┌─────────────┐
-  rm_fillers               └──────────┘    │  rm_fillers │
-  waveform_trim                            └──────┬──────┘
+  cut                      └──────────┘    │     cut     │
+  caption                                  └──────┬──────┘
   transcribe                                      │
   trim                                   click to configure:
   concat                                 sensitivity: [====|  ] 0.8

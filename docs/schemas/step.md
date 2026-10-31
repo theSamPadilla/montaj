@@ -160,33 +160,6 @@ Each param:
 }
 ```
 
-### `rm_fillers`
-
-```json
-{
-  "name": "rm_fillers",
-  "description": "Remove filler words (um, uh, hmm) and surrounding silence from a clip",
-  "input": {
-    "type": "video",
-    "description": "Source video clip"
-  },
-  "output": {
-    "type": "video",
-    "description": "Cleaned clip with fillers removed"
-  },
-  "params": [
-    {
-      "name": "sensitivity",
-      "type": "float",
-      "default": 0.5,
-      "min": 0.0,
-      "max": 1.0,
-      "description": "How aggressively to remove fillers. Higher = more removed."
-    }
-  ]
-}
-```
-
 ### `normalize`
 
 ```json

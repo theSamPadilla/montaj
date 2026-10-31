@@ -30,7 +30,7 @@ First-run flow is identical for brew and pip: `montaj doctor` first to see what'
 
 | Group | What it installs | Required for |
 |-------|-----------------|--------------|
-| `whisper` | whisper-cli (via `brew install whisper-cpp` on macOS) + large-v3-turbo-q5_0 model weights | `transcribe`, `rm_fillers`, `rm_nonspeech`, `waveform_trim`, render pipeline |
+| `whisper` | whisper-cli (via `brew install whisper-cpp` on macOS) + large-v3-turbo-q5_0 model weights | `transcribe`, `cut`, render pipeline |
 | `ui` | npm deps for `render/` and `ui/`; production UI build | `montaj serve`, render engine |
 | `ffmpeg` | pinned static ffmpeg + ffprobe (8.1.2, with libzimg/zscale) into the managed models dir | HDR normalization (`zscale`), all ffmpeg-backed steps, render engine |
 | `rvm` | onnxruntime, av, numpy (pip) + rvm_mobilenetv3_fp32.onnx (~15 MB, SHA-256 verified); runs on the CPU | `remove_bg`, `track_pose` |
@@ -212,8 +212,7 @@ montaj validate workflow <filename>  # validate a workflow .json file
 Steps chain via stdout — the output path of one step becomes the `--input` of the next:
 
 ```bash
-FILE=$(montaj step rm_fillers --input clip.mp4 --model base.en)
-FILE=$(montaj step waveform_trim --input "$FILE")
+FILE=$(montaj step materialize_cut --input clip.mp4 --inpoint 5 --outpoint 90)
 FILE=$(montaj step resize --input "$FILE" --ratio 9:16)
 # $FILE is the final output path
 ```
@@ -354,19 +353,11 @@ montaj sample frame ./my-project/project.json --at 5.5 --out /tmp/t5.5.png
 ### Clean
 
 ```bash
-montaj step rm_fillers --input clip.mp4
-montaj step rm_fillers --input clip.mp4 --model medium.en    # higher accuracy, slower
-
-montaj step waveform_trim --input clip.mp4
-montaj step waveform_trim --input clip.mp4 --threshold -30 --min-silence 0.3
-
-montaj step waveform_trim --input clip.mp4 --out spec.json
-# → {"path": "/abs/path/spec.json"}  (writes the trim spec instead of printing it)
-montaj step rm_nonspeech --input spec.json
-# Feed the written path straight in — no separate write_file needed to chain the two
-
-montaj step rm_nonspeech --input clip.mp4
-montaj step rm_nonspeech --input clip.mp4 --model base --max-word-gap 0.10 --sentence-edge 0.05
+# Cleaning talk (silences, fillers, false starts, repeats) is one step: `cut`.
+montaj step cut --project project.json
+# → writes cut-plan.md next to project.json and answers with the plan. Delete the rows or words
+#   you do not want (skill select-takes), then apply it:
+montaj step cut --project project.json --plan cut-plan.md
 
 montaj step speech_text --project project.json
 # → writes speech-text.md next to project.json: numbered transcript lines with their pauses. Edit it, then:
@@ -396,10 +387,8 @@ montaj step materialize_cut --input clip.mp4 --cuts '[[0,1.2],[5.3,7.8]]'
 montaj step materialize_cut --input clip.mp4 --audio
 # Audio-only output, no video stream — .wav by default (aac if --out ends in another extension)
 
-montaj step waveform_trim --input clip.mp4 > spec.json
 montaj step materialize_cut --input spec.json
-# waveform_trim only detects silence and writes a trim spec {input, keeps} —
-# no encode happens until materialize_cut consumes it
+# A trim spec {input, keeps} is data; no encode happens until materialize_cut consumes it
 
 
 montaj step resize --input clip.mp4 --ratio 9:16     # TikTok / Reels / Shorts
@@ -569,8 +558,7 @@ All commands follow the same contract:
 Steps are composable at the shell level — stdout of one step is the `--input` of the next:
 
 ```bash
-FILE=$(montaj step rm_fillers --input clip.mp4 --model base.en)
-FILE=$(montaj step materialize_cut --input "$FILE" --inpoint 5 --outpoint 90)
+FILE=$(montaj step materialize_cut --input clip.mp4 --inpoint 5 --outpoint 90)
 FILE=$(montaj step resize --input "$FILE" --ratio 9:16)
 # $FILE is the final output path
 ```

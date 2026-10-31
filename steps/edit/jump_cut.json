@@ -1,7 +1,7 @@
 {
   "name": "jump_cut",
   "category": "edit",
-  "description": "Split a clip into sub-clips by removing time ranges. Metadata-only operation on tracks[0] — no video encoding. Render engine materializes at render time.",
+  "description": "Split a clip into sub-clips by removing time ranges. Metadata-only operation on tracks[0] — no video encoding. Render engine materializes at render time. Not how to clean a talking head: use `cut` (plan, select-takes, apply).",
   "input": {
     "type": "project",
     "description": "Project ID"
@@ -39,7 +39,7 @@
       "name": "spec",
       "type": "path",
       "required": false,
-      "description": "Path to a trim spec JSON (e.g. the rm_fillers output); its `keeps` (source time) become the kept segments. Mutually exclusive with cuts and keeps."
+      "description": "Path to a trim spec JSON ({input, keeps}); its `keeps` (source time) become the kept segments. Mutually exclusive with cuts and keeps."
     }
   ]
 }

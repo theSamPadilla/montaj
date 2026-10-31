@@ -1,6 +1,6 @@
 {
   "name": "waveform_trim",
-  "description": "Detect silence — outputs trim spec JSON with keep ranges. No video encode.",
+  "description": "Detect silence by a fixed dB threshold — outputs trim spec JSON with keep ranges. No video encode. A low-level utility (the editor's audio polish uses it). Not how to clean a talking head: use `cut` (plan, select-takes, apply).",
   "input": {
     "type": "video",
     "description": "Source video file (use 'inputs' for batch parallel processing)",
@@ -31,7 +31,7 @@
       "name": "out",
       "type": "path",
       "required": false,
-      "description": "Write the JSON it would print to this file instead (the trim spec, or with 'inputs' the array of trim specs), and print {\"path\": \"<abs path>\"} instead. Pass a single spec's path as --input to a downstream step (e.g. rm_nonspeech) to chain."
+      "description": "Write the JSON it would print to this file instead (the trim spec, or with 'inputs' the array of trim specs), and print {\"path\": \"<abs path>\"} instead."
     }
   ]
 }

@@ -57,15 +57,13 @@ For HTTP and CLI, **load skill `native`** — it defines how every `_contract` v
 | Step | What it does | Key params |
 |------|-------------|------------|
 | `probe` | Duration, resolution, fps, codec | — |
-| `snapshot` | Contact sheet grid image | `--cols 3 --rows 3` |
+| `snapshot` | Contact sheet grid image. Several clips in ONE sheet: pass them as `inputs` (at most 12) | `--cols 3 --rows 3`; `--at 1.5 --at 9` for a sheet of moments |
 | `virtual_to_original` | Map virtual-timeline timestamps → original file timestamps | `--input spec.json`; positional timestamps; `--inverse`; `--verbose` |
 
 ### Clean
 | Step | What it does | Key params |
 |------|-------------|------------|
-| `waveform_trim` | Detect silence → trim spec (near-instant, no encode) | `--threshold -30 --min-silence 0.3`; add `--out <path>` to write the spec to a file and get back `{"path": ...}` instead of the inline JSON — pass that path as `rm_nonspeech`'s `--input` to chain (its own stdout is inline JSON too, so hold the path yourself between calls) |
-| `rm_nonspeech` | Remove non-speech → trim spec. **Input: trim spec, not video.** | `--max-word-gap 0.10 --sentence-edge 0.05` |
-| `rm_fillers` | Remove um/uh/hmm → trim spec. **Input: trim spec, not video.** | `--language en` |
+| `cut` | **The one way to clean talk** (silences, fillers, false starts, repeats). Two calls: plan (writes `cut-plan.md`), then apply. Between them, skill `select-takes` edits the plan. Never rebuild a cut from other steps. | `project`; apply with `plan cut-plan.md`; `--language <code>` |
 | `crop_spec` | Crop trim spec to virtual-timeline windows → refined trim spec, no encode | `--keep 8.5:14.8` (repeatable; `end` sentinel ok) |
 
 ### Edit
@@ -86,7 +84,7 @@ For HTTP and CLI, **load skill `native`** — it defines how every `_contract` v
 
 **`caption` produces a data track, not pixels.** Rendered at review/final render time by the UI and render engine.
 
-**Language — non-English footage.** The speech steps (`transcribe`, `rm_nonspeech`, `rm_fillers`) default to the multilingual `large-v3-turbo-q5_0` model, which handles every language; omit `--model`. A model that is not installed falls back to one that is. **Always pass `--language <code>` to every speech step** (e.g. `--language es`), taken from `project.settings.language`: whisper transcribes in the language it is told, and a wrong one emits sparse/garbage word timestamps that `rm_nonspeech` then deletes as "silence". If you do pass an English-only `*.en` model, a non-English code auto-upgrades it to its multilingual sibling. Set the project language at init with `--language es` (stored in `settings.language`); if a project predates this field and the audio clearly isn't English, pass `--language` explicitly anyway. `rm_fillers` also switches to that language's hesitation-filler set.
+**Language — non-English footage.** `transcribe` and `cut` default to the multilingual `large-v3-turbo-q5_0` model, which handles every language; omit `--model`. A model that is not installed falls back to one that is. **Always pass `--language <code>` to `transcribe` and `cut`** (e.g. `--language es`), taken from `project.settings.language`: whisper transcribes in the language it is told, and a wrong one emits sparse/garbage word timestamps that `cut` then deletes as "silence". If you do pass an English-only `*.en` model, a non-English code auto-upgrades it to its multilingual sibling. Set the project language at init with `--language es` (stored in `settings.language`); if a project predates this field and the audio clearly isn't English, pass `--language` explicitly anyway. `cut` also switches to that language's hesitation-filler set.
 
 **Transcribing a long source (e.g. a multi-minute source you will split into clips)?** whisper can fall into a repetition-loop hallucination — one phrase repeated to EOF after a hard-to-decode stretch (music, a goal replay). Pass `--max-context 0` to `transcribe` to disable cross-window context, which reliably prevents the loop. Recommended for any multi-minute and/or non-English source transcription.
 
@@ -115,25 +113,17 @@ These produce artifacts the **editor** reads. Render never reads either one.
 
 ## Trim Spec Architecture
 
-Editing steps do not encode video. They output **trim specs** — JSON describing which ranges of the original file to keep:
+Editing steps do not encode video. Where one outputs a **trim spec**, it is JSON describing which ranges of the original file to keep:
 
 ```json
 {"input": "/path/to/original.MOV", "keeps": [[0.0, 5.3], [6.1, 12.4]]}
 ```
 
-**Data flow:**
-```
-waveform_trim → trim spec → rm_nonspeech → trim spec → transcribe
-                                                       → rm_fillers → refined spec → tracks[0] inPoint/outPoint/start/end
-                                                                           ↓
-                                                                   render engine (final assembly)
-```
-
 **Rules:**
 - Pass original source files to editing steps — never pre-encode them
-- `rm_fillers`, `rm_nonspeech`, `crop_spec` take a trim spec as `input` and output a refined spec — never pass a video file to these
+- `crop_spec` takes a trim spec as `input` and outputs a refined spec — never pass a video file to it
 - One encode per clip, then one render pass
-- **None of these steps write to disk on their own except `crop_spec`.** `waveform_trim`, `rm_nonspeech`, and `rm_fillers` each print the trim spec inline as JSON on stdout — there is no automatic wiring between one step's output and the next step's `--input` (a workflow names its steps; it never runs one or passes data between them). You hold the JSON between calls: either write it to a file yourself (`write a file`, per `_contract`) or, for `waveform_trim` specifically, pass `--out <path>` and it does that for you, replying `{"path": "<abs path>"}` instead of the spec — feed that path straight into `rm_nonspeech --input`.
+- A trim spec is data: nothing writes it to disk for you, so write it to a file (`write a file`, per `_contract`) before a step takes it as `--input`. Cleaning talk does not go through trim specs: `cut` edits the project's timeline itself.
 
 > **CRITICAL — video clip `src` field:**
 > Any video clip item (in any track) MUST have `src` pointing to a **real video file** (`.MOV`, `.mp4`, etc.) — never a spec JSON file.
@@ -147,7 +137,7 @@ waveform_trim → trim spec → rm_nonspeech → trim spec → transcribe
 Read the assigned workflow with the `get_workflow` tool when you have it (the Montaj app serves its templates through it, recipe included); otherwise read `workflows/{name}.json` from the filesystem.
 
 **Built-in workflows:**
-- `overlays` (the default): silence trim, remove non-speech, transcribe, select takes, remove fillers, overlays
+- `overlays` (the default): `cut` plan, select takes, `cut` apply, captions, punch-ins, overlays
 - `blank` — empty project, no steps; edit directly per the user's instructions
 - `carousel` — N still slides at one fixed aspect ratio, rendered to PNGs; no time axis, no audio
 - `ai_video` — director agent writes a storyboard from your prompt and references, you approve, scenes are generated via Kling
@@ -158,7 +148,7 @@ A project can also name a project-local (`./workflows/`) or user-global (`~/.mon
 You should deviate only under one conditions:
 When the prompt or user intent deviates from the selected workflow:**
 - "no captions" → skip caption
-- "keep it raw" → skip rm_fillers, waveform_trim
+- "keep it raw" → skip `cut`
 - "YouTube format" → resize 16:9
 
 If in doubt, **ask your human**.
@@ -196,7 +186,7 @@ Dropping it is silent. The project still validates, the render is still correct,
 
 **HEVC clips:** the editing steps read HEVC directly and the render engine conforms it at assembly time. Never manually re-encode before an editing step.
 
-**One trim pass only.** Running silence removal twice causes boundary glitches.
+**One cut only.** Apply `cut` once; an already-cut project answers `already-cut`. Fix a seam with `speech_text` / `speech_edit`.
 
 ## File Conventions
 
@@ -217,8 +207,7 @@ Refer to sub-skills by name; the reader resolves the name to a path.
 | `parallel` | Multiple clips, or workflow has `foreach` steps |
 | `edit-session` | The draft is done and the user wants interactive refinements — cuts, re-timing, new overlays |
 | `speech-edit` | Cutting speech by editing its transcript as text (`speech_text`, `speech_edit`), on a project that already has a timeline |
-| `select-takes` | Executing `montaj/select_takes` in a workflow |
-| `waveform-silence` | `waveform_trim`'s fixed threshold failed because the noise floor varies across clips — read waveforms visually instead |
+| `select-takes` | Editing `cut-plan.md` between `cut`'s plan and its apply |
 | `overlay` | Executing `montaj/overlay` in a workflow |
 | `write-overlay` | Writing custom JSX overlay components |
 | `image-search` | Sourcing outside imagery (`search_images` + `fetch_image`) when the prompt asks for photos / logos / B-roll stills |

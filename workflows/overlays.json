@@ -1,6 +1,6 @@
 {
   "name": "overlays",
-  "description": "Trim and clean the footage, pick the best takes, then add overlays.",
+  "description": "Cut the talk (plan, select takes, apply), then captions, punch-ins and overlays.",
   "project_type": "editing",
   "steps": [
     { "id": "cut_plan",         "uses": "montaj/cut",            "note": "With footage, start here: faster, cheaper and better than cutting by hand, and battle-tested on real projects (false starts, repeats, dead air, unfinished sentences). Makes a plan of what to remove; read it and adjust it if needed." },

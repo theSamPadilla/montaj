@@ -109,7 +109,7 @@ See the [CLI Reference](https://docs.montaj.ag/cli) for the full documentation.
 | Category | Steps |
 |----------|-------|
 | **Inspect** | `probe`, `snapshot`, `analyze_media` |
-| **Clean** | `waveform_trim`, `rm_fillers`, `rm_nonspeech`, `speech_text`, `speech_edit` |
+| **Clean** | `cut` (the one way to clean talk: plan, pick takes, apply), `speech_text`, `speech_edit` |
 | **Edit** | `materialize_cut`, `resize`, `extract_audio`, `crop_spec` |
 | **Enrich** | `transcribe`, `caption`, `normalize` (full-source, eager default), `normalize_window` (per clip-window, lazy) |
 | **Generate** | `kling_generate`, `generate_image`, `eval_scene` |
@@ -120,7 +120,7 @@ See the [CLI Reference](https://docs.montaj.ag/cli) for the full documentation.
 
 | Workflow | Description |
 |----------|-------------|
-| `overlays` | Trim, remove filler, then add overlays (the default) |
+| `overlays` | Cut the talk (`cut`), then captions and overlays (the default) |
 | `ai_video` | Generate video from text via Kling + storyboard |
 | `carousel` | Image carousel of still slides, rendered to PNGs |
 | `blank` | Empty editing project; footage optional, steps for looking, cutting (only if asked), placing, captions and a check |
@@ -131,7 +131,7 @@ Custom steps and workflows are discovered automatically — no registration need
 
 Skills are agent-readable contracts that teach the agent how to approach a specific editing task. Each skill describes the goal, the steps to use, the parameter choices, and the quality criteria.
 
-Available skills: `onboarding`, `edit-session`, `ai-video-plan`, `ai-video-generate`, `eval-scenes`, `overlay`, `write-overlay`, `serve`, `parallel`, `select-takes`, `waveform-silence`, `camera-vocabulary`, `mcp`.
+Available skills: `onboarding`, `edit-session`, `ai-video-plan`, `ai-video-generate`, `eval-scenes`, `overlay`, `write-overlay`, `serve`, `parallel`, `select-takes`, `camera-vocabulary`, `mcp`.
 
 ## Connectors
 

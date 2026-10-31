@@ -9,11 +9,11 @@ Cut speech by editing its words, not by doing timestamp arithmetic. `speech_text
 
 ## Order of passes
 
-1. Mechanical pass first: `waveform_trim` (or the `waveform-silence` skill when noise defeats its threshold), `rm_nonspeech`, `rm_fillers`.
+1. Clean the talk first with `cut` (plan, select-takes, apply). It is the one way to remove silences, fillers and false starts.
 2. This pass.
 3. Captions, overlays and music last. They anchor to the speech, so finish it first.
 
-`waveform_trim` stays the fallback when the transcript is unreliable (noisy or mumbled audio) and for footage without speech.
+On a project `cut` already cut, this pass fixes words and seams only.
 
 ## The loop
 

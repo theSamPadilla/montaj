@@ -1,6 +1,6 @@
 {
   "name": "rm_fillers",
-  "description": "Remove filler words (um, uh, hmm) and surrounding silence from a clip",
+  "description": "Remove filler words (um, uh, hmm) and surrounding silence from a clip. A low-level utility. Not how to clean a talking head: use `cut` (plan, select-takes, apply).",
   "input": {
     "type": "video_or_spec",
     "description": "Source video file or trim spec JSON from a prior step"

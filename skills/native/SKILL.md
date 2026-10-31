@@ -77,15 +77,15 @@ curl -s -X POST http://localhost:3000/api/steps/materialize_cut \
   -H "Content-Type: application/json" \
   -d '{"input": "/path/to/clip.mp4", "inpoint": 2.5, "outpoint": 8.3}'
 
-# Multiple inputs (rm_fillers batch, etc.)
-curl -s -X POST http://localhost:3000/api/steps/rm_fillers \
+# Multiple inputs (materialize_cut batch, etc.)
+curl -s -X POST http://localhost:3000/api/steps/materialize_cut \
   -H "Content-Type: application/json" \
   -d '{"inputs": ["/path/clip1.mp4", "/path/clip2.mp4"]}'
 ```
 
 Response: `{"path": "..."}` for file outputs, a JSON object for data outputs (probe, transcribe, etc.).
 
-**Long-running steps** (transcribe, rm_fillers, resize, remove_bg) must run in the background so you stay available for conversation:
+**Long-running steps** (transcribe, resize, remove_bg) must run in the background so you stay available for conversation:
 
 1. **Single long step** — set `run_in_background: true` on the Bash tool call. You are notified on completion.
 2. **Multiple clips in parallel** — write a shell script with `&` + `wait` to `/tmp`, execute with `run_in_background: true`.
@@ -167,8 +167,7 @@ montaj snapshot clip.mp4
 montaj materialize-cut clip.mp4 --inpoint 2.0 --outpoint 8.0    # keep one range
 montaj materialize-cut clip.mp4 --cuts '[[0,1.2],[5.3,7.8]]'    # remove ranges, one ffmpeg pass
 montaj materialize-cut spec.json                                 # apply every keep in a trim spec
-montaj waveform-trim clip.mp4 --threshold -30 --min-silence 0.3
-montaj rm-nonspeech clip_spec.json --model base
+montaj step cut --project project.json                           # clean talk: plan, then apply with --plan cut-plan.md
 montaj transcribe clip.mp4 --model base.en
 montaj caption clip.mp4 --style word-by-word
 montaj step crop_spec --input spec.json --keep 8.5:14.8 --keep 40.0:end
