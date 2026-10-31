@@ -764,7 +764,7 @@ def _main():
         "--language", default="en",
         help="Spoken language of the footage as a whisper code (e.g. 'es', 'pt', 'fr'), or "
              "'auto' to detect. Stored in settings.language and passed to the speech steps "
-             "(transcribe, rm_nonspeech, rm_fillers); non-English values auto-select a "
+             "(transcribe, cut); non-English values auto-select a "
              "multilingual whisper model. Default 'en'.",
     )
     parser.add_argument(

@@ -8,7 +8,7 @@
 
 A video editing tool harness that mounts on top of your existing agent framework. Montaj is not an agent — it is the toolkit the agent uses. You bring Claude, OpenClaw, or any agent; Montaj gives it the tools to edit video.
 
-Built-in steps cover the common operations (trim, transcribe, remove fillers, resize). Custom steps extend the toolkit. The agent reads the workflow and the editing prompt, then calls steps as tools at its own discretion — deciding what to run, in what order, and with what params.
+Built-in steps cover the common operations (cut, transcribe, captions, resize). Custom steps extend the toolkit. The agent reads the workflow and the editing prompt, then calls steps as tools at its own discretion — deciding what to run, in what order, and with what params.
 
 **The fundamental dependency is an agent.** Montaj headlessly produces nothing on its own. `montaj run` creates a pending project and waits. An agent picks it up, calls steps, and writes the edit.
 
@@ -337,15 +337,11 @@ The agent may call these steps in this order, reorder them, adjust params, skip 
 Example execution waves for the `overlays` workflow:
 
 ```
-Wave 1 (parallel): probe, snapshot, silence×N (foreach clips)
-Wave 2 (parallel): transcribe×N (foreach clips — needs silence)
-Wave 3:            select_takes (needs transcribe)
-Wave 4 (parallel): fillers×N (foreach clips — needs select_takes)
-Wave 5:            concat (needs fillers)
-Wave 6:            transcribe_concat (needs concat)
-Wave 7:            caption (needs transcribe_concat)
-Wave 8:            overlays (needs caption)
-Wave 9:            resize (needs overlays)
+Wave 1:            cut_plan (one call, all clips)
+Wave 2:            select-takes (needs cut_plan)
+Wave 3:            cut_apply (needs select-takes)
+Wave 4 (parallel): captions, punch (both need cut_apply)
+Wave 5:            overlays (needs captions and punch)
 ```
 
 `foreach: <path>` fans out a step across all entries in a dotted-path collection on the project. Common values: `"clips"` (all project clips), `"storyboard.scenes"`, `"storyboard.imageRefs"`, `"storyboard.styleRefs"` (used by the `ai_video` workflow). The agent runs them as parallel tool calls (not subagents) and collects the outputs before proceeding to steps that need them. Any dotted identifier path is accepted; the agent decides what iteration means for that collection (e.g. the ai-video-plan skill skips imageRefs with `source: "upload"` since they already have their image).
@@ -406,7 +402,7 @@ Install the optional deps with `montaj install connectors`.
 
 | Workflow | Description |
 |----------|-------------|
-| `overlays` | Multi-clip edit — silence trim, transcribe, select best takes, remove fillers, overlays. No captions. |
+| `overlays` | Multi-clip edit — `cut` plan, select takes, `cut` apply, then captions, punch-ins and overlays. |
 | `ai_video` | AI-generated video: storyboard, approval gate, Kling scene generation. No source footage required. |
 | `carousel` | Still slides at one fixed aspect ratio, rendered to PNGs. |
 | `blank` | Empty editing project. Footage is optional; the steps are look, cut (only if asked), place, captions and check. |
@@ -550,7 +546,7 @@ Editing steps output **trim specs** — not video files. A trim spec describes w
 
 Before this architecture, every editing step re-encoded the full video. A five-clip workflow with three editing passes produced fifteen video encodes before the final concat. For 4K HEVC footage this caused multi-minute timeouts per step.
 
-With trim specs, **no video is decoded or encoded until `concat`**. Editing steps work on audio only (for analysis) and pass timestamps forward. The entire set of cuts — silence boundaries, filler removals, take selections — is accumulated as trim spec refinements and applied in a single ffmpeg filter_complex pass at concat time.
+With trim specs, **no video is decoded or encoded until `concat`**. Editing steps work on audio only (for analysis) and pass timestamps forward. The cuts a trim-spec step makes are accumulated as trim spec refinements and applied in a single ffmpeg filter_complex pass at concat time.
 
 ### Data flow
 
@@ -574,7 +570,7 @@ Cleaning talk (silences, fillers, false starts, repeats) is not a trim spec pipe
 ### Rules
 
 - Editing steps always receive the **original source file path**, never a re-encoded intermediate
-- Trim specs chain: each step refines the keeps list, preserving the original `input` path throughout
+- A trim spec step refines the keeps list, preserving the original `input` path throughout
 - `concat` and `materialize_cut` are the only steps that encode video. `concat` is used for the normal pipeline; `materialize_cut` is used only when a subsequent step (e.g. `remove_bg`) requires a physical video file before the final render
 - Both encoders use input-level seeking (`-ss`/`-t` placed before `-i`) — ffmpeg seeks at the container level so only the requested segment is decoded. Neither uses the `trim` filter, which would force a full file decode regardless of the requested range
 - HEVC source files are handled automatically at concat — no pre-conversion needed

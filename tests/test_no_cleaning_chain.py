@@ -29,9 +29,11 @@ _SEQUENCE_RES = (
     re.compile(r"five[- ]step", re.I),
     re.compile(r"\b(?:cleaning|clean|trim) chain\b", re.I),
     re.compile(r"silence\s*(?:→|->|=>|then)\s*(?:remove\s+)?(?:non-?speech\s*(?:→|->|=>|then)\s*)?(?:transcribe|fillers?)", re.I),
-    re.compile(r"silence trim,\s*remove non-?speech", re.I),
     re.compile(r"\bto chain\b", re.I),
     re.compile(r"mechanical pass", re.I),
+    re.compile(r"silence\s*[×x]\d*", re.I),
+    re.compile(r"silence trim,", re.I),
+    re.compile(r"remove fillers", re.I),
 )
 
 # Scope 3: the only places outside a step's own json that may name a chain step.

@@ -28,10 +28,10 @@ The file watcher is unreliable under load. Always call this explicitly after cha
 The clip filename tells you which transcript to use. For a clip at:
 
 ```
-IMG_4900_fillers_concat_cut_cut.mp4
+IMG_4900_cut_cut.mp4
 ```
 
-The transcript must be named after that exact file — e.g. `IMG_4900_fillers_concat_cut_cut.json`. If only an older transcript exists (e.g. `IMG_4900_fillers_concat.json`), it is stale — its timestamps come from a pre-cut file and will not align with the current video.
+The transcript must be named after that exact file — e.g. `IMG_4900_cut_cut.json`. If only an older transcript exists (e.g. `IMG_4900_cut.json`), it is stale — its timestamps come from a pre-cut file and will not align with the current video.
 
 **Re-transcribe when in doubt:**
 
