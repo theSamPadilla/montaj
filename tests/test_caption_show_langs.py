@@ -196,3 +196,35 @@ class TestANewLanguageIsShown:
         _translate(d, {"show": ["en"]})
         answer = _translate(d, {"lang": "es", "phrases": PHRASES})
         assert answer["showLangs"] == ["en"]
+
+
+class TestTheRouteReadsTheNarrationByDefault:
+    """§652: the editor's caption route reads the same audio as the generate_captions step."""
+
+    def _run(self, tmp_path, monkeypatch, project):
+        _patch_caption_subprocess(monkeypatch)
+        d = tmp_path / "proj"
+        d.mkdir()
+        (d / "_caption_track.json").write_text(json.dumps({"style": "subtitle", "segments": [seg(WORDS_A)]}))
+        track = asyncio.run(_run_caption_pipeline(
+            PID, d, project, model="base.en", language="en", style="subtitle", broadcaster=_FakeBroadcaster()))
+        srcs = [s["src"] for s in json.loads((d / "_caption_mix.json").read_text())["segments"]]
+        return d, track, srcs
+
+    def _bed(self, **kw):
+        p = _audible_project()
+        p["audio"] = {"tracks": [{"id": "bed", "src": "/nonexistent/bed.mp3", "start": 0.0, "end": 2.0, "inPoint": 0.0, "outPoint": 2.0}]}
+        return p
+
+    def test_default_skips_an_untyped_music_bed(self, tmp_path, monkeypatch):
+        d, track, srcs = self._run(tmp_path, monkeypatch, self._bed())
+        assert srcs == ["/nonexistent/none.mov"]
+        assert "noVoiceTrack" not in track
+
+    def test_a_bed_only_project_falls_back_and_says_so(self, tmp_path, monkeypatch):
+        p = self._bed()
+        p["tracks"][0][0]["muted"] = True
+        d, track, srcs = self._run(tmp_path, monkeypatch, p)
+        assert srcs == ["/nonexistent/bed.mp3"]
+        assert "noVoiceTrack" in track
+        assert "noVoiceTrack" not in json.loads((d / "project.json").read_text())["captions"]
