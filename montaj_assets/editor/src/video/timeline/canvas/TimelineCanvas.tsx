@@ -39,7 +39,7 @@ import type { GetFilmstripArgs, GetWaveformPeaksArgs, FilmstripIndex, PeaksData,
 import { FOOTAGE_DND_MIME, AUDIO_DND_MIME } from '../../../types'
 import type { KeyframeProp, Marker } from '../../../schema'
 import type { PlaybackClock } from '../../playback-clock'
-import { BASE_VISUAL_ROW_RENDER_HEIGHT_PX, ROW_GAP_PX, VISUAL_ROW_RENDER_HEIGHT_PX } from '../timeline-model'
+import { holdsVideoLayer, BASE_VISUAL_ROW_RENDER_HEIGHT_PX, ROW_GAP_PX, VISUAL_ROW_RENDER_HEIGHT_PX } from '../timeline-model'
 import { placeDroppedClip, placeDroppedAudio, resolveDropPoint } from '../placement'
 import { computeTimelineLayout, drawTimelineContent, drawTimelineOverlay, MARKER_FLAG_WIDTH_PX, MARKER_LABEL_GAP_PX, type LayoutHold, type PendingDropBand, type TimelineLayout, type TimelineMode, type VisualRowLayout } from './draw'
 import { hitTest, isEdgeHit, type Point, type SurfaceRect } from './hit-test'
@@ -309,7 +309,7 @@ export function pendingDropBands(
   // `rows` is in DRAW order (highest trackIdx first), so the base video row is
   // found by scanning for the lowest trackIdx that carries video, not by
   // taking rows[0].
-  const videoRows = layout.rows.filter(r => r.items.some(it => it.type === 'video'))
+  const videoRows = layout.rows.filter(r => holdsVideoLayer(r.items, r.trackIdx))
   const baseRow = videoRows.length > 0
     ? videoRows.reduce((lowest, r) => (r.trackIdx < lowest.trackIdx ? r : lowest))
     : layout.rows[layout.rows.length - 1]

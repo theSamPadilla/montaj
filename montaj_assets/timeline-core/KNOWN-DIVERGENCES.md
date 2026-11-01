@@ -1327,7 +1327,7 @@ this is WHAT SHAPE it has once it does.
 
 **Decided, not a bug.** Since §308 P3 the export and sample_frame stack every
 visual layer by the editor's track order (`src/layering.js`,
-`trackLayerPositions`: every track holding a plain (not `remove_bg`) video first, then the rest, each
+`trackLayerPositions`: every track holding a plain (not `remove_bg`) video first (any video on tracks[0]), then the rest, each
 group in JSON order), so a layer on a higher track draws over one on a lower
 track in all three. WITHIN one track the two still differ:
 

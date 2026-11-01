@@ -21,6 +21,9 @@
 // cut-out, a picture with alpha, so it follows track order the way an image
 // does. A track counts as a video track only if it holds a video item that is
 // NOT a cut-out; a track of cut-outs, images and overlays stacks with the rest.
+// The exception is the track at JSON index 0, the base video track: it counts as
+// video if it holds ANY video item, cut-out or not, so it stays the bottom layer
+// and re-normalizing never moves primary audio, transcripts or cut plans off it.
 //
 // So a track holding video ALWAYS draws below every image and overlay track,
 // wherever it sits in the JSON: an image-only track listed below a video track
@@ -43,7 +46,8 @@
  * The layer position of each visual track, by its JSON index: 0 is the bottom.
  * Mirrors the editor's canonical track order (see the module header): every
  * track holding a plain video item first, then the rest, each group in JSON order.
- * A `remove_bg` video is a cut-out and counts as a non-video item (§644).
+ * A `remove_bg` video is a cut-out and counts as a non-video item (§644),
+ * except on the base track (JSON index 0), where any video item counts.
  *
  * Read over ALL tracks, disabled ones included, as the editor's partition is:
  * a disabled track has nothing to draw, so where it sits changes no one's
@@ -56,7 +60,7 @@
  */
 export function trackLayerPositions(trackItems) {
   const tracks = Array.isArray(trackItems) ? trackItems : []
-  const holdsVideo = tracks.map((items) => Array.isArray(items) && items.some((item) => item?.type === 'video' && !item.remove_bg))
+  const holdsVideo = tracks.map((items, i) => Array.isArray(items) && items.some((item) => item?.type === 'video' && (i === 0 || !item.remove_bg)))
   /** @type {number[]} */
   const positions = new Array(tracks.length)
   let next = 0

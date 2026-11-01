@@ -33,7 +33,14 @@ const cut = { type: 'video', remove_bg: true }
 
 test('trackLayerPositions: a cut-out-only track stacks in JSON order with the non-video group', () => {
   assert.deepEqual(trackLayerPositions([[v], [o], [cut]]), [0, 1, 2], 'cut-out after an overlay stays above it')
-  assert.deepEqual(trackLayerPositions([[cut], [v], [o]]), [1, 0, 2], 'cut-out before a video sits above it')
+  assert.deepEqual(trackLayerPositions([[v], [cut], [o]]), [0, 1, 2], 'cut-out on tracks[1] follows track order')
+  assert.deepEqual(trackLayerPositions([[o], [v], [cut]]), [1, 0, 2])
+})
+
+test('trackLayerPositions: tracks[0] is the base video track even when it holds only a cut-out', () => {
+  assert.deepEqual(trackLayerPositions([[cut], [v], [o]]), [0, 1, 2], 'base cut-out stays the bottom')
+  assert.deepEqual(trackLayerPositions([[cut], [o], [v]]), [0, 2, 1])
+  assert.deepEqual(trackLayerPositions([[cut], [o]]), [0, 1])
 })
 
 test('trackLayerPositions: a track mixing a cut-out and a plain video is still a video track', () => {

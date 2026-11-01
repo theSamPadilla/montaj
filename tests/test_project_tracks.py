@@ -390,7 +390,11 @@ def test_track_layer_positions_cut_out_video_follows_track_order():
     v, o = {"type": "video"}, {"type": "overlay"}
     cut = {"type": "video", "remove_bg": True}
     assert track_layer_positions({"tracks": [[v], [o], [cut]]}) == [0, 1, 2]
-    assert track_layer_positions({"tracks": [[cut], [v], [o]]}) == [1, 0, 2]
+    assert track_layer_positions({"tracks": [[v], [cut], [o]]}) == [0, 1, 2]
+    assert track_layer_positions({"tracks": [[o], [v], [cut]]}) == [1, 0, 2]
+    # tracks[0] is the base video track even when it holds only a cut-out
+    assert track_layer_positions({"tracks": [[cut], [v], [o]]}) == [0, 1, 2]
+    assert track_layer_positions({"tracks": [[cut], [o], [v]]}) == [0, 2, 1]
     assert track_layer_positions({"tracks": [[o], [cut, v], [o]]}) == [1, 0, 2]
     assert track_layer_positions({"tracks": [[o], [{"type": "video", "remove_bg": False}]]}) == [1, 0]
 
@@ -401,3 +405,5 @@ def test_look_check_layer_positions_treats_a_cut_out_video_like_track_layer_posi
     v, o, cut = {"type": "video"}, {"type": "overlay"}, {"type": "video", "remove_bg": True}
     assert layer_positions([[v], [o], [cut]]) == [0, 1, 2]
     assert layer_positions([[o], [cut, v], [o]]) == [1, 0, 2]
+    assert layer_positions([[cut], [v], [o]]) == [0, 1, 2], "tracks[0] stays the base video track"
+    assert layer_positions([[v], [cut], [o]]) == [0, 1, 2]

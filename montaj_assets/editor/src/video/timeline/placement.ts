@@ -15,7 +15,7 @@
 import type { Project, AudioDropPayload } from '../../types'
 import type { AudioTrack, VisualTrack } from '../../schema'
 import { insertClipAt, overlapsAny, type NewClipInput } from '../cuts'
-import { normalizeTracks, nextVisualTrackId, normalizeAudioTracks, groupAudioLanes, stampAudioLanes, computeDerivedTiming } from './timeline-model'
+import { holdsVideoLayer, normalizeTracks, nextVisualTrackId, normalizeAudioTracks, groupAudioLanes, stampAudioLanes, computeDerivedTiming } from './timeline-model'
 
 /** What a drop needs to tell `placeDroppedClip` about ITSELF — the pointer's
  *  drop time, which row (if any) it released over, and the magnet/snap state
@@ -99,7 +99,7 @@ export function resolveDropPoint({
 
 /**
  * A track at `index` is a video-placement CANDIDATE when either it already
- * carries a video item (`trackGroupKind`'s own rule, timeline-model.ts), or
+ * carries a video layer (`holdsVideoLayer`, not a cut-out after the base, timeline-model.ts), or
  * it is the empty base row (`index === 0` with no items at all) —
  * `computeTimelineLayout` (canvas/draw.ts) already draws that row tall,
  * i.e. treats it as video-kind, regardless of content. Overlay/image tracks
@@ -108,7 +108,7 @@ export function resolveDropPoint({
  * with, they simply aren't in the array this function scans.
  */
 function isVideoCandidate(track: VisualTrack, index: number): boolean {
-  return track.items.some(it => it.type === 'video') || (index === 0 && track.items.length === 0)
+  return holdsVideoLayer(track.items, index) || (index === 0 && track.items.length === 0)
 }
 
 /**

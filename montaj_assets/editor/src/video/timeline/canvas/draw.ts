@@ -29,6 +29,7 @@ import {
   groupAudioLanes,
   normalizeTracks,
   trackItems,
+  holdsVideoLayer,
 } from '../timeline-model'
 import { DEFAULT_FADE_CURVE, fadeGain, makeFadeGainAt, type FadeCurve } from './fade-curve'
 import { canKeyframe, isKeyframed } from '../../keyframeOps'
@@ -932,7 +933,7 @@ export function computeTimelineLayout(project: Project, pins: readonly TimelineP
   // change is a no-op for the single-video-track case.
   let topVideoIdx = -1
   for (let i = 0; i < allTracks.length; i++) {
-    if (allTracks[i].some(item => item.type === 'video')) topVideoIdx = i
+    if (holdsVideoLayer(allTracks[i], i)) topVideoIdx = i
   }
   const captionEmitIdx = topVideoIdx >= 0 ? topVideoIdx : 0
 

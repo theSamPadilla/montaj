@@ -138,7 +138,7 @@ The three are kept in lock-step by convention: the same input produces the same 
 | Property | Rule |
 |----------|------|
 | **Primary track** | `tracks[0]` — always. Its `items` contain the main footage clips (`type: "video"`). |
-| **Z-order** | Tracks holding a plain video item (not a `remove_bg` cut-out, which stacks like an image) draw below all others; within each group, index order (higher on top); within a track, clips before overlays. One rule for the preview, `sample_frame` and the export (timeline-core `trackLayerPositions`). |
+| **Z-order** | Tracks holding a plain video item (not a `remove_bg` cut-out, which stacks like an image; `tracks[0]` is the exception and always counts as video) draw below all others; within each group, index order (higher on top); within a track, clips before overlays. One rule for the preview, `sample_frame` and the export (timeline-core `trackLayerPositions`). |
 | **Primary audio** | Non-muted items in `tracks[0]`'s `items` provide the primary audio mix. |
 | **Transcript source** | Whisper runs against `tracks[0]` audio. |
 | **Canvas projects** | `tracks[0].items` is `[]` for animation-only projects. Duration is inferred from max `end` across all overlay tracks. |

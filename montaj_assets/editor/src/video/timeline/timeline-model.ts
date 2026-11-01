@@ -1096,15 +1096,24 @@ export function nextVisualTrackId(tracks: readonly unknown[]): string {
 // cross-kind mixing, so this only has to group what's already there, never
 // merge or split a track.
 
-/** A track's coarse kind for STACKING purposes: 'video' if it holds at least
- *  one plain video item (a `remove_bg` cut-out stacks like an image, §644),
- *  'overlay' otherwise (overlay/image items, or none at
- *  all). Distinct from `moveItemAcrossTracks`'s own item-level `coarse` —
- *  that one classifies a single dragged ITEM to gate a move; this one
- *  classifies a whole TRACK by its content, to group tracks for display. A
- *  track holding even one video item groups as video, mixed or not. */
-function trackGroupKind(track: VisualTrack): 'video' | 'overlay' {
-  return track.items.some(item => item.type === 'video' && !item.remove_bg) ? 'video' : 'overlay'
+/** Whether the track at JSON `index` holds a video-layer item for STACKING:
+ *  a plain video item, or any video item on the base track (index 0, which is
+ *  always the bottom video track, cut-out or not). A `remove_bg` cut-out on a
+ *  later track stacks like an image (§644). The one copy of the rule for the
+ *  editor; mirrors timeline-core `trackLayerPositions`. */
+export function holdsVideoLayer(items: readonly { type: string; remove_bg?: boolean }[], index: number): boolean {
+  return items.some(item => item.type === 'video' && (index === 0 || !item.remove_bg))
+}
+
+/** A track's coarse kind for STACKING purposes: 'video' if it holds a video
+ *  layer (`holdsVideoLayer`), 'overlay' otherwise (overlay/image items,
+ *  cut-outs after the base, or none at all). Distinct from
+ *  `moveItemAcrossTracks`'s own item-level `coarse` — that one classifies a
+ *  single dragged ITEM to gate a move; this one classifies a whole TRACK by
+ *  its content, to group tracks for display. A track holding even one video
+ *  layer groups as video, mixed or not. */
+function trackGroupKind(track: VisualTrack, index: number): 'video' | 'overlay' {
+  return holdsVideoLayer(track.items, index) ? 'video' : 'overlay'
 }
 
 /**
@@ -1117,7 +1126,7 @@ function trackGroupKind(track: VisualTrack): 'video' | 'overlay' {
 function orderedTrackArray(tracks: VisualTrack[]): VisualTrack[] {
   const video: VisualTrack[] = []
   const overlay: VisualTrack[] = []
-  for (const track of tracks) (trackGroupKind(track) === 'video' ? video : overlay).push(track)
+  tracks.forEach((track, i) => (trackGroupKind(track, i) === 'video' ? video : overlay).push(track))
   const reordered = [...video, ...overlay]
   return reordered.every((track, i) => track === tracks[i]) ? tracks : reordered
 }

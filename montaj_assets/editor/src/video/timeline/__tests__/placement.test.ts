@@ -140,6 +140,16 @@ describe('placeDroppedClip — new track creation', () => {
   })
 })
 
+describe('placeDroppedClip — cut-out tracks are not video candidates (§644)', () => {
+  it('a plain clip never lands on a cut-out track after the base', () => {
+    const cut = { id: 'cut', type: 'video', src: 'cut.mp4', start: 50, end: 60, remove_bg: true } as VisualItem
+    const p = makeProject({ tracks: vtracks([videoItem('a', 20, 25)], [cut]) })
+    const result = placeDroppedClip(p, { atTime: 0, preferredTrackIndex: 1, clip: { src: 'n.mp4', sourceDuration: 3 } })
+    expect(result.trackIndex).toBe(0)
+    expect(result.project.tracks![1].items).toEqual([cut])
+  })
+})
+
 describe('placeDroppedClip — kind lock', () => {
   it('never chooses an overlay/image track, even when it is the preferred index and free', () => {
     const p = makeProject({

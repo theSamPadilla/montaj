@@ -1117,6 +1117,19 @@ describe('normalizeTracks: cut-out videos stack like images (§644)', () => {
     expect(order([[vid('v')], [ov], [vid('cut', { remove_bg: true })]])).toEqual(['v', 'o', 'cut'])
   })
 
+  it('a cut-out on tracks[1] keeps its place above an overlay track', () => {
+    const ov = { id: 'o', type: 'overlay', start: 0, end: 1 }
+    expect(order([[vid('v')], [vid('cut', { remove_bg: true })], [ov]])).toEqual(['v', 'cut', 'o'])
+  })
+
+  it('a cut-out-only base track stays first, under plain b-roll, and re-normalizing is stable', () => {
+    const ov = { id: 'o', type: 'overlay', start: 0, end: 1 }
+    const tracks = [[vid('cut', { remove_bg: true })], [vid('v')], [ov]]
+    expect(order(tracks)).toEqual(['cut', 'v', 'o'])
+    const once = normalizeTracks({ id: 'p', tracks } as { id: string; tracks?: unknown })
+    expect(normalizeTracks(once as { id: string; tracks?: unknown }).tracks).toBe(once.tracks)
+  })
+
   it('a track mixing a cut-out and a plain video is still a video track', () => {
     const ov = { id: 'o', type: 'overlay', start: 0, end: 1 }
     expect(order([[ov], [vid('cut', { remove_bg: true }), vid('v')]])).toEqual(['cut', 'o'])
