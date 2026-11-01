@@ -28,6 +28,7 @@ except ImportError:
     _missing.append("onnxruntime")
 try:
     import av
+    from av.video.reformatter import Colorspace
 except ImportError:
     _missing.append("av")
 
@@ -41,6 +42,9 @@ if _missing:
 
 # CPU only, on every OS: CoreML's provider produced wrong mattes (measured, PL2).
 _PROVIDERS = ["CPUExecutionProvider"]
+# libavutil AVCOL_SPC values: a frame with no matrix tag, and BT.601 (what the writer produces)
+_AVCOL_SPC_UNSPECIFIED = 2
+_AVCOL_SPC_SMPTE170M = 6
 _OUTPUT_NAMES = ["fgr", "pha", "r1o", "r2o", "r3o", "r4o"]
 
 
@@ -226,6 +230,11 @@ def _process_one(
                 out_stream.height = out_height
                 out_stream.pix_fmt = "yuva444p10le"
                 out_stream.options = {"profile": "4"}  # profile 4 = ProRes 4444
+                # PyAV's writer converts RGB to BT.601 limited YUV (measured: red
+                # 230/25/75 gives YUV 381/478/859, BT.601 predicts 380/478/858).
+                # Each frame says so in its matrix tag alone (the codec context's
+                # own colorspace does not reach the file); transfer and primaries stay unset,
+                # so render's probed transfer for a cut-out stays 'unknown' (§625).
 
                 zeros = np.zeros((1, 1, 1, 1), dtype=np.float32)
                 rec = [zeros, zeros, zeros, zeros]
@@ -235,13 +244,17 @@ def _process_one(
                 for packet in in_container.demux(video_stream):
                     for frame in packet.decode():
                         # Frame → H×W×3 uint8 → [1, 3, H, W] float32 in [0, 1]
+                        # An untagged source is BT.709 by render's rule, but PyAV reads
+                        # it through BT.601 (H.264 holding BT.709 YUV for red
+                        # 230/25/74 decodes to 213/0/74). Tagged frames are left alone.
+                        cs = {"src_colorspace": Colorspace.ITU709} if int(frame.colorspace) == _AVCOL_SPC_UNSPECIFIED else {}
                         if scaled:
                             img = frame.reformat(
                                 width=out_width, height=out_height,
-                                format="rgb24", interpolation="AREA",
+                                format="rgb24", interpolation="AREA", **cs,
                             ).to_ndarray()
                         else:
-                            img = frame.to_ndarray(format="rgb24")
+                            img = frame.to_ndarray(format="rgb24", **cs)
                         src = img.transpose(2, 0, 1)[None].astype(np.float32) / 255.0
 
                         fgr, pha, *rec = session.run(_OUTPUT_NAMES, {
@@ -256,6 +269,7 @@ def _process_one(
                         # Scale to uint16 and write as rgba64be
                         rgba_np = (rgba * 65535).clip(0, 65535).astype(np.uint16)
                         out_frame = av.VideoFrame.from_ndarray(rgba_np, format="rgba64be")
+                        out_frame.colorspace = _AVCOL_SPC_SMPTE170M
                         out_frame.pts = frame.pts
                         out_frame.time_base = frame.time_base
 

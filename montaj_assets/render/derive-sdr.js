@@ -62,6 +62,23 @@ export function probeColorTransfer(filePath) {
 }
 
 /**
+ * The matrix tag (ffprobe color_space) of a file's first video stream: 'smpte170m'
+ * or 'bt470bg' for BT.601, 'bt709', and so on; 'unknown' when the file is
+ * untagged. null when the probe fails. Only render.js's remove_bg cut-out
+ * handling asks (§625), so it is a call of its own and no other path pays for it.
+ */
+export function probeColorMatrix(filePath) {
+  const result = spawnSync(FFPROBE, [
+    '-v', 'quiet', '-select_streams', 'v:0',
+    '-show_entries', 'stream=color_space',
+    '-of', 'csv=p=0', filePath,
+  ], { encoding: 'utf8', timeout: 30_000 })
+  if (result.status !== 0) return null
+  const value = (result.stdout || '').trim().replace(/,+$/, '')
+  return value || 'unknown'
+}
+
+/**
  * The color-space key a file's own tags say it is ('hdr_hlg', 'hdr_pq', or
  * 'sdr_bt709' for anything else, including untagged).
  */

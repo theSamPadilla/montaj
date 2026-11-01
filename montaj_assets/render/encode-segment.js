@@ -1718,8 +1718,19 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // on a cutout over the SDR canvas, RGB read back through BT.709: before, red
   // 230/25/75 came out 247/48/74; after, red 230/25/74, green 30/200/40 ->
   // 31/200/41, skin 224/172/105 -> 225/172/104.
+  // Which cut-outs hold BT.601: remove_bg now tags what it writes (smpte170m,
+  // matrix only), and an OLDER cut-out is untagged. An old one of a TAGGED source
+  // is BT.601 too (PyAV read the source by its tag). An old one of an UNTAGGED
+  // source is not: PyAV read it through BT.601 although it holds BT.709, then
+  // wrote BT.601 of that wrong RGB, which lands within a code or two of the
+  // source's own BT.709 YUV (measured, red 230/25/74 -> source YUV decoded as
+  // 213/0/74 -> written back ~ source YUV). That one keeps the pre-§625 graph.
+  const isMatrixTagged = (m) => m === 'smpte170m' || m === 'bt470bg'
+  const isUntaggedMatrix = (m) => !m || m === 'unknown' || m === 'unspecified'
+  const cutoutIs601 = isMatrixTagged(item.colorMatrix)
+    || (isUntaggedMatrix(item.colorMatrix) && !isUntaggedMatrix(item.srcColorMatrix))
   const sdrCutoutMatrix = !isHdr(projectColorSpace) && item.colorTransfer === 'unknown' && !cutoutGrade
-    && Boolean(skipConversionForAlpha)
+    && Boolean(skipConversionForAlpha) && cutoutIs601
   const untaggedTag = !isHdr(projectColorSpace) && item.colorTransfer === 'unknown' && !cutoutGrade
     ? (sdrCutoutMatrix
       ? 'setparams=colorspace=smpte170m:color_trc=bt709:color_primaries=bt709,'

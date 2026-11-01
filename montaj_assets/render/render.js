@@ -55,7 +55,7 @@ import { persistColorSpace }              from './persist-colour-space.js'
 import { pMap }                           from './p-map.js'
 import { visibleVideoItems, effectiveColorSpace } from './visible-video.js'
 import { fileHasAudio, probeVideoGeometry } from './encode-segment.js'
-import { probeColorTransfer }             from './derive-sdr.js'
+import { probeColorTransfer, probeColorMatrix } from './derive-sdr.js'
 import { sdrLayerFor, gradeKeyFor, probeMedia, defaultDeps, originOf } from './sdr-layer.js'
 import { sourceWindow, transitionPairs, isOpaqueCover, opaqueReplacesPicture, trackLayerPositions, isPlainComposite } from '@bycrux/timeline-core'
 import { MASTER_LOOK, curveIds }          from './look.js'
@@ -638,6 +638,7 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
   // colorTransfer and hasAudio, once per unique source (see stampSourceProbes).
   const transferCache = new Map()
   stampSourceProbes(videoItems, transferCache)
+  stampCutoutMatrices(videoItems, transferCache)
 
   // Project working color space — drives normalize CLI flag, segment encoder
   // codec/pix_fmt, and per-item conversion filter. See resolveProjectColorSpace.
@@ -1411,6 +1412,26 @@ async function bundleSegmentSpec(spec, { fps, width, height, projectDir }) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Stamp `colorMatrix` (the cut-out file's matrix tag) and `srcColorMatrix` (the
+ * original source's) on every remove_bg item whose src is its cut-out. Only
+ * those; no other item gains a field, so no other graph can move. encode-segment's
+ * sdrCutoutMatrix reads them (§625). The cut-out is re-stamped by 4b, after
+ * remove_bg has made it; before that its src is still the original and is skipped.
+ */
+function stampCutoutMatrices(videoItems, cache) {
+  const matrixOf = (p) => {
+    const key = `matrix:${p}`
+    if (!cache.has(key)) cache.set(key, probeColorMatrix(p))
+    return cache.get(key)
+  }
+  for (const item of videoItems) {
+    if (!(item.remove_bg && item.nobg_src && item.src === item.nobg_src)) continue
+    item.colorMatrix = matrixOf(item.src) ?? 'unknown'
+    item.srcColorMatrix = item.cutoutOrigSrc ? (matrixOf(item.cutoutOrigSrc) ?? 'unknown') : 'unknown'
+  }
+}
+
+/**
  * Stamp each video item's `colorTransfer` and `hasAudio`, probing each unique
  * path once. A typical project breaks one clip into many segments; without the
  * caches, a 50-segment project with 5 items would run each ffprobe 250 times
@@ -1568,6 +1589,7 @@ async function prepareVideoItems(videoItems, targetFor,
     }
     item.colorTransfer = transferCache.get(item.src) ?? 'unknown'
   }
+  stampCutoutMatrices(videoItems, transferCache)
 }
 
 /**
@@ -2036,6 +2058,9 @@ function collectAllItems(projectJson) {
           // consumer reads this field today.
           outPoint,
           remove_bg: item.remove_bg ?? false,
+          // The item's own source, kept past the swap to nobg_src so the cut-out's
+          // matrix can be judged against it (stampCutoutMatrices, §625).
+          ...(item.remove_bg ? { cutoutOrigSrc: item.src } : {}),
           muted,
           volume,
           // Per-clip playback speed (montaj/speed feature). Not defaulted here —

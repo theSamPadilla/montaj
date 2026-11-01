@@ -976,3 +976,56 @@ def test_flat_cli_default_name_and_video_refused(tmp_path):
     vid.write_bytes(b"not a video")
     r = subprocess.run([sys.executable, str(STEP), "--input", str(vid), "--flat"], capture_output=True, text=True)
     assert r.returncode != 0 and "images only" in r.stderr
+
+
+# ---------------------------------------------------------------------------
+# Colour matrix (§625 review fix)
+# ---------------------------------------------------------------------------
+
+def _bt601_limited_yuv8(rgb):
+    r, g, b = (float(v) for v in rgb)
+    y = 16 + (65.481 * r + 128.553 * g + 24.966 * b) / 255
+    cb = 128 + (-37.797 * r - 74.203 * g + 112.0 * b) / 255
+    cr = 128 + (112.0 * r - 93.786 * g - 18.214 * b) / 255
+    return [y, cb, cr]
+
+
+def test_untagged_source_is_read_as_bt709_and_the_cutout_is_tagged_bt601(stubbed, monkeypatch, capsys, tmp_path):
+    """An untagged web-download clip holds BT.709 YUV. PyAV reads it through BT.601
+    (red 230/25/74 -> 213/0/74 measured) unless told otherwise; the cut-out must
+    hold BT.601 YUV of the TRUE colour and say so in its matrix tag alone."""
+    mod, _rec, _ = stubbed
+    ffmpeg, ffprobe = _ff_bins()
+    want_rgb = (230, 25, 75)
+    src = tmp_path / "web.mp4"
+    subprocess.run(
+        [ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i",
+         "color=c=0xe6194b:size=64x64:rate=25:duration=0.2,format=rgb24",
+         "-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,"
+                "setparams=colorspace=unknown:color_trc=unknown:color_primaries=unknown",
+         "-c:v", "libx264", str(src)],
+        check=True, capture_output=True)
+    res = _run_main(mod, monkeypatch, capsys, "--inputs", str(src))
+    out = Path(res[0]["nobg_src"])
+
+    raw = subprocess.run(
+        [ffmpeg, "-v", "error", "-i", str(out), "-frames:v", "1",
+         "-f", "rawvideo", "-pix_fmt", "yuv444p10le", "pipe:1"],
+        capture_output=True, check=True).stdout
+    plane = 64 * 64 * 2
+    got = []
+    for k in range(3):
+        o = k * plane + (32 * 64 + 32) * 2
+        got.append(int.from_bytes(raw[o:o + 2], "little") / 4.0)
+    want = _bt601_limited_yuv8(want_rgb)
+    for g, w in zip(got, want):
+        assert abs(g - w) <= 2, f"YUV {got} vs BT.601 {want}"
+
+    r = subprocess.run(
+        [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=color_space,color_transfer,color_primaries", "-of", "json", str(out)],
+        capture_output=True, text=True, check=True)
+    s = json.loads(r.stdout)["streams"][0]
+    assert s.get("color_space") in ("smpte170m", "bt470bg"), s
+    assert s.get("color_transfer", "unknown") in ("unknown", "unspecified"), s
+    assert s.get("color_primaries", "unknown") in ("unknown", "unspecified"), s
