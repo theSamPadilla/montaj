@@ -5,7 +5,7 @@ project keeps it) to one entry: its `kind`, when it was recorded (`at`, ISO
 8601 UTC to the second) and the kind's own fields (`KINDS`):
 
   user       via: drop, picker, new-project, import, agent-image, import_model, record
-  stock      source (commons, sportsdb, web), licence, artist, sourceUrl, title
+  stock      source (commons, openverse, sportsdb, web, site, favicon), licence, artist, sourceUrl, title
   web        via (url, youtube, capture_site, fetch), sourceUrl, title, uploader
   ai         provider, model, prompt, step
   derived    step, from (its inputs inside the project folder, as keys)
@@ -57,7 +57,7 @@ _MANIFEST_MAX_BYTES = 1024 * 1024
 
 USER_VIA = ("drop", "picker", "new-project", "import", "agent-image", "import_model", "record")
 WEB_VIA = ("url", "youtube", "capture_site", "fetch")
-STOCK_SOURCES = ("commons", "sportsdb", "web")
+STOCK_SOURCES = ("commons", "openverse", "sportsdb", "web", "site", "favicon")
 MONTAJ_WHAT = ("preset", "sample")
 
 # kind -> {field: (type, required)}. A tuple type is the values the field may take;

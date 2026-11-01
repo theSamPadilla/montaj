@@ -837,3 +837,98 @@ def test_real_model_through_serve_with_project(out, tmp_path, monkeypatch):
     entry = next(v for k, v in record.items() if k.endswith(made.name))
     assert entry["kind"] == "derived" and entry["step"] == "remove_bg"
     assert [f.split("/")[-1] for f in entry["from"]] == ["person.jpg"]
+
+
+# ---------------------------------------------------------------------------
+# flat: a logo on a solid square (no model)
+# ---------------------------------------------------------------------------
+
+def _ring_logo(tmp_path, bg=(0, 0, 0), fg=(255, 255, 255), name="logo.png", blur=True):
+    """A 120 px square of *bg* with a thick *fg* ring (an "O") in the middle, edges antialiased."""
+    from PIL import Image, ImageDraw, ImageFilter
+    big = Image.new("L", (480, 480), 0)
+    d = ImageDraw.Draw(big)
+    d.ellipse((120, 120, 360, 360), fill=255)
+    d.ellipse((190, 190, 290, 290), fill=0)
+    mask = big.resize((120, 120), Image.LANCZOS) if blur else big.resize((120, 120), Image.NEAREST)
+    im = Image.composite(Image.new("RGB", (120, 120), fg), Image.new("RGB", (120, 120), bg), mask)
+    p = tmp_path / name
+    im.save(p)
+    return p
+
+
+def _flat(mod, src, out):
+    return mod._process_flat(str(src), str(out))
+
+
+def test_flat_black_square_outside_goes_ring_stays_hole_stays(tmp_path):
+    from PIL import Image
+    mod = _import_step_module()
+    res = _flat(mod, _ring_logo(tmp_path), tmp_path / "o.png")
+    a = np.asarray(Image.open(res["out"]))
+    assert res["keyed"] == "#000000"
+    assert a[2, 2, 3] == 0 and a[60, 5, 3] == 0                  # outside, corner and edge-middle
+    assert a[60, 35, 3] == 255                                     # on the ring (radius ~30..~17)
+    assert a[60, 60, 3] == 255 and tuple(a[60, 60, :3]) == (0, 0, 0)  # the hole is not connected to the border
+    assert 0.5 < res["transparent"] < 0.85
+    assert (res["width"], res["height"]) == (120, 120)
+
+
+def test_flat_soft_edge_has_no_background_fringe(tmp_path):
+    """Composite the cutout over white: a white ring on black must not show a dark halo."""
+    from PIL import Image
+    mod = _import_step_module()
+    res = _flat(mod, _ring_logo(tmp_path), tmp_path / "o.png")
+    cut = Image.open(res["out"]).convert("RGBA")
+    over = Image.alpha_composite(Image.new("RGBA", cut.size, (255, 255, 255, 255)), cut).convert("RGB")
+    arr = np.asarray(over).astype(int)
+    a = np.asarray(cut)[..., 3]
+    outer = np.zeros(a.shape, bool)
+    yy, xx = np.mgrid[:120, :120]
+    r = np.hypot(yy - 59.5, xx - 59.5)
+    outer = (r > 28) & (r < 33)       # the outer antialiased edge of the ring
+    assert (a[outer] > 0).any() and (a[outer] < 255).any()   # there is a soft edge
+    assert arr[outer].min() >= 250                            # over white, a white logo leaves no dark pixel
+    # and the partial pixels were un-premultiplied back to the logo colour
+    part = (a > 0) & (a < 255)
+    assert np.asarray(cut)[..., :3][part].min() >= 245
+
+
+def test_flat_white_background_keys_white(tmp_path):
+    from PIL import Image
+    mod = _import_step_module()
+    src = _ring_logo(tmp_path, bg=(255, 255, 255), fg=(200, 20, 20), name="w.png")
+    res = _flat(mod, src, tmp_path / "w-out.png")
+    a = np.asarray(Image.open(res["out"]))
+    assert res["keyed"] == "#ffffff"
+    assert a[2, 2, 3] == 0
+    assert a[60, 35, 3] == 255 and tuple(a[60, 35, :3]) == (200, 20, 20)
+    assert a[60, 60, 3] == 255 and tuple(a[60, 60, :3]) == (255, 255, 255)   # the enclosed hole keeps its colour
+    cut = Image.open(res["out"]).convert("RGBA")
+    part = (a[..., 3] > 0) & (a[..., 3] < 255)
+    assert np.asarray(cut)[..., 1][part].max() <= 40
+
+
+def test_flat_noise_in_the_background_is_still_background(tmp_path):
+    from PIL import Image
+    mod = _import_step_module()
+    p = _ring_logo(tmp_path)
+    arr = np.asarray(Image.open(p)).astype(int)
+    rng = np.random.default_rng(1)
+    noisy = np.clip(arr + (arr < 5) * rng.integers(0, 6, arr.shape), 0, 255).astype(np.uint8)
+    Image.fromarray(noisy).save(tmp_path / "n.png")
+    res = _flat(mod, tmp_path / "n.png", tmp_path / "n-out.png")
+    assert res["transparent"] > 0.5
+
+
+def test_flat_cli_default_name_and_video_refused(tmp_path):
+    p = _ring_logo(tmp_path)
+    r = subprocess.run([sys.executable, str(STEP), "--input", str(p), "--flat"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    body = json.loads(r.stdout)
+    assert body["out"] == str(tmp_path / "logo-cutout.png") and body["keyed"] == "#000000"
+    assert (tmp_path / "logo-cutout.png").exists()
+    vid = tmp_path / "v.mp4"
+    vid.write_bytes(b"not a video")
+    r = subprocess.run([sys.executable, str(STEP), "--input", str(vid), "--flat"], capture_output=True, text=True)
+    assert r.returncode != 0 and "images only" in r.stderr

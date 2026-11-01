@@ -1,24 +1,24 @@
 {
   "name": "search_images",
-  "description": "Search for images — Wikimedia Commons, TheSportsDB, or the open web (SerpApi/Google Images)",
+  "description": "Search images: Commons, Openverse, sports badges, a brand logo, or the web",
   "output": {
     "type": "json",
-    "description": "JSON object with {results: [{title, url, width, height, mime, license, artist, source, thumbnail?, pageUrl?}]}; pageUrl is the page the image came from (commons and web)"
+    "description": "JSON object with {results: [{title, url, width, height, mime, license, artist, source, thumbnail?, pageUrl?}]}; pageUrl is the page the image came from"
   },
   "params": [
     {
       "name": "query",
       "type": "string",
       "required": true,
-      "description": "Search query string"
+      "description": "Search text; for logo, the brand's domain (stripe.com)"
     },
     {
       "name": "provider",
       "type": "enum",
       "required": false,
       "default": "commons",
-      "options": ["commons", "sportsdb", "web"],
-      "description": "Image provider: 'commons' (Wikimedia Commons, keyless), 'sportsdb' (TheSportsDB team badges, keyless), or 'web' (open-web Google Images via SerpApi — requires credentials.serpapi.api_key passthrough)"
+      "options": ["commons", "openverse", "logo", "sportsdb", "web"],
+      "description": "commons, openverse (CC photos), logo (site icons by domain), sportsdb (team badges): keyless. web: Google Images, needs credentials.serpapi.api_key"
     },
     {
       "name": "limit",

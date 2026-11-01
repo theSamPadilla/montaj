@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Fetch an image from any public host to a local path (SSRF/size/content-type guarded)."""
+import json
 import os
 import sys
 import argparse
@@ -18,7 +19,7 @@ def main():
     # Serve records these in the project's provenance (serve/provenance.py); the fetch ignores them.
     p.add_argument("--licence", help="The image's licence")
     p.add_argument("--artist", help="Who made the image")
-    p.add_argument("--source", choices=["commons", "sportsdb", "web"], help="Where search_images found it")
+    p.add_argument("--source", choices=["commons", "openverse", "sportsdb", "web", "site", "favicon"], help="Where search_images found it")
     p.add_argument("--source-url", dest="source_url", help="The page the image came from")
     p.add_argument("--title", help="The image's title")
     args = p.parse_args()
@@ -27,8 +28,15 @@ def main():
     out = Path(args.out)
     hosts = allowed_image_hosts()
 
-    result = fetch_image_to_path(args.url, out, hosts, max_bytes=args.max_bytes)
-    print(str(result))
+    info: dict = {}
+    result = fetch_image_to_path(args.url, out, hosts, max_bytes=args.max_bytes, info=info)
+    final = info.get("finalUrl")
+    if final and final != args.url:
+        # Redirected (a favicon service, a short link): say where it ended. The bare path stays the
+        # answer otherwise, so serve wraps it as before; provenance's source-url keeps the URL passed.
+        print(json.dumps({"path": str(result), "type": "image", "finalUrl": final}))
+    else:
+        print(str(result))
 
 
 if __name__ == "__main__":

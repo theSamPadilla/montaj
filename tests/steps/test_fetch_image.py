@@ -71,3 +71,24 @@ class TestFetchImageArgParsing:
         assert proc.returncode != 0
         err = json.loads(proc.stderr)
         assert err["error"] == "url_rejected"
+
+
+def test_redirected_fetch_answers_final_url_and_plain_path_otherwise(tmp_path, monkeypatch, capsys):
+    """The answer is the bare path; after a redirect it is {path, type, finalUrl}."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fetch_image_step", REPO_ROOT / "steps" / "media" / "fetch_image.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    for url, final, expect_json in (("https://a.example/x.png", "https://a.example/x.png", False),
+                                    ("https://a.example/go", "https://cdn.example/x.png", True)):
+        def fake(u, out, hosts, max_bytes=0, info=None, _final=final):
+            info["finalUrl"] = _final
+            return out
+        monkeypatch.setattr(mod, "fetch_image_to_path", fake)
+        monkeypatch.setattr(sys, "argv", ["fetch_image.py", "--url", url, "--out", str(tmp_path / "o.png")])
+        mod.main()
+        out = capsys.readouterr().out.strip()
+        if expect_json:
+            assert json.loads(out) == {"path": str(tmp_path / "o.png"), "type": "image", "finalUrl": final}
+        else:
+            assert out == str(tmp_path / "o.png")

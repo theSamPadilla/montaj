@@ -22,6 +22,8 @@ from lib.image_sources import (
     commons_search,
     fetch_image_to_path,
     is_public_host,
+    logo_search,
+    openverse_search,
     preflight_image_url,
     serpapi_image_search,
     sportsdb_badge,
@@ -550,47 +552,88 @@ class TestFetchImageToPath:
         )
         assert out.exists()
 
-    def test_redirect_rejected(self, tmp_path, monkeypatch, capsys):
-        """A 301 redirect response → fail(redirect_rejected); nothing written."""
-        monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("91.198.174.192"))
-        resp = httpx.Response(
-            301,
-            headers={"location": "https://internal.example.com/secret.jpg"},
-        )
-        c = httpx.Client(transport=_make_transport(resp))
-        out = tmp_path / "out.jpg"
-        with pytest.raises(SystemExit):
-            fetch_image_to_path(
-                "https://upload.wikimedia.org/test.jpg", out, self.HOSTS, client=c
-            )
-        err = json.loads(capsys.readouterr().err)
-        assert err["error"] == "redirect_rejected"
-        assert not out.exists()
+    # -- redirects: followed by hand, every hop re-checked -------------------
 
-    def test_injected_client_with_follow_redirects_true_still_rejects(self, tmp_path, monkeypatch, capsys):
-        """follow_redirects=False is forced per-request: even a client built with
-        follow_redirects=True must see the raw 302 and reject it."""
-        monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("91.198.174.192"))
+    @staticmethod
+    def _redirecting(routes, final=b"IMG"):
+        """Client whose handler maps host+path to a redirect target or an image; records each URL asked."""
+        calls = []
 
         def handler(request):
-            if request.url.host == "upload.wikimedia.org":
-                return httpx.Response(
-                    302, headers={"location": "https://evil.example.com/x.jpg"}
-                )
-            # If the redirect were followed, this would return a "valid" image.
-            return httpx.Response(
-                200, headers={"content-type": "image/jpeg"}, content=b"EVIL"
-            )
+            calls.append(str(request.url))
+            tgt = routes.get(str(request.url))
+            if tgt:
+                return httpx.Response(302, headers={"location": tgt})
+            return httpx.Response(200, headers={"content-type": "image/png"}, content=final)
+        # follow_redirects=True on the client: the fetch must still see the raw 302s.
+        return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True), calls
 
-        c = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
-        out = tmp_path / "out.jpg"
+    def test_redirect_to_public_https_followed(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MONTAJ_IMAGE_HOST_STRICT", raising=False)
+        monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
+        c, calls = self._redirecting({"https://a.example.com/f": "/real.png"})
+        info = {}
+        out = tmp_path / "o.png"
+        fetch_image_to_path("https://a.example.com/f", out, self.HOSTS, client=c, info=info)
+        assert out.read_bytes() == b"IMG"
+        assert calls == ["https://a.example.com/f", "https://a.example.com/real.png"]
+        assert info["finalUrl"] == "https://a.example.com/real.png"
+
+    def test_no_redirect_final_url_is_the_url(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
+        c, _ = self._redirecting({})
+        info = {}
+        fetch_image_to_path("https://a.example.com/x.png", tmp_path / "o.png", self.HOSTS, client=c, info=info)
+        assert info["finalUrl"] == "https://a.example.com/x.png"
+
+    def test_redirect_to_private_ip_refused(self, tmp_path, monkeypatch, capsys):
+        def gai(host, *a, **k):
+            return [(None, None, None, None, ("10.0.0.5" if host == "internal.example.com" else "1.2.3.4", 0))]
+        monkeypatch.setattr(socket, "getaddrinfo", gai)
+        c, calls = self._redirecting({"https://a.example.com/f": "https://internal.example.com/secret.png"})
+        out = tmp_path / "o.png"
         with pytest.raises(SystemExit):
-            fetch_image_to_path(
-                "https://upload.wikimedia.org/test.jpg", out, self.HOSTS, client=c
-            )
+            fetch_image_to_path("https://a.example.com/f", out, self.HOSTS, client=c)
         err = json.loads(capsys.readouterr().err)
-        assert err["error"] == "redirect_rejected"
+        assert (err["error"], err["message"]) == ("url_rejected", "host_not_public")
+        assert calls == ["https://a.example.com/f"]   # the private host was never connected to
         assert not out.exists()
+
+    def test_redirect_to_http_refused(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
+        c, calls = self._redirecting({"https://a.example.com/f": "http://a.example.com/x.png"})
+        with pytest.raises(SystemExit):
+            fetch_image_to_path("https://a.example.com/f", tmp_path / "o.png", self.HOSTS, client=c)
+        err = json.loads(capsys.readouterr().err)
+        assert (err["error"], err["message"]) == ("url_rejected", "not_https")
+        assert len(calls) == 1
+
+    def test_redirect_outside_strict_allowlist_refused(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("MONTAJ_IMAGE_HOST_STRICT", "1")
+        monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
+        c, calls = self._redirecting({"https://upload.wikimedia.org/f": "https://evil.example.com/x.png"})
+        with pytest.raises(SystemExit):
+            fetch_image_to_path("https://upload.wikimedia.org/f", tmp_path / "o.png", self.HOSTS, client=c)
+        err = json.loads(capsys.readouterr().err)
+        assert (err["error"], err["message"]) == ("url_rejected", "host_not_allowed")
+        assert len(calls) == 1
+
+    def test_redirect_loop_stops_at_five_hops(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
+        c, calls = self._redirecting({"https://a.example.com/a": "/b", "https://a.example.com/b": "/a"})
+        out = tmp_path / "o.png"
+        with pytest.raises(SystemExit):
+            fetch_image_to_path("https://a.example.com/a", out, self.HOSTS, client=c)
+        assert json.loads(capsys.readouterr().err)["error"] == "too_many_redirects"
+        assert len(calls) == 6   # the first request plus five followed hops
+        assert not out.exists()
+
+    def test_five_hops_are_allowed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
+        routes = {f"https://a.example.com/{i}": f"/{i + 1}" for i in range(5)}
+        c, calls = self._redirecting(routes)
+        fetch_image_to_path("https://a.example.com/0", tmp_path / "o.png", self.HOSTS, client=c)
+        assert len(calls) == 6
 
     # -- never overwrites --------------------------------------------------
 
@@ -647,3 +690,179 @@ class TestFetchImageToPath:
                                 client=httpx.Client(transport=httpx.MockTransport(handler)))
         assert not out.exists()
         assert neighbour.read_bytes() == b"KEEP"
+
+
+# ---------------------------------------------------------------------------
+# openverse_search (keyless)
+# ---------------------------------------------------------------------------
+
+# Shape per Openverse's v1 API docs (api.openverse.org/v1/images/); hand-written, not a capture.
+_OPENVERSE = {"results": [
+    {"title": "Red fox", "url": "https://live.staticflickr.com/1/fox.jpg", "creator": "A. Person",
+     "license": "by-sa", "license_version": "4.0", "foreign_landing_url": "https://www.flickr.com/photos/1/2",
+     "width": 4000, "height": 3000, "thumbnail": "https://api.openverse.org/v1/images/x/thumb/",
+     "source": "flickr", "provider": "flickr", "filetype": "jpg"},
+    {"title": "Plain", "url": "https://upload.wikimedia.org/p.png", "creator": None,
+     "license": "cc0", "license_version": "1.0", "foreign_landing_url": "https://commons.wikimedia.org/wiki/File:p.png",
+     "width": 10, "height": 10, "thumbnail": None, "filetype": "png"},
+    {"title": "Old", "url": "https://x.example.com/o.jpg", "creator": "Z", "license": "pdm",
+     "license_version": "1.0", "foreign_landing_url": "http://x.example.com/page", "filetype": None},
+    {"title": "Insecure", "url": "http://x.example.com/i.jpg", "license": "by", "license_version": "2.0"},
+]}
+
+
+class TestOpenverseSearch:
+    def test_mapping_and_licence_strings(self):
+        seen = {}
+
+        def handler(request):
+            seen["url"] = request.url
+            seen["headers"] = request.headers
+            return httpx.Response(200, json=_OPENVERSE)
+        r = openverse_search("fox", limit=10, client=httpx.Client(transport=httpx.MockTransport(handler)))
+        assert [x["license"] for x in r] == ["CC BY-SA 4.0", "CC0 1.0", "PDM 1.0"]   # http result dropped
+        a = r[0]
+        assert (a["title"], a["artist"], a["source"], a["mime"]) == ("Red fox", "A. Person", "openverse", "image/jpeg")
+        assert (a["width"], a["height"]) == (4000, 3000)
+        assert a["pageUrl"] == "https://www.flickr.com/photos/1/2" and a["thumbnail"].startswith("https://")
+        assert r[1]["artist"] is None and r[1]["mime"] == "image/png"
+        assert r[2]["pageUrl"] == "http://x.example.com/page"   # a page is only recorded, never fetched: http is fine
+        assert seen["url"].params["q"] == "fox" and seen["url"].host == "api.openverse.org"
+        assert "authorization" not in seen["headers"]
+
+    def test_limit_applies_after_filtering(self):
+        c = httpx.Client(transport=_json_transport(_OPENVERSE))
+        assert len(openverse_search("fox", limit=2, client=c)) == 2
+
+    def test_one_request_and_page_size_capped(self):
+        calls = []
+
+        def handler(request):
+            calls.append(request.url.params["page_size"])
+            return httpx.Response(200, json={"results": []})
+        openverse_search("x", limit=30, client=httpx.Client(transport=httpx.MockTransport(handler)))
+        assert calls == ["20"]
+
+    def test_rate_limit_is_plain(self):
+        c = httpx.Client(transport=_json_transport({"detail": "slow down"}, status=429))
+        with pytest.raises(ValueError, match="rate limit"):
+            openverse_search("x", client=c)
+
+
+# ---------------------------------------------------------------------------
+# logo_search (keyless): a brand's declared icons
+# ---------------------------------------------------------------------------
+
+_HOME = """<!doctype html><html><head>
+<meta property="og:image" content="/og.png">
+<link rel="icon" href="/favicon-16.png" sizes="16x16" type="image/png">
+<link rel="shortcut icon" href="/favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-180.png">
+<link rel="apple-touch-icon" sizes="120x120" href="https://cdn.example.com/apple-120.png">
+<link rel="mask-icon" href="/mask.svg">
+<link rel="icon" href="http://insecure.example.com/x.png">
+<link rel="manifest" href="/site.webmanifest">
+</head><body>ignored</body></html>"""
+_MANIFEST = {"icons": [{"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},
+                       {"src": "/icon-512.png", "sizes": "512x512"}]}
+
+
+def _site_client(home=_HOME, manifest=_MANIFEST, redirect_to=None):
+    calls = []
+
+    def handler(request):
+        u = str(request.url)
+        calls.append(u)
+        if redirect_to and u == "https://brand.example/":
+            return httpx.Response(301, headers={"location": redirect_to})
+        if u.endswith("/site.webmanifest"):
+            return httpx.Response(200, headers={"content-type": "application/manifest+json"}, json=manifest)
+        return httpx.Response(200, headers={"content-type": "text/html; charset=utf-8"}, content=home.encode())
+    return httpx.Client(transport=httpx.MockTransport(handler)), calls
+
+
+class TestLogoSearch:
+    @pytest.fixture(autouse=True)
+    def _public(self, monkeypatch):
+        monkeypatch.delenv("MONTAJ_IMAGE_HOST_STRICT", raising=False)
+        monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
+
+    def test_order_resolution_and_fallback(self):
+        c, calls = _site_client()
+        r = logo_search("brand.example", client=c)
+        assert [x["url"] for x in r] == [
+            "https://brand.example/apple-180.png",        # apple-touch-icon, biggest first
+            "https://cdn.example.com/apple-120.png",
+            "https://brand.example/favicon-32.png",       # icons, biggest first (http one dropped)
+            "https://brand.example/favicon-16.png",
+            "https://brand.example/mask.svg",
+            "https://brand.example/icon-512.png",         # manifest icons, relative to the manifest
+            "https://brand.example/icon-192.png",
+            "https://brand.example/og.png",               # og:image last of the site's own
+            "https://www.google.com/s2/favicons?domain=brand.example&sz=256",
+        ]
+        assert r[0]["width"] == 180 and r[0]["license"] == "trademark" and r[0]["source"] == "site"
+        assert r[2]["mime"] is None or r[2]["mime"] == "image/png"
+        assert r[3]["mime"] == "image/png"
+        assert r[-1]["source"] == "favicon" and r[-1]["width"] == 256
+        assert all(x["url"].startswith("https://") for x in r)
+        assert r[0]["pageUrl"] == "https://brand.example/"
+        assert len(calls) == 2   # homepage, manifest
+
+    def test_url_query_and_limit(self):
+        c, calls = _site_client()
+        r = logo_search("https://brand.example/about?x=1", limit=2, client=c)
+        assert len(r) == 2 and calls[0] == "https://brand.example/about?x=1"
+
+    def test_http_query_is_upgraded(self):
+        c, calls = _site_client()
+        logo_search("http://brand.example", client=c)
+        assert calls[0].startswith("https://")
+
+    def test_relative_hrefs_resolve_against_the_final_url(self):
+        c, _ = _site_client(redirect_to="https://www.brand.example/home/")
+        r = logo_search("brand.example", client=c)
+        assert r[0]["url"] == "https://www.brand.example/apple-180.png"
+
+    def test_no_icons_still_gives_the_favicon_service(self):
+        c, _ = _site_client(home="<html><head></head></html>")
+        r = logo_search("brand.example", client=c)
+        assert [x["source"] for x in r] == ["favicon"]
+
+    def test_homepage_read_is_capped(self):
+        big = "<html><head>" + "<!-- x -->" * 300_000 + '<link rel="icon" href="/late.png"></head>'
+        c, _ = _site_client(home=big)
+        r = logo_search("brand.example", client=c)
+        assert all("late.png" not in x["url"] for x in r)
+
+    @pytest.mark.parametrize("q", ["stripe", "Stripe Inc", "", "localhost"])
+    def test_bare_word_is_an_error_naming_the_fix(self, q):
+        c, calls = _site_client()
+        with pytest.raises(ValueError, match="domain"):
+            logo_search(q, client=c)
+        assert calls == []
+
+    def test_private_host_homepage_refused(self, monkeypatch):
+        monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("192.168.1.9"))
+        c, calls = _site_client()
+        with pytest.raises(ValueError, match="host_not_public"):
+            logo_search("intranet.example", client=c)
+        assert calls == []
+
+    def test_homepage_redirect_to_private_host_refused(self, monkeypatch):
+        def gai(host, *a, **k):
+            return [(None, None, None, None, ("10.1.1.1" if host == "internal.example" else "1.2.3.4", 0))]
+        monkeypatch.setattr(socket, "getaddrinfo", gai)
+        c, calls = _site_client(redirect_to="https://internal.example/")
+        with pytest.raises(ValueError, match="host_not_public"):
+            logo_search("brand.example", client=c)
+        assert calls == ["https://brand.example/"]
+
+    def test_manifest_on_a_private_host_is_skipped_not_fetched(self, monkeypatch):
+        def gai(host, *a, **k):
+            return [(None, None, None, None, ("10.1.1.1" if host == "m.internal" else "1.2.3.4", 0))]
+        monkeypatch.setattr(socket, "getaddrinfo", gai)
+        home = '<link rel="manifest" href="https://m.internal/site.webmanifest"><link rel="icon" href="/a.png" sizes="64x64">'
+        c, calls = _site_client(home=home)
+        r = logo_search("brand.example", client=c)
+        assert calls == ["https://brand.example/"] and r[0]["url"] == "https://brand.example/a.png"

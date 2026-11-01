@@ -785,7 +785,7 @@ An entry is recorded only for a file (or folder) that exists. Every entry has `k
 | `kind` | Fields | Recorded by |
 |---|---|---|
 | `user` | `via` (required): `drop`, `picker`, `new-project`, `import`, `agent-image`, `import_model`, `record` | the app's import paths |
-| `stock` | `source` (`commons`, `sportsdb`, `web`), `licence`, `artist`, `sourceUrl`, `title` | `fetch_image`, given its search result's fields as params |
+| `stock` | `source` (`commons`, `openverse`, `sportsdb`, `web`, `site`, `favicon`), `licence`, `artist`, `sourceUrl`, `title` | `fetch_image`, given its search result's fields as params |
 | `web` | `via` (required): `url`, `youtube`, `capture_site`, `fetch`; `sourceUrl`, `title`, `uploader` | the `fetch` and `capture_site` steps, the YouTube source download (`sourceDownload`), the app |
 | `ai` | `provider` and `step` (required), `model`, `prompt` | every generate step |
 | `derived` | `step` (required), `from`: the inputs inside the project folder, as keys | every other step whose output lands in a project (a file it rewrites in place keeps its entry, with its new `bytes`) |

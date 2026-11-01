@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Search for images — Wikimedia Commons, TheSportsDB, or the open web (SerpApi)."""
+"""Search for images: Commons, Openverse, TheSportsDB, a brand logo by domain, or the open web (SerpApi)."""
 import json
 import os
 import sys
@@ -8,7 +8,7 @@ import argparse
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail
-from image_sources import commons_search, sportsdb_badge, serpapi_image_search
+from image_sources import commons_search, sportsdb_badge, serpapi_image_search, openverse_search, logo_search
 from lib.credentials import missing_key_message
 
 
@@ -16,7 +16,7 @@ def main():
     p = argparse.ArgumentParser(description="Search for images")
     p.add_argument("--query", required=True, help="Search query")
     p.add_argument("--provider", default="commons",
-                   choices=["commons", "sportsdb", "web"],
+                   choices=["commons", "openverse", "logo", "sportsdb", "web"],
                    help="Image provider (default: commons)")
     p.add_argument("--limit", type=int, default=10,
                    help="Max results to return (default: 10, max: 30)")
@@ -27,6 +27,10 @@ def main():
     try:
         if args.provider == "commons":
             results = commons_search(args.query, limit=limit)
+        elif args.provider == "openverse":
+            results = openverse_search(args.query, limit=limit)
+        elif args.provider == "logo":
+            results = logo_search(args.query, limit=limit)
         elif args.provider == "sportsdb":
             results = sportsdb_badge(args.query)
             results = results[:limit]

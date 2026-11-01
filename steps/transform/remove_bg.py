@@ -445,6 +445,138 @@ def _process_image(input_path: str, output_path: str, session, max_height: int |
 
 
 # ---------------------------------------------------------------------------
+# Flat-background cutout (a logo on a solid square): no model, numpy only
+# ---------------------------------------------------------------------------
+
+# RGB distance (0-441) from the background colour: at or under _FLAT_LO a pixel is
+# background (noise, JPEG ringing); up to _FLAT_HI it can still join the background
+# region; past it, it is the logo.
+_FLAT_LO, _FLAT_HI = 6.0, 20.0
+_FLAT_EDGE = 3   # px either side of the background/logo boundary that get a soft matte
+
+
+def _border_connected(mask: "np.ndarray") -> "np.ndarray":
+    """The part of *mask* connected (4-way) to the image border. Frontier BFS in
+    numpy, so no scipy: an enclosed pocket the border cannot reach is left out."""
+    h, w = mask.shape
+    flat = mask.ravel()
+    reach = np.zeros(h * w, dtype=bool)
+    edge = np.zeros((h, w), dtype=bool)
+    edge[0, :] = edge[-1, :] = edge[:, 0] = edge[:, -1] = True
+    frontier = np.flatnonzero(edge.ravel() & flat)
+    reach[frontier] = True
+    while frontier.size:
+        y, x = np.divmod(frontier, w)
+        found = []
+        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            ny, nx = y + dy, x + dx
+            ok = (ny >= 0) & (ny < h) & (nx >= 0) & (nx < w)
+            idx = ny[ok] * w + nx[ok]
+            found.append(idx[flat[idx] & ~reach[idx]])
+        frontier = np.unique(np.concatenate(found))
+        reach[frontier] = True
+    return reach.reshape(h, w)
+
+
+def _dilate(mask: "np.ndarray", steps: int) -> "np.ndarray":
+    """*mask* grown by *steps* px (4-way)."""
+    m = mask.copy()
+    for _ in range(steps):
+        g = m.copy()
+        g[1:] |= m[:-1]
+        g[:-1] |= m[1:]
+        g[:, 1:] |= m[:, :-1]
+        g[:, :-1] |= m[:, 1:]
+        m = g
+    return m
+
+
+def _process_flat(input_path: str, output_path: str) -> dict:
+    """Key out the flat background an image sits on.
+
+    The background colour is the median of the outer 2 px ring. Only background
+    CONNECTED to the border goes: pixels within _FLAT_HI of that colour, flood-filled
+    from the border. A hole the border cannot reach (the counter of an "O") is part of
+    the logo and keeps its colour, so a logo with dark details survives a black key.
+
+    The edge is a soft two-colour matte, not a threshold: within _FLAT_EDGE px of the
+    boundary each pixel is a mix of the background and the nearest solid logo colour,
+    its alpha is how much of that colour it holds, and its colour is un-premultiplied
+    against the background, so the logo carries no halo of the old background. Where
+    no solid colour is near (a stroke thinner than the edge zone) alpha ramps over
+    _FLAT_LO.._FLAT_HI of distance instead."""
+    from PIL import Image, ImageOps
+
+    try:
+        with Image.open(input_path) as im:
+            icc = im.info.get("icc_profile") if im.mode in ("RGB", "RGBA", "P") else None
+            im = ImageOps.exif_transpose(im)
+            rgba = np.asarray(im.convert("RGBA"))
+    except Exception as e:
+        fail("invalid_image", f"Could not read {os.path.basename(input_path)} as an image: {e}")
+    h, w = rgba.shape[:2]
+    rgb = rgba[..., :3].astype(np.float32)
+    ring = np.zeros((h, w), dtype=bool)
+    ring[:2, :] = ring[-2:, :] = ring[:, :2] = ring[:, -2:] = True
+    bg = np.median(rgb[ring], axis=0)
+    dist = np.sqrt(((rgb - bg) ** 2).sum(axis=2))
+
+    back = _border_connected(dist <= _FLAT_HI)
+    fore = ~back
+    zone = (fore & _dilate(back, _FLAT_EDGE)) | (back & _dilate(fore, _FLAT_EDGE))
+    core = fore & ~zone
+
+    # The nearest solid colour, grown out through the zone one px a round.
+    near = np.where(core[..., None], rgb, 0.0)
+    have = core.copy()
+    for _ in range(2 * _FLAT_EDGE + 1):
+        acc = np.zeros_like(near)
+        cnt = np.zeros((h, w), dtype=np.float32)
+        for sl_dst, sl_src in (
+            ((slice(1, None), slice(None)), (slice(None, -1), slice(None))),
+            ((slice(None, -1), slice(None)), (slice(1, None), slice(None))),
+            ((slice(None), slice(1, None)), (slice(None), slice(None, -1))),
+            ((slice(None), slice(None, -1)), (slice(None), slice(1, None))),
+        ):
+            acc[sl_dst] += near[sl_src] * have[sl_src][..., None]
+            cnt[sl_dst] += have[sl_src]
+        grow = zone & ~have & (cnt > 0)
+        near[grow] = acc[grow] / cnt[grow][..., None]
+        have |= grow
+
+    alpha = np.where(back, 0.0, 1.0).astype(np.float32)
+    out = rgb.copy()
+    span = near - bg
+    span2 = (span ** 2).sum(axis=2)
+    matte = zone & have & (span2 >= 40.0 ** 2)
+    # a = how much of the solid colour the pixel holds, along bg -> colour.
+    a = np.clip(((rgb - bg) * span).sum(axis=2) / np.maximum(span2, 1.0), 0.0, 1.0)
+    alpha[matte] = a[matte]
+    # Where there is no solid colour to measure against: ramp on the distance.
+    ramp = zone & back & ~matte
+    alpha[ramp] = np.clip((dist[ramp] - _FLAT_LO) / (_FLAT_HI - _FLAT_LO), 0.0, 1.0)
+    alpha[back & (dist <= _FLAT_LO)] = 0.0
+    part = (alpha > 0.0) & (alpha < 1.0)
+    # Un-premultiply against the background: c = a*fg + (1-a)*bg.
+    sa = np.maximum(alpha[part], 0.02)[:, None]
+    out[part] = np.clip((rgb[part] - (1.0 - sa) * bg) / sa, 0.0, 255.0)
+    # A pixel too faint to carry colour takes the solid colour (matte) or stays as it is.
+    faint = matte & (alpha < 0.02)
+    out[faint] = near[faint]
+
+    alpha *= rgba[..., 3] / 255.0   # the image's own transparency stays
+    res = np.empty((h, w, 4), dtype=np.uint8)
+    res[..., :3] = np.rint(out).clip(0, 255).astype(np.uint8)
+    res[..., 3] = np.rint(alpha * 255.0).clip(0, 255).astype(np.uint8)
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    Image.fromarray(res, "RGBA").save(output_path, format="PNG", **({"icc_profile": icc} if icc else {}))
+    check_output(output_path)
+    keyed = "#" + "".join(f"{int(round(v)):02x}" for v in bg)
+    return {"out": output_path, "width": w, "height": h, "keyed": keyed,
+            "transparent": round(float((res[..., 3] == 0).mean()), 4)}
+
+
+# ---------------------------------------------------------------------------
 # WebM preview generation (VP9 with alpha — browser-compatible)
 # ---------------------------------------------------------------------------
 
@@ -538,6 +670,9 @@ def main():
         help="Scale the cutout down so its display height is at most this (a positive even "
              "number). Never scales up; width follows the aspect ratio.",
     )
+    parser.add_argument("--flat", action="store_true",
+                        help="Image on a flat background (a logo on a solid square): key out the border-connected "
+                             "background colour, no model. Images only")
     parser.add_argument("--progress", action="store_true", help="Emit JSON progress lines to stderr")
 
     args = parser.parse_args()
@@ -555,6 +690,16 @@ def main():
     paths = [args.input] if args.input else args.inputs
     for path in paths:
         require_file(path)
+
+    if args.flat:
+        # Images only: a video has no single flat backdrop to sample, and a per-frame key would flicker.
+        done = []
+        for path in paths:
+            if not _is_image(path):
+                fail("invalid_args", f"--flat works on images only; {os.path.basename(path)} is not one")
+            done.append(_process_flat(path, _image_out(path, args.out if args.input else None)))
+        print(json.dumps(done[0] if args.input else done))
+        return
 
     # One session serves every clip, sequentially.
     session = _load_session()

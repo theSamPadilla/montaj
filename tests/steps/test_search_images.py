@@ -135,3 +135,21 @@ def test_web_search_with_no_serpapi_key_says_where_to_add_one(step_module, monke
     err = json.loads(capsys.readouterr().err)
     assert err == {**err, "error": "missing_credentials",
                    "message": "No SerpApi key. Add one in Montaj under Connectors."}
+
+
+def test_openverse_and_logo_route_keyless(step_module, monkeypatch, capsys):
+    """The two new providers need no key and get the clamped limit."""
+    seen = {}
+    monkeypatch.setattr(step_module, "openverse_search", lambda q, limit=10: seen.update(ov=(q, limit)) or [])
+    monkeypatch.setattr(step_module, "logo_search", lambda q, limit=10: seen.update(logo=(q, limit)) or [])
+    _run_main(step_module, monkeypatch, capsys, ["--query", "fox", "--provider", "openverse", "--limit", "99"])
+    _run_main(step_module, monkeypatch, capsys, ["--query", "stripe.com", "--provider", "logo"])
+    assert seen == {"ov": ("fox", 30), "logo": ("stripe.com", 10)}
+
+
+def test_logo_bare_word_is_search_failed_with_the_fix(step_module, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["search_images.py", "--query", "stripe", "--provider", "logo"])
+    with pytest.raises(SystemExit):
+        step_module.main()
+    err = json.loads(capsys.readouterr().err)
+    assert err["error"] == "search_failed" and "domain" in err["message"]

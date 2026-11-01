@@ -3,7 +3,7 @@
   "description": "Fetch an image from any public HTTPS host to a local path (private/internal IPs blocked, images only, size-capped)",
   "output": {
     "type": "image",
-    "description": "Absolute path to the downloaded image file"
+    "description": "Absolute path to the downloaded image file; after a redirect, {path, type, finalUrl}"
   },
   "provenance": { "kind": "stock" },
   "params": [
@@ -11,7 +11,7 @@
       "name": "url",
       "type": "string",
       "required": true,
-      "description": "HTTPS URL of the image to fetch (any public host; private/internal IPs are blocked)"
+      "description": "HTTPS image URL (public hosts only; redirects followed, each re-checked)"
     },
     {
       "name": "out",
@@ -41,7 +41,7 @@
     {
       "name": "source",
       "type": "enum",
-      "options": ["commons", "sportsdb", "web"],
+      "options": ["commons", "openverse", "sportsdb", "web", "site", "favicon"],
       "required": false,
       "description": "Where search_images found it, from its result's source. Recorded in the project's provenance"
     },

@@ -1,6 +1,6 @@
 {
   "name": "remove_bg",
-  "description": "Remove video or image background (RVM, CPU): a video gives a ProRes 4444 .mov with alpha + VP9 WebM preview, an image a PNG with alpha. Video is LONG-RUNNING, about 0.1 s per megapixel per frame: batch clips with inputs, run in the background with progress (per-frame JSON on stderr). Pass max-height to matte at the size the clip is shown; downsample 1.0 for sharper video edges (slower).",
+  "description": "Remove a video or image background with RVM (CPU): video gives a ProRes 4444 .mov with alpha + VP9 WebM preview, an image a PNG with alpha. Video is LONG-RUNNING (~0.1 s per megapixel per frame): batch with inputs, run in the background with progress (per-frame JSON on stderr). max-height mattes at the shown size; downsample 1.0 sharpens video edges (slower).",
   "input": {
     "type": "media",
     "description": "Source video or image"
@@ -36,14 +36,21 @@
       "default": 0.5,
       "min": 0.25,
       "max": 1.0,
-      "description": "Video inference resolution ratio, relative to the frame RVM is given. 1.0 = full resolution (about 4x slower, sharper hair)."
+      "description": "Video inference scale; 1.0 = full resolution (about 4x slower, sharper hair)."
     },
     {
       "name": "max-height",
       "type": "int",
       "required": false,
       "min": 2,
-      "description": "Scales the cutout down so its display height is at most this many pixels (a positive even number), never up. Width follows the aspect ratio. Omit to keep the source size."
+      "description": "Scale the cutout down to at most this display height (positive even number), never up. Omit to keep the source size."
+    },
+    {
+      "name": "flat",
+      "type": "boolean",
+      "required": false,
+      "default": false,
+      "description": "Logo on a solid colour: keys that colour out from the border, no model; enclosed holes stay. Answers keyed, transparent"
     },
     {
       "name": "progress",
