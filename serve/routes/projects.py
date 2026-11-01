@@ -34,7 +34,7 @@ from serve.common import (
     validate_project_subpath, _is_under, lands_on_project_file,
 )
 from serve import context as context_store
-from serve.caption_job import build_audio_mix_spec, caption_input_change, caption_input_fingerprint
+from serve.caption_job import build_audio_mix_spec, narration_audio, caption_input_change, caption_input_fingerprint
 from serve.caption_theme import sanitize_theme, seed_prev
 from serve import provenance
 from serve import save_guard
@@ -6326,7 +6326,9 @@ async def _run_caption_pipeline(
     #    item on every enabled visual track, plus every unmuted audio track,
     #    each at its own timeline position. Output time is timeline time, so
     #    word timings map 1:1 without any remapping downstream.
-    mix_spec = build_audio_mix_spec(project)
+    # Narration only (§652), as the generate_captions step: clips' own audio and voice tracks; every track when none is voice.
+    heard, no_voice = narration_audio(project)
+    mix_spec = build_audio_mix_spec(heard)
 
     # 2. Write the mix spec.
     mix_spec_path.write_text(json.dumps(mix_spec))
@@ -6335,7 +6337,7 @@ async def _run_caption_pipeline(
     # (lib/caption_words), as the generate_captions step takes them; the mix is transcribed (by voiced runs, never
     # --fit-pauses, which squeezed run 5's words early) only when one has none.
     from lib.caption_words import timeline_words, write_transcript
-    from_sources = timeline_words(project, str(project_dir))
+    from_sources = timeline_words(heard, str(project_dir), keep_all=no_voice)
     if from_sources is not None:
         write_transcript(from_sources, str(words_json_path))
     steps = ([] if from_sources is not None else [
@@ -6435,6 +6437,8 @@ async def _run_caption_pipeline(
     broadcaster.publish(project_id, _sse_data_frame(text))
     _start_caption_ink(project_id, project_path, project, broadcaster)
 
+    if no_voice:   # flagged in the answer only, never stored
+        track = {**track, "noVoiceTrack": "No voice track: read every audio track. Mark narration type voiceover, or pass audio."}
     return track
 
 
