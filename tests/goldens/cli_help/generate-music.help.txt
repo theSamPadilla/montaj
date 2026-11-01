@@ -16,11 +16,11 @@ options:
   --seed SEED           RNG seed for reproducible outputs. Gemini only;
                         ignored for ElevenLabs.
   --with-vocals         Allow vocals in the output. Gemini only; ElevenLabs
-                        ignores this. Omit (default) for instrumental-only —
-                        recommended for background music under narration.
-  --duration DURATION   Clip length in seconds. Required for --vendor
-                        elevenlabs (minimum 3s); ignored for Gemini, whose
-                        Lyria picks the length (~68 s for lyria-3.5).
+                        ignores this. Omit for instrumental-only, best under
+                        narration.
+  --duration DURATION   Seconds. Required for elevenlabs (min 3). Gemini's
+                        longer track is trimmed to it with a fade-out, same
+                        codec; a shorter one is kept.
   --json                Output result as JSON
   --out PATH            Output file path
   --quiet               Suppress progress output

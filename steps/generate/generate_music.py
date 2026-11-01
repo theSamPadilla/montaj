@@ -1,19 +1,55 @@
 #!/usr/bin/env python3
 """Generate a music clip from a text prompt via Gemini Lyria 3 or ElevenLabs.
 
-Generation step — produces a file on disk and prints JSON metadata. No ffmpeg.
+Generation step — produces a file on disk and prints JSON metadata. ffmpeg runs
+only to trim a track the vendor returned longer than --duration.
 """
-import argparse, json, os, sys
+import argparse, json, os, subprocess, sys
 
 # File lives at steps/<category>/<name>.py — reach lib/ and project root
 # by going up two levels.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import fail, get_duration
+from common import fail, get_duration, ffmpeg_bin, ffmpeg_error_tail, ffprobe_value
 from connectors import ConnectorError
 from connectors.gemini import DEFAULT_MUSIC_MODEL, invalid_api_key_message
 from _fail_reasons import fail_for
+
+
+FADE_MAX_S = 1.5
+SLACK_S = 0.1          # a vendor track within this of the ask is not worth an encode
+# Source codec -> (encoder args). Trimming needs one encode; the codec family is
+# kept so the file still matches its extension.
+ENCODERS = {
+    "mp3":       ["-c:a", "libmp3lame", "-q:a", "2"],
+    "aac":       ["-c:a", "aac", "-b:a", "192k"],
+    "vorbis":    ["-c:a", "libvorbis", "-q:a", "6"],
+    "opus":      ["-c:a", "libopus", "-b:a", "160k"],
+    "flac":      ["-c:a", "flac"],
+    "pcm_s16le": ["-c:a", "pcm_s16le"],
+}
+
+
+def trim_to(path, duration):
+    """Cut `path` to `duration` s with a short fade-out, re-encoding in the same
+    codec family. Returns (codec, None) on success, (None, note) when it kept the
+    vendor file (unknown codec or encode failure) — a trim is never a refusal."""
+    codec = ffprobe_value(path, "stream=codec_name", "a:0")
+    enc = ENCODERS.get(codec)
+    if enc is None:
+        return None, f"kept the vendor's {codec} track untrimmed (no matching encoder)"
+    fade = min(FADE_MAX_S, 0.1 * duration)
+    tmp = path + ".trim" + os.path.splitext(path)[1]
+    cmd = [ffmpeg_bin(), "-nostdin", "-v", "error", "-y", "-i", path, "-vn", "-t", f"{duration:.3f}",
+           "-af", f"afade=t=out:st={duration - fade:.3f}:d={fade:.3f}", *enc, tmp]
+    r = subprocess.run(cmd, capture_output=True)
+    if r.returncode != 0:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        return None, "kept the vendor track untrimmed: " + ffmpeg_error_tail(r.stderr)
+    os.replace(tmp, path)
+    return codec, None
 
 
 def main():
@@ -29,7 +65,7 @@ def main():
                    help="Allow vocals (default: instrumental-only). Gemini only; ElevenLabs ignores this.")
     p.add_argument("--duration",     type=float,
                    help="Clip length in seconds. Required for --vendor elevenlabs (minimum 3s); "
-                        "ignored for Gemini, whose Lyria picks the length (~68 s for lyria-3.5).")
+                        "Gemini's longer track is trimmed to it with a fade-out.")
     # --json on the step controls the step's own stdout format when invoked as a subprocess
     # by the CLI wrapper. The CLI wrapper has its own --json (via add_global_flags) which
     # controls emit() formatting. Two layers, two concerns — not a duplicate declaration.
@@ -66,11 +102,24 @@ def main():
             fail("invalid_api_key", invalid_api_key_message(e))
         fail_for(e, "Gemini" if args.vendor == "gemini" else "ElevenLabs")
 
-    duration = get_duration(path)
+    vendor_seconds = duration = get_duration(path)
+    trimmed, note = None, None
+    if args.vendor == "gemini" and args.duration is not None and args.duration > 0:
+        if duration > args.duration + SLACK_S:
+            trimmed, note = trim_to(path, args.duration)
+            if trimmed:
+                duration = get_duration(path)
+        elif duration < args.duration - SLACK_S:
+            note = f"vendor returned {duration:.1f}s, shorter than the {args.duration:g}s asked; kept as is"
 
     result = {
         "path": path,
         "duration_seconds": duration,
+        "seconds": duration,
+        "vendorSeconds": vendor_seconds,
+        "trimmed": trimmed is not None,
+        "trimCodec": trimmed,
+        "note": note,
         "vendor": args.vendor,
         "model": model,
         # Gemini's --with-vocals actually controls this; ElevenLabs takes no

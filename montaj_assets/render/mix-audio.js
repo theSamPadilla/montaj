@@ -152,34 +152,23 @@ export function buildAudioTrackFilters(audioTracks = [], baseInputIdx, currentAu
   const filterParts = []
   let audioLabel = currentAudioLabel
   let offset = 0  // counts only unmuted tracks (maps to input index)
+  const ducked = []  // { offset, inputIdx, track, vol, delayMs }, in array order
 
+  // Pass 1: every un-ducked track mixes into the running label. The result is the
+  // speech bus: canvas audio plus all un-ducked tracks, WHEREVER they sit in the
+  // array. (Ducking used to key off whatever was mixed before the ducked track, so
+  // a voiceover listed after the music never reached the sidechain.)
   for (const track of audioTracks) {
     if (track.muted) continue
 
     const inputIdx = baseInputIdx + offset
     const vol      = finiteNumber(track.volume ?? 1.0, 'audio.tracks[].volume')  // §563: text in the graph
     const delayMs  = Math.round((track.start ?? 0) * 1000)
-    const audioIn  = audioLabel.startsWith('[') ? audioLabel : `[${audioLabel}]`
 
     if (track.ducking?.enabled) {
-      const depthRaw = track.ducking.depth
-      const depthDb = Number.isFinite(depthRaw) ? depthRaw : -12  // dB reduction when ducking
-      const attack  = track.ducking.attack  ?? 0.3
-      const release = track.ducking.release ?? 0.5
-      // Map dB depth → compressor ratio (e.g. -12 dB ≈ ratio 4, -6 dB ≈ ratio 2),
-      // clamped to ffmpeg's sidechaincompress range of 1..20: an unclamped
-      // depth of -60 asked for ratio 1000 and failed the whole mix. So depths
-      // below about -26 dB all duck the same as -26 dB (ratio 20).
-      const ratio   = Math.min(20, Math.max(1, Math.round(10 ** (-depthDb / 20))))
-      const fadeFilters = buildFadeFilters(track)
-      filterParts.push(
-        `${audioIn}asplit=2[speech${offset}][sc${offset}]`,
-        `[${inputIdx}:a]adelay=${delayMs}:all=1,volume=${vol}${fadeFilters}[mscaled${offset}]`,
-        `[mscaled${offset}][sc${offset}]sidechaincompress=threshold=0.02:ratio=${ratio}:attack=${attack * 1000}:release=${release * 1000}[ducked${offset}]`,
-        `[speech${offset}][ducked${offset}]amix=inputs=2:duration=first:normalize=0[aout${offset}]`,
-      )
-      audioLabel = `[aout${offset}]`
+      ducked.push({ offset, inputIdx, track, vol, delayMs })
     } else {
+      const audioIn = audioLabel.startsWith('[') ? audioLabel : `[${audioLabel}]`
       const fadeFilters = buildFadeFilters(track)
       filterParts.push(
         `[${inputIdx}:a]adelay=${delayMs}:all=1,volume=${vol}${fadeFilters}[atrack${offset}]`,
@@ -191,7 +180,37 @@ export function buildAudioTrackFilters(audioTracks = [], baseInputIdx, currentAu
     offset++
   }
 
-  return { filterParts, audioLabel }
+  if (ducked.length === 0) return { filterParts, audioLabel }
+
+  // Pass 2: every ducked track compresses against the same speech bus (so two
+  // beds duck against the speech and never against each other), and the final
+  // mix is the speech bus plus every ducked bed.
+  const speechIn = audioLabel.startsWith('[') ? audioLabel : `[${audioLabel}]`
+  const first = ducked[0].offset
+  const last  = ducked[ducked.length - 1].offset
+  filterParts.push(
+    `${speechIn}asplit=${ducked.length + 1}[speech${first}]${ducked.map(d => `[sc${d.offset}]`).join('')}`,
+  )
+  for (const { offset: o, inputIdx, track, vol, delayMs } of ducked) {
+    const depthRaw = track.ducking.depth
+    const depthDb = Number.isFinite(depthRaw) ? depthRaw : -12  // dB reduction when ducking
+    const attack  = track.ducking.attack  ?? 0.3
+    const release = track.ducking.release ?? 0.5
+    // Map dB depth → compressor ratio (e.g. -12 dB ≈ ratio 4, -6 dB ≈ ratio 2),
+    // clamped to ffmpeg's sidechaincompress range of 1..20: an unclamped
+    // depth of -60 asked for ratio 1000 and failed the whole mix. So depths
+    // below about -26 dB all duck the same as -26 dB (ratio 20).
+    const ratio   = Math.min(20, Math.max(1, Math.round(10 ** (-depthDb / 20))))
+    const fadeFilters = buildFadeFilters(track)
+    filterParts.push(
+      `[${inputIdx}:a]adelay=${delayMs}:all=1,volume=${vol}${fadeFilters}[mscaled${o}]`,
+      `[mscaled${o}][sc${o}]sidechaincompress=threshold=0.02:ratio=${ratio}:attack=${attack * 1000}:release=${release * 1000}[ducked${o}]`,
+    )
+  }
+  filterParts.push(
+    `[speech${first}]${ducked.map(d => `[ducked${d.offset}]`).join('')}amix=inputs=${ducked.length + 1}:duration=first:normalize=0[aout${last}]`,
+  )
+  return { filterParts, audioLabel: `[aout${last}]` }
 }
 
 /** Final-pass loudness normalization. `lufs` is the integrated target

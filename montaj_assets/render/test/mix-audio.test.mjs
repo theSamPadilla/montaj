@@ -201,14 +201,14 @@ test('buildAudioTrackFilters: valid numeric tracks build exactly the graph they 
     filterParts: [
       '[1:a]adelay=2500:all=1,volume=0.8,afade=t=in:st=2.5:d=1:curve=exp,afade=t=out:st=8:d=2:curve=exp[atrack0]',
       '[0:a][atrack0]amix=inputs=2:duration=longest:normalize=0[amid0]',
-      '[amid0]asplit=2[speech1][sc1]',
+      '[3:a]adelay=0:all=1,volume=1[atrack2]',
+      '[amid0][atrack2]amix=inputs=2:duration=longest:normalize=0[amid2]',
+      '[amid2]asplit=2[speech1][sc1]',
       '[2:a]adelay=0:all=1,volume=0.35,afade=t=in:st=0:d=0.5:curve=exp[mscaled1]',
       '[mscaled1][sc1]sidechaincompress=threshold=0.02:ratio=4:attack=300:release=500[ducked1]',
       '[speech1][ducked1]amix=inputs=2:duration=first:normalize=0[aout1]',
-      '[3:a]adelay=0:all=1,volume=1[atrack2]',
-      '[aout1][atrack2]amix=inputs=2:duration=longest:normalize=0[amid2]',
     ],
-    audioLabel: '[amid2]',
+    audioLabel: '[aout1]',
   })
 })
 
@@ -233,4 +233,61 @@ test('buildAudioTrackFilters: numeric-string volume and start build the same gra
     buildAudioTrackFilters([plain, ducked], 1, '[0:a]'))
   assert.throws(() => buildAudioTrackFilters([{ src: '/a.wav', volume: '' }], 1, '[0:a]'), /volume/)
   assert.throws(() => buildAudioTrackFilters([{ src: '/a.wav', volume: '0x10' }], 1, '[0:a]'), /volume/)
+})
+
+// ── ducking keys off ALL the speech, whatever the array order ───────────────
+
+test('ducking: a voiceover listed AFTER the music reaches the sidechain (the bed ducks)', () => {
+  const music = { src: '/m.mp3', ducking: { enabled: true } }
+  const vo = { src: '/v.wav' }
+  const { filterParts, audioLabel } = buildAudioTrackFilters([music, vo], 1, '[0:a]')
+  assert.deepEqual(filterParts, [
+    '[2:a]adelay=0:all=1,volume=1[atrack1]',
+    '[0:a][atrack1]amix=inputs=2:duration=longest:normalize=0[amid1]',
+    '[amid1]asplit=2[speech0][sc0]',
+    '[1:a]adelay=0:all=1,volume=1[mscaled0]',
+    '[mscaled0][sc0]sidechaincompress=threshold=0.02:ratio=4:attack=300:release=500[ducked0]',
+    '[speech0][ducked0]amix=inputs=2:duration=first:normalize=0[aout0]',
+  ])
+  assert.equal(audioLabel, '[aout0]')
+})
+
+test('ducking: array order does not change the graph beyond input indices and labels', () => {
+  const music = { src: '/m.mp3', ducking: { enabled: true } }
+  const vo = { src: '/v.wav' }
+  const norm = (r) => r.filterParts.join(';').replace(/\[(\d+):a\]/g, '[in]').replace(/\d+\]/g, 'N]')
+  const a = buildAudioTrackFilters([music, vo], 1, '[0:a]')
+  const b = buildAudioTrackFilters([vo, music], 1, '[0:a]')
+  assert.equal(norm(a), norm(b))
+  // The music (input 1 when first) is the sidechain MAIN input; the speech bus is the key.
+  assert.match(b.filterParts.join(';'), /\[2:a\]adelay=0:all=1,volume=1\[mscaled1\]/)
+})
+
+test('ducking: two ducked beds both duck against the speech bus, never each other', () => {
+  const music = { src: '/m.mp3', ducking: { enabled: true } }
+  const amb = { src: '/a.mp3', ducking: { enabled: true, depth: -6 } }
+  const vo = { src: '/v.wav' }
+  const { filterParts, audioLabel } = buildAudioTrackFilters([music, amb, vo], 1, '[0:a]')
+  const g = filterParts.join(';')
+  assert.match(g, /\[amid2\]asplit=3\[speech0\]\[sc0\]\[sc1\]/)
+  assert.match(g, /\[mscaled0\]\[sc0\]sidechaincompress=threshold=0.02:ratio=4/)
+  assert.match(g, /\[mscaled1\]\[sc1\]sidechaincompress=threshold=0.02:ratio=2/)
+  assert.match(g, /\[speech0\]\[ducked0\]\[ducked1\]amix=inputs=3:duration=first:normalize=0\[aout1\]/)
+  assert.equal(audioLabel, '[aout1]')
+})
+
+test('ducking: no ducked track builds the plain chain exactly as before', () => {
+  const { filterParts, audioLabel } = buildAudioTrackFilters([{ src: '/a.wav' }, { src: '/b.wav', start: 1 }], 1, '[0:a]')
+  assert.deepEqual(filterParts, [
+    '[1:a]adelay=0:all=1,volume=1[atrack0]',
+    '[0:a][atrack0]amix=inputs=2:duration=longest:normalize=0[amid0]',
+    '[2:a]adelay=1000:all=1,volume=1[atrack1]',
+    '[amid0][atrack1]amix=inputs=2:duration=longest:normalize=0[amid1]',
+  ])
+  assert.equal(audioLabel, '[amid1]')
+})
+
+test('ducking: a muted track does not shift the ducked track\'s input index', () => {
+  const { filterParts } = buildAudioTrackFilters([{ src: '/x', muted: true }, { src: '/m.mp3', ducking: { enabled: true } }], 1, '[0:a]')
+  assert.ok(filterParts.some(p => p.startsWith('[1:a]adelay')))
 })

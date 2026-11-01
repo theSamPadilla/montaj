@@ -339,3 +339,77 @@ def test_module_imports_no_numeric_libraries():
             names.add(node.module.split(".")[0])
     assert names, "guard parsed no imports"
     assert not names & {"numpy", "scipy", "librosa"}, names
+
+
+# ── key (--key) ──────────────────────────────────────────────────────────────
+
+def _chord_wav(path, midis, seconds=8.0, sr=22050):
+    """Sustained sine chord (each note plus a quieter octave) as a wav."""
+    n = int(sr * seconds)
+    freqs = [440.0 * 2 ** ((m - 69) / 12) for m in midis]
+    buf = array.array("h", (
+        int(9000 * sum(math.sin(2 * math.pi * f * i / sr) + 0.4 * math.sin(2 * math.pi * 2 * f * i / sr)
+                       for f in freqs) / len(freqs))
+        for i in range(n)))
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(buf.tobytes())
+
+
+def _profile(mod, tonic, prof):
+    return [prof[(i - tonic) % 12] for i in range(12)]
+
+
+def test_key_from_chroma_c_major_triad(mod):
+    chroma = [0.0] * 12
+    for pc in (0, 4, 7):
+        chroma[pc] = 1.0
+    key, conf = mod.key_from_chroma(chroma)
+    assert key == "C major"
+    assert conf > 0.3
+
+
+def test_key_from_chroma_a_minor_triad(mod):
+    chroma = [0.0] * 12
+    for pc in (9, 0, 4):
+        chroma[pc] = 1.0
+    chroma[9] = 1.5          # tonic weighted, as in a real bed (A C E alone ties with C major)
+    key, _ = mod.key_from_chroma(chroma)
+    assert key == "A minor"
+
+
+def test_key_from_chroma_rotates_the_profile(mod):
+    key, conf = mod.key_from_chroma(_profile(mod, 3, mod.KK_MINOR))
+    assert key == "D# minor"
+    assert conf > 0.5
+    key, _ = mod.key_from_chroma(_profile(mod, 6, mod.KK_MAJOR))
+    assert key == "F# major"
+
+
+def test_key_from_chroma_flat_has_no_confidence(mod):
+    key, conf = mod.key_from_chroma([1.0 / 12] * 12)
+    assert conf == 0.0 and isinstance(key, str)
+    assert mod.key_from_chroma([0.0] * 12)[1] == 0.0
+
+
+def test_key_default_off_adds_no_keys(tracks):
+    r = detect(tracks[120])
+    assert "key" not in r and "chroma" not in r
+
+
+def test_key_on_synthetic_chords(tmp_path):
+    a_min = tmp_path / "amin.wav"
+    c_maj = tmp_path / "cmaj.wav"
+    _chord_wav(a_min, [57, 60, 64, 45])      # A3 C4 E4 + A2 bass
+    _chord_wav(c_maj, [60, 64, 67, 48])      # C4 E4 G4 + C3 bass
+    ra = run_step("detect_beats.py", "--input", str(a_min), "--key")
+    rc = run_step("detect_beats.py", "--input", str(c_maj), "--key")
+    assert ra.returncode == 0, ra.stderr
+    a, c = json.loads(ra.stdout), json.loads(rc.stdout)
+    assert a["key"] == "A minor"
+    assert c["key"] == "C major"
+    assert len(a["chroma"]) == 12 and abs(sum(a["chroma"]) - 1) < 0.02
+    assert a["chroma"][9] > 0.2 and a["chroma"][0] > 0.1 and a["chroma"][4] > 0.1   # A, C, E lead
+    assert 0 <= a["keyConfidence"] <= 1

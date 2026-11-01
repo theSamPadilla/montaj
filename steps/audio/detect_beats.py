@@ -2,7 +2,8 @@
 """Measure a music bed's tempo, beat grid, first downbeat and energy sections.
 
 Pure analysis: one ffmpeg decode (split into low / mid / high bands) plus
-stdlib Python. No encode, no network, no model, no numpy.
+stdlib Python. No encode, no network, no model, no numpy. With --key, a second
+low-rate decode feeds a pitch-class profile and a Krumhansl-Schmuckler key.
 
 Pipeline (method "bandflux-autocorr-v1"):
   1. decode to 22050 Hz mono, band-split in the same ffmpeg call
@@ -45,6 +46,19 @@ DRIFT_MS = 25.0
 SILENT_DB = -60.0
 ENERGY_JUMP_DB = 6.0
 ACCENT_MIN_CONFIDENCE = 0.2
+
+# Key detection (--key). Chroma comes from correlating windowed frames against
+# sine/cosine tables for every note C2..B5 (stdlib only: no numpy, no FFT; the
+# dot products run in C through sum(map(mul))). Krumhansl-Kessler profiles.
+KEY_SR = 4000
+KEY_FRAME = 8192                  # 2.05 s: resolves semitones down to C2 (~4 Hz apart)
+KEY_MAX_FRAMES = 24               # spread evenly over the file
+KEY_LOW_MIDI, KEY_HIGH_MIDI = 36, 83
+KEY_SILENT_RMS = 1e-4
+KEY_CONF_SCALE = 5.0              # best-minus-second correlation of 0.2 is full confidence
+PITCH_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+KK_MAJOR = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88]
+KK_MINOR = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
 
 
 # ── decode ────────────────────────────────────────────────────────────────────
@@ -347,9 +361,116 @@ def events_from_runs(rs):
     return ev
 
 
+# ── key ───────────────────────────────────────────────────────────────────────
+
+def _corr(a, b):
+    """Pearson correlation; 0.0 when either side is constant (nothing to match)."""
+    n = len(a)
+    ma, mb = sum(a) / n, sum(b) / n
+    da = [x - ma for x in a]
+    db_ = [x - mb for x in b]
+    va, vb = sum(x * x for x in da), sum(x * x for x in db_)
+    if va < 1e-12 or vb < 1e-12:
+        return 0.0
+    return sum(x * y for x, y in zip(da, db_)) / math.sqrt(va * vb)
+
+
+def key_from_chroma(chroma):
+    """(key, confidence) from 12 pitch-class weights, C first.
+
+    Correlates against the Krumhansl-Kessler major and minor profiles in all 12
+    rotations. Confidence is how far the best correlation stands above the next
+    best, scaled so a 0.2 gap is 1.0; a flat or empty chroma has no preferred
+    key and gets 0.0 (the key is still the first of the tie, never a refusal).
+    """
+    scores = []
+    for tonic in range(12):
+        for mode, prof in (("major", KK_MAJOR), ("minor", KK_MINOR)):
+            rot = [prof[(i - tonic) % 12] for i in range(12)]
+            scores.append((_corr(chroma, rot), tonic, mode))
+    scores.sort(key=lambda r: -r[0])
+    best, second = scores[0], scores[1]
+    conf = max(0.0, min(1.0, (best[0] - second[0]) * KEY_CONF_SCALE))
+    return "%s %s" % (PITCH_NAMES[best[1]], best[2]), conf
+
+
+_KEY_TABLES = None
+
+
+def _key_tables():
+    """Hann-windowed cos/sin tables per note, built once."""
+    global _KEY_TABLES
+    if _KEY_TABLES is None:
+        hann = [0.5 - 0.5 * math.cos(2 * math.pi * i / KEY_FRAME) for i in range(KEY_FRAME)]
+        tabs = []
+        for m in range(KEY_LOW_MIDI, KEY_HIGH_MIDI + 1):
+            w = 2 * math.pi * 440.0 * 2 ** ((m - 69) / 12) / KEY_SR
+            tabs.append((m % 12,
+                         [h * math.cos(w * i) for i, h in enumerate(hann)],
+                         [h * math.sin(w * i) for i, h in enumerate(hann)]))
+        _KEY_TABLES = tabs
+    return _KEY_TABLES
+
+
+def chroma_of(sig):
+    """Mean pitch-class profile (12 weights summing to 1, C first) of mono `sig`
+    sampled at KEY_SR, or None when no frame is audible. Each frame is normalised
+    before averaging so one loud passage does not outvote the rest."""
+    n = len(sig)
+    count = min(KEY_MAX_FRAMES, n // KEY_FRAME)
+    if count == 0:
+        return None
+    tabs = _key_tables()
+    mul = operator.mul
+    acc, used = [0.0] * 12, 0
+    for f in range(count):
+        a = 0 if count == 1 else int(f * (n - KEY_FRAME) / (count - 1))
+        fr = sig[a:a + KEY_FRAME]
+        if math.sqrt(sum(map(mul, fr, fr)) / KEY_FRAME) < KEY_SILENT_RMS:
+            continue
+        pc = [0.0] * 12
+        for cls, c, s_ in tabs:
+            re, im = sum(map(mul, fr, c)), sum(map(mul, fr, s_))
+            pc[cls] += re * re + im * im
+        tot = sum(pc)
+        if tot <= 0:
+            continue
+        for i in range(12):
+            acc[i] += pc[i] / tot
+        used += 1
+    return [v / used for v in acc] if used else None
+
+
+def decode_mono(path, sr, timeout=600):
+    """Decode the first audio stream to mono float samples at `sr`."""
+    cmd = [ffmpeg_bin(), "-nostdin", "-v", "error", "-i", ff_input(path), "-vn",
+           "-map", "0:a:0", "-ac", "1", "-ar", str(sr), "-f", "f32le", "-acodec", "pcm_f32le", "-"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        fail("timeout", f"ffmpeg decode timed out after {timeout}s: {path}")
+    if r.returncode != 0:
+        fail("unexpected_error", f"ffmpeg decode failed: {ffmpeg_error_tail(r.stderr)}")
+    a = array.array("f")
+    raw = r.stdout
+    a.frombytes(raw[: len(raw) - len(raw) % 4])
+    if sys.byteorder == "big":
+        a.byteswap()
+    return a
+
+
+def detect_key(path):
+    """{key, keyConfidence, chroma} for the whole file; key null when silent."""
+    ch = chroma_of(decode_mono(path, KEY_SR))
+    if ch is None:
+        return {"key": None, "keyConfidence": 0.0, "chroma": [0.0] * 12}
+    key, conf = key_from_chroma(ch)
+    return {"key": key, "keyConfidence": round(conf, 3), "chroma": [round(v, 3) for v in ch]}
+
+
 # ── analysis ─────────────────────────────────────────────────────────────────
 
-def analyze(path, bpm_hint=None, bpb=4, min_bpm=60.0, max_bpm=200.0):
+def analyze(path, bpm_hint=None, bpb=4, min_bpm=60.0, max_bpm=200.0, key=False):
     bands = decode_bands(path)
     n_samples = len(bands[0]) if bands else 0
     duration = n_samples / SR
@@ -438,7 +559,7 @@ def analyze(path, bpm_hint=None, bpb=4, min_bpm=60.0, max_bpm=200.0):
     elif stability_ms is not None and stability_ms > DRIFT_MS:
         warning = "tempo_drift"
 
-    return {
+    res = {
         "input": os.path.abspath(path),
         "duration": round(duration, 3),
         "method": METHOD,
@@ -459,6 +580,9 @@ def analyze(path, bpm_hint=None, bpb=4, min_bpm=60.0, max_bpm=200.0):
         "tempo_stability_ms": round(stability_ms, 1) if stability_ms is not None else None,
         "warning": warning,
     }
+    if key:
+        res.update(detect_key(path))
+    return res
 
 
 def main():
@@ -471,6 +595,8 @@ def main():
     parser.add_argument("--beats-per-bar", type=int, default=4, help="Beats per bar (default: 4)")
     parser.add_argument("--min-bpm", type=float, default=60.0, help="Lowest tempo considered (default: 60)")
     parser.add_argument("--max-bpm", type=float, default=200.0, help="Highest tempo considered (default: 200)")
+    parser.add_argument("--key", action="store_true",
+                        help="Also report the musical key (key, keyConfidence, chroma)")
     parser.add_argument("--out", help="Write the JSON here and print {\"path\": \"<abs path>\"} instead")
     args = parser.parse_args()
 
@@ -485,7 +611,7 @@ def main():
     if not ffprobe_value(args.input, "stream=index", "a"):
         fail("no_audio", f"No audio stream in {args.input}")
 
-    result = analyze(args.input, args.bpm_hint, args.beats_per_bar, args.min_bpm, args.max_bpm)
+    result = analyze(args.input, args.bpm_hint, args.beats_per_bar, args.min_bpm, args.max_bpm, args.key)
 
     if args.out:
         out_path = os.path.abspath(args.out)

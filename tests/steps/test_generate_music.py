@@ -185,3 +185,75 @@ class TestConnectorErrorMapping:
         err = _last_stderr_json(capsys)
         assert err["error"] == "invalid_api_key"
         assert err["message"] == "ElevenLabs key check failed (HTTP 401): invalid key"
+
+
+class TestGeminiDurationTrim:
+    """--duration applies to Gemini: a longer vendor track is trimmed (one encode,
+    same codec family) with a fade-out; a shorter one is kept. The vendor call is
+    mocked; the audio is a short sine made with the bundled ffmpeg."""
+
+    @pytest.fixture
+    def real_step(self):
+        spec = importlib.util.spec_from_file_location("generate_music_step_real", _STEP_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    @staticmethod
+    def _make(path, seconds, *codec):
+        import subprocess
+        from common import ffmpeg_bin
+        subprocess.run([ffmpeg_bin(), "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i",
+                        f"sine=f=440:d={seconds}", *codec, str(path)], check=True)
+
+    def _run(self, step, monkeypatch, capsys, out, extra):
+        monkeypatch.setattr(sys, "argv", ["generate_music.py", "--prompt", "x", "--out", str(out),
+                                          "--json", *extra])
+        step.main()
+        return json.loads(capsys.readouterr().out)
+
+    def test_longer_track_is_trimmed_with_fade(self, real_step, monkeypatch, capsys, tmp_path):
+        from common import get_duration, ffmpeg_bin
+        import subprocess
+        out = tmp_path / "m.mp3"
+        monkeypatch.setattr(gemini_mod, "generate_music",
+                            lambda **kw: (self._make(kw["out_path"], 8, "-c:a", "libmp3lame"), kw["out_path"])[1])
+        r = self._run(real_step, monkeypatch, capsys, out, ["--duration", "3"])
+        assert r["vendorSeconds"] == pytest.approx(8.0, abs=0.1)
+        assert r["seconds"] == pytest.approx(3.0, abs=0.1)
+        assert get_duration(str(out)) == pytest.approx(3.0, abs=0.1)
+        assert r["trimmed"] is True and r["trimCodec"] == "mp3"
+        assert not list(tmp_path.glob("*.trim*"))
+        # the tail fades out: last 0.1 s is far quieter than the middle
+        def rms(ss, t):
+            import array, math
+            p = subprocess.run([ffmpeg_bin(), "-nostdin", "-v", "error", "-ss", str(ss), "-t", str(t), "-i", str(out),
+                                "-ac", "1", "-f", "f32le", "-"], capture_output=True)
+            a = array.array("f")
+            a.frombytes(p.stdout[: len(p.stdout) // 4 * 4])
+            return math.sqrt(sum(x * x for x in a) / len(a))
+        assert rms(2.85, 0.15) < rms(1.0, 0.15) * 0.5
+
+    def test_shorter_track_is_kept_and_noted(self, real_step, monkeypatch, capsys, tmp_path):
+        out = tmp_path / "m.mp3"
+        monkeypatch.setattr(gemini_mod, "generate_music",
+                            lambda **kw: (self._make(kw["out_path"], 2, "-c:a", "libmp3lame"), kw["out_path"])[1])
+        r = self._run(real_step, monkeypatch, capsys, out, ["--duration", "5"])
+        assert r["trimmed"] is False and r["seconds"] == r["vendorSeconds"]
+        assert "shorter" in r["note"]
+
+    def test_no_duration_leaves_vendor_track_alone(self, real_step, monkeypatch, capsys, tmp_path):
+        out = tmp_path / "m.mp3"
+        monkeypatch.setattr(gemini_mod, "generate_music",
+                            lambda **kw: (self._make(kw["out_path"], 4, "-c:a", "libmp3lame"), kw["out_path"])[1])
+        r = self._run(real_step, monkeypatch, capsys, out, [])
+        assert r["trimmed"] is False and r["note"] is None
+        assert r["seconds"] == r["vendorSeconds"]
+
+    def test_short_fade_scales_to_ten_percent(self, real_step, monkeypatch, capsys, tmp_path):
+        out = tmp_path / "m.wav"
+        monkeypatch.setattr(gemini_mod, "generate_music",
+                            lambda **kw: (self._make(kw["out_path"], 4, "-c:a", "pcm_s16le"), kw["out_path"])[1])
+        r = self._run(real_step, monkeypatch, capsys, out, ["--duration", "1"])
+        assert r["trimCodec"] == "pcm_s16le"
+        assert r["seconds"] == pytest.approx(1.0, abs=0.05)
