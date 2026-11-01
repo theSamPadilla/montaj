@@ -199,3 +199,110 @@ def test_overlay_readable_via_api_files(project_id):
     get = client.get("/api/files", params={"path": put.json()["path"]})
     assert get.status_code == 200
     assert get.text == HEADLINE_JSX
+
+
+# §643: DELETE /api/projects/{id}/overlays/{name}
+def _put(project_id, name, text="export default () => null;"):
+    res = client.put(f"/api/projects/{project_id}/overlays/{name}", content=text, headers={"Content-Type": "text/plain"})
+    assert res.status_code in (200, 201), res.text
+    return Path(res.json()["path"])
+
+
+def _set_tracks(path, tracks):
+    import json
+    pj = path.parent.parent / "project.json"
+    data = json.loads(pj.read_text())
+    data["tracks"] = tracks
+    pj.write_text(json.dumps(data))
+
+
+def test_delete_overlay_removes_an_unused_file(project_id):
+    path = _put(project_id, "del-unused")
+    res = client.delete(f"/api/projects/{project_id}/overlays/del-unused")
+    assert res.status_code == 200, res.text
+    assert res.json()["deleted"] is True
+    assert not path.exists()
+
+
+def test_delete_overlay_absent_file_is_safe(project_id):
+    res = client.delete(f"/api/projects/{project_id}/overlays/never-written")
+    assert res.status_code == 200
+    assert res.json()["deleted"] is False
+
+
+@pytest.mark.parametrize("name", ["bad name", "a.b", "x" * 65, "..%2F..%2Fproject"])
+def test_delete_overlay_rejects_invalid_names(project_id, name):
+    res = client.delete(f"/api/projects/{project_id}/overlays/{name}")
+    assert res.status_code in (400, 404, 405, 422), res.text  # 405: an encoded slash never reaches the route
+
+
+def test_delete_overlay_missing_project_returns_404(workspace):
+    res = client.delete(f"/api/projects/{uuid.uuid4()}/overlays/headline")
+    assert res.status_code == 404
+
+
+def test_delete_overlay_refused_while_the_timeline_uses_it(project_id):
+    path = _put(project_id, "del-onlane")
+    _set_tracks(path, [[{"id": "item-a", "type": "overlay", "src": "overlays/del-onlane.jsx", "start": 0, "end": 1}]])
+    res = client.delete(f"/api/projects/{project_id}/overlays/del-onlane")
+    assert res.status_code == 409
+    assert res.json()["detail"]["error"] == "overlay_in_use"
+    assert "item-a" in res.json()["detail"]["message"]
+    assert path.exists()
+    _set_tracks(path, [])
+    assert client.delete(f"/api/projects/{project_id}/overlays/del-onlane").json()["deleted"] is True
+
+
+def test_delete_overlay_refused_while_another_overlay_imports_it(project_id):
+    dep = _put(project_id, "del-dep")
+    _put(project_id, "del-user", "import Dep from './del-dep';\nexport default () => <Dep />;")
+    res = client.delete(f"/api/projects/{project_id}/overlays/del-dep")
+    assert res.status_code == 409
+    assert "del-user.jsx" in res.json()["detail"]["message"]
+    assert dep.exists()
+    # the importer itself is unused and goes
+    assert client.delete(f"/api/projects/{project_id}/overlays/del-user").json()["deleted"] is True
+
+
+def test_delete_overlay_refused_for_a_template_installed_file(project_id):
+    path = _put(project_id, "del-tpl")
+    res = client.post(f"/api/projects/{project_id}/provenance", json={"path": "overlays/del-tpl.jsx", "entry": {"kind": "template", "templateId": "t1"}})
+    assert res.status_code == 200, res.text
+    res = client.delete(f"/api/projects/{project_id}/overlays/del-tpl")
+    assert res.status_code == 409
+    assert "template" in res.json()["detail"]["message"]
+    assert path.exists()
+
+
+def test_delete_overlay_applies_the_sync_guard_and_keeps_the_file(project_id, monkeypatch):
+    from fastapi import HTTPException
+    from serve import save_guard
+
+    calls = []
+
+    def refuse(headers, pid, files=None):
+        calls.append((pid, files))
+        raise HTTPException(409, detail={"error": "sync_clash", "message": "clash"})
+
+    path = _put(project_id, "del-sync")
+    monkeypatch.setattr(save_guard, "check_sync", refuse)
+    res = client.delete(f"/api/projects/{project_id}/overlays/del-sync")
+    assert res.status_code == 409
+    assert calls == [(project_id, ["overlays/del-sync.jsx"])]
+    assert path.exists()
+
+
+def test_delete_overlay_holds_the_project_lock(project_id, monkeypatch):
+    import serve.routes.projects as pm
+
+    held = []
+    real = pm.project_lock_async
+
+    def spy(path):
+        held.append(path.name)
+        return real(path)
+
+    monkeypatch.setattr(pm, "project_lock_async", spy)
+    _put(project_id, "del-lock")
+    assert client.delete(f"/api/projects/{project_id}/overlays/del-lock").status_code == 200
+    assert held == ["project.json"]
