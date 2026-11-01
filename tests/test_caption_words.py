@@ -85,3 +85,65 @@ def test_the_step_captions_from_the_transcripts_within_a_tenth_and_never_transcr
     want = expected(p)
     assert [w for w, _ in words] == [t for t, _ in want]
     assert max(abs(a - b) for (_, a), (_, b) in zip(words, want)) < 0.1
+
+
+# §652: captions read the narration by default.
+
+def _load_step(monkeypatch, d, argv, ran):
+    spec = importlib.util.spec_from_file_location("generate_captions_audio", STEP_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(mod, "get_project_dir", lambda pid: d)
+    monkeypatch.setattr(mod, "require_whisper_model", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "ink_pass", lambda p: [])
+
+    def fake_run(cmd, **kw):          # lowest call faked: no mix, no whisper
+        ran.append([str(c) for c in cmd])
+        joined = " ".join(map(str, cmd))
+        if "transcribe.py" in joined:
+            shutil.copy(FIX / "speech.json", d / "_caption_words.json")
+            return None
+        if "mix_timeline.py" in joined:
+            return None
+        return subprocess.run(cmd, check=True, capture_output=True, text=True)
+    monkeypatch.setattr(mod, "run", fake_run)
+    monkeypatch.setattr(sys, "argv", ["generate_captions.py", "--project-id", "p1", "--script", ""] + argv)
+    return mod
+
+
+def _untyped_bed_project(tmp_path):
+    d, p = project(tmp_path)
+    p["audio"]["tracks"][0].pop("type")           # a music bed nobody marked: it has no transcript
+    p["audio"]["tracks"][0]["id"] = "bed"
+    (d / "project.json").write_text(json.dumps(p))
+    return d, p
+
+
+def test_default_skips_a_music_track_and_keeps_the_narration(tmp_path, monkeypatch, capsys):
+    d, p = _untyped_bed_project(tmp_path)
+    ran = []
+    _load_step(monkeypatch, d, [], ran).main()
+    assert not any("transcribe.py" in " ".join(c) or "mix_timeline.py" in " ".join(c) for c in ran)
+    answer = json.loads(capsys.readouterr().out)
+    assert "noVoiceTrack" not in answer
+    assert [w["word"] for s in answer["segments"] for w in s["words"]] == [t for t, _ in expected(p)]
+
+
+def test_an_explicit_audio_param_includes_the_music_track(tmp_path, monkeypatch, capsys):
+    d, p = _untyped_bed_project(tmp_path)
+    ran = []
+    _load_step(monkeypatch, d, ["--audio", "bed"], ran).main()
+    assert any("mix_timeline.py" in " ".join(c) for c in ran)       # the bed has no transcript: the mix is read
+    assert "noVoiceTrack" not in json.loads(capsys.readouterr().out)
+
+
+def test_no_voice_track_and_nothing_else_audible_falls_back_and_says_so(tmp_path, monkeypatch, capsys):
+    d, p = _untyped_bed_project(tmp_path)
+    for it in p["tracks"][0]["items"]:
+        it["muted"] = True                                          # no clip audio: only the bed is left
+    (d / "project.json").write_text(json.dumps(p))
+    ran = []
+    _load_step(monkeypatch, d, [], ran).main()
+    answer = json.loads(capsys.readouterr().out)
+    assert answer["segments"] and "noVoiceTrack" in answer
+    assert any("mix_timeline.py" in " ".join(c) for c in ran)

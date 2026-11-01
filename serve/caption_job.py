@@ -186,6 +186,26 @@ def _audio_track_segments(project: dict) -> list[dict]:
     return segments
 
 
+# Audio-track `type`s that are narration (the type convention of lib/speech_source: "voiceover", "music", "sfx", else "audio").
+VOICE_TYPES = ("voiceover", "voice", "narration", "speech", "dialogue")
+
+
+def narration_audio(project: dict, include: str = "voice"):
+    """(project, fallback): `project` with only the audio tracks captions read. `include`: "voice" (default: tracks typed
+    voiceover/voice/narration/speech/dialogue; clips' own audio always stays), "all", or comma-separated track ids added
+    to the voice ones. Nothing audible left means no voice at all: every track is read instead and `fallback` is True."""
+    tracks = ((project or {}).get("audio") or {}).get("tracks")
+    inc = (include or "voice").strip()
+    if inc == "all" or not isinstance(tracks, list):
+        return project, False
+    ids = {i.strip() for i in inc.split(",") if i.strip()} - {"voice"}
+    kept = [t for t in tracks if isinstance(t, dict) and (t.get("type") in VOICE_TYPES or t.get("id") in ids)]
+    view = {**project, "audio": {**project["audio"], "tracks": kept}}
+    if _visual_segments(view) or _audio_track_segments(view) or not _audio_track_segments(project):
+        return view, False
+    return project, True
+
+
 def build_audio_mix_spec(project: dict, sample_rate: int = 16000) -> dict:
     """Build the ``mix_timeline`` input spec for the caption transcript.
 

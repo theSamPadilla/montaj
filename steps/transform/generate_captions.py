@@ -34,7 +34,7 @@ from caption_translation import finish_regenerated_track, merge_caption_theme as
 
 sys.path.insert(0, MONTAJ_ROOT)
 from serve.common import get_project_dir  # noqa: E402
-from serve.caption_job import build_audio_mix_spec, caption_input_change, caption_input_fingerprint  # noqa: E402
+from serve.caption_job import build_audio_mix_spec, narration_audio, caption_input_change, caption_input_fingerprint  # noqa: E402
 from lib.project_revisions import engine_guard_enabled  # noqa: E402
 from lib import caption_ink  # noqa: E402
 from lib.caption_script import script_of, spell_from_script  # noqa: E402
@@ -92,6 +92,8 @@ def main():
     parser.add_argument("--script", default=None,
                         help="The script the speaker read (default: the project's editingPrompt; \"\" for none): caption "
                              "words take its spelling on the transcript's timings")
+    parser.add_argument("--audio", default="voice",
+                        help="Audio tracks to caption besides clips' own audio: voice (default), all, or track ids")
     args = parser.parse_args()
 
     # Resolve the project dir. The step is a CLI subprocess, not an HTTP
@@ -117,8 +119,9 @@ def main():
     # surfacing later inside transcribe's unexpected_error.
     require_whisper_model(args.model, args.language)
 
+    heard, no_voice = narration_audio(project, args.audio)
     try:
-        mix_spec = build_audio_mix_spec(project)
+        mix_spec = build_audio_mix_spec(heard)
     except ValueError as e:
         fail("no_audible_timeline", str(e))
 
@@ -140,7 +143,7 @@ def main():
     try:
         # Run 5: the words are each audible clip's and voiceover's own transcript, mapped through the timeline
         # (lib/caption_words): the ones the cut was made on. The mix is transcribed only when one has none.
-        from_sources = timeline_words(project, d)
+        from_sources = timeline_words(heard, d, keep_all=no_voice or args.audio.strip() != "voice")
         if from_sources is not None:
             write_transcript(from_sources, words_json_path)
         else:
@@ -225,6 +228,8 @@ def main():
             answer["keptYours"] = written["kept"]
         if unguarded:
             answer["unguarded"] = True
+        if no_voice:
+            answer["noVoiceTrack"] = "No voice track: read every audio track. Mark narration type voiceover, or pass audio."
         if warnings:
             answer["warnings"] = warnings
         print(json.dumps(answer))

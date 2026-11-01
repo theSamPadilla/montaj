@@ -26,12 +26,12 @@ def _sidecar(src):
     return p if _sidecar_has_transcription(p) else None
 
 
-def timeline_words(project, project_dir):
+def timeline_words(project, project_dir, keep_all=False):
     """[{"text", "start", "end"}] in timeline seconds, in time order, from each audible speech source's own transcript
     (a word belongs to a segment when its middle is in the part it plays), or None when one has no transcript."""
     from serve.caption_job import _audio_track_segments, _visual_segments
     audio = [t for t in ((project.get("audio") or {}).get("tracks") or [])
-             if isinstance(t, dict) and t.get("type") not in NOT_SPEECH]
+             if isinstance(t, dict) and (keep_all or t.get("type") not in NOT_SPEECH)]
     segments = _visual_segments(project) + _audio_track_segments({"audio": {"tracks": audio}})
     words, cache = [], {}
     for seg in segments:

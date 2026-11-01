@@ -1,6 +1,6 @@
 {
   "name": "generate_captions",
-  "description": "Caption a project's audio, writing project[\"captions\"]. The words are each unmuted clip's and voiceover's own transcript, mapped through the timeline (music and sfx left out); with one untranscribed, the timeline's mix is transcribed instead. Groups words into styled caption segments (each with a cap-<n> id), carries every field of the prior caption track but its style and segments (the theme), and keeps its translated rows (lang + translationOf), each found again in the new words. Mute is read at generation time only. Run async (montaj_step async:true) and poll montaj_step_status. Takes a project id, not a file input.",
+  "description": "Caption a project's audio, writing project[\"captions\"]. The words are each unmuted clip's and voiceover's own transcript, mapped through the timeline (music and sfx left out); an untranscribed one: its mix is transcribed. Groups words into styled segments (cap-<n> ids), carries the prior track's theme (all but style and segments) and keeps its translated rows (lang + translationOf). Mute is read at generation only. Run async (montaj_step async:true), poll montaj_step_status. Takes a project id.",
   "input": {
     "type": "none",
     "description": "No file input — operates on a project by id (see project-id param)."
@@ -21,13 +21,19 @@
       "type": "enum",
       "default": "large-v3-turbo-q5_0",
       "options": ["large-v3-turbo-q5_0", "large-v3-turbo", "tiny.en", "base.en", "small.en", "medium.en", "tiny", "base", "small", "medium", "large", "large-v1", "large-v2", "large-v3"],
-      "description": "Whisper model. The default, large-v3-turbo-q5_0, is multilingual and suits every language."
+      "description": "Whisper model. The default is multilingual."
     },
     {
       "name": "language",
       "type": "string",
       "default": "auto",
       "description": "Language code (e.g. en, es, fr), or 'auto' for language auto-detection."
+    },
+    {
+      "name": "audio",
+      "type": "string",
+      "default": "voice",
+      "description": "Audio tracks read besides clips' own audio: voice (type voiceover; none audible: all, answer flags noVoiceTrack), all, or track ids."
     },
     {
       "name": "style",
@@ -39,12 +45,12 @@
       "name": "replace-edited",
       "type": "bool",
       "default": false,
-      "description": "Lines a person made or edited are kept and the new captions go around them (the answer names them as keptYours). True replaces them too: only when the person asks."
+      "description": "Lines a person made or edited are kept (the answer names them as keptYours). True replaces them too: only when the person asks."
     },
     {
       "name": "script",
       "type": "string",
-      "description": "The script the speaker read. Defaults to the project's editing prompt (its <tags> left out), so a script given there needs no param; an empty string turns it off. Caption words take its spelling and names on the transcript's timings (a misheard name or word is replaced when the two read alike, a word said twice where the script has it once is one word); words said that are not in it stay as heard. The answer counts `corrected`."
+      "description": "The script the speaker read. Defaults to the project's editing prompt (its <tags> left out), so a script given there needs no param; an empty string turns it off. Caption words take its spelling on the transcript's timings (a misheard word that reads alike is replaced; words not in it stay as heard). The answer counts `corrected`."
     }
   ]
 }
