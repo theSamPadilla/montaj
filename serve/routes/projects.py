@@ -6819,7 +6819,7 @@ async def put_project_overlay(
     - Path safety: name regex rules out traversal; validate_project_subpath
       is a belt-and-suspenders second check.
     """
-    if not OVERLAY_NAME_RE.match(name):
+    if not OVERLAY_NAME_RE.fullmatch(name):
         raise bad_request(
             "invalid_name",
             f"Overlay name must match {OVERLAY_NAME_RE.pattern} (got {name!r})",
@@ -6875,30 +6875,49 @@ async def put_project_overlay(
 
 
 def _overlay_in_use(project_dir: Path, name: str) -> str:
-    """§643: why overlays/{name}.jsx must stay, or "" when nothing uses it. A timeline item
-    whose src is that file, another overlay that imports it, or a template-installed record."""
-    tail = f"overlays/{name}.jsx"
+    """§643: why overlays/{name}.jsx must stay, or "" when nothing uses it. A timeline item or
+    carousel slide element whose src/template is that file, another overlay that imports it, or a
+    template-installed record. Every comparison ignores case (a case-insensitive disk would
+    delete the file through any spelling of its name); an extra refusal is the safe failure."""
+    tail = f"overlays/{name}.jsx".casefold()
+
+    def is_it(src) -> bool:
+        if not isinstance(src, str):
+            return False
+        src = src.replace("\\", "/").casefold()
+        return src == tail or src.endswith("/" + tail)
+
     try:
         project = json.loads((project_dir / "project.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         project = {}
+    if not isinstance(project, dict):
+        project = {}
     users = []
-    tracks = project.get("tracks") if isinstance(project, dict) else None
+    tracks = project.get("tracks")
     for ti, track in enumerate(tracks if isinstance(tracks, list) else []):
         items = track if isinstance(track, list) else track.get("items") if isinstance(track, dict) else None
         for ii, item in enumerate(items if isinstance(items, list) else []):
-            src = item.get("src") if isinstance(item, dict) else None
-            if isinstance(src, str):
-                src = src.replace("\\", "/")
-                if src == tail or src.endswith("/" + tail):
-                    users.append(str(item.get("id") or f"track {ti} item {ii}"))
+            if isinstance(item, dict) and is_it(item.get("src")):
+                users.append(str(item.get("id") or f"track {ti} item {ii}"))
+    slides = project.get("slides")
+    for si, slide in enumerate(slides if isinstance(slides, list) else []):
+        elements = slide.get("elements") if isinstance(slide, dict) else None
+        for ei, el in enumerate(elements if isinstance(elements, list) else []):
+            ov = el.get("overlay") if isinstance(el, dict) else None
+            if isinstance(ov, dict) and is_it(ov.get("template")):
+                users.append(f"slide {si + 1} element {ei + 1}")
     if users:
-        return f"Overlay {name} is on the timeline ({', '.join(users[:5])}). Remove those items first."
-    spec = re.compile(r"""(?:from|import|require\()\s*['"][^'"]*?(?:^|/)""" + re.escape(name) + r"""(?:\.jsx|\.tsx|\.js)?['"]""")
+        return f"Overlay {name} is on the timeline or a slide ({', '.join(users[:5])}). Remove those first."
+    spec = re.compile(
+        r"""(?:from|import\s*\(?|require\s*\()\s*['"`][^'"`]*?(?:^|/)""" + re.escape(name) + r"""(?:\.jsx|\.tsx|\.js)?['"`]""",
+        re.IGNORECASE,
+    )
     importers = []
     folder = project_dir / "overlays"
-    for other in sorted(folder.glob("*.jsx")) if folder.is_dir() else []:
-        if other.stem == name:
+    others = sorted(p for pat in ("*.jsx", "*.js", "*.tsx") for p in folder.glob(pat)) if folder.is_dir() else []
+    for other in others:
+        if other.stem.casefold() == name.casefold():
             continue
         try:
             if spec.search(other.read_text(encoding="utf-8", errors="replace")):
@@ -6907,9 +6926,9 @@ def _overlay_in_use(project_dir: Path, name: str) -> str:
             continue
     if importers:
         return f"Overlay {name} is imported by {', '.join(importers[:5])}. Change those first."
-    keys = {k.replace("\\", "/") for k in provenance.merged(project_dir)}
-    if tail in keys:
-        return f"Overlay {name} came with a template. Leave it, or replace it with write_project_overlay."
+    for key, entry in provenance.annotated(project_dir).items():
+        if isinstance(entry, dict) and entry.get("kind") == "template" and not entry.get("stale") and key.replace("\\", "/").casefold() == tail:
+            return f"Overlay {name} came with a template. Leave it, or replace it with write_project_overlay."
     return ""
 
 
@@ -6927,7 +6946,7 @@ async def delete_project_overlay(
     lock apply. Refused (409) while the timeline, another overlay or a template record
     uses it. A file already absent answers 200 with deleted: false.
     """
-    if not OVERLAY_NAME_RE.match(name):
+    if not OVERLAY_NAME_RE.fullmatch(name):
         raise bad_request(
             "invalid_name",
             f"Overlay name must match {OVERLAY_NAME_RE.pattern} (got {name!r})",
@@ -6935,10 +6954,15 @@ async def delete_project_overlay(
     target = validate_project_subpath(project_dir, f"overlays/{name}.jsx")
 
     def remove() -> bool:
-        save_guard.check_sync(getattr(request, "headers", None), project_id, files=[f"overlays/{name}.jsx"])
+        # The file's real name: on a case-insensitive disk Foo reaches foo.jsx, and every check is for that file.
+        folder = project_dir / "overlays"
+        real = next((f.stem for f in sorted(folder.glob("*.jsx")) if f.stem.casefold() == name.casefold()), None) if folder.is_dir() else None
+        if real is None:
+            real = name
+        save_guard.check_sync(getattr(request, "headers", None), project_id, files=[f"overlays/{real}.jsx"])
         if not target.is_file():
             return False
-        why = _overlay_in_use(project_dir, name)
+        why = _overlay_in_use(project_dir, real)
         if why:
             raise HTTPException(409, detail={"error": "overlay_in_use", "message": why})
         target.unlink()

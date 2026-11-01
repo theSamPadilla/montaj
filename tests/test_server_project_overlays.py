@@ -306,3 +306,77 @@ def test_delete_overlay_holds_the_project_lock(project_id, monkeypatch):
     _put(project_id, "del-lock")
     assert client.delete(f"/api/projects/{project_id}/overlays/del-lock").status_code == 200
     assert held == ["project.json"]
+
+
+# §643 review fixes
+def test_delete_overlay_refused_while_a_carousel_slide_uses_it(project_id):
+    import json
+    path = _put(project_id, "del-slide")
+    pj = path.parent.parent / "project.json"
+    data = json.loads(pj.read_text())
+    data["slides"] = [{"elements": [{"overlay": {"template": str(path)}}]}]
+    pj.write_text(json.dumps(data))
+    res = client.delete(f"/api/projects/{project_id}/overlays/del-slide")
+    assert res.status_code == 409
+    assert "slide 1 element 1" in res.json()["detail"]["message"]
+    assert path.exists()
+    data.pop("slides")
+    pj.write_text(json.dumps(data))
+    assert client.delete(f"/api/projects/{project_id}/overlays/del-slide").json()["deleted"] is True
+
+
+def test_delete_overlay_checks_ignore_case(project_id):
+    path = _put(project_id, "del-case")
+    _set_tracks(path, [[{"id": "item-c", "src": "overlays/del-case.jsx"}]])
+    res = client.delete(f"/api/projects/{project_id}/overlays/Del-Case")
+    # a case-sensitive disk has no such file (nothing to delete); a case-insensitive one reaches it and is refused
+    assert res.status_code == 200 and res.json()["deleted"] is False or res.status_code == 409
+    assert path.exists()
+    _set_tracks(path, [[{"id": "item-c", "src": "/w/overlays/DEL-CASE.jsx"}]])
+    assert client.delete(f"/api/projects/{project_id}/overlays/del-case").status_code == 409
+    _set_tracks(path, [])
+    assert client.delete(f"/api/projects/{project_id}/overlays/del-case").json()["deleted"] is True
+
+
+def test_overlay_in_use_helper_is_case_insensitive(project_id):
+    from serve.routes.projects import _overlay_in_use
+    path = _put(project_id, "del-helper")
+    _set_tracks(path, [[{"id": "i", "src": "overlays/del-helper.jsx"}]])
+    assert _overlay_in_use(path.parent.parent, "Del-Helper")
+    _set_tracks(path, [])
+    _put(project_id, "del-helper-user", "import X from './DEL-HELPER';")
+    assert "del-helper-user.jsx" in _overlay_in_use(path.parent.parent, "Del-Helper")
+    client.delete(f"/api/projects/{project_id}/overlays/del-helper-user")
+    client.delete(f"/api/projects/{project_id}/overlays/del-helper")
+
+
+@pytest.mark.parametrize("ext,text", [
+    ("jsx", "const X = await import('./del-imp.jsx');"),
+    ("jsx", "const X = require ('./del-imp');"),
+    ("jsx", "const X = await import(`./del-imp`);"),
+    ("js", "import X from './del-imp';"),
+    ("tsx", "import X from '../overlays/del-imp.jsx';"),
+])
+def test_delete_overlay_refused_for_each_import_form(project_id, ext, text):
+    dep = _put(project_id, "del-imp")
+    user = dep.parent / f"del-imp-user.{ext}"
+    user.write_text(text)
+    res = client.delete(f"/api/projects/{project_id}/overlays/del-imp")
+    assert res.status_code == 409, text
+    assert f"del-imp-user.{ext}" in res.json()["detail"]["message"]
+    user.unlink()
+    assert client.delete(f"/api/projects/{project_id}/overlays/del-imp").json()["deleted"] is True
+
+
+def test_delete_overlay_only_template_entries_hold_it(project_id):
+    path = _put(project_id, "del-prov")
+    res = client.post(f"/api/projects/{project_id}/provenance", json={"path": "overlays/del-prov.jsx", "entry": {"kind": "montaj", "what": "preset"}})
+    assert res.status_code == 200, res.text
+    assert client.delete(f"/api/projects/{project_id}/overlays/del-prov").json()["deleted"] is True
+    assert not path.exists()
+
+
+def test_overlay_name_with_a_trailing_newline_is_refused(project_id):
+    put = client.put(f"/api/projects/{project_id}/overlays/foo%0A", content="x", headers={"Content-Type": "text/plain"})
+    assert put.status_code == 400, put.text
+    assert client.delete(f"/api/projects/{project_id}/overlays/foo%0A").status_code == 400
