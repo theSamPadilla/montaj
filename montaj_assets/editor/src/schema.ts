@@ -281,7 +281,7 @@ export interface VisualItem {
   end: number
   sourceDuration?: number     // video type only — used for right-edge drag guard
   sourceCreatedAt?: string    // video type only — container recording timestamp (ISO 8601); footage-bin "Date created" sort. Absent when the source carried no creation_time tag.
-  silentAudio?: boolean        // video type only — set at import when the source has an audio track whose loudest sample is at or below -60 dB. Absent otherwise.
+  silentAudio?: boolean        // video type only — set at import when the source has an audio track whose loudest sample is at or below -60 dB. Absent otherwise. May appear after import (a background pass writes it).
   inPoint?: number            // video type only
   outPoint?: number           // video type only
   loop?: boolean              // video type only — loop source clip within project window
