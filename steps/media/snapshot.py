@@ -23,7 +23,7 @@ Times (--at repeated, 2 to 36):
     in the order given; --cols sets the columns (default up to 6). For finding
     the moments of a source video (b-roll) in one call.
 """
-import math, os, sys, argparse, glob, tempfile
+import math, os, sys, argparse, glob, json, tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
@@ -59,12 +59,15 @@ CLIP_COLS = 6
 
 def clips_sheet(inputs, names, cols, out):
     """ONE sheet of several clips: a row per clip, `cols` frames spread over each, every tile labelled with the clip's
-    name and the time, fitted into the same square box (takes and screen recordings of any shape)."""
-    times, srcs, labels = [], [], []
+    name and the time, fitted into the same square box (takes and screen recordings of any shape). Returns each clip's
+    tile times, [(name, src, [t])], for the `faces` pass."""
+    times, srcs, labels, per_clip = [], [], [], []
     for src, name in zip(inputs, names):
         d = get_duration(src)
+        per_clip.append((name, src, []))
         for k in range(cols):
             t = round(d * (k + 0.5) / cols, 2)
+            per_clip[-1][2].append(t)
             times.append(t)
             srcs.append(src)
             labels.append(f"{name} {t:.1f}s")
@@ -79,6 +82,27 @@ def clips_sheet(inputs, names, cols, out):
         with ThreadPoolExecutor(SEEKS_AT_ONCE) as pool:
             list(pool.map(grab, range(len(times))))
         look_sheet(paths, labels, out, cols=cols, box=True)
+    return per_clip
+
+
+def faces_answer(paths, clips):
+    """The answer with `faces` (lib/pose/head.clip_faces) for [(label, src, [t])]. One sheet: {path, type, faces};
+    several: path is the first and paths all of them."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+    from lib.pose.head import clip_faces
+    faces = {}
+    for label, src, times in clips:
+        faces[label] = clip_faces(src, times)
+    answer = {"path": paths[0], "type": "image"}
+    if len(paths) > 1:
+        answer["paths"] = paths
+    answer["faces"] = faces
+    return answer
+
+
+def print_sheet(out, args, clips):
+    """The answer for one sheet: its path, or with --faces the JSON that adds the head boxes."""
+    print(json.dumps(faces_answer([out], clips)) if args.faces else out)
 
 
 def main():
@@ -97,6 +121,8 @@ def main():
                         help="Extract a single full-resolution frame at this timestamp (seconds). "
                              "Repeat it (2 to 36) for one labelled sheet of those times. "
                              "Mutually exclusive with --frames, --rows, --start, --end (and --cols for one time).")
+    parser.add_argument("--faces",   action="store_true",
+                        help="Also answer each clip's head box, sampled at the sheet's tile times")
     parser.add_argument("--out",     help="Output file path (grid and --at modes) or directory (all-frames mode)")
     args = parser.parse_args()
 
@@ -110,11 +136,16 @@ def main():
         # More than MAX_CLIPS is several sheets of MAX_CLIPS (the 2nd as <out>-2.jpg ...), one path per line;
         # up to MAX_CLIPS the answer is the one path, as before.
         stem, ext = os.path.splitext(out)
+        dests, clips = [], []
         for k, i in enumerate(range(0, len(args.inputs), MAX_CLIPS)):
             dest = out if k == 0 else f"{stem}-{k + 1}{ext}"
-            clips_sheet(args.inputs[i:i + MAX_CLIPS], names[i:i + MAX_CLIPS], max(1, min(cols, 10)), dest)
+            clips += clips_sheet(args.inputs[i:i + MAX_CLIPS], names[i:i + MAX_CLIPS], max(1, min(cols, 10)), dest)
             check_output(dest)
-            print(dest)
+            dests.append(dest)
+        if args.faces:
+            print(json.dumps(faces_answer(dests, clips)))
+        else:
+            print("\n".join(dests))
         return
     if not args.input:
         fail("invalid_args", "Pass input (a video), or inputs (several clips, one sheet).")
@@ -150,7 +181,7 @@ def main():
             cols = args.cols if "--cols" in sys.argv else min(6, len(times))
             times_sheet(args.input, times, cols, out, explicit_cols="--cols" in sys.argv)
             check_output(out)
-            print(out)
+            print_sheet(out, args, [(args.input, args.input, list(times))])
             return
 
         at = times[0]
@@ -165,7 +196,7 @@ def main():
              "-q:v", "2",  # high-quality JPEG (scale: 1=best..31=worst)
              out])
         check_output(out)
-        print(out)
+        print_sheet(out, args, [(args.input, args.input, [at])])
         return
 
     window_start = max(0.0, args.start)
@@ -227,7 +258,8 @@ def main():
          "-frames:v", "1", out])
 
     check_output(out)
-    print(out)
+    # the fps filter's first frame is the window start, then one every `interval`
+    print_sheet(out, args, [(args.input, args.input, [round(window_start + k * interval, 2) for k in range(total)])])
 
 
 if __name__ == "__main__":
