@@ -466,8 +466,8 @@ function VideoPreviewPlayer(props: PreviewPlayerProps) {
   }
 
   return mode === 'engine'
-    ? <EnginePreview {...props} currentTime={currentTime} timeSink={timeSink} onPlayingChange={onPlayingChange} />
-    : <LegacyPreview {...props} currentTime={currentTime} timeSink={timeSink} onPlayingChange={onPlayingChange} />
+    ? <EnginePreview {...props} currentTime={currentTime} holdTime={hoverTime != null ? playheadTime : undefined} timeSink={timeSink} onPlayingChange={onPlayingChange} />
+    : <LegacyPreview {...props} currentTime={currentTime} holdTime={hoverTime != null ? playheadTime : undefined} timeSink={timeSink} onPlayingChange={onPlayingChange} />
 }
 
 /**
@@ -481,6 +481,8 @@ type PlaybackBinding =
 
 type SurfaceProps = PreviewPlayerProps & {
   currentTime: number
+  /** The playhead while hover-scrubbing (then `currentTime` is the hover time); absent otherwise. */
+  holdTime?: number
   /** `clock.set`, gated on hover-preview — see `timeSink` above. Never pass
    *  `clock.set` directly here, or hover-seeking writes back into the clock. */
   timeSink: (t: number) => void
@@ -501,6 +503,7 @@ function PreviewSurface({
   clock,
   hoverScrub,
   currentTime,
+  holdTime,
   playback,
   selectedOverlayId,
   onOverlayChange,
@@ -1046,6 +1049,7 @@ function PreviewSurface({
       <OverlayItemsLayer
         project={project}
         currentTime={currentTime}
+        holdTime={holdTime}
         isPlaying={isPlaying}
         isCanvasProject={isCanvasProject}
         overlayTracks={overlayTracks}

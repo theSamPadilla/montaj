@@ -19,12 +19,20 @@ export interface LoadState { loading: string | null; error: string | null }
 
 const NONE: LoadState = { loading: null, error: null }
 
+/** The first match not inside a pre-mounted (hidden, not yet shown) item: its loading is not the viewer's wait. */
+function firstLive(root: Element, selector: string): Element | null {
+  for (const el of Array.from(root.querySelectorAll(selector))) {
+    if (!el.closest('[data-montaj-premount]')) return el
+  }
+  return null
+}
+
 /** What the markers under `root` say: the first loading one wins, then the first error. */
 export function readLoadState(root: Element | null): LoadState {
   if (!root) return NONE
-  const loading = root.querySelector('[data-montaj-loading]')
+  const loading = firstLive(root, '[data-montaj-loading]')
   if (loading) return { loading: loading.getAttribute('data-montaj-loading') || 'overlay', error: null }
-  const error = root.querySelector('[data-montaj-load-error]')
+  const error = firstLive(root, '[data-montaj-load-error]')
   if (error) return { loading: null, error: error.getAttribute('data-montaj-load-error') || 'overlay' }
   return NONE
 }
@@ -41,7 +49,7 @@ export function useLoadState(ref: RefObject<Element | null>): LoadState {
     }
     update()
     const observer = new MutationObserver(update)
-    observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-montaj-loading', 'data-montaj-load-error'] })
+    observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-montaj-loading', 'data-montaj-load-error', 'data-montaj-premount'] })
     return () => observer.disconnect()
   }, [ref])
   return state

@@ -17,6 +17,7 @@ import type { Corner, Edge, OverlayChanges, OverlayCommitOptions } from './useDr
 import type { useDragOverlay } from './useDragOverlay'
 import MaskGizmo from './MaskGizmo'
 import { clientToBox, type ClipPlacement, type MaskChanges } from './maskGizmoMath'
+import { isScene3dItem } from '../scene3d'
 import { useMissingClips } from '../missingClips'
 import { effectiveItemAudio, enabledTrackItems, enabledTracks, withEnabledItemTracks } from '../timeline/timeline-model'
 
@@ -29,6 +30,15 @@ import { effectiveItemAudio, enabledTrackItems, enabledTracks, withEnabledItemTr
 // doesn't flash in — presentation, not activation. `containsTime` (the shared
 // predicate) still decides `visible`; see timeline-core/index.d.ts.
 const VIDEO_PRELOAD_S = 0.4
+
+// A 3D scene item builds its stage (fetches the scene, decodes textures, compiles
+// shaders) when it mounts, which takes seconds. It mounts this long before
+// item.start, hidden, drawing the frame it will show first, and stays this long
+// after item.end so a scrub back over the cut finds it built. Presentation, not
+// activation, for the same reason as VIDEO_PRELOAD_S: `containsTime` still
+// decides `visible`.
+const SCENE3D_PRELOAD_S = 1.5
+const SCENE3D_LINGER_S = 0.5
 
 // Synced video overlay — seeks to the correct position within the item's inPoint/outPoint range
 function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlaying, muted, volume = 1, visible, cropStyle, onSrcError }: {
@@ -469,6 +479,11 @@ function FitControl({ value, scaleX, scaleY, onChange, locked }: {
 interface OverlayItemsLayerProps {
   project: Project
   currentTime: number
+  /**
+   * The playhead, passed only while hover-scrubbing (then `currentTime` is the hover time). A 3D scene item
+   * mounted around either time stays mounted, so hovering across a boundary does not tear its scene down.
+   */
+  holdTime?: number
   isPlaying: boolean
   isCanvasProject: boolean
   overlayTracks: VisualItem[][]
@@ -506,6 +521,7 @@ interface OverlayItemsLayerProps {
 export default function OverlayItemsLayer({
   project,
   currentTime,
+  holdTime,
   isPlaying,
   isCanvasProject,
   overlayTracks,
@@ -779,12 +795,18 @@ export default function OverlayItemsLayer({
           // Presentation-only pre-mount window — see VIDEO_PRELOAD_S above for
           // why it is not (and must not be) a resolver concern. A pre-mounted
           // item still renders at opacity 0 until `visible` flips true.
+          const scene3d  = isScene3dItem(item)
+          const inScene3dWindow = (t: number) => containsTime(item.start - SCENE3D_PRELOAD_S, item.end + SCENE3D_LINGER_S, t)
           const mounted  = item.type === 'video'
             ? containsTime(item.start - VIDEO_PRELOAD_S, item.end, currentTime)
-            : visible
+            : scene3d
+              ? inScene3dWindow(currentTime) || (holdTime != null && inScene3dWindow(holdTime))
+              : visible
           if (!mounted) return null
+          // A 3D scene item mounted outside its span: invisible and inert (no selection, handles or drag).
+          const premount = scene3d && !visible
 
-          const isSel    = selectedOverlayId === item.id
+          const isSel    = !premount && selectedOverlayId === item.id
           // Persisted geometry from the resolver; live drag state layered on top
           // (see the tracks[0] block above for why the override has to win).
           //
@@ -898,7 +920,8 @@ export default function OverlayItemsLayer({
             transform: `translate(${offsetX}%, ${offsetY}%) rotate(${rotation}deg) scale(${scaleX}, ${scaleY})`,
             transformOrigin: 'center center',
             zIndex,
-            opacity,
+            opacity: premount ? 0 : opacity,
+            ...(premount ? { visibility: 'hidden' as const } : null),
             // A clip's blend (§616). Here, on the wrapper, because the wrapper
             // is a direct child of the preview frame: the frame is the isolated
             // group the base clip and the lower tracks paint into, so they are
@@ -1028,10 +1051,13 @@ export default function OverlayItemsLayer({
           // JSX overlays
           if (item.type === 'overlay' && item.src) {
             const fps = project.settings?.fps ?? 30
-            const frame = Math.round((currentTime - item.start) * fps)
             const durationFrames = Math.round((item.end - item.start) * fps)
+            // Hidden before the start: frame 0; after the end: the last frame (the one it will show first).
+            const rawFrame = Math.round((currentTime - item.start) * fps)
+            const frame = premount ? Math.min(Math.max(rawFrame, 0), Math.max(durationFrames - 1, 0)) : rawFrame
             return (
-              <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove} onDoubleClick={handleDoubleClick}>
+              <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove} onDoubleClick={handleDoubleClick}
+                {...(premount ? { 'data-montaj-premount': '' } : null)}>
                 {/* Render at native 1080×1920 then scale down to match container */}
                 <div
                   style={{

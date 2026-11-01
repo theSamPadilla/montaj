@@ -245,3 +245,14 @@ await import('./motion.test.js')
   assert.equal(previewDpr(undefined, 320, 1080), 320 / 1080)
 }
 console.log('overlay-runtime: previewDpr OK')
+
+// Preview Canvas: measure on the first call, then at most once per interval.
+{
+  const { shouldMeasure, PREVIEW_MEASURE_INTERVAL_MS } = await import('./canvas-wrapper.js')
+  assert.equal(PREVIEW_MEASURE_INTERVAL_MS, 250)
+  assert.equal(shouldMeasure(0, null), true, 'the first measure is never skipped')
+  assert.equal(shouldMeasure(1000, 900), false)
+  assert.equal(shouldMeasure(1149, 900), false)
+  assert.equal(shouldMeasure(1150, 900), true)
+}
+console.log('overlay-runtime: preview measure throttle OK')
