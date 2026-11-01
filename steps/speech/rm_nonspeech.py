@@ -83,6 +83,13 @@ def main():
     if spec is not None:
         source = spec["input"]
         keeps = spec["keeps"]
+        if not keeps:
+            # a silent source (waveform_trim hands back keeps []): nothing to transcribe
+            result = {"input": source, "keeps": []}
+            if windowed:
+                result["cuts"] = []
+            print(json.dumps(result))
+            return
 
         work = tempfile.mkdtemp(prefix="nonspeech_")
         try:

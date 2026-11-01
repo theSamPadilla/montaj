@@ -8,7 +8,7 @@
   },
   "output": {
     "type": "json",
-    "description": "Trim spec: {input, keeps} — or array of trim specs for batch"
+    "description": "Trim spec: {input, keeps} — or array of trim specs for batch. A silent input returns keeps [] and a note."
   },
   "params": [
     {
