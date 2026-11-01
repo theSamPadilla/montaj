@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, fps_from_rate, modal_dims
 from lib.common import SAFE_NAME, fail, ffprobe_bin, progress, ff_path
-from lib.audio_level import is_silent_audio
+from lib.audio_level import schedule_silent_audio
 from lib import disk_space
 from lib.fs_remove import rmtree_force
 from lib.fs_safe import _is_link, open_write_no_follow
@@ -1341,6 +1341,8 @@ def _main():
     # realpath, and `_proxy_lock_for` serializes the freshness-check-and-encode
     # for that path. No shared lists, file handles, or probe-cache writes beyond
     # that. Any NEW cross-thread write needs the same treatment.
+    _silent_check = {}  # clip id -> original file; measured in the background after project.json lands
+
     def _normalize_one(clip):
         """Normalize a single clip in place. Mutates clip['src'] and clip['sourceDuration']."""
         clip_path = clip["src"]
@@ -1354,8 +1356,7 @@ def _main():
             # re-read on a cache miss (that probe failed), same idiom as the
             # probe_cache use below.
             _resolve_source_duration(clip, clip_id, clip_path, clip_path)
-            if is_silent_audio(clip_path):
-                clip["silentAudio"] = True
+            _silent_check[clip_id] = clip_path
             progress(f"[{clip_id}] lazy skip")
 
             # Full-source editing proxy from the original — lazy mode never
@@ -1413,9 +1414,8 @@ def _main():
         # or this code path is reached from a non-init caller).
         info = probe_cache.get(clip_path) or probe_video(clip_path)
 
-        # Silent audio track on the ORIGINAL (data only; key absent otherwise).
-        if is_silent_audio(clip_path):
-            clip["silentAudio"] = True
+        # Silent audio is measured after init returns, on the ORIGINAL.
+        _silent_check[clip_id] = clip_path
 
         # Recording timestamp (ISO 8601) — see the lazy arm above. Read off the
         # ORIGINAL here: a transcode rewrites the container and drops the
@@ -1693,6 +1693,9 @@ def _main():
     _CREATED.pop("adopt", None)  # §631: adopted; a later failure undoes nothing
 
     _cleanup_staged_uploads(staged_uploads)
+
+    # Silent-audio flag: a detached pass writes it later, so init never waits on it.
+    schedule_silent_audio(project_path, _silent_check)
 
     print(project_path)
 

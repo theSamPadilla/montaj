@@ -44,3 +44,55 @@ def is_silent_audio(path):
     """True only when the file has an audio stream and it is silent."""
     levels = audio_levels(path)
     return levels is not None and levels[1] <= SILENT_MAX_DB
+
+
+def silent_audio_pass(project_path, originals):
+    """Background pass after init: measure each source in `originals` ({source id: file})
+    and set `silentAudio: true` on the matching source in project.json, only when it is
+    silent, the source still exists and is still unflagged. Each write is one locked
+    read-modify-write of that one field (lib/project_lock.update_project). Never raises."""
+    try:
+        from lib.project_lock import update_project
+        for sid, path in dict(originals).items():
+            try:
+                if not is_silent_audio(path):
+                    continue
+
+                def apply(project, sid=sid):
+                    for src in project.get("sources") or []:
+                        if isinstance(src, dict) and src.get("id") == sid:
+                            if src.get("silentAudio") is True:
+                                return None
+                            src["silentAudio"] = True
+                            return project
+                    return None
+
+                update_project(project_path, apply)
+            except (Exception, SystemExit):
+                continue
+    except (Exception, SystemExit):
+        pass
+
+
+def schedule_silent_audio(project_path, originals):
+    """Run `silent_audio_pass` in a detached process, so the caller (init) neither waits
+    on it nor holds its pipes open. Never raises."""
+    try:
+        if not originals:
+            return
+        import json
+        from lib.proc import detached_kwargs
+        child = subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), str(project_path)],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            **detached_kwargs())
+        child.stdin.write(json.dumps(originals).encode())
+        child.stdin.close()
+    except (Exception, SystemExit):
+        pass
+
+
+if __name__ == "__main__":
+    import json
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root for `lib.`
+    silent_audio_pass(sys.argv[1], json.loads(sys.stdin.read() or "{}"))
