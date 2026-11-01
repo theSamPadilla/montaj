@@ -391,6 +391,50 @@ def test_look_reports_a_label_hard_to_read_on_its_picture(tmp_path):
     assert not any("against the picture" in i for i in out.get("issues", [])), out
 
 
+TOO_LARGE = json.dumps({"error": "sample_too_large", "message": "The frame at 2s could not be sampled: it carried "
+                        "625 MB of 3D in 26 3D items (the largest, \"wf-s3\", 24 MB), past the 537 MB one piece of "
+                        "text can hold."})
+
+
+def test_a_picture_that_cannot_be_sampled_says_why(tmp_path, monkeypatch):
+    # §651: a backdrop sample that failed ("Invalid string length" on 24 3D scenes) left its labels unchecked in silence
+    path, project = _project(tmp_path, overlays=[{"id": "ov-chain", "start": 1, "end": 3}])
+    monkeypatch.setattr(look, "_run_group_env", lambda cmd, timeout, env: (1, "", "[montaj sample] x\n" + TOO_LARGE + "\n"))
+    entries = [{"ti": 1, "label": "ov-chain", "mid": 2.0}]
+    failed = []
+    assert look.backdrops(str(path), project, entries, failed) == {}
+    assert failed == [{"t": 2.0, "labels": ["ov-chain"], "why": json.loads(TOO_LARGE)["message"]}], failed
+    monkeypatch.setattr(look, "_run_group_env", lambda cmd, timeout, env: None)
+    failed = []
+    look.backdrops(str(path), project, entries, failed)
+    assert failed[0]["why"].startswith("timed out after"), failed
+
+
+def test_look_says_a_picture_it_could_not_sample(tmp_path):
+    path, _ = _project(tmp_path, overlays=[{"id": "ov-chain", "start": 1, "end": 3}])
+
+    def measure(item, *a):
+        return _coloured("computer", (400, 600, 280, 50), "rgb(255, 255, 255)"), None
+
+    def backdrops(project_path, project, entries, failed):
+        failed.append({"t": 2.0, "labels": ["ov-chain"], "why": "it carried 625 MB of 3D"})
+        return {}
+    out = look.run(str(path), detail=True, measure_fn=measure, backdrops_fn=backdrops)
+    assert "2.0s ov-chain: contrast unchecked, the picture behind could not be sampled: it carried 625 MB of 3D" \
+        in out["issues"], out
+
+    def broken(project_path, project, entries):
+        raise RuntimeError("no browser")
+    out = look.run(str(path), detail=True, measure_fn=measure, backdrops_fn=broken)
+    assert any("could not be sampled: no browser" in i for i in out["issues"]), out
+
+
+def test_a_contact_sheet_that_failed_says_why(tmp_path, monkeypatch):
+    monkeypatch.setattr(look, "_run_group", lambda cmd, timeout: (1, "", TOO_LARGE + "\n"))
+    path, why = look.sheet(str(tmp_path / "project.json"), str(tmp_path), [1.0])
+    assert path is None and why == "the contact sheet failed: " + json.loads(TOO_LARGE)["message"][-300:], why
+
+
 def test_look_at_given_times(tmp_path):
     path, _ = _project(tmp_path, overlays=[{"id": "ov-a", "start": 1, "end": 3}])
     out = look.run(str(path), at=[2.0, 7.5], detail=True, measure_fn=_fake_measure({}))
@@ -416,7 +460,9 @@ def test_look_through_the_real_measurer_finds_the_text_off_the_frame(tmp_path):
     assert out["overlays"] == 2, out
     wide_issues = [i for i in out["issues"] if "ov-wide" in i]
     assert any("runs off the frame" in i for i in wide_issues), out
-    assert not any("ov-fits" in i for i in out["issues"]), out
+    # the fixture's footage (/x/clip.mp4) does not exist, so the picture behind is unsampled, and says so (§651)
+    assert not any("ov-fits" in i and "contrast unchecked" not in i for i in out["issues"]), out
+    assert any("ov-fits: contrast unchecked, the picture behind could not be sampled" in i for i in out["issues"]), out
 
 
 @pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")

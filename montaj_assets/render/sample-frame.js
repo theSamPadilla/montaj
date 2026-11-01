@@ -514,7 +514,10 @@ if (isMain) {
       process.stdout.write(result.pngPath + '\n', () => process.exit(0))
     }).catch(err => {
       // A 3D item's refusal keeps its own code (render/scene3d.js), so `--scene nope` answers scene3d_scene_missing.
-      const error = isThreeFrameBlank(err) ? 'three_frame_blank' : err instanceof Scene3dError ? err.code : 'sample_failed'
+      // §651: a frame too large to sample says so (sample_too_large), never V8's bare "Invalid string length".
+      const error = isThreeFrameBlank(err) ? 'three_frame_blank' : err instanceof Scene3dError ? err.code
+        : err.sampleError === 'sample_too_large' ? err.sampleError
+        : isStringLengthError(err) ? (err = tooLargeError(err, null)).sampleError : 'sample_failed'
       process.stderr.write(JSON.stringify({ error, message: err.message }) + '\n')
       process.exit(1)
     })
@@ -1417,7 +1420,62 @@ function pngFullyOpaque(pngPath) {
  *   `projectJson` brings its own.
  * @returns {Promise<{ pngPath: string }>}
  */
-export async function sampleFrame({
+export async function sampleFrame(opts) {
+  const seen = { project: null }
+  try {
+    return await sampleFrameAt(opts, seen)
+  } catch (err) {
+    throw isStringLengthError(err) ? tooLargeError(err, seen.project, opts?.atSeconds) : err
+  }
+}
+
+/** V8's longest string on a 64-bit build (2^29 - 24 UTF-16 units): JSON.stringify or a concatenation past it throws. */
+export const MAX_STRING_LENGTH = 2 ** 29 - 24
+
+/** The RangeError V8 throws when a string would pass MAX_STRING_LENGTH. */
+export function isStringLengthError(err) {
+  return err instanceof RangeError && /Invalid string length/i.test(String(err.message))
+}
+
+function mb(n) { return `${(n / 1e6).toFixed(n < 1e7 ? 1 : 0)} MB` }
+
+/**
+ * §651: the error for a sample whose data passed V8's string limit, named `sample_too_large` and saying how big the
+ * 3D it carried was and which item was the largest, instead of V8's bare "Invalid string length". `project` is the
+ * project as the sample held it (its 3D items materialized), or null when it failed before that.
+ */
+export function tooLargeError(cause, project, atSeconds) {
+  const threes = []
+  try {
+    for (const track of project ? trackItems(project) : []) {
+      for (const item of track ?? []) {
+        const text = item?.props?.sceneJson
+        if (typeof text === 'string') threes.push({ id: item.id ?? '?', bytes: text.length })
+      }
+    }
+  } catch { threes.length = 0 } // the explanation never replaces the failure with one of its own
+  const total = threes.reduce((s, x) => s + x.bytes, 0)
+  const largest = threes.reduce((a, x) => (x.bytes > (a?.bytes ?? -1) ? x : a), null)
+  const at = Number.isFinite(atSeconds) ? ` at ${atSeconds}s` : ''
+  const what = threes.length
+    ? `it carried ${mb(total)} of 3D in ${threes.length} 3D item${threes.length === 1 ? '' : 's'} (the largest, "${largest.id}", ${mb(largest.bytes)})`
+    : 'its project data was too large'
+  const err = new Error(`The frame${at} could not be sampled: ${what}, past the ${mb(MAX_STRING_LENGTH)} one piece of text can hold.`, { cause })
+  err.sampleError = 'sample_too_large'
+  return err
+}
+
+/**
+ * §651: whether a 3D item is on screen at `t`, for materializeScene3d's `only`. The resolver's own test is
+ * `start <= t < end`; this one keeps the end too, and keeps an item whose times are not numbers, since an extra 3D
+ * costs one read and a missing one would fail the sample. A function declaration: the CLI above calls it while this
+ * module is still evaluating.
+ */
+export function onScreenAt(t) {
+  return (item) => !(Number(item.start) > t) && !(Number(item.end) < t)
+}
+
+async function sampleFrameAt({
   projectJson,
   atSeconds,
   outPath,
@@ -1428,7 +1486,7 @@ export async function sampleFrame({
   projectDir: projectDirOpt = null,
   session = null,
   maxShortEdge = null,
-}) {
+}, seen = {}) {
   if (!outPath) throw new Error('outPath is required')
   if (atSeconds == null) throw new Error('atSeconds is required')
 
@@ -1449,10 +1507,7 @@ export async function sampleFrame({
   } else {
     project = projectJson
   }
-  // §239: a scene item (src `engine:scene3d`) becomes the plain overlay of the host's stage before the cache key reads
-  // the overlay sources, so an edited stage or scene misses. Needs the project's folder, so only a project given by path.
-  // PL89g: a projectDir given wins over the file's folder (look's backdrop project is kept in the samples folder).
-  materializeScene3d(project, projectDirOpt || (projectPath ? dirname(projectPath) : null))
+  seen.project = project
 
   // Opt-in: a time at or past the end samples the last frame instead of
   // failing. Done before the cache key so the clamped time is what is cached.
@@ -1463,6 +1518,13 @@ export async function sampleFrame({
       writeFileSync(clampedSidecar, JSON.stringify({ requested: c.requested, at: c.at, end: c.end }))
     }
   }
+
+  // §239: a scene item (src `engine:scene3d`) becomes the plain overlay of the host's stage before the cache key reads
+  // the overlay sources, so an edited stage or scene misses. Needs the project's folder, so only a project given by path.
+  // PL89g: a projectDir given wins over the file's folder (look's backdrop project is kept in the samples folder).
+  // §651: only the 3D items on screen at this time (after the clamp): each inlines its whole scene, and 24 of them
+  // (620 MB) passed V8's string limit in the copy below. The rest are never drawn in this frame.
+  materializeScene3d(project, projectDirOpt || (projectPath ? dirname(projectPath) : null), { only: onScreenAt(atSeconds) })
 
   // Cache key
   // PL89c: a sheet's frame at the design canvas is its own entry, never a full-size sample's.
@@ -2478,9 +2540,12 @@ function gcCache() {
   } catch { /* permissions issue — don't break sampling */ }
 }
 
-/** Deep-clone a JSON-serializable object. */
+/**
+ * Deep-clone a JSON-serializable object. structuredClone, as render.js copies its project (§651): a JSON round trip
+ * builds the whole project as one string, and a project's 3D can pass V8's string limit (MAX_STRING_LENGTH).
+ */
 function deepClone(obj) {
-  return JSON.parse(JSON.stringify(obj))
+  return structuredClone(obj)
 }
 
 /** Hex random string for temp file names. */

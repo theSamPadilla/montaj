@@ -7,7 +7,7 @@ contact_sheet of at most IMAGE_TIMES of those times. The text answer checks the 
 measured: it renders no frame. Writes nothing in project.json; the measure PNGs and the sheet go under
 render/samples.
 """
-import argparse, hashlib, json, os, re, shutil, signal, subprocess, sys, tempfile, time
+import argparse, hashlib, inspect, json, os, re, shutil, signal, subprocess, sys, tempfile, time
 from concurrent.futures import ThreadPoolExecutor
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -168,11 +168,24 @@ def end_frames(entries):
 BACKDROP_TIMEOUT_S = 60   # PL89g: per time, for the pictures behind the measured overlays
 
 
-def backdrops(project_path, project, entries):
+def why_failed(stderr, limit=300):
+    """The reason a child step or sample-frame.js gave on its last stderr line ({"error", "message"}), or that line."""
+    lines = [ln for ln in (stderr or "").strip().splitlines() if ln.strip()]
+    if not lines:
+        return "no reason given"
+    try:
+        said = json.loads(lines[-1])
+        text = said.get("message") or said.get("error") or lines[-1]
+    except (ValueError, AttributeError):
+        text = lines[-1]
+    return text[-limit:]
+
+
+def backdrops(project_path, project, entries, failed=None):
     """PL89g: the picture under each measured overlay at its measured time, at the design size: {label: png}. One
     sample_frames call per track the overlays sit on (lc.backdrop_project: the tracks below it, no captions), from the
     proxies; a later pass whose tracks below did not change reads them from the frame cache. A track that fails is left
-    out (its labels go unchecked), never an issue."""
+    out (its labels go unchecked); §651: its reason goes to `failed` ({t, labels, why}), and run says it."""
     from lib.common import node_child_env
     from steps.render.sample_frame import SAMPLE_FRAME_JS
     project_dir = os.path.dirname(project_path)
@@ -195,7 +208,11 @@ def backdrops(project_path, project, entries):
         cmd += ["--out", os.path.join(folder, "f_0000.png")] if len(group) == 1 else ["--frames-dir", folder]
         r = _run_group_env(cmd, BACKDROP_TIMEOUT_S * len(group), node_child_env())
         if r is None or r[0] != 0:
-            continue   # a picture that cannot be had leaves its labels unchecked
+            # a picture that cannot be had leaves its labels unchecked, and says why (§651: it used to say nothing)
+            if failed is not None:
+                why = f"timed out after {BACKDROP_TIMEOUT_S * len(group)} s" if r is None else why_failed(r[2])
+                failed.append({"t": min(e["mid"] for e in group), "labels": [e["label"] for e in group], "why": why})
+            continue
         pngs = [ln.strip() for ln in r[1].splitlines() if ln.strip().endswith(".png")]
         if len(pngs) == len(group):
             out.update({e["label"]: p for e, p in zip(group, pngs)})
@@ -240,7 +257,7 @@ def sheet(project_path, project_dir, times):
     if r is None:
         return None, "the contact sheet timed out"
     if r[0] != 0:
-        return None, "the contact sheet failed"
+        return None, f"the contact sheet failed: {why_failed(r[2])}"
     return out, None
 
 
@@ -284,7 +301,10 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=None, sheet
     # caller's own measure_fn (tests) checks contrast only with its own backdrops_fn.
     pictures_fn = backdrops_fn or (backdrops if measure_fn is None else None)
     picture_pool = ThreadPoolExecutor(max_workers=1) if pictures_fn and entries else None
-    pictures = picture_pool.submit(pictures_fn, project_path, project, entries) if picture_pool else None
+    picture_failures = []   # §651: a picture that could not be sampled is said, never dropped in silence
+    takes_failed = bool(pictures_fn) and "failed" in inspect.signature(pictures_fn).parameters
+    pictures = (picture_pool.submit(pictures_fn, project_path, project, entries,
+                                    **({"failed": picture_failures} if takes_failed else {})) if picture_pool else None)
     # PL89g: the whole pass in one call; a caller's own measure_fn (tests, or a failed call) measures one at a time
     got = measure_many(entries) if measure_fn is None else None
     if got is None:
@@ -298,11 +318,15 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=None, sheet
     renders = {x["label"]: x["out"] for x in entries if os.path.isfile(x["out"])}   # each overlay as measured, alone
     try:
         behind = pictures.result() if pictures else {}
-    except Exception:  # noqa: BLE001 — no pictures: the labels' contrast goes unchecked
+    except Exception as e:  # noqa: BLE001 — no pictures: the labels' contrast goes unchecked, and says why
         behind = {}
+        picture_failures.append({"t": 0.0, "labels": [x["label"] for x in entries], "why": str(e)[-300:] or type(e).__name__})
     finally:
         if picture_pool:
             picture_pool.shutdown(wait=False)
+    for f in picture_failures:
+        issues.append({"t": lc.r2(f["t"]), "id": ", ".join(f["labels"]),
+                       "text": f"contrast unchecked, the picture behind could not be sampled: {f['why']}"})
     placed, checked, notes = [], [], []
     for ti, it, label, s, e, mid, m, why in results:
         if m is None:

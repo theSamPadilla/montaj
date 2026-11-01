@@ -101,12 +101,17 @@ export function scene3dStage({ env = process.env, exists = existsSync, log = log
  *
  * The messages reach whoever exports, so they say "3D" and never "scene": the user never meets that concept (§308).
  * The codes keep their names; they are for the host and the AI.
+ *
+ * `only` (§651) picks the scene items to rewrite; the rest stay `engine:scene3d`, unread. A sampled frame passes the
+ * items on screen at its time: each scene's text is inlined whole (a real one is 25 to 33 MB), so materializing a
+ * project of 24 scenes held 620 MB of text, and the sample's JSON copy of it passed V8's 512 MB string limit.
  */
-export function materializeScene3d(project, projectDir, { env = process.env, exists = existsSync, read = (f) => readFileSync(f, 'utf8'), log = logToStderr } = {}) {
+export function materializeScene3d(project, projectDir, { env = process.env, exists = existsSync, read = (f) => readFileSync(f, 'utf8'), log = logToStderr, only = null } = {}) {
   let n = 0
   for (const track of trackItems(project)) {
     for (const item of track ?? []) {
       if (!isScene3dItem(item)) continue
+      if (only && !only(item)) continue
       const label = item.id ? `3D item "${item.id}"` : 'A 3D item'
       if (typeof projectDir !== 'string' || projectDir.length === 0) {
         throw new Scene3dError('scene3d_invalid', `${label} needs the project's folder to find its 3D.`)
