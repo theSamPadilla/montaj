@@ -234,6 +234,24 @@ class TestGeminiDurationTrim:
             return math.sqrt(sum(x * x for x in a) / len(a))
         assert rms(2.85, 0.15) < rms(1.0, 0.15) * 0.5
 
+    def test_a_hung_trim_keeps_the_vendor_file_with_a_note(self, real_step, monkeypatch, capsys, tmp_path):
+        import subprocess
+        out = tmp_path / "m.mp3"
+        monkeypatch.setattr(gemini_mod, "generate_music",
+                            lambda **kw: (self._make(kw["out_path"], 4, "-c:a", "libmp3lame"), kw["out_path"])[1])
+        real_run = subprocess.run
+
+        def slow(cmd, *a, **kw):
+            if "-af" in cmd:     # the trim, not ffprobe
+                assert kw.get("timeout")
+                open(cmd[-1], "wb").write(b"half")
+                raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+            return real_run(cmd, *a, **kw)
+        monkeypatch.setattr(real_step.subprocess, "run", slow)
+        r = self._run(real_step, monkeypatch, capsys, out, ["--duration", "1"])
+        assert r["trimmed"] is False and "took over" in r["note"]
+        assert r["seconds"] == r["vendorSeconds"] and not list(tmp_path.glob("*.trim*"))
+
     def test_shorter_track_is_kept_and_noted(self, real_step, monkeypatch, capsys, tmp_path):
         out = tmp_path / "m.mp3"
         monkeypatch.setattr(gemini_mod, "generate_music",

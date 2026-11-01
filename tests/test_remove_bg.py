@@ -921,6 +921,50 @@ def test_flat_noise_in_the_background_is_still_background(tmp_path):
     assert res["transparent"] > 0.5
 
 
+def test_flat_outline_of_another_colour_is_solid_not_half_transparent(tmp_path):
+    """A 2 px red outline round a blue fill on white: the outline is a colour of its own, not a blend of
+    white and blue, so it keeps alpha 255 (it came out near 128 when measured against the blue)."""
+    from PIL import Image
+    mod = _import_step_module()
+    im = np.full((100, 100, 3), 255, np.uint8)
+    im[20:80, 20:80] = (255, 0, 0)
+    im[22:78, 22:78] = (0, 0, 255)
+    Image.fromarray(im).save(tmp_path / "ro.png")
+    res = _flat(mod, tmp_path / "ro.png", tmp_path / "ro-out.png")
+    a = np.asarray(Image.open(res["out"]))
+    assert res["keyed"] == "#ffffff"
+    assert a[50, 20, 3] == 255 and tuple(a[50, 20, :3]) == (255, 0, 0)   # the outline, both px
+    assert a[50, 21, 3] == 255 and tuple(a[50, 21, :3]) == (255, 0, 0)
+    assert a[50, 50, 3] == 255 and a[5, 5, 3] == 0
+
+
+def test_flat_already_transparent_keeps_its_alpha_and_dark_parts(tmp_path):
+    """The RGB under transparent pixels is usually black: it is not a background colour to key, and a dark logo
+    part must survive."""
+    from PIL import Image
+    mod = _import_step_module()
+    im = np.zeros((80, 80, 4), np.uint8)
+    im[20:60, 20:60] = (0, 0, 0, 255)       # a black logo part
+    im[30:50, 30:50] = (240, 40, 40, 255)
+    Image.fromarray(im, "RGBA").save(tmp_path / "t.png")
+    res = _flat(mod, tmp_path / "t.png", tmp_path / "t-out.png")
+    a = np.asarray(Image.open(res["out"]))
+    assert res["keyed"] is None and "already transparent" in res["note"]
+    assert (a == im).all()
+    assert res["transparent"] == round(float((im[..., 3] == 0).mean()), 4)
+
+
+def test_flat_over_16_megapixels_matte_is_made_smaller_and_says_so(tmp_path, monkeypatch):
+    from PIL import Image
+    mod = _import_step_module()
+    monkeypatch.setattr(mod, "_FLAT_MAX_PIXELS", 40 * 40)
+    res = _flat(mod, _ring_logo(tmp_path), tmp_path / "s.png")
+    a = np.asarray(Image.open(res["out"]))
+    assert "40x40" in res["note"] and res["keyed"] == "#000000"
+    assert (res["width"], res["height"]) == (120, 120) and a.shape == (120, 120, 4)
+    assert a[2, 2, 3] == 0 and a[60, 35, 3] == 255 and a[60, 60, 3] == 255
+
+
 def test_flat_cli_default_name_and_video_refused(tmp_path):
     p = _ring_logo(tmp_path)
     r = subprocess.run([sys.executable, str(STEP), "--input", str(p), "--flat"], capture_output=True, text=True)

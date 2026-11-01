@@ -1,6 +1,6 @@
 {
   "name": "remove_bg",
-  "description": "Remove a video or image background with RVM (CPU): video gives a ProRes 4444 .mov with alpha + VP9 WebM preview, an image a PNG with alpha. Video is LONG-RUNNING (~0.1 s per megapixel per frame): batch with inputs, run in the background with progress (per-frame JSON on stderr). max-height mattes at the shown size; downsample 1.0 sharpens video edges (slower).",
+  "description": "Remove a video or image background (RVM, CPU): video gives a ProRes 4444 .mov with alpha + VP9 WebM preview, an image a PNG with alpha. Video is LONG-RUNNING (~0.1 s per megapixel per frame): batch with inputs, run in the background with progress (per-frame JSON on stderr). max-height mattes at the shown size; downsample 1.0 sharpens video edges (slower).",
   "input": {
     "type": "media",
     "description": "Source video or image"

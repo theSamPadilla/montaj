@@ -31,11 +31,12 @@ def test_head_box_with_both_ears():
     assert (x, y, w, h) == (76, 60, 48, 90)
 
 
-def test_head_box_profile_uses_twice_the_eye_span():
+def test_head_box_profile_width_is_the_larger_of_twice_the_eye_span_and_the_seen_span():
     lm, vis = _lm(p1=(100, 100), p2=(96, 100), p3=(92, 100), p7=(70, 104), p9=(98, 130))
     x, y, w, h = head.head_box(lm, vis, 400, 400)
-    # eye span 8, width 16; landmarks span 70..100 already wider, so across is that plus 1.6 each side; vertical uses 16
-    assert (x, w) == pytest.approx((68.4, 33.2)) and y == 100 - 16 and y + h == 130 + 8
+    # eye span 8 (twice: 16) but the seen landmarks, the ear included, span 70..100 = 30: that is the width, a tenth
+    # each side across, and the same 30 sets the vertical size (hair 30 above the eyes, chin 15 below the mouth)
+    assert (x, w) == pytest.approx((67, 36)) and y == 100 - 30 and y + h == 130 + 15
 
 
 def test_head_box_profile_widens_to_twice_the_eye_span():
@@ -49,6 +50,10 @@ def test_head_box_nothing_visible_or_unsizable():
     assert head.head_box(lm, vis, 400, 400) is None
     lm, vis = _lm(p2=(100, 100))          # one eye, no ears: no width
     assert head.head_box(lm, vis, 400, 400) is None
+    lm, vis = _lm(p2=(100, 100), p9=(100, 130))   # one eye and a mouth is still no width
+    assert head.head_box(lm, vis, 400, 400) is None
+    lm, vis = _lm(p2=(100, 100), p7=(80, 104))    # one eye and an ear is a profile: sized by the span between them
+    assert head.head_box(lm, vis, 400, 400)[2] == pytest.approx(24)
 
 
 def test_head_box_ignores_low_visibility_and_clamps():
@@ -70,7 +75,7 @@ def test_summarize_median_range_seen():
     assert s["size"] == [1920, 1080] and s["seen"] == "3/4"
     assert s["at"] == [[1.0, 10, 20, 30, 40], [2.0, None], [3.0, 14, 24, 30, 40], [4.0, 12, 22, 36, 40]]
     assert s["box"] == [12, 22, 30, 40]
-    assert s["range"] == [10, 20, 48, 64]
+    assert s["range"] == [10, 20, 38, 44]    # [x, y, w, h], as box: 48-10 wide, 64-20 high
     assert "note" not in s
 
 
@@ -109,7 +114,7 @@ def test_clip_faces_scales_decode_box_to_source(tmp_path, monkeypatch):
     out = head.clip_faces(_clip(tmp_path), [0.5, 1.0])   # 640 wide decoded at 360: x1.7778
     assert out["size"] == [640, 360] and out["seen"] == "2/2"
     assert out["box"] == [135, 107, 85, 160]             # (76, 60, 48, 90) * 640/360
-    assert out["at"][0][0] == 0.5 and out["range"] == [135, 107, 220, 267]
+    assert out["at"][0][0] == 0.5 and out["range"] == [135, 107, 85, 160]
 
 
 def test_clip_faces_no_model_or_no_decode_is_a_note(tmp_path, monkeypatch):
@@ -150,3 +155,26 @@ def test_answer_shape_faces_on_and_off(tmp_path, monkeypatch, capsys):
     grid = json.loads(_snapshot(["--input", clip, "--cols", "2", "--rows", "1", "--faces",
                                  "--out", str(tmp_path / "g.jpg")], capsys, monkeypatch))
     assert os.path.isfile(grid["path"])
+
+
+def test_same_label_clips_get_distinct_keys(tmp_path, monkeypatch):
+    monkeypatch.setattr(head, "clip_faces", lambda src, times: {"box": None, "src": src})
+    a = faces_answer_of(["x.jpg"], [("a", "/p/1/a.mp4", [1.0]), ("a", "/p/2/a.mp4", [1.0]), ("a", "/p/3/a.mp4", [1.0]), ("b", "/b.mp4", [1.0])])
+    assert list(a["faces"]) == ["a", "a (2)", "a (3)", "b"]
+    assert a["faces"]["a (2)"]["src"] == "/p/2/a.mp4"
+
+
+def test_frames_all_with_faces_says_faces_needs_a_sheet(tmp_path, monkeypatch, capsys):
+    clip = _clip(tmp_path)
+    out = json.loads(_snapshot(["--input", clip, "--frames", "all", "--faces", "--out", str(tmp_path / "fr")],
+                               capsys, monkeypatch))
+    assert out["note"] and "sheet or at" in out["note"] and len(out["paths"]) >= 10 and "faces" not in out
+    plain = _snapshot(["--input", clip, "--frames", "all", "--out", str(tmp_path / "fr2")], capsys, monkeypatch)
+    assert plain.split("\n")[0].endswith("frame_0001.jpg") and "{" not in plain      # faces off: the paths, as before
+
+
+def faces_answer_of(paths, clips):
+    spec = importlib.util.spec_from_file_location("snapshot_step", os.path.join(ROOT, "steps/media/snapshot.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.faces_answer(paths, clips)

@@ -628,6 +628,17 @@ class TestFetchImageToPath:
         assert len(calls) == 6   # the first request plus five followed hops
         assert not out.exists()
 
+    @pytest.mark.parametrize("bad", ["https:host/x", "https://[bad/x.png", "https://a.example.com:bad/x"])
+    def test_malformed_redirect_location_is_url_rejected(self, tmp_path, monkeypatch, capsys, bad):
+        """A Location httpx or urllib cannot parse used to escape as InvalidURL / ValueError, not a step error."""
+        monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
+        c, calls = self._redirecting({"https://a.example.com/f": bad})
+        out = tmp_path / "o.png"
+        with pytest.raises(SystemExit):
+            fetch_image_to_path("https://a.example.com/f", out, self.HOSTS, client=c)
+        assert json.loads(capsys.readouterr().err)["error"] == "url_rejected"
+        assert not out.exists()
+
     def test_five_hops_are_allowed(self, tmp_path, monkeypatch):
         monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
         routes = {f"https://a.example.com/{i}": f"/{i + 1}" for i in range(5)}
@@ -842,21 +853,56 @@ class TestLogoSearch:
             logo_search(q, client=c)
         assert calls == []
 
-    def test_private_host_homepage_refused(self, monkeypatch):
+    def test_private_host_homepage_refused_still_gives_the_favicon_service(self, monkeypatch):
         monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("192.168.1.9"))
         c, calls = _site_client()
-        with pytest.raises(ValueError, match="host_not_public"):
-            logo_search("intranet.example", client=c)
-        assert calls == []
+        r = logo_search("intranet.example", client=c)
+        assert calls == []                                    # the private host was never connected to
+        assert [x["source"] for x in r] == ["favicon"] and "host_not_public" in r[0]["note"]
+        assert r[0]["url"].startswith("https://www.google.com/s2/favicons?domain=intranet.example")
 
-    def test_homepage_redirect_to_private_host_refused(self, monkeypatch):
+    def test_homepage_redirect_to_private_host_refused_still_gives_the_favicon_service(self, monkeypatch):
         def gai(host, *a, **k):
             return [(None, None, None, None, ("10.1.1.1" if host == "internal.example" else "1.2.3.4", 0))]
         monkeypatch.setattr(socket, "getaddrinfo", gai)
         c, calls = _site_client(redirect_to="https://internal.example/")
-        with pytest.raises(ValueError, match="host_not_public"):
-            logo_search("brand.example", client=c)
+        r = logo_search("brand.example", client=c)
         assert calls == ["https://brand.example/"]
+        assert [x["source"] for x in r] == ["favicon"] and "host_not_public" in r[0]["note"]
+
+    @pytest.mark.parametrize("target,why", [("http://brand.example/", "not_https"), ("https:host/x", "url_rejected"),
+                                            ("https://[bad/x", "url_rejected"),
+                                            ("https://a.example.com:bad/x", "url_rejected")])
+    def test_homepage_redirect_refused_or_malformed_keeps_the_favicon_service(self, target, why):
+        c, _ = _site_client(redirect_to=target)
+        r = logo_search("brand.example", client=c)
+        assert [x["source"] for x in r] == ["favicon"] and why in r[0]["note"]
+
+    def test_homepage_redirect_loop_keeps_the_favicon_service(self):
+        def handler(request):
+            return httpx.Response(302, headers={"location": "/b" if request.url.path != "/b" else "/"})
+        r = logo_search("brand.example", client=httpx.Client(transport=httpx.MockTransport(handler)))
+        assert [x["source"] for x in r] == ["favicon"] and "too_many_redirects" in r[0]["note"]
+
+    def test_homepage_timeout_keeps_the_favicon_service(self):
+        def handler(request):
+            raise httpx.ReadTimeout("slow", request=request)
+        r = logo_search("brand.example", client=httpx.Client(transport=httpx.MockTransport(handler)))
+        assert [x["source"] for x in r] == ["favicon"] and "ReadTimeout" in r[0]["note"]
+
+    def test_a_good_homepage_has_no_note(self):
+        c, _ = _site_client()
+        assert all("note" not in x for x in logo_search("brand.example", client=c))
+
+    def test_hostile_manifest_is_skipped(self):
+        deep = "[" * 100_000 + "]" * 100_000      # json.loads recurses past the interpreter's limit
+        def handler(request):
+            if str(request.url).endswith("/site.webmanifest"):
+                return httpx.Response(200, content=('{"icons":' + deep + '}').encode())
+            return httpx.Response(200, headers={"content-type": "text/html"}, content=_HOME.encode())
+        r = logo_search("brand.example", client=httpx.Client(transport=httpx.MockTransport(handler)))
+        urls = [x["url"] for x in r]
+        assert "https://brand.example/apple-180.png" in urls and not any("icon-512" in u for u in urls)
 
     def test_manifest_on_a_private_host_is_skipped_not_fetched(self, monkeypatch):
         def gai(host, *a, **k):

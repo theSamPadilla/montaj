@@ -172,15 +172,25 @@ def stream_following(c: httpx.Client, url: str, hosts: set[str]):
     cur = url
     with contextlib.ExitStack() as stack:
         for hop in range(_MAX_REDIRECTS + 1):
-            resp = stack.enter_context(
-                c.stream("GET", cur, headers={"User-Agent": _UA}, follow_redirects=False))
+            try:
+                resp = stack.enter_context(
+                    c.stream("GET", cur, headers={"User-Agent": _UA}, follow_redirects=False))
+            except httpx.InvalidURL as exc:    # a Location like "https:host/x" gets past the checks and httpx refuses it
+                raise FetchRefused("url_rejected", f"Malformed URL in a redirect: {str(exc)[:120]}")
+            except httpx.RemoteProtocolError as exc:    # httpx's own parse of a Location ("...:bad/x", a control character)
+                if "Invalid URL" not in str(exc):
+                    raise
+                raise FetchRefused("url_rejected", f"Malformed URL in a redirect: {str(exc)[:120]}")
             if not resp.is_redirect:
                 yield resp, cur
                 return
             if hop == _MAX_REDIRECTS:
                 break
-            nxt = urljoin(cur, resp.headers.get("location", "")).split("#", 1)[0]
-            err = preflight_image_url(nxt, hosts)
+            try:
+                nxt = urljoin(cur, resp.headers.get("location", "")).split("#", 1)[0]
+                err = preflight_image_url(nxt, hosts)
+            except ValueError as exc:    # a Location urllib cannot parse (a bad IPv6 literal)
+                raise FetchRefused("url_rejected", f"Malformed redirect Location: {str(exc)[:120]}")
             if err:
                 raise FetchRefused("url_rejected", err)
             resp.close()
@@ -477,21 +487,24 @@ def logo_search(
     license "trademark" (the brand owns it) and source "site", or "favicon"
     for the service. Homepage and manifest are untrusted fetches (public
     hosts, HTTPS, redirects by hand, size-capped); a homepage that cannot be
-    fetched for network reasons still yields the favicon service."""
+    fetched (refused, redirected away, timed out) still yields the favicon
+    service, with a note saying why."""
     home, host = _logo_target(query)
     hosts = allowed_image_hosts()
     own_client = client is None
     c = _make_client(client)
+    note = None
     try:
         try:
             html, page = _fetch_text(c, home, _HTML_MAX_BYTES, hosts)
         except FetchRefused as exc:
-            if exc.code == "upstream_error":
-                html, page = "", home
-            else:
-                raise ValueError(f"{exc.code}: {exc.message}")
-        except httpx.HTTPError:
+            # A refused or failed homepage (a redirect to http, too many redirects, a host the checks refuse) still
+            # gets the favicon service, a fixed Google host that is safe whatever the site did; the note says why.
             html, page = "", home
+            note = f"homepage not read ({exc.code}: {exc.message[:100]}); the favicon service only"
+        except httpx.HTTPError as exc:
+            html, page = "", home
+            note = f"homepage not read ({type(exc).__name__}); the favicon service only"
         parser = _IconParser()
         parser.feed(html)
         parser.close()
@@ -532,8 +545,8 @@ def logo_search(
                                 "mime": ic.get("type") or mimetypes.guess_type(urlparse(u).path)[0],
                                 "license": "trademark", "artist": None, "source": "site", "pageUrl": page,
                             }))
-            except (FetchRefused, httpx.HTTPError, ValueError, AttributeError):
-                pass   # the manifest is a bonus; its failure never fails the search
+            except (FetchRefused, httpx.HTTPError, ValueError, AttributeError, RecursionError):
+                pass   # a hostile manifest (nested past the parser's depth) is skipped; the manifest is a bonus; its failure never fails the search
         if parser.og_image:
             add(4, parser.og_image, None, None, "og:image")
     finally:
@@ -550,6 +563,7 @@ def logo_search(
         "title": f"{host} favicon", "url": f"{_FAVICON_SERVICE}?domain={host}&sz=256",
         "width": 256, "height": 256, "mime": "image/png",
         "license": "trademark", "artist": None, "source": "favicon", "pageUrl": page,
+        **({"note": note} if note else {}),
     })
     return results[:limit]
 

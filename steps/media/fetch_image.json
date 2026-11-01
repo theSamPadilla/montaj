@@ -1,6 +1,6 @@
 {
   "name": "fetch_image",
-  "description": "Fetch an image from any public HTTPS host to a local path (private/internal IPs blocked, images only, size-capped)",
+  "description": "Fetch an image from a public HTTPS URL to a path (private/internal IPs blocked, images only, size-capped)",
   "output": {
     "type": "image",
     "description": "Absolute path to the downloaded image file; after a redirect, {path, type, finalUrl}"

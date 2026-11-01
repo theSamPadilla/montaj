@@ -11,13 +11,14 @@ import argparse, json, os, subprocess, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import fail, get_duration, ffmpeg_bin, ffmpeg_error_tail, ffprobe_value
+from common import fail, get_duration, ffmpeg_bin, ffmpeg_error_tail, ffprobe_value, ff_path
 from connectors import ConnectorError
 from connectors.gemini import DEFAULT_MUSIC_MODEL, invalid_api_key_message
 from _fail_reasons import fail_for
 
 
 FADE_MAX_S = 1.5
+TRIM_TIMEOUT_S = 120   # a re-encode of a few minutes of audio takes seconds; a hung ffmpeg must not hang the step
 SLACK_S = 0.1          # a vendor track within this of the ask is not worth an encode
 # Source codec -> (encoder args). Trimming needs one encode; the codec family is
 # kept so the file still matches its extension.
@@ -40,10 +41,16 @@ def trim_to(path, duration):
     if enc is None:
         return None, f"kept the vendor's {codec} track untrimmed (no matching encoder)"
     fade = min(FADE_MAX_S, 0.1 * duration)
+    path = ff_path(path)
     tmp = path + ".trim" + os.path.splitext(path)[1]
     cmd = [ffmpeg_bin(), "-nostdin", "-v", "error", "-y", "-i", path, "-vn", "-t", f"{duration:.3f}",
            "-af", f"afade=t=out:st={duration - fade:.3f}:d={fade:.3f}", *enc, tmp]
-    r = subprocess.run(cmd, capture_output=True)
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=TRIM_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        return None, f"kept the vendor track untrimmed: the trim took over {TRIM_TIMEOUT_S} s"
     if r.returncode != 0:
         if os.path.exists(tmp):
             os.remove(tmp)

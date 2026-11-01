@@ -55,6 +55,17 @@ KEY_FRAME = 8192                  # 2.05 s: resolves semitones down to C2 (~4 Hz
 KEY_MAX_FRAMES = 24               # spread evenly over the file
 KEY_LOW_MIDI, KEY_HIGH_MIDI = 36, 83
 KEY_SILENT_RMS = 1e-4
+# A track tuned off A440 (a sample slowed, a detuned synth) puts every note between the probes, and the high
+# ones fall out of the Hann lobe altogether. So the tuning is estimated first, on short frames of the middle
+# octaves probed 15 cents apart, then refined on full frames of the upper octave 3 cents apart: a note above
+# C4 is only found within a few cents (its Hann lobe is under 2 Hz wide), so the probe has to sit on the tuning.
+KEY_TUNE_FRAME = 2048
+KEY_TUNE_FRAMES = 12
+KEY_TUNE_MIDI = (48, 71)
+KEY_TUNE_STEPS = (-45, -30, -15, 0, 15, 30, 45)
+KEY_FINE_FRAMES = 4
+KEY_FINE_MIDI = (60, 71)
+KEY_FINE_STEPS = (-6, -3, 0, 3, 6)
 KEY_CONF_SCALE = 5.0              # best-minus-second correlation of 0.2 is full confidence
 PITCH_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 KK_MAJOR = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88]
@@ -394,33 +405,96 @@ def key_from_chroma(chroma):
     return "%s %s" % (PITCH_NAMES[best[1]], best[2]), conf
 
 
-_KEY_TABLES = None
+_KEY_TABLES = {}
 
 
-def _key_tables():
-    """Hann-windowed cos/sin tables per note, built once."""
-    global _KEY_TABLES
-    if _KEY_TABLES is None:
-        hann = [0.5 - 0.5 * math.cos(2 * math.pi * i / KEY_FRAME) for i in range(KEY_FRAME)]
+def _note_tables(lo, hi, frame, cents):
+    """Hann-windowed cos/sin tables per note lo..hi (MIDI), tuned `cents` off A440, built once."""
+    k = (lo, hi, frame, round(cents))
+    if k not in _KEY_TABLES:
+        hann = [0.5 - 0.5 * math.cos(2 * math.pi * i / frame) for i in range(frame)]
         tabs = []
-        for m in range(KEY_LOW_MIDI, KEY_HIGH_MIDI + 1):
-            w = 2 * math.pi * 440.0 * 2 ** ((m - 69) / 12) / KEY_SR
+        for m in range(lo, hi + 1):
+            w = 2 * math.pi * 440.0 * 2 ** ((m - 69) / 12 + k[3] / 1200.0) / KEY_SR
             tabs.append((m % 12,
                          [h * math.cos(w * i) for i, h in enumerate(hann)],
                          [h * math.sin(w * i) for i, h in enumerate(hann)]))
-        _KEY_TABLES = tabs
-    return _KEY_TABLES
+        if len(_KEY_TABLES) > 24:
+            _KEY_TABLES.clear()
+        _KEY_TABLES[k] = tabs
+    return _KEY_TABLES[k]
 
 
-def chroma_of(sig):
+def _frame_pc(fr, tabs):
+    """Power per pitch class of one frame, and its total."""
+    mul = operator.mul
+    pc = [0.0] * 12
+    for cls, c, s_ in tabs:
+        re, im = sum(map(mul, fr, c)), sum(map(mul, fr, s_))
+        pc[cls] += re * re + im * im
+    return pc, sum(pc)
+
+
+def _tuning_pass(sig, frame, nframes, midi, offsets):
+    """Score of each offset (cents): the share of a frame's peak power that offset's note probes hold, summed over
+    `nframes` frames spread over the file. Zeros when every frame is silent."""
+    n = len(sig)
+    count = min(nframes, n // frame)
+    score = [0.0] * len(offsets)
+    if count == 0:
+        return score
+    sets = [_note_tables(midi[0], midi[1], frame, c) for c in offsets]
+    mul = operator.mul
+    for f in range(count):
+        a = 0 if count == 1 else int(f * (n - frame) / (count - 1))
+        fr = sig[a:a + frame]
+        if math.sqrt(sum(map(mul, fr, fr)) / frame) < KEY_SILENT_RMS:
+            continue
+        tot = [_frame_pc(fr, tabs)[1] for tabs in sets]
+        top = max(tot)
+        if top <= 0:
+            continue
+        for i, v in enumerate(tot):
+            score[i] += v / top
+    return score
+
+
+def _peak(score, offsets):
+    """The offset of the best score, a parabola through it and its neighbours when it has both; None when flat."""
+    i = max(range(len(score)), key=lambda j: score[j])
+    if score[i] <= 0:
+        return None
+    off = float(offsets[i])
+    if 0 < i < len(score) - 1:
+        l, c, r = score[i - 1], score[i], score[i + 1]
+        den = l - 2 * c + r
+        if den < 0:
+            off += (offsets[i + 1] - offsets[i]) * 0.5 * (l - r) / den
+    return off
+
+
+def tuning_cents(sig):
+    """How far (cents, within about +-45) the track sits from A440 tuning; 0.0 when it cannot tell."""
+    coarse = _peak(_tuning_pass(sig, KEY_TUNE_FRAME, KEY_TUNE_FRAMES, KEY_TUNE_MIDI, KEY_TUNE_STEPS), KEY_TUNE_STEPS)
+    if coarse is None:
+        return 0.0
+    offsets = [round(coarse + d) for d in KEY_FINE_STEPS]
+    fine = _peak(_tuning_pass(sig, KEY_FRAME, KEY_FINE_FRAMES, KEY_FINE_MIDI, offsets), offsets)
+    return coarse if fine is None else fine
+
+
+def chroma_of(sig, cents=None):
     """Mean pitch-class profile (12 weights summing to 1, C first) of mono `sig`
     sampled at KEY_SR, or None when no frame is audible. Each frame is normalised
-    before averaging so one loud passage does not outvote the rest."""
+    before averaging so one loud passage does not outvote the rest. The notes are
+    probed at the track's own tuning (`cents` off A440; estimated when None)."""
     n = len(sig)
     count = min(KEY_MAX_FRAMES, n // KEY_FRAME)
     if count == 0:
         return None
-    tabs = _key_tables()
+    if cents is None:
+        cents = tuning_cents(sig)
+    tabs = _note_tables(KEY_LOW_MIDI, KEY_HIGH_MIDI, KEY_FRAME, cents)
     mul = operator.mul
     acc, used = [0.0] * 12, 0
     for f in range(count):
@@ -428,11 +502,7 @@ def chroma_of(sig):
         fr = sig[a:a + KEY_FRAME]
         if math.sqrt(sum(map(mul, fr, fr)) / KEY_FRAME) < KEY_SILENT_RMS:
             continue
-        pc = [0.0] * 12
-        for cls, c, s_ in tabs:
-            re, im = sum(map(mul, fr, c)), sum(map(mul, fr, s_))
-            pc[cls] += re * re + im * im
-        tot = sum(pc)
+        pc, tot = _frame_pc(fr, tabs)
         if tot <= 0:
             continue
         for i in range(12):

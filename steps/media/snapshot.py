@@ -92,7 +92,11 @@ def faces_answer(paths, clips):
     from lib.pose.head import clip_faces
     faces = {}
     for label, src, times in clips:
-        faces[label] = clip_faces(src, times)
+        key, n = label, 1
+        while key in faces:     # clips with the same file name and no names: "a", "a (2)", "a (3)", not one overwriting another
+            n += 1
+            key = f"{label} ({n})"
+        faces[key] = clip_faces(src, times)
     answer = {"path": paths[0], "type": "image"}
     if len(paths) > 1:
         answer["paths"] = paths
@@ -221,6 +225,10 @@ def main():
         paths = sorted(glob.glob(os.path.join(out_dir, "frame_*.jpg")))
         if not paths:
             fail("no_output", f"No frames written to {out_dir}")
+        if args.faces:    # not silently dropped: the frames are made, the head boxes are not
+            print(json.dumps({"path": paths[0], "type": "image", "paths": paths,
+                              "note": "faces needs a sheet or at; frames all does not answer it"}))
+            return
         print("\n".join(paths))
         return
 

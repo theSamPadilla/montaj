@@ -3,7 +3,8 @@
 The rule is the one the Studio Talk recipe gives an agent to measure by hand, so the two agree. BlazePose 33: 0 nose,
 1-6 eyes, 7-8 ears, 9-10 mouth. The box spans the ears and the eyes across; its top is the hair, one ear-to-ear width
 above the eyes; its bottom is the chin, half an ear-to-ear width below the mouth (the body landmarks have no chin).
-With the ears not both visible (a profile) the width is twice the eye span; a tenth of the width is added each side (the
+With the ears not both visible (a profile) the width is the larger of twice the eye span and the horizontal span of the
+seen landmarks (a visible ear included), and that width sets the vertical size too; one eye and no ear cannot be sized. A tenth of the width is added each side (the
 ear landmarks sit mid-ear). Only landmarks at FACE_VISIBLE or above
 count (the threshold steps/edit/push_in.py uses)."""
 import subprocess
@@ -22,14 +23,16 @@ def head_box(landmarks, visibility, frame_w, frame_h, visible=FACE_VISIBLE):
     eyes, ears, mouth = seen(EYES), seen(EARS), seen(MOUTH)
     if not eyes:
         return None
-    eye_x = [p[0] for p in eyes]
-    both = len(ears) == 2
-    width = abs(ears[0][0] - ears[1][0]) if both else 2 * (max(eye_x) - min(eye_x))
-    if not width > 0:
+    if len(eyes) == 1 and not ears:                      # one landmark and no ear: nothing to measure a width by
         return None
+    eye_x = [p[0] for p in eyes]
     xs = eye_x + [p[0] for p in ears]
     x0, x1 = min(xs), max(xs)
-    if x1 - x0 < width:                                  # a profile: widen about the seen landmarks to twice the eye span
+    both = len(ears) == 2
+    width = abs(ears[0][0] - ears[1][0]) if both else max(2 * (max(eye_x) - min(eye_x)), x1 - x0)
+    if not width > 0:
+        return None
+    if x1 - x0 < width:                                  # a profile: widen about the seen landmarks to that width
         mid = (x0 + x1) / 2
         x0, x1 = mid - width / 2, mid + width / 2
     pad = 0.1 * width                                    # the ear landmarks sit mid-ear: measured on a rendered head, the ears and hair
@@ -50,7 +53,7 @@ def scale_box(box, k):
 
 
 def summarize(samples, size):
-    """samples [(t, (x, y, w, h) or None)] -> the per-clip answer: at, box (median of the seen), range (their union),
+    """samples [(t, (x, y, w, h) or None)] -> the per-clip answer: at, box (median of the seen), range (their union, same x, y, w, h),
     seen 'k/n'. A clip where no face is seen has box None and a note."""
     at = [[t, *b] if b else [t, None] for t, b in samples]
     boxes = [b for _, b in samples if b]
@@ -58,8 +61,8 @@ def summarize(samples, size):
     if not boxes:
         return {**out, "box": None, "range": None, "note": "no face seen"}
     out["box"] = [int(round(median(b[i] for b in boxes))) for i in range(4)]
-    out["range"] = [min(b[0] for b in boxes), min(b[1] for b in boxes),
-                    max(b[0] + b[2] for b in boxes), max(b[1] + b[3] for b in boxes)]
+    x0, y0 = min(b[0] for b in boxes), min(b[1] for b in boxes)    # [x, y, w, h] like box: the union of the seen boxes
+    out["range"] = [x0, y0, max(b[0] + b[2] for b in boxes) - x0, max(b[1] + b[3] for b in boxes) - y0]
     return out
 
 

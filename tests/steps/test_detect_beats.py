@@ -413,3 +413,31 @@ def test_key_on_synthetic_chords(tmp_path):
     assert len(a["chroma"]) == 12 and abs(sum(a["chroma"]) - 1) < 0.02
     assert a["chroma"][9] > 0.2 and a["chroma"][0] > 0.1 and a["chroma"][4] > 0.1   # A, C, E lead
     assert 0 <= a["keyConfidence"] <= 1
+
+
+def _progression_wav(path, chords, cents, seconds=4.0, sr=22050):
+    """Sustained sine chords one after another, every note `cents` off A440 tuning."""
+    n = int(sr * seconds)
+    buf = array.array("h")
+    for midis in chords:
+        freqs = [440.0 * 2 ** ((m - 69 + cents / 100.0) / 12) for m in midis]
+        buf.extend(int(9000 * sum(math.sin(2 * math.pi * f * i / sr) for f in freqs) / len(freqs)) for i in range(n))
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(buf.tobytes())
+
+
+@pytest.mark.parametrize("cents", [10, 40, -25])
+def test_key_of_a_detuned_track_still_has_its_thirds(tmp_path, cents):
+    """G-C-D-G, every note off A440 tuning: each note was probed only at its exact frequency, so a track tuned
+    10 cents off lost the B (G major's third) and the D. The tuning is estimated first and the notes probed there."""
+    p = tmp_path / "prog.wav"
+    _progression_wav(p, [[43, 67, 71, 74], [48, 72, 76, 79], [50, 74, 78, 81], [43, 67, 71, 74]], cents)
+    r = run_step("detect_beats.py", "--input", str(p), "--key")
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["key"] == "G major"
+    chroma = out["chroma"]
+    assert chroma[11] > 0.05 and chroma[2] > 0.1 and chroma[7] > 0.1   # B, D, G

@@ -491,6 +491,91 @@ def _dilate(mask: "np.ndarray", steps: int) -> "np.ndarray":
     return m
 
 
+# A pixel on the logo side of the boundary this far (RGB) from the line background -> nearest solid colour is a
+# different colour (a red outline round a blue fill), not a blend of the two, so it is solid.
+_FLAT_OFF_LINE = 30.0
+_FLAT_MAX_PIXELS = 16_000_000   # above this the matte is made on a 16 MP copy and its alpha scaled back up
+
+
+def _flat_matte(rgb: "np.ndarray") -> tuple:
+    """The soft matte of a flat-background image: (alpha float32 0..1, bg float32 (3,), faint_idx, faint_rgb).
+
+    Dense work is the distance map and boolean masks only; the edge zone (a few px along the boundary, sparse)
+    carries the rest, so the cost follows the outline, not the pixel count."""
+    h, w = rgb.shape[:2]
+    ring = np.zeros((h, w), dtype=bool)
+    ring[:2, :] = ring[-2:, :] = ring[:, :2] = ring[:, -2:] = True
+    bg = np.median(rgb[ring], axis=0).astype(np.float32)
+    del ring
+    dist = np.empty((h, w), dtype=np.float32)
+    for r0 in range(0, h, 256):   # a float copy of the whole image would be 12 bytes a pixel
+        blk = rgb[r0:r0 + 256].astype(np.float32)
+        blk -= bg
+        blk *= blk
+        dist[r0:r0 + 256] = np.sqrt(blk.sum(axis=2))
+    back = _border_connected(dist <= _FLAT_HI)
+    fore = ~back
+    zone = (fore & _dilate(back, _FLAT_EDGE)) | (back & _dilate(fore, _FLAT_EDGE))
+    core = (fore & ~zone).ravel()
+    zi = np.flatnonzero(zone.ravel())   # sorted flat indices of the edge zone
+    del zone
+    px = rgb.reshape(-1, 3)
+    m = zi.size
+
+    # The nearest solid colour, grown out through the zone one px a round (table: one row per zone pixel).
+    table = np.zeros((m, 3), dtype=np.float32)
+    have = np.zeros(m, dtype=bool)
+    for _ in range(2 * _FLAT_EDGE + 1):
+        cand = np.flatnonzero(~have)
+        if not cand.size:
+            break
+        ci = zi[cand]
+        y, x = np.divmod(ci, w)
+        acc = np.zeros((cand.size, 3), dtype=np.float32)
+        cnt = np.zeros(cand.size, dtype=np.float32)
+        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            ny, nx = y + dy, x + dx
+            ok = (ny >= 0) & (ny < h) & (nx >= 0) & (nx < w)
+            n = np.where(ok, ny * w + nx, 0)
+            solid = ok & core[n]
+            p = np.minimum(np.searchsorted(zi, n), m - 1)
+            grown = ok & ~solid & (zi[p] == n) & have[p]
+            acc[solid] += px[n[solid]]
+            acc[grown] += table[p[grown]]
+            cnt += solid
+            cnt += grown
+        grow = cnt > 0
+        if not grow.any():
+            break
+        table[cand[grow]] = acc[grow] / cnt[grow][:, None]
+        have[cand[grow]] = True
+
+    alpha = fore.astype(np.float32)
+    back_z = back.ravel()[zi]
+    del back, fore
+    col = px[zi].astype(np.float32)
+    dz = dist.ravel()[zi]
+    del dist
+    span = table - bg
+    span2 = (span ** 2).sum(axis=1)
+    matte = have & (span2 >= 40.0 ** 2)
+    # a = how much of the solid colour the pixel holds, along bg -> colour.
+    t = ((col - bg) * span).sum(axis=1) / np.maximum(span2, 1.0)
+    a = np.clip(t, 0.0, 1.0)
+    # A logo-side pixel far off that line is another colour, not a blend: solid.
+    off = np.sqrt(((col - bg - span * a[:, None]) ** 2).sum(axis=1)) > _FLAT_OFF_LINE
+    matte &= ~(~back_z & off)
+    flat_a = alpha.reshape(-1)
+    flat_a[zi[matte]] = a[matte]
+    # Where there is no solid colour to measure against: ramp on the distance.
+    ramp = back_z & ~matte
+    flat_a[zi[ramp]] = np.clip((dz[ramp] - _FLAT_LO) / (_FLAT_HI - _FLAT_LO), 0.0, 1.0)
+    flat_a[zi[back_z & (dz <= _FLAT_LO)]] = 0.0
+    # A pixel too faint to carry colour takes the solid colour (matte) or stays as it is.
+    faint = matte & (flat_a[zi] < 0.02)
+    return alpha, bg, zi[faint], table[faint]
+
+
 def _process_flat(input_path: str, output_path: str) -> dict:
     """Key out the flat background an image sits on.
 
@@ -502,78 +587,68 @@ def _process_flat(input_path: str, output_path: str) -> dict:
     The edge is a soft two-colour matte, not a threshold: within _FLAT_EDGE px of the
     boundary each pixel is a mix of the background and the nearest solid logo colour,
     its alpha is how much of that colour it holds, and its colour is un-premultiplied
-    against the background, so the logo carries no halo of the old background. Where
-    no solid colour is near (a stroke thinner than the edge zone) alpha ramps over
-    _FLAT_LO.._FLAT_HI of distance instead."""
+    against the background, so the logo carries no halo of the old background. A logo
+    pixel that is not on that blend (a different colour, an outline round a fill) is
+    solid. Where no solid colour is near (a stroke thinner than the edge zone) alpha
+    ramps over _FLAT_LO.._FLAT_HI of distance instead.
+
+    An image that is already transparent round its border keeps its own alpha: its
+    background is the transparency, and the RGB under it (often black) is not a colour
+    to key. Above _FLAT_MAX_PIXELS the matte is made on a smaller copy (a note says so)."""
     from PIL import Image, ImageOps
 
     try:
         with Image.open(input_path) as im:
             icc = im.info.get("icc_profile") if im.mode in ("RGB", "RGBA", "P") else None
             im = ImageOps.exif_transpose(im)
-            rgba = np.asarray(im.convert("RGBA"))
+            rgba = np.array(im.convert("RGBA"))
     except Exception as e:
         fail("invalid_image", f"Could not read {os.path.basename(input_path)} as an image: {e}")
     h, w = rgba.shape[:2]
-    rgb = rgba[..., :3].astype(np.float32)
-    ring = np.zeros((h, w), dtype=bool)
-    ring[:2, :] = ring[-2:, :] = ring[:, :2] = ring[:, -2:] = True
-    bg = np.median(rgb[ring], axis=0)
-    dist = np.sqrt(((rgb - bg) ** 2).sum(axis=2))
-
-    back = _border_connected(dist <= _FLAT_HI)
-    fore = ~back
-    zone = (fore & _dilate(back, _FLAT_EDGE)) | (back & _dilate(fore, _FLAT_EDGE))
-    core = fore & ~zone
-
-    # The nearest solid colour, grown out through the zone one px a round.
-    near = np.where(core[..., None], rgb, 0.0)
-    have = core.copy()
-    for _ in range(2 * _FLAT_EDGE + 1):
-        acc = np.zeros_like(near)
-        cnt = np.zeros((h, w), dtype=np.float32)
-        for sl_dst, sl_src in (
-            ((slice(1, None), slice(None)), (slice(None, -1), slice(None))),
-            ((slice(None, -1), slice(None)), (slice(1, None), slice(None))),
-            ((slice(None), slice(1, None)), (slice(None), slice(None, -1))),
-            ((slice(None), slice(None, -1)), (slice(None), slice(1, None))),
-        ):
-            acc[sl_dst] += near[sl_src] * have[sl_src][..., None]
-            cnt[sl_dst] += have[sl_src]
-        grow = zone & ~have & (cnt > 0)
-        near[grow] = acc[grow] / cnt[grow][..., None]
-        have |= grow
-
-    alpha = np.where(back, 0.0, 1.0).astype(np.float32)
-    out = rgb.copy()
-    span = near - bg
-    span2 = (span ** 2).sum(axis=2)
-    matte = zone & have & (span2 >= 40.0 ** 2)
-    # a = how much of the solid colour the pixel holds, along bg -> colour.
-    a = np.clip(((rgb - bg) * span).sum(axis=2) / np.maximum(span2, 1.0), 0.0, 1.0)
-    alpha[matte] = a[matte]
-    # Where there is no solid colour to measure against: ramp on the distance.
-    ramp = zone & back & ~matte
-    alpha[ramp] = np.clip((dist[ramp] - _FLAT_LO) / (_FLAT_HI - _FLAT_LO), 0.0, 1.0)
-    alpha[back & (dist <= _FLAT_LO)] = 0.0
-    part = (alpha > 0.0) & (alpha < 1.0)
-    # Un-premultiply against the background: c = a*fg + (1-a)*bg.
-    sa = np.maximum(alpha[part], 0.02)[:, None]
-    out[part] = np.clip((rgb[part] - (1.0 - sa) * bg) / sa, 0.0, 255.0)
-    # A pixel too faint to carry colour takes the solid colour (matte) or stays as it is.
-    faint = matte & (alpha < 0.02)
-    out[faint] = near[faint]
-
-    alpha *= rgba[..., 3] / 255.0   # the image's own transparency stays
-    res = np.empty((h, w, 4), dtype=np.uint8)
-    res[..., :3] = np.rint(out).clip(0, 255).astype(np.uint8)
-    res[..., 3] = np.rint(alpha * 255.0).clip(0, 255).astype(np.uint8)
+    save_kw = {"icc_profile": icc} if icc else {}
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    Image.fromarray(res, "RGBA").save(output_path, format="PNG", **({"icc_profile": icc} if icc else {}))
+
+    border = np.concatenate([rgba[:2, :, 3].ravel(), rgba[-2:, :, 3].ravel(), rgba[:, :2, 3].ravel(), rgba[:, -2:, 3].ravel()])
+    if (border < 16).mean() > 0.5:
+        Image.fromarray(rgba, "RGBA").save(output_path, format="PNG", **save_kw)
+        check_output(output_path)
+        return {"out": output_path, "width": w, "height": h, "keyed": None,
+                "transparent": round(float((rgba[..., 3] == 0).mean()), 4),
+                "note": "already transparent: the image's own alpha is kept, nothing keyed"}
+
+    note = None
+    if h * w > _FLAT_MAX_PIXELS:
+        s = (_FLAT_MAX_PIXELS / (h * w)) ** 0.5
+        sw, sh = max(1, int(w * s)), max(1, int(h * s))
+        small = np.asarray(Image.fromarray(rgba[..., :3], "RGB").resize((sw, sh), Image.BOX))
+        alpha_s, bg, _, _ = _flat_matte(small)
+        del small
+        alpha = np.asarray(Image.fromarray(alpha_s, "F").resize((w, h), Image.BILINEAR), dtype=np.float32).copy()
+        del alpha_s
+        faint_i = np.zeros(0, dtype=np.int64)
+        faint_c = np.zeros((0, 3), dtype=np.float32)
+        note = f"matte made at {sw}x{sh} (the image is over 16 MP) and scaled back up"
+    else:
+        alpha, bg, faint_i, faint_c = _flat_matte(rgba[..., :3])
+
+    flat_a = alpha.reshape(-1)
+    res = rgba.reshape(-1, 4)   # in place: only the soft pixels change colour
+    # Un-premultiply against the background: c = a*fg + (1-a)*bg.
+    pi = np.flatnonzero((flat_a > 0.0) & (flat_a < 1.0))
+    sa = np.maximum(flat_a[pi], 0.02)[:, None]
+    res[pi, :3] = np.rint(np.clip((res[pi, :3].astype(np.float32) - (1.0 - sa) * bg) / sa, 0.0, 255.0)).astype(np.uint8)
+    res[faint_i, :3] = np.rint(faint_c).clip(0, 255).astype(np.uint8)
+    np.multiply(alpha, rgba[..., 3], out=alpha)   # the image's own transparency stays
+    np.rint(alpha, out=alpha)
+    rgba[..., 3] = alpha
+    Image.fromarray(rgba, "RGBA").save(output_path, format="PNG", **save_kw)
     check_output(output_path)
     keyed = "#" + "".join(f"{int(round(v)):02x}" for v in bg)
-    return {"out": output_path, "width": w, "height": h, "keyed": keyed,
-            "transparent": round(float((res[..., 3] == 0).mean()), 4)}
+    out = {"out": output_path, "width": w, "height": h, "keyed": keyed,
+           "transparent": round(float((rgba[..., 3] == 0).mean()), 4)}
+    if note:
+        out["note"] = note
+    return out
 
 
 # ---------------------------------------------------------------------------
