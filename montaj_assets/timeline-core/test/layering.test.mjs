@@ -27,3 +27,16 @@ test('trackLayerPositions: empty, missing and malformed tracks are non-video tra
   assert.deepEqual(trackLayerPositions([[], [v], null, [undefined, o]]), [1, 0, 2, 3])
   assert.deepEqual(trackLayerPositions(undefined), [])
 })
+
+// §644: a remove_bg cut-out video draws as a picture with alpha, like an image.
+const cut = { type: 'video', remove_bg: true }
+
+test('trackLayerPositions: a cut-out-only track stacks in JSON order with the non-video group', () => {
+  assert.deepEqual(trackLayerPositions([[v], [o], [cut]]), [0, 1, 2], 'cut-out after an overlay stays above it')
+  assert.deepEqual(trackLayerPositions([[cut], [v], [o]]), [1, 0, 2], 'cut-out before a video sits above it')
+})
+
+test('trackLayerPositions: a track mixing a cut-out and a plain video is still a video track', () => {
+  assert.deepEqual(trackLayerPositions([[o], [cut, v], [i]]), [1, 0, 2])
+  assert.deepEqual(trackLayerPositions([[o], [{ type: 'video', remove_bg: false }]]), [1, 0], 'remove_bg false is a plain video')
+})

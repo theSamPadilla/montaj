@@ -1097,13 +1097,14 @@ export function nextVisualTrackId(tracks: readonly unknown[]): string {
 // merge or split a track.
 
 /** A track's coarse kind for STACKING purposes: 'video' if it holds at least
- *  one video item, 'overlay' otherwise (overlay/image items, or none at
+ *  one plain video item (a `remove_bg` cut-out stacks like an image, §644),
+ *  'overlay' otherwise (overlay/image items, or none at
  *  all). Distinct from `moveItemAcrossTracks`'s own item-level `coarse` —
  *  that one classifies a single dragged ITEM to gate a move; this one
  *  classifies a whole TRACK by its content, to group tracks for display. A
  *  track holding even one video item groups as video, mixed or not. */
 function trackGroupKind(track: VisualTrack): 'video' | 'overlay' {
-  return track.items.some(item => item.type === 'video') ? 'video' : 'overlay'
+  return track.items.some(item => item.type === 'video' && !item.remove_bg) ? 'video' : 'overlay'
 }
 
 /**

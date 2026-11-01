@@ -197,7 +197,7 @@ def track_layer_positions(project: dict) -> list:
     """Where each visual track stacks, by its JSON index: 0 is the bottom (§308 P3).
 
     The editor's canonical track order, which the preview, sample_frame and the
-    export all stack by: every track holding a video item first, then every other
+    export all stack by: every track holding a plain (not ``remove_bg``) video item first, then every other
     track, each group in JSON order (timeline-core ``trackLayerPositions``,
     ``montaj_assets/timeline-core/src/layering.js``, mirroring the editor's
     ``orderedTrackArray``). Read over all tracks, skipped ones included, as the
@@ -205,7 +205,7 @@ def track_layer_positions(project: dict) -> list:
     its overlays.
     """
     tracks = track_items(project)
-    holds_video = [any(isinstance(it, dict) and it.get("type") == "video" for it in (items or [])) for items in tracks]
+    holds_video = [any(isinstance(it, dict) and it.get("type") == "video" and not it.get("remove_bg") for it in (items or [])) for items in tracks]
     positions = [0] * len(tracks)
     nxt = 0
     for want in (True, False):

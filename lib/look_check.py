@@ -114,9 +114,9 @@ def drawn_tracks(project):
 
 
 def layer_positions(rows):
-    """timeline-core trackLayerPositions: every track holding a video item stacks below every other, each group in
-    track order (a higher position draws on top)."""
-    holds = [any(it.get("type") == "video" for it in row) for row in rows]
+    """timeline-core trackLayerPositions: every track holding a plain (not remove_bg) video item stacks below every other, each
+    group in track order (a higher position draws on top)."""
+    holds = [any(it.get("type") == "video" and not it.get("remove_bg") for it in row) for row in rows]
     pos, nxt = [0] * len(rows), 0
     for want in (True, False):
         for i, h in enumerate(holds):

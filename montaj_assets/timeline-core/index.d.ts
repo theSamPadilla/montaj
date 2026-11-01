@@ -701,10 +701,11 @@ export declare function isFullCanvasPlacement(item: PlacementFields | null | und
  * The layer position of each visual track by its JSON index (0 = bottom): the
  * editor's canonical order (`timeline-model.ts` `orderedTrackArray`), every
  * track holding a video item first, then the rest, each group in JSON order.
+ * A video with `remove_bg` on is a cut-out and counts as a non-video item.
  * The export and sample_frame stack by it, as the preview does.
  */
 export declare function trackLayerPositions(
-  trackItems: ReadonlyArray<ReadonlyArray<{ type?: string } | null | undefined> | null | undefined>,
+  trackItems: ReadonlyArray<ReadonlyArray<{ type?: string; remove_bg?: boolean } | null | undefined> | null | undefined>,
 ): number[]
 
 /** The fields {@link opacityAt} and {@link fullOpacitySpans} read. */

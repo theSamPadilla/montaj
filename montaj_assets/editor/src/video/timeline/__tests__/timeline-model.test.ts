@@ -1106,3 +1106,19 @@ describe('visualItemLabel — video items', () => {
     expect(visualItemLabel(video({ src: undefined, proxySrc: undefined }))).toBe('video')
   })
 })
+
+describe('normalizeTracks: cut-out videos stack like images (§644)', () => {
+  const vid = (id: string, extra: Record<string, unknown> = {}) => ({ id, type: 'video', src: `${id}.mp4`, start: 0, end: 1, ...extra })
+  const order = (tracks: unknown[]) =>
+    (normalizeTracks({ id: 'p', tracks } as { id: string; tracks?: unknown }).tracks as Array<{ items: Array<{ id: string }> }>).map(t => t.items[0].id)
+
+  it('a cut-out-only track keeps its place above an overlay track', () => {
+    const ov = { id: 'o', type: 'overlay', start: 0, end: 1 }
+    expect(order([[vid('v')], [ov], [vid('cut', { remove_bg: true })]])).toEqual(['v', 'o', 'cut'])
+  })
+
+  it('a track mixing a cut-out and a plain video is still a video track', () => {
+    const ov = { id: 'o', type: 'overlay', start: 0, end: 1 }
+    expect(order([[ov], [vid('cut', { remove_bg: true }), vid('v')]])).toEqual(['cut', 'o'])
+  })
+})

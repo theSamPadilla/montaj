@@ -383,3 +383,21 @@ def test_track_layer_positions_video_tracks_first_each_group_stable():
     assert track_layer_positions({"tracks": [[i], [v], [o]]}) == [1, 0, 2]
     assert track_layer_positions({"tracks": [{"id": "a", "items": [o]}, {"id": "b", "items": [i, v], "enabled": False}]}) == [1, 0]
     assert track_layer_positions({}) == []
+
+
+def test_track_layer_positions_cut_out_video_follows_track_order():
+    """§644: a remove_bg video is not a video track; a plain video beside it still is."""
+    v, o = {"type": "video"}, {"type": "overlay"}
+    cut = {"type": "video", "remove_bg": True}
+    assert track_layer_positions({"tracks": [[v], [o], [cut]]}) == [0, 1, 2]
+    assert track_layer_positions({"tracks": [[cut], [v], [o]]}) == [1, 0, 2]
+    assert track_layer_positions({"tracks": [[o], [cut, v], [o]]}) == [1, 0, 2]
+    assert track_layer_positions({"tracks": [[o], [{"type": "video", "remove_bg": False}]]}) == [1, 0]
+
+
+def test_look_check_layer_positions_treats_a_cut_out_video_like_track_layer_positions():
+    from lib.look_check import layer_positions
+
+    v, o, cut = {"type": "video"}, {"type": "overlay"}, {"type": "video", "remove_bg": True}
+    assert layer_positions([[v], [o], [cut]]) == [0, 1, 2]
+    assert layer_positions([[o], [cut, v], [o]]) == [1, 0, 2]
