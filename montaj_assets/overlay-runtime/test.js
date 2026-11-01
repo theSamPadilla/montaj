@@ -254,5 +254,8 @@ console.log('overlay-runtime: previewDpr OK')
   assert.equal(shouldMeasure(1000, 900), false)
   assert.equal(shouldMeasure(1149, 900), false)
   assert.equal(shouldMeasure(1150, 900), true)
+  const { trailingDelay } = await import('./canvas-wrapper.js')
+  assert.equal(trailingDelay(1000, 900), 150, 'the trailing measure waits out the interval')
+  assert.equal(trailingDelay(1300, 900), 0)
 }
 console.log('overlay-runtime: preview measure throttle OK')

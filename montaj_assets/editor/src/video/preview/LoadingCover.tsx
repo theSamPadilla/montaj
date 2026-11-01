@@ -13,7 +13,7 @@ import { Loader2 } from 'lucide-react'
  *                                    picture is no longer covered. Never a spinner that runs forever.
  *
  * The overlay decides (the host's stage knows when it has drawn); the editor only reads the attributes, so any
- * overlay can use them. Only mounted overlays count, and the preview mounts an overlay only at the playhead.
+ * overlay can use them. Only mounted overlays count, and the preview mounts an overlay only at the playhead. A 3D scene item also mounts hidden just before and after (data-montaj-premount); its markers are ignored there.
  */
 export interface LoadState { loading: string | null; error: string | null }
 

@@ -10,8 +10,8 @@ import { makeAccumulator } from './three-blur.js'
  *                which the Puppeteer shim calls inside __setFrame before the
  *                screenshot. Also still sets window.__renderThree to it.
  *   - 'preview': no-op. The preview-context Canvas wrapper forces
- *                frameloop="always", so r3f's internal RAF loop handles the
- *                drawing. Authors still call useThreeFrame() (it's mandated by
+ *                frameloop="demand": it draws when the editor re-renders the
+ *                overlay (each frame and each scrub). Authors still call useThreeFrame() (it's mandated by
  *                the skill) but in preview it just returns without doing
  *                anything.
  */

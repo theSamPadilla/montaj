@@ -46,10 +46,15 @@ export function shouldMeasure(now, last) {
   return last == null || now - last >= PREVIEW_MEASURE_INTERVAL_MS
 }
 
+/** How long until the trailing measure of a throttled burst: what is left of the interval. */
+export function trailingDelay(now, last) {
+  return Math.max(0, PREVIEW_MEASURE_INTERVAL_MS - (now - last))
+}
+
 /** Inside the Canvas: asks r3f for one frame after every render of the Canvas's children. */
 function PreviewInvalidate() {
   const invalidate = useThree((s) => s.invalidate)
-  useEffect(() => { invalidate() })
+  useLayoutEffect(() => { invalidate() })
   return null
 }
 
@@ -123,10 +128,23 @@ export function makeCanvas(context) {
         lastMeasured.current = performance.now()
         measure()
       }, [measure])
-      // After a render, but throttled: the measure reads layout.
+      // After a render, but throttled: the measure reads layout. A render skipped by the
+      // throttle schedules one trailing measure, so the last render of a burst (a resize or
+      // zoom while paused) is never left with a stale dpr.
+      const trailing = useRef(0)
       useLayoutEffect(() => {
-        if (shouldMeasure(performance.now(), lastMeasured.current)) measureNow()
+        const now = performance.now()
+        if (shouldMeasure(now, lastMeasured.current)) {
+          clearTimeout(trailing.current)
+          trailing.current = 0
+          measureNow()
+          return
+        }
+        if (!trailing.current) {
+          trailing.current = setTimeout(() => { trailing.current = 0; measureNow() }, trailingDelay(now, lastMeasured.current))
+        }
       })
+      useEffect(() => () => clearTimeout(trailing.current), [])
       useEffect(() => {
         window.addEventListener('resize', measureNow)
         return () => window.removeEventListener('resize', measureNow)
