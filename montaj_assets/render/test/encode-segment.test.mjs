@@ -1807,10 +1807,10 @@ test('a remove_bg cutout in an HLG or PQ segment is byte-identical to 5.5.6 but 
   }
 })
 
-test('an SDR-origin cutout (no alphaGrade) in an SDR segment is byte-identical to 5.5.6', () => {
+test('an SDR-origin cutout (no alphaGrade) in an SDR segment is byte-identical to 5.5.6 but for the BT.601 to BT.709 matrix (§625)', () => {
   const frozen = [
-    '[1:v]setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709,setpts=PTS-STARTPTS,'
-      + 'scale=1080:1920:force_original_aspect_ratio=decrease,format=yuva420p,'
+    '[1:v]setparams=colorspace=smpte170m:color_trc=bt709:color_primaries=bt709,setpts=PTS-STARTPTS,'
+      + 'scale=1080:1920:force_original_aspect_ratio=decrease:in_color_matrix=bt601:out_color_matrix=bt709,format=yuva420p,'
       + 'pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0.0[vid1]',
     '[canvas][vid1]overlay=x=0:y=0:format=auto:shortest=0[iv1]',
   ]

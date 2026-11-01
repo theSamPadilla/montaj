@@ -1700,9 +1700,7 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // practice (web downloads such as X exports). Against the tagged SDR canvas an untagged layer would be
   // read as "unknown" (BT.601) and converted: measured red -19/-25, green
   // +8/+19. Tagged here, it composites unchanged, as it did before the canvas
-  // was tagged. An untagged SDR cutout is still declared BT.709 here, though
-  // remove_bg writes BT.601; it is left as is so SDR graphs stay byte-identical,
-  // and a queue row tracks it. Keyed on the probed transfer, which render.js stamps 'unknown'
+  // was tagged. Keyed on the probed transfer, which render.js stamps 'unknown'
   // for an untagged file. Overlay captures and images are NOT tagged: those are
   // encoded from RGB with ffmpeg's BT.601 default, and converting them is right.
   // A graded cutout is the exception: its alpha file holds HDR signal, and the
@@ -1713,8 +1711,19 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // ffmpeg's "unknown" would read it as BT.601 only by negotiation. Measured on an
   // HLG skin tone (YUV 690/369/614): smpte170m lands at 689/370/614 (within 1
   // code), bt2020nc at 683/365/624 (up to 10 off). Never bt2020nc.
+  // SDR (§625): the same cutout holds BT.601 YUV over BT.709 primaries and
+  // transfer, which pass through remove_bg unchanged. Declared smpte170m, and
+  // converted to BT.709 by the item's own scale (cutoutMatrix): the tag alone
+  // moves no pixel, because the YUV overlay copies YUV as it finds it. Measured
+  // on a cutout over the SDR canvas, RGB read back through BT.709: before, red
+  // 230/25/75 came out 247/48/74; after, red 230/25/74, green 30/200/40 ->
+  // 31/200/41, skin 224/172/105 -> 225/172/104.
+  const sdrCutoutMatrix = !isHdr(projectColorSpace) && item.colorTransfer === 'unknown' && !cutoutGrade
+    && Boolean(skipConversionForAlpha)
   const untaggedTag = !isHdr(projectColorSpace) && item.colorTransfer === 'unknown' && !cutoutGrade
-    ? 'setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709,'
+    ? (sdrCutoutMatrix
+      ? 'setparams=colorspace=smpte170m:color_trc=bt709:color_primaries=bt709,'
+      : 'setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709,')
     : isHdr(projectColorSpace) && item.colorTransfer === 'unknown' && !conversionStep && !cutoutGrade
       ? 'setparams=colorspace=smpte170m,' : ''
 
@@ -1837,10 +1846,11 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // the static branch below is byte-for-byte what it has always been; the frozen
   // goldens say so.
   // trimStep first: it counts in source seconds, before the speed setpts.
+  const cutoutMatrix = sdrCutoutMatrix ? ':in_color_matrix=bt601:out_color_matrix=bt709' : ''
   const head = `[${idx}:v]${trimStep}${untaggedTag}${ptsStep},${cropStep}${preBlur}` +
     (anim?.needsAnimatedChain
-      ? `scale=${anim.peakW}:${anim.peakH}:force_original_aspect_ratio=decrease${divisibleBy},`
-      : `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease${divisibleBy},`)
+      ? `scale=${anim.peakW}:${anim.peakH}:force_original_aspect_ratio=decrease${divisibleBy}${cutoutMatrix},`
+      : `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease${divisibleBy}${cutoutMatrix},`)
   // What follows the pad: the varying resize (and its rotate), or the static
   // rotate. Each starts with its own comma, and the static one may be empty.
   const afterPad = anim?.needsAnimatedChain
