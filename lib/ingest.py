@@ -25,6 +25,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))  # add lib/ so `from common` works in all invocation modes
 from common import get_duration, progress
+from audio_level import is_silent_audio
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # add repo root so `from lib.types...` works
 from lib.color_provenance import ProbeError, proxy_source_for
@@ -114,7 +115,7 @@ def ingest_source(
 
     Returns a clip dict of the same shape init writes, plus source dimensions:
         {"id"?, "type": "video" (or "audio" for an audio file), "src", "start": 0.0, "end": 0.0,
-         "sourceDuration", "sourceWidth"?, "sourceHeight"?, "sourceCreatedAt"?,
+         "sourceDuration", "sourceWidth"?, "sourceHeight"?, "sourceCreatedAt"?, "silentAudio"?,
          "proxySrc"?}
     Optional keys: ``id`` only when *clip_id* is given; ``sourceWidth`` /
     ``sourceHeight`` only when the probe succeeded; ``sourceCreatedAt`` only when
@@ -170,6 +171,11 @@ def ingest_source(
         clip["sourceDuration"] = get_duration(clip["src"])
     except (Exception, SystemExit):
         pass
+
+    # Audio present but silent, measured on the staged original (a normalized
+    # master may add a silent track): data only, key absent otherwise.
+    if is_silent_audio(staged_src):
+        clip["silentAudio"] = True
 
     if info is not None:
         clip["sourceWidth"] = info["display_width"]
