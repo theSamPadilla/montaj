@@ -127,7 +127,7 @@ def process_one(input_path: str, threshold: float, min_silence: float, silences=
         keeps.append([pos, dur])
 
     if not keeps:
-        fail("no_speech", f"No speech detected in {input_path}")
+        return {"input": input_path, "keeps": [], "note": "No speech detected"}
 
     return {"input": input_path, "keeps": keeps}
 

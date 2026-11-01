@@ -100,8 +100,8 @@ def test_the_step_cli_still_reads_silencedetect(monkeypatch):
     assert spec["keeps"] == [[0.0, 1.0], [2.0, 3.0]]
     # min_keep: a 40 ms keep between two silences goes by default, stays with min_keep 0 (cut's)
     sils = [(0.0, 1.0), (1.04, 3.0)]
-    with pytest.raises(SystemExit):                                       # no keep left: no_speech, as before
-        waveform_trim.process_one("x.mp4", 0, 0, silences=sils)
+    assert waveform_trim.process_one("x.mp4", 0, 0, silences=sils) == {   # no keep left: data, not a refusal
+        "input": "x.mp4", "keeps": [], "note": "No speech detected"}
     assert waveform_trim.process_one("x.mp4", 0, 0, silences=sils, min_keep=0.0)["keeps"] == [[1.0, 1.04]]
     assert len(seen) == 1                                                  # given silences: no ffmpeg
 

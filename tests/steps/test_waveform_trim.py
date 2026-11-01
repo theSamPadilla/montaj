@@ -169,3 +169,38 @@ def test_cli_waveform_trim_threshold_is_a_number():
     assert parser.parse_args(["waveform-trim", "a.mp4", "--threshold", "-30"]).threshold == -30.0
     with pytest.raises(SystemExit):
         parser.parse_args(["waveform-trim", "a.mp4", "--threshold", "1,ametadata=mode=print:file=/x"])
+
+
+# --- a silent input is data, not a refusal ------------------------------------
+
+def _silent_clip(tmp_path):
+    out = tmp_path / "silent.mp4"
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=320x240:r=30",
+                    "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", "2",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(out)],
+                   check=True, capture_output=True)
+    return out
+
+
+def test_waveform_trim_silent_input_returns_empty_keeps_and_a_note(tmp_path):
+    silent = _silent_clip(tmp_path)
+    proc = run_step("waveform_trim.py", "--input", str(silent))
+    assert proc.returncode == 0, f"stderr: {proc.stderr}"
+    assert json.loads(proc.stdout) == {"input": str(silent), "keeps": [], "note": "No speech detected"}
+
+
+def test_waveform_trim_batch_with_one_silent_input_keeps_the_others(test_video, tmp_path):
+    silent = _silent_clip(tmp_path)
+    proc = run_step("waveform_trim.py", "--inputs", str(silent), str(test_video))
+    assert proc.returncode == 0, f"stderr: {proc.stderr}"
+    first, second = json.loads(proc.stdout)
+    assert first == {"input": str(silent), "keeps": [], "note": "No speech detected"}
+    assert second["input"] == str(test_video) and second["keeps"] and "note" not in second
+
+
+def test_rm_nonspeech_takes_a_silent_trim_spec_without_failing(test_video, tmp_path):
+    spec = tmp_path / "silent-spec.json"
+    spec.write_text(json.dumps({"input": str(test_video), "keeps": [], "note": "No speech detected"}))
+    proc = run_step("rm_nonspeech.py", "--input", str(spec))
+    assert proc.returncode == 0, f"stderr: {proc.stderr}"
+    assert json.loads(proc.stdout) == {"input": str(test_video), "keeps": []}
