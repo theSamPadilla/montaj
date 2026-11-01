@@ -1100,6 +1100,49 @@ def motion_issues(item, project_dir, label):
     return out
 
 
+# §642: an overlay animation still running at its cut. Two frames, the last but one and the last, both rendered alone
+# (transparent); the fraction of the ink that changed between them. Thresholds were measured on real sample_overlay
+# renders of a static hold, a box still sliding at its last frame and a text fading out over its last 6 frames (1080x1920, 30
+# frames, last two frames 28 and 29); the numbers are in the comment on each constant.
+END_MOTION_WIDTH = 270        # both frames are downscaled to this width before comparing
+END_INK_MIN = 0.002           # mean alpha of the last frame: under this nothing is left to be moving
+END_INK_KEEP = 0.6            # last/prev ink: below this the overlay is fading out, which is a proper exit
+END_MOTION_MIN = 0.02         # fraction of the ink that changed: measured static 0.000, box sliding 8 px/frame 0.208; the
+                              # fade-out alone reads 4.0 on this ratio, so only END_INK_MIN/END_INK_KEEP keep it unflagged
+END_MOTION_TEXT = "still moving at its last frame; settle it before the cut"
+
+
+def end_motion(png_prev, png_last):
+    """Fraction of the ink that changed between an overlay's last two frames, or None when it is not moving at its end
+    (nothing left, or fading out, which is a proper exit) or the pictures cannot be read. Pure: two RGBA PNG paths."""
+    try:
+        from PIL import Image, ImageChops, ImageStat
+        bands = []
+        for path in (png_prev, png_last):
+            im = Image.open(path).convert("RGBA")
+            w, h = im.size
+            im = im.resize((END_MOTION_WIDTH, max(1, round(h * END_MOTION_WIDTH / w))), Image.BILINEAR)
+            r, g, b, a = im.split()
+            bands.append((a, [ImageChops.multiply(c, a) for c in (r, g, b)]))
+        (a1, c1), (a2, c2) = bands
+        if a1.size != a2.size:
+            return None
+        npx = a1.size[0] * a1.size[1] * 255.0
+        ink1, ink2 = ImageStat.Stat(a1).sum[0] / npx, ImageStat.Stat(a2).sum[0] / npx
+        if ink2 <= END_INK_MIN or ink1 <= 0 or ink2 / ink1 < END_INK_KEEP:
+            return None
+        moved = ImageStat.Stat(ImageChops.difference(a1, a2)).sum[0]
+        moved += sum(ImageStat.Stat(ImageChops.difference(x, y)).sum[0] for x, y in zip(c1, c2))
+        denom = ImageStat.Stat(ImageChops.lighter(a1, a2)).sum[0]
+    except Exception:  # noqa: BLE001 — unreadable pictures leave the overlay unchecked
+        return None
+    return moved / denom if denom else None
+
+
+def end_motion_flagged(motion):
+    return motion is not None and motion > END_MOTION_MIN
+
+
 def _px(v):
     m = re.match(r"\s*([\d.]+)\s*px", str(v or ""))
     return float(m.group(1)) if m else None

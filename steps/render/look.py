@@ -120,6 +120,51 @@ def measure_many(entries):
     return out
 
 
+END_FRAMES_TIMEOUT_S = 90   # §642: per overlay, for the last two frames of each
+
+
+def _plain_overlay(entry):
+    src = entry["item"].get("src")
+    return isinstance(src, str) and src.endswith((".jsx", ".js")) and src.startswith("./") and entry["duration"] >= 3
+
+
+def end_frames(entries):
+    """§642: the last two frames of each overlay, rendered alone (transparent PNGs) in ONE sample_overlay --jobs
+    --no-measure call: {label: (prev png, last png)}. 3D scenes and engine items move by design and are skipped. A
+    call or a job that fails leaves its overlays out (unchecked), never an issue."""
+    todo = [e for e in entries if _plain_overlay(e)]
+    if not todo:
+        return {}
+    jobs, keys = [], []
+    for e in todo:
+        stem = e["out"][:-4]
+        for k, frame in enumerate((e["duration"] - 2, e["duration"] - 1)):
+            jobs.append({"component": e["path"], "props": e["item"].get("props") or {}, "frame": frame, "fps": e["fps"],
+                         "width": e["width"], "height": e["height"], "duration": e["duration"],
+                         "out": f"{stem}-end{k}.png",
+                         "googleFonts": [f for f in e["item"].get("googleFonts") or [] if isinstance(f, str) and f]})
+        keys.append(e["label"])
+    jobs_path = os.path.join(os.path.dirname(todo[0]["out"]), "look-end-jobs.json")
+    try:
+        with open(jobs_path, "w", encoding="utf-8") as f:
+            json.dump(jobs, f)
+        r = _run_group([sys.executable, SAMPLE_OVERLAY_PY, "--jobs", jobs_path, "--lanes", str(MEASURE_LANES),
+                        "--no-measure"], END_FRAMES_TIMEOUT_S * len(todo))
+        if r is None or r[0] != 0:
+            return {}
+        results = json.loads(r[1].strip().splitlines()[-1])["results"]
+    except (OSError, ValueError, IndexError, KeyError, TypeError):
+        return {}
+    if not isinstance(results, list) or len(results) != len(jobs):
+        return {}
+    out = {}
+    for n, label in enumerate(keys):
+        a, b = results[2 * n], results[2 * n + 1]
+        if isinstance(a, dict) and isinstance(b, dict) and a.get("pngPath") and b.get("pngPath"):
+            out[label] = (a["pngPath"], b["pngPath"])
+    return out
+
+
 BACKDROP_TIMEOUT_S = 60   # PL89g: per time, for the pictures behind the measured overlays
 
 
@@ -200,7 +245,7 @@ def sheet(project_path, project_dir, times):
 
 
 def run(project_path, at=None, image=False, detail=False, measure_fn=None, sheet_fn=sheet, clock=time.monotonic,
-        render_fn=None, backdrops_fn=None):
+        render_fn=None, backdrops_fn=None, end_fn=None):
     t0 = clock()
     project_dir = os.path.dirname(project_path)
     try:
@@ -272,6 +317,20 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=None, sheet
         checked.append(label)
         if it.get("keyframes"):
             notes.append(f"{label}: keyframed geometry read at its base values")
+    # §642: an animation still running at the cut (flags only; an unrendered or unreadable overlay is unchecked)
+    ends = {}
+    try:
+        measured = {x[2] for x in results if x[6] is not None}
+        ends = (end_fn or (end_frames if measure_fn is None else None) or (lambda _e: {}))([x for x in entries if x["label"] in measured])
+    except Exception:  # noqa: BLE001
+        ends = {}
+    end_moves = []
+    for x in entries:
+        pair = ends.get(x["label"])
+        mv = lc.end_motion(*pair) if pair else None
+        if lc.end_motion_flagged(mv):
+            issues.append({"t": lc.r2(x["e"]), "id": x["label"], "text": lc.END_MOTION_TEXT})
+            end_moves.append({"item": x["label"], "src": x["item"].get("src"), "endMotion": round(mv, 3)})
     issues += lc.text_overlaps(placed)
     issues += lc.top_slot_issues(placed, width, height)   # PL89d: keywords stacked in one top slot
     issues += lc.unread_marks_issues(project, project_dir)   # round 9: a beat marked, never labelled
@@ -295,7 +354,7 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=None, sheet
     out = lc.answer(issues, extra=extra)
     if detail:
         out.update({"issues": [f'{i["t"]}s {i["id"]}: {i["text"]}' for i in sorted(issues, key=lambda x: (x["t"], x["id"]))],
-                    "times": times, "items": checked, "notes": notes, "wallMs": int((clock() - t0) * 1000)})
+                    "times": times, "items": checked, "notes": notes, **({"endMotion": end_moves} if end_moves else {}), "wallMs": int((clock() - t0) * 1000)})
         out.pop("more", None)
     return out
 
