@@ -1430,7 +1430,7 @@ def update(project_path, render_fn=None, timeout=LOCK_TIMEOUT, overlay_fn=None):
     """Read the project, plan, and write `captions` only (under the project lock, onto the fresh captions).
     Returns the answer ({dark, light, cleared, kept, split, snapped, changed, warnings?}; `changed` is whether anything was written) or
     None when there is nothing to do (see needs_pass). Raises InkProjectChanged; lock errors (ProjectLockTimeout,
-    ProjectReadOnly, SyncConflict) pass through."""
+    ProjectReadOnly) pass through."""
     project_path = os.path.abspath(project_path)
     project_dir = os.path.dirname(project_path)
     with open(project_path, encoding="utf-8") as f:

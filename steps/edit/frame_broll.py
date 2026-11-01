@@ -19,7 +19,7 @@ import argparse, contextlib, copy, io, json, os, re, subprocess, sys
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
-from lib import look_check as lc, project_revisions, subject_track, sync_clash  # noqa: E402
+from lib import look_check as lc, project_revisions, subject_track  # noqa: E402
 from lib.common import fail, ffmpeg_bin, ffprobe_value, ff_seconds, ff_input, get_duration  # noqa: E402
 from lib.path_match import spaced_twin  # noqa: E402
 from lib.project_lock import update_project_or_fail  # noqa: E402
@@ -447,13 +447,8 @@ def run(project_path, item_id, *, mode="auto", source=None, detail=False, sample
     no_credits = profile_wants_no_credits(on_disk)
     made, preset_src = False, None
     if any(pl["mode"] == "card" for pl in todo):
-        def sync_check(rel):
-            try:
-                sync_clash.check_step_write(on_disk.get("id"), (), [rel])
-            except sync_clash.SyncConflict as e:
-                sync_clash.exit_refused(e.body)
         referenced = {it.get("src") for t in project["tracks"] for it in t.get("items", []) if isinstance(it.get("src"), str)}
-        rel, made = place.preset_file(project_dir, "footage_card", referenced, sync_check)
+        rel, made = place.preset_file(project_dir, "footage_card", referenced)
         preset_src = "./" + rel
 
     written, version = {}, None

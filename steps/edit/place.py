@@ -6,8 +6,7 @@
   beside the clip as cut writes it (lib/speech_units.transcribe_missing), never over a file.
 - The overlay: a JSX file in the project folder, or a preset (montaj_assets/render/templates/presets) copied into
   the project's overlays/ under its own name, never over a different file (a `-2`, `-3`... name instead).
-- The write: tracks only, through lib/project_lock.update_project_or_fail (under the project lock, which also
-  checks a Studio sync clash). The tracks as read are compared under the lock (project_revisions.revision_of): any
+- The write: tracks only, through lib/project_lock.update_project_or_fail (under the project lock). The tracks as read are compared under the lock (project_revisions.revision_of): any
   change since, a human edit or another step's, refuses `project_changed` and writes nothing. A new item goes on
   the given track, else the highest graphics track free over its span with nothing drawn over it, else a new track; `id` moves or updates that
   item alone, on its own track unless `track` names another, with a version of the project first (it changes an
@@ -21,7 +20,7 @@ import argparse, bisect, contextlib, io, json, math, os, re, secrets, shutil, sy
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
-from lib import look_check as lc, phrase_at, project_revisions, speech_units, sync_clash, write_places  # noqa: E402
+from lib import look_check as lc, phrase_at, project_revisions, speech_units, write_places  # noqa: E402
 from lib.common import fail, DEFAULT_WHISPER_MODEL  # noqa: E402
 from lib.project_lock import update_project_or_fail  # noqa: E402
 from lib import project_tracks  # noqa: E402
@@ -154,7 +153,7 @@ def preset_file(project_dir, preset, referenced, check=None, scene=None):
     """The preset copied into the project's overlays/: (project-relative path, made by this call). An identical file
     is reused only when an item in the tracks as read already points at it (one this call made and another reuses
     could otherwise be removed by this call's refusal); otherwise the first free name, `-2`, `-3`... Never over a
-    different file, never through a link, never outside the project folder. `check(rel)` (the Studio sync file check)
+    different file, never through a link, never outside the project folder. `check(rel)`, when given,
     is asked of the name chosen, before the file is made."""
     src = os.path.join(PRESETS_DIR, COPIED_PRESETS[preset])
     with open(src, "rb") as f:
@@ -406,13 +405,8 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
     width, height = lc.design_size(project)
     src, made = None, False
     if preset:
-        def sync_check(rel):
-            try:
-                sync_clash.check_step_write(on_disk.get("id"), (), [rel])
-            except sync_clash.SyncConflict as e:
-                sync_clash.exit_refused(e.body)
         referenced = {it.get("src") for t in project["tracks"] for it in t.get("items", []) if isinstance(it.get("src"), str)}
-        rel, made = preset_file(project_dir, preset, referenced, sync_check, scene)
+        rel, made = preset_file(project_dir, preset, referenced, None, scene)
         src = "./" + rel
     elif overlay:
         src = overlay_src(project_dir, overlay)

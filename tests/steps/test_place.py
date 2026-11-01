@@ -503,15 +503,6 @@ def test_an_overlays_folder_leading_outside_the_project_is_refused(tmp_path, cap
     assert list(outside.iterdir()) == []
 
 
-def test_the_sync_file_check_is_asked_of_the_name_written(tmp_path, monkeypatch):
-    d = make_project(tmp_path)
-    (d / "overlays" / "callout.jsx").write_text("// the person's own")
-    asked = []
-    monkeypatch.setattr(place.sync_clash, "check_step_write", lambda pid, fields, files: asked.append(list(files)))
-    run(d, at="1", preset="callout")
-    assert asked == [["overlays/callout-2.jsx"]]
-
-
 def test_two_clips_sharing_one_transcript_name_are_refused_before_a_phrase_lookup(tmp_path, capsys):
     d = make_project(tmp_path)
     shutil.copy(d / "speech.mp4", d / "speech.mov")

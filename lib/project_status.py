@@ -19,10 +19,10 @@ def is_storyboard_stage(project: dict) -> bool:
     return status == "pending" and (project.get("projectType") == "ai_video" or project.get("workflow") == "ai-broll")
 
 
-def mark_final_locked(project_path, allows=None) -> "tuple[dict, str] | None":
+def mark_final_locked(project_path) -> "tuple[dict, str] | None":
     """Set `status` to `final`, the caller holding the project lock: only from `draft` or `pending`, never on a
     storyboard stage. Re-reads the file and changes nothing else, so a concurrent save is never clobbered.
-    `allows(raw, project)` may veto the write (serve's Studio sync clash rule). Returns (project, text) when it
+    Returns (project, text) when it
     wrote, else None."""
     path = Path(project_path)
     try:
@@ -33,8 +33,6 @@ def mark_final_locked(project_path, allows=None) -> "tuple[dict, str] | None":
     if not isinstance(project, dict) or project.get("status") not in ("draft", "pending") or is_storyboard_stage(project):
         return None
     project["status"] = "final"
-    if allows is not None and not allows(raw, project):
-        return None
     try:
         text = write_json_atomic(path, project)
     except (OSError, ProjectReadOnly):
@@ -42,12 +40,12 @@ def mark_final_locked(project_path, allows=None) -> "tuple[dict, str] | None":
     return project, text
 
 
-def mark_final(project_path, allows=None) -> bool:
+def mark_final(project_path) -> bool:
     """`mark_final_locked` under the project lock, then, when it wrote, the version commit serve makes on a move to
     `final` (a folder's own project.json only). Never raises: a label never stops a render."""
     try:
         with project_lock(Path(project_path)):
-            result = mark_final_locked(project_path, allows)
+            result = mark_final_locked(project_path)
     except Exception:  # noqa: BLE001
         return False
     if result is None:

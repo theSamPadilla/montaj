@@ -1,7 +1,6 @@
 """Retired project shapes, read as their current form.
 
-serve converges a project on open (``_open_project``, with the tracks migration, under the project lock, through
-``save_guard.maintenance_allows``), answers the revisions route through it and applies it to every PUT, so the next
+serve converges a project on open (``_open_project``, with the tracks migration, under the project lock), answers the revisions route through it and applies it to every PUT, so the next
 save writes it too. Every other reader already copes: ``lib.types.project.normalize_project_type`` reads an unknown
 type as ``editing``.
 

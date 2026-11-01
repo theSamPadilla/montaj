@@ -14,7 +14,7 @@ import shutil
 import sys
 import tempfile
 
-from lib import project_revisions, speech_text, sync_clash
+from lib import project_revisions, speech_text
 from lib.common import fail
 from lib.project_lock import project_lock_or_fail
 from lib.project_tracks import normalize_tracks
@@ -100,15 +100,6 @@ def _noop(report, warnings) -> dict:
 SPEECH_TEXT_FILE = "speech-text.md"
 
 
-def _check_sync(before: dict, after: dict, text_file: bool = True) -> None:
-    """§482: the fields `after` changes and the text file (when it is written), against the project's open Studio
-    sync clashes (a no-op with MONTAJ_SYNC_STATE_DIR unset, or for the window's run). A refusal ends the step with it."""
-    try:
-        sync_clash.check_step_document(before, after, files=[SPEECH_TEXT_FILE] if text_file else [])
-    except sync_clash.SyncConflict as e:
-        sync_clash.exit_refused(e.body)
-
-
 def apply(project_path: str, text: str, *, preview: bool, max_pause: float | None,
           feel: str = DEFAULT_FEEL, base: dict | None = None, base_of: dict | None = None,
           version_message: str = "version: before speech edit", want_project: bool = False,
@@ -118,7 +109,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
 
     base (cut): the project as an in-memory step already changed it, and the one the text was read
     from. base_of: the disk project as the caller read it, before it made `base`. The text is derived,
-    built and carried on `base`; everything that guards the write (the sync check, the version, the lock,
+    built and carried on `base`; everything that guards the write (the version, the lock,
     the stale check and the merge) compares against `base_of`, so the write is refused, never merged over,
     when the disk changed at any time since the caller's read. A base that differs from the disk is written
     even when the text changes nothing.
@@ -134,7 +125,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     refiner: places the words the text is read and built on (speech_text.derive's; cut's speech_energy.Refiner).
     lower (with base): the speech track is a source cut lifted into a track of its own (an audio lane or the
     voiceover, lib/speech_source.py); `lower(candidate)` puts it back where it came from. The text, the summaries and
-    `amend` see the lifted project; the noop check, the validation, the sync check and the write see the lowered
+    `amend` see the lifted project; the noop check, the validation and the write see the lowered
     one, compared with `base_of` (the disk as it is). speech-text.md is not written: it would name the lifted track.
     """
     project_path = os.path.abspath(project_path)
@@ -148,9 +139,6 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
             on_disk = json.load(f)
     project = normalize_tracks(on_disk)
     as_read = copy.deepcopy(project)   # as read, before anything mutates it
-    # §482: the sync check compares with the file as it is on disk (a legacy `tracks` the write converts is a write
-    # of tracks); everything else works on the reader's shape. The same document unless the file is legacy.
-    on_disk_as_read = as_read if project is on_disk else copy.deepcopy(on_disk)
     read_keys = _READ_KEYS + tuple(k for k in guard_keys if k not in _READ_KEYS)
     read = _read_revisions(project, read_keys) if project_revisions.engine_guard_enabled() else None
     disk = project
@@ -239,9 +227,6 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
             out["_lifted"] = lifted
         return out
 
-    # §482: a field this edit changes, or its text file, in an open Studio sync clash refuses it before the
-    # version commit; the check runs again under the lock, on the fresh document.
-    _check_sync(on_disk_as_read, candidate, text_file=lower is None)
     # Everything that can fail runs before the write, so nothing fails after it.
     new_text = speech_text.render(speech_text.derive(lifted, project_dir, track=derived.track_id, sils=plain_sils), _title(candidate))
     version = commit_version(project_dir, version_message)
@@ -275,7 +260,6 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
                     merged[key] = candidate[key]
             elif key in as_read:
                 merged.pop(key, None)
-        _check_sync(fresh_on_disk, merged, text_file=lower is None)
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(merged, f, indent=2, ensure_ascii=False)

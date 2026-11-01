@@ -109,13 +109,6 @@ def test_a_status_it_must_not_touch_is_left_and_the_project_still_renders(tmp_pa
     assert "status_at_render" in kicked, "it rendered"
 
 
-def test_a_studio_sync_clash_skips_the_write_and_the_project_still_renders(tmp_path, monkeypatch):
-    project_dir, kicked = _project(tmp_path, monkeypatch, status="draft")
-    monkeypatch.setattr(projects_mod.save_guard, "maintenance_allows", lambda raw, project, who=None: False)
-    assert _render(project_dir)["status"] == "draft"
-    assert kicked["status_at_render"] == "draft"
-
-
 def test_a_failing_write_never_stops_the_render(tmp_path, monkeypatch):
     project_dir, kicked = _project(tmp_path, monkeypatch, status="draft")
 

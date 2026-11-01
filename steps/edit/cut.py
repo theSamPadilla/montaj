@@ -25,8 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail, get_duration, whisper_weight_path, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES
 from ai_video import save_project_changes
-from lib import project_revisions, speech_apply, speech_energy, speech_rehear, speech_source, speech_text, sync_clash, write_places
-from lib.project_lock import project_lock_or_fail
+from lib import project_revisions, speech_apply, speech_energy, speech_rehear, speech_source, speech_text, write_places
 from lib.project_tracks import normalize_tracks
 from lib.project_versions import commit_version, is_own_repo
 from lib.speech_apply import apply
@@ -648,8 +647,7 @@ def _read_plan(value, project_dir):
 
 
 def _write_plan(project_path, project_id, text):
-    """Write cut-plan.md in the project folder; with Studio sync on, checked against the open clashes under
-    the project lock and written in the same hold (as speech_text writes speech-text.md)."""
+    """Write cut-plan.md in the project folder."""
     project_dir = os.path.dirname(project_path)
     out_path = os.path.join(project_dir, PLAN_FILE)
 
@@ -687,14 +685,7 @@ def _write_plan(project_path, project_id, text):
             if os.path.lexists(tmp):
                 os.remove(tmp)
         return kept_at
-    if not sync_clash.state_dir():
-        return out_path, write()
-    with project_lock_or_fail(project_path, fail):
-        try:
-            sync_clash.check_step_write(project_id, files=[PLAN_FILE, PREV_PLAN_FILE, "cut-plan.prev-"])
-        except sync_clash.SyncConflict as e:
-            sync_clash.exit_refused(e.body)
-        return out_path, write()
+    return out_path, write()
 
 
 # ── the answer ───────────────────────────────────────────────────────────────
@@ -1502,8 +1493,8 @@ def _source(lift):
 
 def _write_silence(project_path, project_dir, disk, b, track_id, max_pause, marker, warnings, plan_stamp,
                    plan_hash=None, lift=None):
-    """The silence cut's write, with the speech path's guards: the other layers carried by the one map, the
-    sync check, validation, a version, and the locked stale check over every key it writes. A lifted source is
+    """The silence cut's write, with the speech path's guards: the other layers carried by the one map,
+    validation, a version, and the locked stale check over every key it writes. A lifted source is
     lowered back before any of them (`lift`). Returns (version saved, layer flags, the result as lifted)."""
     candidate, rep = _carried(b["origin"], b["work"], b["ti"], b["lineage"], project_dir)
 
@@ -1523,10 +1514,6 @@ def _write_silence(project_path, project_dir, disk, b, track_id, max_pause, mark
                                         _source(lift) if lift is not None else "video")
     _start(candidate)
     lifted, candidate = candidate, lowered(candidate)
-    try:
-        sync_clash.check_step_document(disk, candidate, files=[])
-    except sync_clash.SyncConflict as e:
-        sync_clash.exit_refused(e.body)
     speech_apply._validate(candidate)
     version = commit_version(project_dir, VERSION_MESSAGE)
     if not version and not is_own_repo(project_dir):

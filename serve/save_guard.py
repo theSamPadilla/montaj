@@ -8,7 +8,6 @@ for advisory mode, so any other local process calling serve directly is treated 
 strictest class. The secret is never in serve's environment: a process's environment block
 is readable by the same user (`ps eww`) even after os.environ forgets it.
 """
-import contextlib
 import hmac
 import json
 import os
@@ -19,7 +18,7 @@ from collections import OrderedDict
 
 from fastapi import HTTPException
 
-from lib import project_revisions, sync_clash
+from lib import project_revisions
 from lib.project_migrate import converge
 
 GUARD_ENV = project_revisions.GUARD_ENV
@@ -90,9 +89,6 @@ def startup() -> None:
     dependency checks spawn anything) and again when serve.server is imported: stdin is read
     on the first run only, and the second keeps what the first decided."""
     os.environ.pop(SECRET_ENV, None)
-    # §482: a step learns it was the window's only from serve (check_sync's step_origin); an inherited value
-    # must never reach a step or anything else serve starts.
-    os.environ.pop(sync_clash.ORIGIN_ENV, None)
     if os.environ.pop(STDIN_ENV, None) == "1" and not _state["stdin_done"]:
         _state["stdin_done"] = True
         _state["secret"] = _read_secret_line(_stdin_fd, _STDIN_TIMEOUT_SECONDS)
@@ -106,9 +102,6 @@ def startup() -> None:
         if not _state["secret_logged"]:
             _state["secret_logged"] = True
             print(SECRET_MISSING_LINE, file=sys.stderr, flush=True)
-    # §482: one line when MONTAJ_SYNC_STATE_DIR names a folder that does not exist (no clash anywhere), now or the
-    # first time a write finds it gone, so that fail-open is never silent. Once per process.
-    sync_clash.startup()
     _state["canary"] = "ok" if project_revisions.canary_ok() else "mismatch"
     if _state["requested"] and _state["canary"] != "ok" and not _state["logged"]:
         # A divergent hasher would refuse every save as stale; the shell's own guard
@@ -465,182 +458,10 @@ def get_headers(response, project, fields, raw_text=None, raw_project=None) -> N
     response.headers["x-montaj-revisions"] = json.dumps(revs, separators=(",", ":"))
 
 
-# ── §482 M4: the Studio sync clash backstop ──────────────────────────────────
-#
-# With MONTAJ_SYNC_STATE_DIR set, every project write asks check_sync, under the project lock where the route has
-# one and BEFORE check_save/check_read: a write that touches a field or file in an open Studio sync clash
-# (lib/sync_clash.py) is refused with the binding 409 {error: sync_conflict, fields, message}, unless it is a
-# person's. Unset: nothing is read and nothing changes. The trust rule is x-montaj-writer's: only a request with the
-# launch secret may name its origin.
-#
-#   human     trusted `editor` with no x-montaj-write-origin: the window. Passes.
-#   sync      trusted `tool` + origin `sync`: the app's Studio sync pull (it writes the merge). Passes.
-#   resolve   trusted `tool` + origin `resolve` + x-montaj-sync-resolve: <clash id>: a person's resolve, written by
-#             the shell. With the id an open clash in the sidecar, it may write that clash's own fields and files
-#             and nothing else (review 40, 4): any other name it sends is refused, and a field it changes unnamed (a
-#             normalisation) may not be another clash's. With the sidecar unsure it passes (it can not be checked,
-#             and the person must still be able to resolve). Any other id is `other`.
-#   untrusted the same resolve headers while serve has NO launch secret (it never arrived, review 40 3b): nothing can
-#             be believed, so it is refused like `other`, sure sidecar or not, but as 403 `untrusted`, so the app
-#             tells the person to restart Montaj instead of offering the resolve again.
-#   drive     trusted `editor` + origin `drive`: the window while the person's AI drives it. An AI write from the
-#             window to a clashed name is allowed (Sam, 2026-10-24): the app holds the person's version of the clash
-#             before it forwards the write and marks that clash `held` in the sidecar, and the clash stays open for a
-#             person to resolve. Passes on held names only (sync_clash.unheld_touched): a name the app did not hold,
-#             or an unsure set, refuses it as before. A step it runs carries MONTAJ_WRITE_ORIGIN=drive, checked the
-#             same way under the lock.
-#   other     everything else: `ai`, no or a wrong secret, plain `tool`, `tool` + `app`, `editor` + any other
-#             origin, a step run by any of these, and serve's own maintenance heals. Refused on a clashed name.
-#
-# A write names its fields and files (`fields`, `files`); a write of a whole document also passes `derived`, the
-# fields it changes without naming them (check_sync_document): for everyone but a resolve they count the same.
-
-RESOLVE_ORIGIN = "resolve"
-DRIVE_ORIGIN = "drive"
-RESOLVE_HEADER = "x-montaj-sync-resolve"
-_RESOLVE_ID_MAX = 256
-UNTRUSTED_MESSAGE = "Montaj could not confirm this resolve, so nothing was saved. Restart Montaj and try again."
-
-
-def untrusted_refusal(names) -> dict:
-    """A resolve serve cannot believe (no launch secret): {error: untrusted, fields, message}, answered 403."""
-    return {"error": "untrusted", "fields": list(names), "message": UNTRUSTED_MESSAGE}
-
-
-class SyncWho:
-    """Who a write is, for the sync check: `human`, `sync`, `resolve` (with its clash id) or `other`."""
-    __slots__ = ("kind", "clash_id")
-
-    def __init__(self, kind, clash_id=None):
-        self.kind = kind
-        self.clash_id = clash_id
-
-
-MAINTENANCE = SyncWho("other")
-
-
-def sync_who(headers) -> SyncWho:
-    if isinstance(headers, SyncWho):
-        return headers
-    headers = headers if headers is not None else {}
-    writer, trusted = writer_of(headers)
-    if not trusted:
-        if not _state["secret"] and headers.get(ORIGIN_HEADER) == RESOLVE_ORIGIN and headers.get(RESOLVE_HEADER):
-            return SyncWho("untrusted")
-        return MAINTENANCE
-    origin = headers.get(ORIGIN_HEADER)
-    if writer == "editor" and not origin:
-        return SyncWho("human")
-    if writer == "editor" and origin == DRIVE_ORIGIN:
-        return SyncWho("drive")
-    if writer == "tool" and origin == SYNC_ORIGIN:
-        return SyncWho("sync")
-    if writer == "tool" and origin == RESOLVE_ORIGIN:
-        clash_id = headers.get(RESOLVE_HEADER)
-        if isinstance(clash_id, str) and 0 < len(clash_id) <= _RESOLVE_ID_MAX and clash_id.isprintable():
-            return SyncWho("resolve", clash_id)
-    return MAINTENANCE
-
-
-def step_origin(headers) -> str:
-    """MONTAJ_WRITE_ORIGIN for a step serve runs: `human` for the window, `drive` for the window while the AI drives
-    it, else `ai`."""
-    kind = sync_who(headers).kind
-    return sync_clash.HUMAN_ORIGIN if kind == "human" else sync_clash.DRIVE_ORIGIN if kind == "drive" else "ai"
-
-
-def sync_refusal(project_id, who, fields=(), files=(), *, everything: bool = False, derived=()) -> "dict | None":
-    """The refusal body for a write, or None to go on. Reads nothing with MONTAJ_SYNC_STATE_DIR unset. `derived`
-    are fields the write changes without naming them (they refuse like `fields`, except for a resolve)."""
-    if not sync_clash.state_dir():
-        return None
-    who = sync_who(who)
-    if who.kind in ("human", "sync"):
-        # A sync pull passes even when it deletes (sends as null) a field that is itself in an open clash, and
-        # answers 200. Intended: the pull writes the merge, and the merge keeps mine at clash targets, so a
-        # clashed field arrives as a delete only when the merge decided it.
-        return None
-    if not everything and not fields and not files and not derived:
-        return None
-    if who.kind not in ("resolve", "untrusted"):
-        # Sam, 1.5.1: an AI or driven write is never refused for Studio sync, a recorded clash or not. Only a
-        # person's resolve keeps its outside-the-clash check.
-        return None
-    clashes = sync_clash.load(project_id)
-    if clashes.unsure:
-        # An unsure read is not a clash (Sam, 1.5.1: "if the sync state can't be checked make the edit
-        # optimistically"): the write goes through. load() logged the reason.
-        return None
-    if who.kind == "drive":
-        names = sync_clash.unheld_touched(clashes, [*fields, *derived], files, everything)
-        return sync_clash.refusal(names) if names else None
-    if who.kind == "resolve" and who.clash_id in clashes.ids:
-        names = sync_clash.outside_clash(clashes, who.clash_id, fields, files, derived, everything)
-    else:
-        names = sync_clash.touched(clashes, [*fields, *derived], files, everything)
-    if not names:
-        return None
-    return untrusted_refusal(names) if who.kind == "untrusted" else sync_clash.refusal(names)
-
-
-def sync_exception(body: dict) -> HTTPException:
-    """The answer for a refusal body: 403 for `untrusted`, else the binding 409."""
-    return HTTPException(403 if body.get("error") == "untrusted" else 409, detail=body)
-
-
-def check_sync(headers, project_id, fields=(), files=(), *, everything: bool = False, derived=()) -> None:
-    """Raise the binding 409 when this write touches a clashed name (403 `untrusted` for a resolve serve cannot
-    believe). `headers` is the request's, or a SyncWho; `fields` are top-level keys, `files` relpaths in the project
-    folder (a trailing `/` a folder), `everything` a write of the whole project (a restore, a delete), `derived`
-    fields it changes unnamed."""
-    body = sync_refusal(project_id, headers, fields, files, everything=everything, derived=derived)
-    if body is not None:
-        raise sync_exception(body)
-
-
-def check_sync_document(headers, project_id, before: dict, after: dict, named=()) -> None:
-    """check_sync for a write of a whole document (review 40, 1): `named` are the fields the request names (the
-    body's keys), and every other top-level field whose value on disk differs between `before` (the file as read
-    under the lock) and `after` (exactly what will be written) counts too, so a normalisation or a derived rewrite
-    can never change a clashed field the request did not name. Nothing is compared with MONTAJ_SYNC_STATE_DIR
-    unset, or for the window and the pull."""
-    if not sync_clash.state_dir() or sync_who(headers).kind in ("human", "sync"):
-        return
-    named = list(dict.fromkeys(named))
-    derived = [f for f in sync_clash.changed_fields(before, after) if f not in named]
-    check_sync(headers, project_id, named, derived=derived)
-
-
-def maintenance_refusal(raw_text, project: dict, who=None) -> "dict | None":
-    """For serve's own write-backs (a heal, a proxy, a copy patch, a download landing), under the project lock:
-    the refusal when the write changes a top-level field in an open clash or the clash set is unsure, else None.
-    The write is then skipped, and runs again at the next open or save. `raw_text` is the file as read under the
-    lock; `who` is the request a follow-up belongs to (default: serve's own maintenance)."""
-    if not sync_clash.state_dir():
-        return None
-    try:
-        before = json.loads(raw_text) if isinstance(raw_text, str) else raw_text
-    except ValueError:
-        before = None
-    changed = sync_clash.changed_fields(before, project)
-    if not changed:
-        return None
-    # The id as read under the lock: a write that changes `id` is checked against the project it changes.
-    pid = before.get("id") if isinstance(before, dict) else None
-    if not pid and isinstance(project, dict):
-        pid = project.get("id")
-    # Derived: a follow-up names nothing itself (a resolve's may change its own clash's fields and unclashed ones).
-    return sync_refusal(pid, who if who is not None else MAINTENANCE, derived=changed)
-
-
-def maintenance_allows(raw_text, project: dict, who=None) -> bool:
-    return maintenance_refusal(raw_text, project, who) is None
-
-
 def project_of_path(path, *, folder: bool = False) -> "tuple[str | None, str] | None":
     """(project id, relpath) of the topmost project folder in the workspace holding `path` (real path: `..`, a
     symlinked parent and the like resolve first), or None outside every project. The relpath ends with `/` when
-    `folder`; the project folder itself is `*`. An unreadable project.json gives id None (which reads unsure)."""
+    `folder`; the project folder itself is `*`. An unreadable project.json gives id None."""
     found = project_folder_of_path(path, folder=folder)
     return None if found is None else (found[0], found[1])
 
@@ -672,46 +493,7 @@ def project_folder_of_path(path, *, folder: bool = False) -> "tuple[str | None, 
                 pid = None
             rest = parts[i + 1:]
             if not rest:
-                return (pid if isinstance(pid, str) else None), sync_clash.EVERYTHING, here
+                return (pid if isinstance(pid, str) else None), "*", here
             rel = "/".join(rest) + ("/" if folder else "")
             return (pid if isinstance(pid, str) else None), rel, here
     return None
-
-
-def check_sync_paths(headers, writes) -> None:
-    """check_sync for writes given as absolute paths: `writes` is [(path, is_folder)]. Each path inside a project
-    folder is checked against that project's clash set as its relpath."""
-    if not sync_clash.state_dir() or sync_who(headers).kind in ("human", "sync"):
-        return
-    by_project: dict = {}
-    for path, is_folder in writes:
-        found = project_of_path(path, folder=is_folder)
-        if found is not None:
-            by_project.setdefault(found[0], []).append(found[1])
-    for pid, rels in by_project.items():
-        check_sync(headers, pid, files=rels)
-
-
-def sync_checked(headers) -> bool:
-    """Whether this request's writes are checked against the clash sets at all (sync on, and not the window or the
-    pull). When False, nothing is read and no lock is taken for the check."""
-    return bool(sync_clash.state_dir()) and sync_who(headers).kind not in ("human", "sync")
-
-
-@contextlib.asynccontextmanager
-async def sync_paths_locked(headers, writes):
-    """check_sync_paths under the project lock of every project folder holding one of `writes` (review 40, the
-    time-of-check gap): the caller writes inside the block, so a clash recorded under the lock is never missed
-    between the check and the write. Folders are locked in path order. Off (sync off, the window, the pull): no
-    lock, no read, and the caller writes as before."""
-    if not sync_checked(headers):
-        yield
-        return
-    from lib.project_lock import project_lock_async
-    folders = sorted({found[2] for path, is_folder in writes
-                      if (found := project_folder_of_path(path, folder=is_folder)) is not None})
-    async with contextlib.AsyncExitStack() as stack:
-        for folder in folders:
-            await stack.enter_async_context(project_lock_async(os.path.join(folder, "project.json")))
-        check_sync_paths(headers, writes)
-        yield

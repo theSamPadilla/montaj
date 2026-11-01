@@ -39,9 +39,9 @@ from serve.caption_theme import sanitize_theme, seed_prev
 from serve import provenance
 from serve import save_guard
 from lib.project_status import mark_final_locked
-from lib import caption_ink, project_revisions, sync_clash
+from lib import caption_ink, project_revisions
 from serve.jobs import create_job, set_done, set_error, get_job
-from serve.routes.files import drawable_upload, save_upload, upload_name
+from serve.routes.files import drawable_upload, save_upload
 from serve.disk_full import STATUS as disk_full_status, child_disk_full, detail_for as disk_full_detail, workspace_root as disk_full_root
 from lib.disk_space import DiskFull, is_disk_full
 from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, canvas_for_footage, fps_from_rate, modal_dims
@@ -330,7 +330,6 @@ async def _run_caption_detached(
     broadcaster: "SSEBroadcaster",
     job: _CaptionJob,
     theme: dict = None,
-    who=None,
 ) -> None:
     """Run the caption pipeline to completion regardless of any client. Owns the
     `_active_caption_jobs` slot until the pipeline actually finishes, so a dropped
@@ -347,7 +346,6 @@ async def _run_caption_detached(
             on_log=None,
             is_disconnected=None,
             theme=theme,
-            who=who,
         )
         job.status, job.result = "done", track
     except CaptionPipelineError as e:
@@ -410,9 +408,6 @@ def _ingest_running(project_id: str) -> bool:
                for job in list(_ingest_jobs.values()))
 
 
-class _IngestRefused(Exception):
-    """The clip's landing was refused (§482, an open Studio sync clash): the job's error is the message."""
-
 # Strong refs to in-flight detached ingest tasks. asyncio only weakly tracks
 # fire-and-forget tasks, so without this an ingest task could be GC'd mid-run.
 _ingest_task_refs: set = set()
@@ -464,7 +459,6 @@ async def _run_ingest_detached(
     broadcaster: "SSEBroadcaster",
     job: "_IngestJob",
     provenance_entry: dict | None = None,
-    who=None,
 ) -> None:
     """Run lib.ingest.ingest_source to completion regardless of any client,
     mirroring `_run_caption_detached`. `ingest_source` is blocking (ffmpeg
@@ -512,10 +506,6 @@ async def _run_ingest_detached(
             project = json.loads(raw)
             clip = {"id": _next_clip_id(project), **clip}
             project.setdefault("sources", []).append(clip)
-            # §482: checked again as the request's writer, for a clash recorded while it ran.
-            refused = save_guard.maintenance_refusal(raw, project, who)
-            if refused is not None:
-                raise _IngestRefused(refused["message"])
             text = _write_project_json(project_path, project)
         broadcaster.publish(project_id, _sse_data_frame(text))
         if provenance_entry is not None:
@@ -641,14 +631,9 @@ def _start_source_download(
     broadcaster: "SSEBroadcaster | None" = None,
     *,
     resume: bool = False,
-    who=None,
 ) -> dict | None:
     """Write a `downloading` record under a new `jobId` and start the task.
     Returns the project as written, or None when nothing was started.
-
-    §482: nothing starts while a field the download writes (SOURCE_DOWNLOAD_FIELDS)
-    is in an open Studio sync clash, for anyone but `who` when it is a person; the
-    record stays as it is and the next open starts it.
 
     Synchronous on purpose: the live-task check, the read, the write and the
     task's registration happen with no await between, so two callers (two
@@ -667,9 +652,6 @@ def _start_source_download(
             current = project.get("sourceDownload")
             if not isinstance(current, dict) or current.get("status") != "downloading" or current.get("url") != url:
                 return None
-        if save_guard.sync_refusal(project_id, who if who is not None else save_guard.MAINTENANCE,
-                                   SOURCE_DOWNLOAD_FIELDS) is not None:
-            return None
         job_id = create_job()
         project["sourceDownload"] = {"kind": "youtube", "url": url, "status": "downloading", "jobId": job_id}
         try:
@@ -690,10 +672,6 @@ def _start_source_download(
     if broadcaster is not None:
         broadcaster.publish(project_id, _sse_data_frame(text))
     return project
-
-
-# What a YouTube source download writes, from its record to the clip it lands (§482).
-SOURCE_DOWNLOAD_FIELDS = ("sourceDownload", "sources", "tracks", "name")
 
 
 def _ensure_source_download(
@@ -789,8 +767,6 @@ def _update_downloading_record(project_dir: Path, job_id: str, change) -> str | 
         if not isinstance(record, dict) or record.get("status") != "downloading" or record.get("jobId") != job_id:
             return None
         if not change(project, record):
-            return None
-        if not save_guard.maintenance_allows(raw, project):   # §482: skipped while clashed
             return None
         try:
             return _write_project_json(project_path, project)
@@ -979,14 +955,7 @@ async def _finalize_source_download(
             clip = {"id": _next_clip_id(project), **clip}
             sources.append(clip)        # §590: never laid on the timeline; cut builds the spine from sources
         project["sourceDownload"] = {"kind": "youtube", "url": url, "status": "done", "clipId": clip["id"]}
-        refused = save_guard.maintenance_refusal(raw, project)
-        if refused is None:
-            text = _write_project_json(project_path, project)
-    if refused is not None:
-        # §482: a field it lands in is in an open Studio sync clash. The record stays `downloading`, so the
-        # next open after the clash closes lands it (the file is kept).
-        set_error(job_id, refused)
-        return
+        text = _write_project_json(project_path, project)
     if broadcaster is not None:
         broadcaster.publish(project_id, _sse_data_frame(text))
     # Where the file came from (serve/provenance.py). Best-effort, like the proxy below.
@@ -1033,8 +1002,7 @@ def _fail_source_download(
             raw = project_path.read_text()
             project = json.loads(raw)
             project["sourceDownload"] = {"kind": "youtube", "url": url, "status": "failed", "error": code}
-            # §482: `sourceDownload` in an open Studio sync clash keeps `downloading` (it resumes at an open).
-            text = _write_project_json(project_path, project) if save_guard.maintenance_allows(raw, project) else None
+            text = _write_project_json(project_path, project)
         except (OSError, ValueError, ProjectReadOnly):
             text = None
     if text is not None and broadcaster is not None:
@@ -1095,11 +1063,8 @@ async def retry_source_download(project_id: str, request: Request, project_dir: 
         parsed = parse_youtube_url(record.get("url"))
         if not parsed["ok"]:
             raise bad_request("invalid_clip_url", "The download's link is not a YouTube watch or youtu.be link")
-        # §482: what the download writes, in an open Studio sync clash.
-        who = save_guard.sync_who(getattr(request, "headers", None))
-        save_guard.check_sync(who, project_id, SOURCE_DOWNLOAD_FIELDS)
         started = _start_source_download(project_id, project_dir, record["url"], parsed["id"],
-                                         request.app.state.broadcaster, who=who)
+                                         request.app.state.broadcaster)
     if started is None:
         raise HTTPException(409, detail={"error": "not_failed", "message": "This download is already running."})
     return {"sourceDownload": started["sourceDownload"]}
@@ -1542,14 +1507,6 @@ async def run_project(request: Request, response: Response, body: dict = Body(..
             raise bad_request("invalid_field", "'adoptSeed' does not take 'clipUrls'")
         if remote_clips or remote_assets:
             raise bad_request("invalid_field", "'adoptSeed' does not take 'remoteClips' or 'remoteAssets'")
-    if project_id_arg:
-        # §482: a second folder under a synced project's id shares its clash set (A-17), so the AI may not make
-        # one while a clash is open. Not even from the window it drives with the clash held (B1 allows writing a held
-        # clash's names, never a second copy of the project): a driven run is checked as the AI's.
-        who = getattr(request, "headers", None)
-        if save_guard.sync_who(who).kind == "drive":
-            who = save_guard.MAINTENANCE
-        save_guard.check_sync(who, project_id_arg, everything=True)
 
     # --- Carousel fast path — branch before clip/asset/intake validation ---
     wf_data = read_workflow(workflow)
@@ -2171,7 +2128,7 @@ async def _run_look_migration_unit(unit: _LookMigrationUnit) -> str | None:
 
 
 def _apply_project_edits(project_path: Path, edits: list[tuple],
-                         *, settings: dict | None = None, who=None) -> tuple[dict, str] | None:
+                         *, settings: dict | None = None) -> tuple[dict, str] | None:
     """Apply `(item_id, item_src, field, value)` edits to a project.json — a
     `None` value deletes the field. Each key of `settings` is set in the
     project's `settings` in the same write. Returns the updated (project, json
@@ -2188,16 +2145,12 @@ def _apply_project_edits(project_path: Path, edits: list[tuple],
     The project may have changed since the edits were computed: items are
     matched by (id, src), and an item that no longer exists is simply skipped.
 
-    §482: a write-back that would change a field in an open Studio sync clash (or
-    with the clash set unsure) is skipped, None, like one with nothing to change;
-    the heal finds it again at the next open. `who` is the request a route's own
-    write-back belongs to (None: serve's maintenance).
     """
     with project_lock(project_path):
-        return _apply_project_edits_locked(project_path, edits, settings, who)
+        return _apply_project_edits_locked(project_path, edits, settings)
 
 
-def _apply_project_edits_locked(project_path: Path, edits, settings, who=None):
+def _apply_project_edits_locked(project_path: Path, edits, settings):
     try:
         raw = project_path.read_text()
         project = json.loads(raw)
@@ -2222,8 +2175,6 @@ def _apply_project_edits_locked(project_path: Path, edits, settings, who=None):
                 current[key] = value
                 changed = True
     if not changed:
-        return None
-    if not save_guard.maintenance_allows(raw, project, who):
         return None
     try:
         text = _write_project_json(project_path, project)
@@ -2554,8 +2505,6 @@ def _set_background_normalize_locked(project_path: Path, pending: bool) -> tuple
         del settings[BACKGROUND_NORMALIZE_KEY]
         changed = True
     if not changed:
-        return None
-    if not save_guard.maintenance_allows(raw, project):   # §482: `settings` in an open sync clash
         return None
     try:
         text = _write_project_json(project_path, project)
@@ -3466,8 +3415,7 @@ async def _open_project(project_id: str, request, project_dir: Path, seen: dict)
     # Under the project lock, on a fresh read, so a step's write in another
     # process is not undone by the copy read at the top of this handler (§467).
     # The same pass converges the retired shapes (lib/project_migrate.py: the Lyric video's music_video type and
-    # ffmpeg-drawtext render mode) through the same lock and the same maintenance check: a field in an open Studio
-    # sync clash is served converged and written at the first open after it closes.
+    # ffmpeg-drawtext render mode) through the same lock.
     text = None
     if converge(project) is not project:
         # Only a project that is about to be rewritten takes the lock; an open
@@ -3482,14 +3430,11 @@ async def _open_project(project_id: str, request, project_dir: Path, seen: dict)
                     pass
                 normalized = converge(project)
                 if normalized is not project:
-                    # §482: `tracks` in an open Studio sync clash is served converged, not written; the
-                    # next open after the clash closes writes it.
-                    if save_guard.maintenance_allows(fresh_raw if fresh_raw is not None else raw, normalized):
-                        try:
-                            text = _write_project_json(project_path, normalized)
-                            seen.update(text=text, project=normalized)
-                        except (OSError, ProjectReadOnly):
-                            pass  # degrade to "not converged yet": a project must always open
+                    try:
+                        text = _write_project_json(project_path, normalized)
+                        seen.update(text=text, project=normalized)
+                    except (OSError, ProjectReadOnly):
+                        pass  # degrade to "not converged yet": a project must always open
                     project = normalized
         except ProjectLockTimeout:
             # A project must always open: serve the converged copy, write nothing.
@@ -3778,14 +3723,8 @@ async def delete_project(
             "message": "A file is still being added to this project. Try again when it finishes.",
         })
     broadcaster = getattr(getattr(getattr(request, "app", None), "state", None), "broadcaster", None)
-    # §482: the project itself, and every other project the rescue would patch, against open Studio sync clashes.
-    headers = getattr(request, "headers", None)
-    who = save_guard.sync_who(headers)
-    save_guard.check_sync(who, project_id, everything=True)
     dependents = _dependents_of(project_id, project_dir)
-    for other_id, _folder, _other, _wanted in dependents:
-        save_guard.check_sync(who, other_id, _SAVE_MEDIA_KEYS)
-    await _rescue_dependents(project_id, project_dir, broadcaster, dependents=dependents, who=who)
+    await _rescue_dependents(project_id, project_dir, broadcaster, dependents=dependents)
     preserved: dict[str, str] = {}
     if preserve_assets:
         project_path = project_dir / "project.json"
@@ -3885,7 +3824,7 @@ def _dependents_of(project_id: str, project_dir: Path) -> "list[tuple[str, Path,
 
 
 async def _rescue_dependents(project_id: str, project_dir: Path, broadcaster: "SSEBroadcaster | None",
-                             *, dependents=None, who=None) -> None:
+                             *, dependents=None) -> None:
     """§126 (b): before a project's folder goes, every other project that
     points at files in it gets its own copies, the way a save copies borrowed
     media (`copy_borrowed_media`, then `_finish_save_copy`'s patch of just
@@ -3919,7 +3858,7 @@ async def _rescue_dependents(project_id: str, project_dir: Path, broadcaster: "S
         task.add_done_callback(_save_copy_tasks.discard)
         await asyncio.wait({task})
         patched, report = await _finish_save_copy_async(
-            other_id, folder, other, wanted, set(wanted), task, broadcaster, who=who)
+            other_id, folder, other, wanted, set(wanted), task, broadcaster)
         if patched is not None and broadcaster is not None:
             _late_save_follow_ups(other_id, folder, other, patched, broadcaster)
         if report.get("warnings"):
@@ -4117,12 +4056,10 @@ _PATCH_GONE = "gone"
 _PATCH_READ_KEY = "_patchRead"
 _PATCH_UNREADABLE = "unreadable"
 _PATCH_OTHER_PROJECT = "other project"
-# §482: the patch would change a field in an open Studio sync clash; kept, like an unreadable file, for the next save.
-_PATCH_SYNC_CLASH = "sync clash"
 
 
 def _patch_copied_media(
-    project_path: Path, previous: dict, made: dict, also=(), project_id: "str | None" = None, *, who=None,
+    project_path: Path, previous: dict, made: dict, also=(), project_id: "str | None" = None
 ) -> "tuple[dict, str, list, str] | str | None":
     """The patch (§126): re-read project.json (in the current tracks shape,
     whatever another writer left), point each entry that is new or changed
@@ -4154,15 +4091,12 @@ def _patch_copied_media(
         copied = apply_borrowed_media(previous, project, made, also)
         if not copied:
             return None
-        # §482: the save's follow-up, checked as the save's writer (`who`; none is serve's own).
-        if not save_guard.maintenance_allows(read_text, project, who):
-            return _PATCH_SYNC_CLASH
         return project, _write_project_json(project_path, project), copied, read_text
 
 
 def _finish_save_copy(
     project_id: str, project_dir: Path, previous: dict, wanted: dict, also, task: "asyncio.Future",
-    broadcaster: "SSEBroadcaster", *, who=None,
+    broadcaster: "SSEBroadcaster"
 ) -> "tuple[dict | None, dict]":
     """The copy's completion, on the event loop, once: take its result, run
     the patch, announce it like any write so an open editor picks the copies
@@ -4175,8 +4109,7 @@ def _finish_save_copy(
         if project_gone(project_dir):
             settled = set(wanted)
             return None, {}
-        return _finish_copy_and_patch(project_id, project_dir, previous, wanted, also, task, broadcaster, settled,
-                                      who=who)
+        return _finish_copy_and_patch(project_id, project_dir, previous, wanted, also, task, broadcaster, settled)
     finally:
         settle_copies(project_dir, wanted, settled)
 
@@ -4186,7 +4119,7 @@ _FINISH_COPY_LOCK_TRIES = 3
 
 async def _finish_save_copy_async(
     project_id: str, project_dir: Path, previous: dict, wanted: dict, also, task: "asyncio.Future",
-    broadcaster: "SSEBroadcaster", *, who=None,
+    broadcaster: "SSEBroadcaster"
 ) -> "tuple[dict | None, dict]":
     """`_finish_save_copy` under the async project lock (its patch takes the
     lock; a done-callback or a handler on the loop must not block on it). A lock
@@ -4196,7 +4129,7 @@ async def _finish_save_copy_async(
     for _ in range(_FINISH_COPY_LOCK_TRIES):
         try:
             async with project_lock_async(project_path):
-                return _finish_save_copy(project_id, project_dir, previous, wanted, also, task, broadcaster, who=who)
+                return _finish_save_copy(project_id, project_dir, previous, wanted, also, task, broadcaster)
         except ProjectLockTimeout:
             continue
     print(f"[montaj] save_project: project busy, could not save the copied paths for {project_id}")
@@ -4210,7 +4143,7 @@ async def _finish_save_copy_async(
 
 def _finish_copy_and_patch(
     project_id: str, project_dir: Path, previous: dict, wanted: dict, also, task: "asyncio.Future",
-    broadcaster: "SSEBroadcaster", settled: set, *, who=None,
+    broadcaster: "SSEBroadcaster", settled: set
 ) -> "tuple[dict | None, dict]":
     """`_finish_save_copy`'s work; adds to `settled` the keys the patch dealt with."""
     if task.cancelled() or task.exception() is not None:
@@ -4228,7 +4161,7 @@ def _finish_copy_and_patch(
         failed: dict = {}
         why = None
         try:
-            result = _patch_copied_media(project_dir / "project.json", previous, made, also, project_id, who=who)
+            result = _patch_copied_media(project_dir / "project.json", previous, made, also, project_id)
         except Exception as e:
             print(f"[montaj] save_project: could not save the copied paths for {project_id}: {e}")
             result, why = None, e
@@ -4236,9 +4169,8 @@ def _finish_copy_and_patch(
         if result is _PATCH_GONE or result is _PATCH_OTHER_PROJECT:
             settled.update(wanted)
             result = None
-        elif result is _PATCH_UNREADABLE or result is _PATCH_SYNC_CLASH:
-            why = ("project.json could not be read" if result is _PATCH_UNREADABLE
-                   else "the project has an open Studio sync clash")
+        elif result is _PATCH_UNREADABLE:
+            why = "project.json could not be read"
             failed = {key: src for key, src in wanted.items() if key in made}
             result = None
         elif why is None:
@@ -4284,7 +4216,7 @@ def _late_save_follow_ups(
 
 async def _copy_and_patch_media(
     project_id: str, project_dir: Path, previous: dict, wanted: dict, also, broadcaster: "SSEBroadcaster",
-    follow_ups: bool, on_late=None, *, who=None,
+    follow_ups: bool, on_late=None
 ) -> "tuple[dict | None, dict]":
     """After the save's own write: copy `wanted` into the project off the
     event loop, with no lock. The copy's completion runs the patch
@@ -4302,8 +4234,7 @@ async def _copy_and_patch_media(
 
     async def finish(task):
         try:
-            result = await _finish_save_copy_async(project_id, project_dir, previous, wanted, also, task, broadcaster,
-                                                   who=who)
+            result = await _finish_save_copy_async(project_id, project_dir, previous, wanted, also, task, broadcaster)
         except Exception as e:
             print(f"[montaj] save_project: could not finish copying borrowed media for {project_id}: {e}")
             result = (None, {"warnings": [
@@ -4406,9 +4337,7 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
         raw = project_path.read_text()
         existing = json.loads(raw)
         headers = getattr(request, "headers", None)
-        # Computed before any check: the merge reads nothing and writes nothing, and the sync check below needs
-        # the document exactly as it will be written.
-        named = save_guard.changed_fields(body)
+        # Computed before any check: the merge reads nothing and writes nothing.
         body = {key: value for key, value in body.items() if key not in _SAVE_REPORT_KEYS}
         merged = _merged_for_save(existing, body,
                                   drop_nulls=save_guard.sync_origin_of(headers) == save_guard.SYNC_ORIGIN)
@@ -4416,11 +4345,6 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
         # typed space for the U+202F in a screen recording's name) or Unicode form, saves that file's real name.
         # Before every check, so they see the document as it will be written. Stat calls only.
         src_warnings = _match_item_srcs(merged, existing, project_dir) if "tracks" in body else []
-        # §482: a field in an open Studio sync clash refuses the whole save, from anyone but a person, before
-        # the revisions are compared. Every field the write really changes counts, not only the body's: a
-        # normalisation of a legacy `tracks` the body never named is still a write of `tracks` (review 40, 1).
-        # Nothing is read or compared unless the app named its sync state folder.
-        save_guard.check_sync_document(headers, project_id, existing, merged, named)
         # §477: a stale or unread field refuses the whole save here, before anything is
         # merged or written. None (and no answer headers) unless the app switched it on.
         # (`body` without its report keys: check_save never counts them as fields either.)
@@ -4490,7 +4414,7 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
     if wanted:
         patched, media_report = await _copy_and_patch_media(
             project_id, project_dir, existing, wanted, retrying, broadcaster, follow_ups,
-            on_late=lambda: copy_pending.append(True), who=save_guard.sync_who(getattr(request, "headers", None)))
+            on_late=lambda: copy_pending.append(True)  )
         current = patched if patched is not None else merged
     patch_read = media_report.pop(_PATCH_READ_KEY, None) if media_report else None
     if current is not merged and patch_read != text:
@@ -4715,9 +4639,6 @@ async def record_project_provenance(project_id: str, request: Request, body: dic
     may record; an AI caller, or one without the launch secret, is 403. Not
     `require_editor`, which would refuse the main process's own import paths."""
     save_guard.require_shell(getattr(request, "headers", None))
-    # §482: the record is a project file; one in an open Studio sync clash is refused for plain tool too.
-    save_guard.check_sync(getattr(request, "headers", None), project_id,
-                          files=[f"{provenance.ASSETS_DIR}/{provenance.RECORD_NAME}"])
     try:
         entry = provenance.validate_entry(body.get("entry"))
         key, stored = await asyncio.to_thread(provenance.record_provenance, project_dir, body.get("path"), entry)
@@ -4796,8 +4717,6 @@ def _restore_under_lock(project_dir: Path, restored: dict, headers=None, project
     in one hold of the project lock, keeping the current notes."""
     project_path = project_dir / "project.json"
     with project_lock(project_path):
-        # §482: a restore replaces the whole project: refused while any clash is open, but for a person's.
-        save_guard.check_sync(headers, project_id, everything=True)
         try:
             current_project = json.loads(project_path.read_text())
         except (OSError, ValueError):
@@ -5028,13 +4947,6 @@ def _rerun_under_lock(project_dir: Path, body: dict, headers=None, project_id=No
     completed version and the reset in one hold of the project lock."""
     project_path = project_dir / "project.json"
     with project_lock(project_path):
-        # §482: what a rerun writes, in an open Studio sync clash.
-        fields = ["status", "runCount", "tracks"]
-        if "prompt" in body:
-            fields.append("editingPrompt")
-        if "workflow" in body:
-            fields.append("workflow")
-        save_guard.check_sync(headers, project_id, fields)
         fresh = json.loads(project_path.read_text())
         fresh_sources = fresh.get("sources")
         if not fresh_sources:
@@ -5114,9 +5026,6 @@ async def include_profile_asset(project_id: str, body: dict = Body(...), request
         raise forbidden("traversal", "Path escapes assets dir")
     if not src_path.is_file():
         raise not_found("not_found", f"Asset '{filename}' not found in profile '{profile_name}'")
-    # §482: `assets` and the file the copy lands as, in an open Studio sync clash, before the copy (and again
-    # under the lock, by the name it really landed on: a clashed file that does not exist here yet is theirs).
-    save_guard.check_sync(getattr(request, "headers", None), project_id, ["assets"], files=[filename])
 
     # Copy into project_dir, reusing the shared helper from project/init.py so
     # the collision-suffix pattern stays in one place.
@@ -5130,12 +5039,6 @@ async def include_profile_asset(project_id: str, body: dict = Body(...), request
     else:                            asset_type = "file"
 
     async with project_lock_async(project_path):
-        try:
-            save_guard.check_sync(getattr(request, "headers", None), project_id, ["assets"],
-                                  files=[dest.resolve().relative_to(project_dir.resolve()).as_posix()])
-        except HTTPException:
-            dest.unlink(missing_ok=True)   # the copy made above, new and nobody's yet
-            raise
         project = json.loads(project_path.read_text())   # fresh, under the lock
         existing = project.get("assets") or []
         next_idx = 0
@@ -5356,16 +5259,7 @@ async def upload_asset_to_project(
             entry = provenance.validate_entry(json.loads(provenance_entry))
         except ValueError as e:
             raise _provenance_refused(e)
-    # §482: a new file never replaces one, but a name in an open Studio sync clash is still that file's.
-    record = [f"{provenance.ASSETS_DIR}/{provenance.RECORD_NAME}"] if entry is not None else []
-    save_guard.check_sync(getattr(request, "headers", None), project_id, files=[upload_name(file.filename), *record])
     dest = await drawable_upload(await save_upload(file, project_dir))
-    if dest.name != upload_name(file.filename):
-        try:   # the de-duplicated or converted name it landed on
-            save_guard.check_sync(getattr(request, "headers", None), project_id, files=[dest.name])
-        except HTTPException:
-            dest.unlink(missing_ok=True)
-            raise
     answer = {"path": str(dest)}
     if entry is not None:
         try:
@@ -5411,9 +5305,6 @@ async def ingest_project_source(
             raise _provenance_refused(e)
     if not os.path.isfile(path):
         raise bad_request("invalid_path", f"'{path}' is not a readable file")
-    # §482: `sources` in an open Studio sync clash, before anything is staged (and again when it lands).
-    who = save_guard.sync_who(getattr(request, "headers", None))
-    save_guard.check_sync(who, project_id, ["sources"])
 
     project_path = project_dir / "project.json"
     try:
@@ -5431,7 +5322,7 @@ async def ingest_project_source(
     _ingest_jobs[job_id] = job
     task = asyncio.create_task(
         _run_ingest_detached(project_id, project_dir, path, color_space, broadcaster, job,
-                             provenance_entry=entry, who=who)
+                             provenance_entry=entry)
     )
     _ingest_task_refs.add(task)
     task.add_done_callback(_ingest_task_refs.discard)
@@ -5562,12 +5453,9 @@ async def probe_source_duration(
     # report as success — (2) and (3) probed a real value that never made it
     # to disk, which is the same silent-failure shape this feature exists to
     # fix. We already hold the pre-probe value, so we can tell them apart.
-    who = save_guard.sync_who(getattr(request, "headers", None))
     async with project_lock_async(project_path):
-        # §482: the backfill lands in `sources` and its `tracks` twin.
-        save_guard.check_sync(who, project_id, ["sources", "tracks"])
         result = _apply_project_edits(
-            project_path, [(source_id, src, "sourceDuration", duration)], who=who,
+            project_path, [(source_id, src, "sourceDuration", duration)],
         )
     if result is None and source.get("sourceDuration") != duration:
         raise server_error(
@@ -5590,7 +5478,7 @@ _DOWNLOAD_TASKS: set[asyncio.Task] = set()
 
 
 async def _run_download_to_job(
-    job_id: str, downloads: list, project_dir: Path, allowed_hosts: set, *, land_check=None,
+    job_id: str, downloads: list, project_dir: Path, allowed_hosts: set,
 ) -> None:
     """Run a transfer to completion independent of any client connection.
 
@@ -5599,49 +5487,10 @@ async def _run_download_to_job(
     the job itself an error.
     """
     try:
-        # §482: land_check only when there is one, so a call with sync off is exactly as before.
-        extra = {"land_check": land_check} if land_check is not None else {}
-        results = await fetch_to_disk_async(downloads, project_dir, allowed_hosts, **extra)
+        results = await fetch_to_disk_async(downloads, project_dir, allowed_hosts)
         set_done(job_id, {"results": results})
     except Exception as e:
         set_error(job_id, {"error": "download_failed", "message": str(e)})
-
-
-def _download_land_check(project_id: str, project_dir: Path, headers):
-    """§482, review 40: a download is checked again as each file lands, right before its rename and with no await
-    between them, so a clash recorded while it downloaded refuses that file (an error item with the refusal, the
-    temp file removed). Not under the project lock: the fetches run concurrently in lib/remote_io, which takes no
-    project lock, and the rename is the whole write. None (no check, as before) with sync off, for the window and
-    for the pull."""
-    if not save_guard.sync_checked(headers):
-        return None
-    who = save_guard.sync_who(headers)
-    root = Path(project_dir).resolve()
-
-    def check(dest: Path) -> "dict | None":
-        try:
-            rel = Path(dest).resolve().relative_to(root).as_posix()
-        except (ValueError, OSError):
-            return None   # outside the project: validate_project_subpath already refused it
-        return save_guard.sync_refusal(project_id, who, files=[rel])
-
-    return check
-
-
-def _project_relpaths(project_dir: Path, raws) -> list:
-    """§482: each path a request names inside the project, as its relpath from the project folder (resolved:
-    `..` and links count as where they land), a folder with a trailing `/`. A path that is refused anyway
-    (outside the project, empty, absolute) is left to the route's own check."""
-    out = []
-    root = Path(project_dir).resolve()
-    for raw in raws:
-        try:
-            target = validate_project_subpath(project_dir, raw)
-            rel = target.relative_to(root).as_posix()
-        except (HTTPException, ValueError, OSError):
-            continue
-        out.append(rel + "/" if target.is_dir() else rel)
-    return out
 
 
 @router.post("/projects/{project_id}/download")
@@ -5678,24 +5527,18 @@ async def download_assets(
     allowed_hosts = parse_allowed_hosts()
     if not allowed_hosts:
         raise forbidden("allowlist_unset", "MONTAJ_HTTP_ALLOWED_HOSTS is required")
-    # §482: a destination in an open Studio sync clash (fetch_to_disk_async validates each path itself).
-    headers = getattr(request, "headers", None)
-    save_guard.check_sync(headers, project_id, files=_project_relpaths(
-        project_dir, [d.get("destPath") for d in downloads if isinstance(d, dict)]))
-    land_check = _download_land_check(project_id, project_dir, headers)
 
     is_async = bool(body.get("_async", False))
     if is_async:
         job_id = create_job()
         task = asyncio.create_task(
-            _run_download_to_job(job_id, downloads, project_dir, allowed_hosts, land_check=land_check)
+            _run_download_to_job(job_id, downloads, project_dir, allowed_hosts)
         )
         _DOWNLOAD_TASKS.add(task)
         task.add_done_callback(_DOWNLOAD_TASKS.discard)
         return JSONResponse({"job_id": job_id, "status": "running"}, status_code=202)
 
-    extra = {"land_check": land_check} if land_check is not None else {}
-    results = await fetch_to_disk_async(downloads, project_dir, allowed_hosts, **extra)
+    results = await fetch_to_disk_async(downloads, project_dir, allowed_hosts)
 
     any_error = any(r.get("status") == "error" for r in results)
     return JSONResponse(
@@ -5763,15 +5606,7 @@ async def delete_files(
     paths = body.get("paths")
     if not isinstance(paths, list) or not paths:
         raise bad_request("invalid_body", "'paths' must be a non-empty list")
-    # §482: a file, or a folder holding one, in an open Studio sync clash refuses the whole request. Checked and
-    # deleted under the project lock (review 40: the time-of-check gap); sync off, the window and the pull: no lock.
-    headers = getattr(request, "headers", None)
-    if save_guard.sync_checked(headers):
-        async with project_lock_async(project_dir / "project.json"):
-            save_guard.check_sync(headers, project_id, files=_project_relpaths(project_dir, paths))
-            results = _delete_project_paths(project_dir, paths)
-    else:
-        results = _delete_project_paths(project_dir, paths)
+    results = _delete_project_paths(project_dir, paths)
 
     any_error = any(r.get("status") == "error" for r in results)
     return JSONResponse(
@@ -6075,14 +5910,13 @@ async def render_estimate(project_id: str, request: Request, project_dir: Path =
     return out
 
 
-async def mark_final_for_render(project_id: str, project_dir: Path, broadcaster=None, who=None) -> bool:
+async def mark_final_for_render(project_id: str, project_dir: Path, broadcaster=None) -> bool:
     """An export marks its project final, first, whoever asks for it (the editor's Export, an agent's render, a
     review send, the CLI through serve). `status` is a label: any status renders, so this never stops a render and
     never raises; it returns whether it wrote. The write is broadcast over SSE so an open editor adopts it."""
     try:
         async with project_lock_async(project_dir / "project.json"):
-            result = mark_final_locked(project_dir / "project.json",
-                                       lambda raw, project: save_guard.maintenance_allows(raw, project, who))
+            result = mark_final_locked(project_dir / "project.json")
     except Exception as exc:  # noqa: BLE001 - a label must never stop a render
         print(f"[montaj serve] render: could not mark {project_id} final ({exc})", file=sys.stderr)
         return False
@@ -6142,8 +5976,7 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
     # runs whatever the write did. A carousel snapshots the change into git here,
     # as its save to final would; the video path commits just below.
     render_broadcaster = getattr(getattr(getattr(request, "app", None), "state", None), "broadcaster", None)
-    if await mark_final_for_render(project_id, project_dir, render_broadcaster,
-                                   who=save_guard.sync_who(getattr(request, "headers", None))):
+    if await mark_final_for_render(project_id, project_dir, render_broadcaster):
         project["status"] = "final"
         if project_type == "carousel":
             await asyncio.to_thread(_git_commit_sync, project_dir, f"version: run {project.get('runCount', 1)} — final")
@@ -6380,9 +6213,9 @@ def _caption_log(broadcaster, project_id: str, message: str) -> None:
     broadcaster.publish(project_id, f"event: log\ndata: {json.dumps({'message': message})}\n\n")
 
 
-def _start_caption_ink(project_id: str, project_path: Path, project: dict, broadcaster, who=None) -> None:
+def _start_caption_ink(project_id: str, project_path: Path, project: dict, broadcaster) -> None:
     """Run the ink pass as a background task, so the caption job is done (SSE `done`, the slot released) without it."""
-    task = asyncio.create_task(_run_caption_ink(project_id, project_path, project, broadcaster, who))
+    task = asyncio.create_task(_run_caption_ink(project_id, project_path, project, broadcaster))
     _caption_ink_tasks.add(task)
     task.add_done_callback(_caption_ink_tasks.discard)
 
@@ -6393,7 +6226,7 @@ async def drain_caption_ink_tasks() -> None:
         await asyncio.gather(*list(_caption_ink_tasks), return_exceptions=True)
 
 
-async def _run_caption_ink(project_id: str, project_path: Path, project: dict, broadcaster, who=None) -> None:
+async def _run_caption_ink(project_id: str, project_path: Path, project: dict, broadcaster) -> None:
     """After the captions are written and broadcast: when the step has anything to do (a card on screen, or ink of its
     own to clear), run the caption_ink step (a subprocess; it renders frames) as the request's writer and broadcast the
     project again if it wrote. Any failure is a `log` event only: it never fails the caption job."""
@@ -6401,8 +6234,6 @@ async def _run_caption_ink(project_id: str, project_path: Path, project: dict, b
         if not caption_ink.needs_pass(project):
             return
         env = {**os.environ, "MONTAJ_ROOT": str(MONTAJ_ROOT)}
-        if sync_clash.state_dir():   # §482: whose run this is, as serve/routes/steps.py sets it
-            env[sync_clash.ORIGIN_ENV] = save_guard.step_origin(who)
         proc = await asyncio.create_subprocess_exec(
             sys.executable, str(MONTAJ_ROOT / "steps" / "transform" / "caption_ink.py"), "--project", str(project_path),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=str(MONTAJ_ROOT), env=env,
@@ -6444,7 +6275,6 @@ async def _run_caption_pipeline(
     on_log=None,
     is_disconnected=None,
     theme: dict = None,
-    who=None,
 ):
     """Core caption pipeline, shared by the SSE route and (later) a detached
     async caller. Runs build_audio_mix_spec → write mix spec → mix_timeline →
@@ -6592,11 +6422,6 @@ async def _run_caption_pipeline(
             change = caption_input_change(fingerprint, project)
             if change is not None:
                 raise CaptionPipelineError(change["message"], detail=change, status_code=409)
-        # §482: checked again as the request's writer, for a clash recorded while whisper ran.
-        clash = save_guard.sync_refusal(project_id, who if who is not None else save_guard.MAINTENANCE, ["captions"])
-        if clash is not None:
-            raise CaptionPipelineError(clash["message"], detail=clash,
-                                       status_code=save_guard.sync_exception(clash).status_code)
         prev = seed_prev(project.get("captions") or {}, theme)
         # Theme carried forward, ids minted, translated rows kept and re-cut at
         # their phrase boundaries (lib/caption_translation.py).
@@ -6608,7 +6433,7 @@ async def _run_caption_pipeline(
         project["captions"] = track
         text = _write_project_json(project_path, project)
     broadcaster.publish(project_id, _sse_data_frame(text))
-    _start_caption_ink(project_id, project_path, project, broadcaster, who)
+    _start_caption_ink(project_id, project_path, project, broadcaster)
 
     return track
 
@@ -6654,9 +6479,6 @@ async def generate_captions(
         project = json.loads(project_path.read_text())
     except Exception:
         raise not_found("project_not_found", f"project.json for {project_id} not found")
-    # §482: `captions` in an open Studio sync clash, before any work starts (and again when it lands).
-    who = save_guard.sync_who(getattr(request, "headers", None))
-    save_guard.check_sync(who, project_id, ["captions"])
 
     model = body.get("model") or DEFAULT_WHISPER_MODEL
     # No whisper weight installed (serve starts without one): refuse before
@@ -6692,7 +6514,7 @@ async def generate_captions(
         task = asyncio.create_task(
             _run_caption_detached(
                 project_id, project_dir, project, model, language, style, broadcaster, job,
-                theme=theme, who=who,
+                theme=theme,
             )
         )
         _caption_task_refs.add(task)
@@ -6728,7 +6550,6 @@ async def generate_captions(
                 on_log=on_log,
                 is_disconnected=request.is_disconnected,
                 theme=theme,
-                who=who,
             ))
 
             # Drain log frames until the pipeline task completes, then flush any
@@ -6848,20 +6669,12 @@ async def put_project_overlay(
     target = validate_project_subpath(project_dir, f"overlays/{name}.jsx")
 
     def write() -> bool:
-        save_guard.check_sync(getattr(request, "headers", None), project_id, files=[f"overlays/{name}.jsx"])
         target.parent.mkdir(parents=True, exist_ok=True)
         created = not target.exists()
         target.write_text(jsx_text, encoding="utf-8")
         return created
 
-    # §482: with Studio sync on, under the project lock, the overlay's file in an open sync clash is refused.
-    # Off, the write is as it always was (no lock), and no time-of-check gap opens (review 40): the variable is
-    # serve's environment, fixed for its life, so with it unset no sidecar exists that serve would honour.
-    if save_guard.sync_clash.state_dir():
-        async with project_lock_async(project_dir / "project.json"):
-            created = write()
-    else:
-        created = write()
+    created = write()
 
     return JSONResponse(
         content={
@@ -7002,8 +6815,6 @@ async def caption_translation(project_id: str, body: dict = Body(...), request: 
     async with project_lock_async(project_path):
         raw = project_path.read_text()
         project = json.loads(raw)
-        # §482: `captions` in an open Studio sync clash, before the read check.
-        save_guard.check_sync(getattr(request, "headers", None), project_id, ["captions"])
         # §477, with the guard on: the AI and tools must send the captions revision they read
         # (strict); the window's editor is advisory. Guard off: apply_translation's
         # source-words check is the guard, as before.

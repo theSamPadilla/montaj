@@ -28,14 +28,9 @@ def _log_probe_failures(healed) -> None:
 
 
 def _mark_final(project_path) -> None:
-    """Best effort; never raises. Studio sync's clash rule applies as it does to serve's own writes."""
+    """Best effort; never raises."""
     from lib.project_status import mark_final
-    try:
-        from serve import save_guard
-        allows = lambda raw, project: save_guard.maintenance_allows(raw, project)  # noqa: E731
-    except Exception:  # noqa: BLE001
-        allows = None
-    mark_final(project_path, allows)
+    mark_final(project_path)
 
 
 def main(project_path=None, out=None, workers=None, clean=False, scale=None, montaj_root=None,

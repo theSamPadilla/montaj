@@ -616,7 +616,7 @@ class _InkProc(_FakeCaptionProc):
 WROTE = b'{"dark": 1, "light": 0, "cleared": 0, "kept": 0, "changed": true}\n'
 
 
-def _route_ink_run(tmp_path, monkeypatch, with_card, ink_proc, who=None, drain=True, segments=None):
+def _route_ink_run(tmp_path, monkeypatch, with_card, ink_proc, drain=True, segments=None):
     """(track, broadcaster, argv of every subprocess, project dir, kwargs of the ink step's spawn, ink passes still
     running when the pipeline returned)."""
     from serve.routes.projects import _run_caption_pipeline
@@ -643,7 +643,7 @@ def _route_ink_run(tmp_path, monkeypatch, with_card, ink_proc, who=None, drain=T
 
     async def run():
         track = await _run_caption_pipeline("proj-ink", project_dir, project, model="base.en", language="auto",
-                                            style="pop", broadcaster=broadcaster, who=who)
+                                            style="pop", broadcaster=broadcaster)
         running = len(projects_mod._caption_ink_tasks)
         if not drain:
             for t in list(projects_mod._caption_ink_tasks):
@@ -686,16 +686,10 @@ def test_route_does_not_broadcast_again_when_the_step_wrote_nothing(tmp_path, mo
     assert len([f for f in b.frames if f.startswith("data:")]) == 1
 
 
-def test_route_gives_the_step_the_requests_write_origin_and_its_own_process_group(tmp_path, monkeypatch):
-    from lib import sync_clash
-    monkeypatch.setattr(sync_clash, "state_dir", lambda: "/x")
-    human = projects_mod.save_guard.SyncWho("human")
-    _, _, _, _, kw, _ = _route_ink_run(tmp_path, monkeypatch, True, _InkProc(), who=human)
-    assert kw[0]["env"][sync_clash.ORIGIN_ENV] == "human" and kw[0]["env"]["MONTAJ_ROOT"]
-    assert kw[0].get("start_new_session") is True or "creationflags" in kw[0]
-    (tmp_path / "proj").rename(tmp_path / "proj2")
+def test_route_gives_the_step_its_own_process_group(tmp_path, monkeypatch):
     _, _, _, _, kw, _ = _route_ink_run(tmp_path, monkeypatch, True, _InkProc())
-    assert kw[0]["env"][sync_clash.ORIGIN_ENV] == "ai", "a request with no writer is the AI's"
+    assert kw[0]["env"]["MONTAJ_ROOT"]
+    assert kw[0].get("start_new_session") is True or "creationflags" in kw[0]
 
 
 def test_route_job_is_done_before_the_ink_pass_ends(tmp_path, monkeypatch):
