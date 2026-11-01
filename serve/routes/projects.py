@@ -6819,7 +6819,7 @@ async def put_project_overlay(
     - Path safety: name regex rules out traversal; validate_project_subpath
       is a belt-and-suspenders second check.
     """
-    if not OVERLAY_NAME_RE.match(name):
+    if not OVERLAY_NAME_RE.fullmatch(name):
         raise bad_request(
             "invalid_name",
             f"Overlay name must match {OVERLAY_NAME_RE.pattern} (got {name!r})",
@@ -6872,6 +6872,107 @@ async def put_project_overlay(
         },
         status_code=201 if created else 200,
     )
+
+
+def _overlay_in_use(project_dir: Path, name: str) -> str:
+    """§643: why overlays/{name}.jsx must stay, or "" when nothing uses it. A timeline item or
+    carousel slide element whose src/template is that file, another overlay that imports it, or a
+    template-installed record. Every comparison ignores case (a case-insensitive disk would
+    delete the file through any spelling of its name); an extra refusal is the safe failure."""
+    tail = f"overlays/{name}.jsx".casefold()
+
+    def is_it(src) -> bool:
+        if not isinstance(src, str):
+            return False
+        src = src.replace("\\", "/").casefold()
+        return src == tail or src.endswith("/" + tail)
+
+    try:
+        project = json.loads((project_dir / "project.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        project = {}
+    if not isinstance(project, dict):
+        project = {}
+    users = []
+    tracks = project.get("tracks")
+    for ti, track in enumerate(tracks if isinstance(tracks, list) else []):
+        items = track if isinstance(track, list) else track.get("items") if isinstance(track, dict) else None
+        for ii, item in enumerate(items if isinstance(items, list) else []):
+            if isinstance(item, dict) and is_it(item.get("src")):
+                users.append(str(item.get("id") or f"track {ti} item {ii}"))
+    slides = project.get("slides")
+    for si, slide in enumerate(slides if isinstance(slides, list) else []):
+        elements = slide.get("elements") if isinstance(slide, dict) else None
+        for ei, el in enumerate(elements if isinstance(elements, list) else []):
+            ov = el.get("overlay") if isinstance(el, dict) else None
+            if isinstance(ov, dict) and is_it(ov.get("template")):
+                users.append(f"slide {si + 1} element {ei + 1}")
+    if users:
+        return f"Overlay {name} is on the timeline or a slide ({', '.join(users[:5])}). Remove those first."
+    spec = re.compile(
+        r"""(?:from|import\s*\(?|require\s*\()\s*['"`][^'"`]*?(?:^|/)""" + re.escape(name) + r"""(?:\.jsx|\.tsx|\.js)?['"`]""",
+        re.IGNORECASE,
+    )
+    importers = []
+    folder = project_dir / "overlays"
+    others = sorted(p for pat in ("*.jsx", "*.js", "*.tsx") for p in folder.glob(pat)) if folder.is_dir() else []
+    for other in others:
+        if other.stem.casefold() == name.casefold():
+            continue
+        try:
+            if spec.search(other.read_text(encoding="utf-8", errors="replace")):
+                importers.append(other.name)
+        except OSError:
+            continue
+    if importers:
+        return f"Overlay {name} is imported by {', '.join(importers[:5])}. Change those first."
+    for key, entry in provenance.annotated(project_dir).items():
+        if isinstance(entry, dict) and entry.get("kind") == "template" and not entry.get("stale") and key.replace("\\", "/").casefold() == tail:
+            return f"Overlay {name} came with a template. Leave it, or replace it with write_project_overlay."
+    return ""
+
+
+@router.delete("/projects/{project_id}/overlays/{name}")
+async def delete_project_overlay(
+    project_id: str,
+    name: str,
+    request: Request,
+    project_dir: Path = Depends(get_project_dir),
+):
+    """§643: delete an UNUSED <project_dir>/overlays/{name}.jsx.
+
+    Same constraints as the PUT: the name regex bounds the target to that one file,
+    validate_project_subpath is the second check, the Studio-sync guard and the project
+    lock apply. Refused (409) while the timeline, another overlay or a template record
+    uses it. A file already absent answers 200 with deleted: false.
+    """
+    if not OVERLAY_NAME_RE.fullmatch(name):
+        raise bad_request(
+            "invalid_name",
+            f"Overlay name must match {OVERLAY_NAME_RE.pattern} (got {name!r})",
+        )
+    target = validate_project_subpath(project_dir, f"overlays/{name}.jsx")
+
+    def remove() -> bool:
+        # The file's real name: on a case-insensitive disk Foo reaches foo.jsx, and every check is for that file.
+        folder = project_dir / "overlays"
+        real = next((f.stem for f in sorted(folder.glob("*.jsx")) if f.stem.casefold() == name.casefold()), None) if folder.is_dir() else None
+        if real is None:
+            real = name
+        save_guard.check_sync(getattr(request, "headers", None), project_id, files=[f"overlays/{real}.jsx"])
+        if not target.is_file():
+            return False
+        why = _overlay_in_use(project_dir, real)
+        if why:
+            raise HTTPException(409, detail={"error": "overlay_in_use", "message": why})
+        target.unlink()
+        return True
+
+    # Always under the project lock: the in-use check reads project.json, and a save must not land between it and the unlink.
+    async with project_lock_async(project_dir / "project.json"):
+        deleted = remove()
+
+    return {"name": name, "path": str(target), "deleted": deleted}
 
 
 @router.post("/projects/{project_id}/captions/translation")
