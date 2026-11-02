@@ -27,6 +27,7 @@ from common import fail, get_duration, whisper_weight_path, DEFAULT_WHISPER_MODE
 from ai_video import save_project_changes
 from lib import project_revisions, speech_apply, speech_energy, speech_rehear, speech_source, speech_text, write_places
 from lib.project_tracks import normalize_tracks
+from lib.project_status import is_storyboard_stage
 from lib.project_versions import commit_version, is_own_repo
 from lib.speech_apply import apply
 from lib.speech_build import DEFAULT_FEEL, FEELS
@@ -765,6 +766,7 @@ def _marker(mode, kept, removed, duration, max_pause, written, plan_stamp, plan_
            "planHash": plan_hash}
     if source != "video":
         out["source"] = source
+    out["sources"] = _sources_key(written)
     return out
 
 
@@ -781,13 +783,12 @@ def _has_clips(project, track_id):
     return any(float(it.get("end", 0)) > float(it.get("start", 0)) for it in items)
 
 
-def _spine(project, project_dir, words=False):
+def _spine(project, project_dir, words=False, clips=None):
     """§590: (project, spine ids, ids left out). A project with no clip on any track has the talking-head spine
     built in memory: its video sources on the first track, as project creation laid them before §590, so the plan
     rows every take of every line; only the cut that applies writes it. words (after transcription): a source whose
     words do not look like speech (b-roll) is left out, unless none does. Any other project is returned as it is."""
-    sources = [s for s in project.get("sources") or [] if isinstance(s, dict) and s.get("id") and s.get("src")
-               and s.get("type", "video") == "video"]
+    sources = [s for s in _picked(project, clips) if s.get("type", "video") == "video"]
     out = normalize_tracks(copy.deepcopy(project))
     if not sources or any(_media(t) for t in out.get("tracks", [])):
         return project, frozenset(), []
@@ -831,6 +832,64 @@ def _already_cut(project):
     return out
 
 
+
+
+def _picked(project, clips):
+    """The project's sources `clips` (ids, comma separated) names, in the order named; all of them when it is None.
+    An id that is no source is refused with the ids there are."""
+    srcs = [s for s in project.get("sources") or [] if isinstance(s, dict) and s.get("id") and s.get("src")]
+    if clips is None:
+        return srcs
+    ids = [c.strip() for c in clips.split(",") if c.strip()]
+    by_id = {s["id"]: s for s in srcs}
+    bad = [i for i in ids if i not in by_id]
+    if bad or not ids:
+        fail("invalid_params", f"clips names no source {', '.join(bad) or '(none)'}; the sources: {', '.join(by_id) or 'none'}.")
+    return [by_id[i] for i in ids]
+
+
+def _sources_key(project):
+    """What the project's sources are, for telling a changed set: each one's id and file."""
+    return sorted(f"{s['id']}={s['src']}" for s in project.get("sources") or [] if isinstance(s, dict) and s.get("id"))
+
+
+def _unplaced(project, project_dir):
+    """The ids of sources with no clip or audio item playing their file."""
+    played = {os.path.realpath(_resolve(it["src"], project_dir)) for t in normalize_tracks(copy.deepcopy(project)).get("tracks", [])
+              for it in _media(t) if isinstance(it.get("src"), str)}
+    audio = (project.get("audio") or {}).get("tracks") if isinstance(project.get("audio"), dict) else None
+    played |= {os.path.realpath(_resolve(a["src"], project_dir)) for a in audio or [] if isinstance(a, dict) and isinstance(a.get("src"), str)}
+    return [s["id"] for s in _picked(project, None) if os.path.realpath(_resolve(s["src"], project_dir)) not in played]
+
+
+def _stands(project, recut):
+    """Whether the project's cut marker stands: it is there, a recut was not asked for, and the sources are the ones
+    it was made from (a marker with no record of them, from before, stands)."""
+    m = project.get(MARKER_KEY)
+    if not isinstance(m, dict) or recut:
+        return False
+    return m.get("sources") is None or m["sources"] == _sources_key(project)
+
+
+def _audio_spine(project, project_dir, clips=None):
+    """§661: (project, whether it was built). A project with no clip on any track and no audio item whose sources are
+    audio (a voiceover's takes) has them in memory as one narration on lane 0, back to back in the order named, so
+    the cut plans them and writes them as audio, with no video to carry them. Any other project comes back as it is."""
+    out = normalize_tracks(copy.deepcopy(project))
+    audio = out.get("audio") if isinstance(out.get("audio"), dict) else {}
+    if any(_media(t) for t in out.get("tracks", [])) or any(isinstance(a, dict) and a.get("src") for a in audio.get("tracks") or []):
+        return project, False
+    srcs = [s for s in _picked(project, clips) if s.get("type") == "audio"]
+    if not srcs:
+        return project, False
+    items, at = [], 0.0
+    for s in srcs:
+        dur = round(get_duration(_resolve(s["src"], project_dir)), 6)
+        items.append({"id": s["id"], "type": "voiceover", "lane": 0, "src": s["src"], "start": round(at, 6),
+                      "end": round(at + dur, 6), "inPoint": 0.0, "outPoint": dur, "volume": 1})
+        at += dur
+    out["audio"] = {**audio, "tracks": [*(audio.get("tracks") or []), *items]}
+    return out, True
 
 
 # ── the run ──────────────────────────────────────────────────────────────────
@@ -1230,6 +1289,7 @@ def main():
     parser.add_argument("--language", default=None, help="The speaker's language (e.g. es), or 'auto' (the default)")
     parser.add_argument("--speech", default=None,
                         help="Where the speech is: auto (default), a video track id, audio:lane-<n>, audio:<type> or voiceover")
+    parser.add_argument("--clips", default=None, help="Cut only these sources: their ids, comma separated")
     parser.add_argument("--recut", action="store_true", help="Plan again a project cut already cut")
     parser.add_argument("--detail", action="store_true", help="Also answer with the kept lines")
     args = parser.parse_args()
@@ -1251,12 +1311,16 @@ def main():
 
 def _make_plan(args, project_path, project_dir):
     first = _load(project_path)
-    if isinstance(first.get(MARKER_KEY), dict) and not args.recut:
+    if _stands(first, args.recut):
         print(json.dumps(_already_cut(first), ensure_ascii=False))
         return
+    changed = isinstance(first.get(MARKER_KEY), dict) and not args.recut
     # §558: the speech is a video track, an audio lane or the voiceover; an audio one is lifted into a track of its
     # own for the cut (lib/speech_source.py) and lowered back at the write
-    spined, spine, _ = _spine(first, project_dir)
+    spined, spine, _ = _spine(first, project_dir, clips=args.clips)
+    aspine = False
+    if not spine:
+        spined, aspine = _audio_spine(first, project_dir, args.clips)
     key = speech_source.choose(spined, project_dir, args.speech)
     if spine and key != spined["tracks"][0]["id"]:
         spined, spine = first, frozenset()     # the spine is built for the video track cut, never under a narration
@@ -1269,10 +1333,12 @@ def _make_plan(args, project_path, project_dir):
     transcribed, failed, warnings = _transcribe_missing(first_l, track_id, project_path, project_dir,
                                                         args.model, args.language or "auto")
     disk = _load(project_path)        # read again after the long part
-    if isinstance(disk.get(MARKER_KEY), dict) and not args.recut:     # another run cut it meanwhile
+    if _stands(disk, args.recut) and not changed:     # another run cut it meanwhile
         print(json.dumps(_already_cut(disk), ensure_ascii=False))
         return
-    disk_s, spine, left = _spine(disk, project_dir, words=True) if spine else (disk, spine, [])
+    disk_s, spine, left = _spine(disk, project_dir, words=True, clips=args.clips) if spine else (disk, spine, [])
+    if aspine:
+        disk_s, _ = _audio_spine(disk, project_dir, args.clips)
     disk_l, lift = speech_source.lift(disk_s, key, project_dir)
     if left:
         warnings.insert(0, _left_out(left))
@@ -1290,6 +1356,10 @@ def _make_plan(args, project_path, project_dir):
         warnings.insert(0, THRESHOLD_SPEECH_WARNING)       # §577: it never reaches a clip with a transcript
     answer = {"project": disk.get("id"), "mode": "plan", "speech": key}
     notes = []
+    if changed:
+        left_out = _unplaced(disk, project_dir)
+        notes.append("the sources changed since the cut: planned again"
+                     + (f"; not on the timeline: {', '.join(left_out)}" if left_out else ""))
 
     if b["d"] is None:
         candidate, rep = _carried(b["origin"], b["work"], b["ti"], b["lineage"], project_dir)
@@ -1377,11 +1447,14 @@ def _apply_plan(args, project_path, project_dir):
     if isinstance(marker, dict) and marker.get("planStamp") == plan_stamp and marker.get("planHash") == plan_hash:
         fail("already_applied", "This plan is already applied: there is nothing new in it to apply. "
                                 "Edit it to change the cut.")
-    if speech_source.is_lifted(track_id) and not speech_source.has_source(disk, project_dir, key):
+    disk_a, aspine = _audio_spine(disk, project_dir, args.clips)
+    if speech_source.is_lifted(track_id) and not speech_source.has_source(disk_a, project_dir, key):
         fail("stale_plan", "The timeline changed since this plan was made. Run cut again for a new plan.")
-    disk_s, spine, left = _spine(disk, project_dir, words=True)
+    disk_s, spine, left = _spine(disk, project_dir, words=True, clips=args.clips)
     if spine and track_id != disk_s["tracks"][0]["id"]:
         disk_s, spine, left = disk, frozenset(), []
+    if not spine and aspine:
+        disk_s = disk_a
     disk_l, lift = speech_source.lift(disk_s, key, project_dir)
     _track(disk_l, track_id)
     plan_lang, plan_pause, plan_breath, plan_threshold = _plan_meta(text)
@@ -1471,8 +1544,9 @@ def _apply_plan(args, project_path, project_dir):
 
 
 def _start(project):
-    """A pending project is started by the cut that applies: the same write sets it to draft."""
-    if project.get("status") == "pending":
+    """A pending project is started by the cut that applies: the same write sets it to draft. Not one whose workflow
+    manages its own phases (an ai-broll storyboard): its recipe moves the status."""
+    if project.get("status") == "pending" and not is_storyboard_stage(project):
         project["status"] = "draft"
 
 

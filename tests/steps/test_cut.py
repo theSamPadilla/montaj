@@ -256,7 +256,7 @@ def test_schema_declares_the_params():
     names = {p["name"]: p for p in SCHEMA["params"]}
     assert SCHEMA["name"] == "cut"
     assert names["project"]["required"] is True and names["project"]["type"] == "path"
-    assert {"plan", "language", "max-pause", "breath", "silence-threshold", "speech", "recut", "detail", "model"} == set(names) - {"project"}
+    assert {"plan", "language", "max-pause", "breath", "silence-threshold", "speech", "clips", "recut", "detail", "model"} == set(names) - {"project"}
     assert names["silence-threshold"]["type"] == "float" and names["silence-threshold"]["min"] == -60
     assert "preview" not in names
     assert SCHEMA["input"]["type"] == "project" and "language is detected" in SCHEMA["description"]
@@ -526,7 +526,7 @@ def test_planning_a_cut_project_answers_already_cut(tmp_path, stub_transcribe, m
     plan, _ = plan_and_apply(d, monkeypatch)
     marker = json.loads((d / "project.json").read_text())["cleanCut"]
     assert set(marker) == {"at", "maxPause", "stepVersion", "mode", "kept", "removed", "duration", "tracksRev",
-                           "planStamp", "planHash"}
+                           "planStamp", "planHash", "sources"}
     plan_file = (d / "cut-plan.md").read_bytes()
     again, _ = run(d, monkeypatch=monkeypatch)
     assert again == {"project": "cut-fixture", "mode": "already-cut", "cutAt": marker["at"], "kept": marker["kept"],
