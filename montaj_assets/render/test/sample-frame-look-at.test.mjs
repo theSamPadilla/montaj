@@ -29,6 +29,23 @@ test('look_at rewrites the camera to one POV shot on the bone, at the distance, 
   assert.ok(Array.isArray(shot.from.at) && Array.isArray(shot.from.look), 'a shot needs its from')
 })
 
+test("the offset turns with the cast's base rot, so a turned cast is still shot from its front", () => {
+  const offsetFor = (rot) => {
+    const turned = JSON.stringify({ ...scene, cast: [{ model: 'a', rot }, { model: 'b' }] })
+    const p = project()
+    materializeScene3d(p, '/p', opts({ read: () => turned, closeUp: { follow: { cast: 0, bone: 'hand_r' }, distance: 0.5, lens: 50 } }))
+    return JSON.parse(p.tracks[0][0].props.sceneJson).camera.shots[0].pov.offset
+  }
+  const [x0, y0, z0] = offsetFor(0)
+  const near = (a, b) => Math.abs(a - b) < 1e-9
+  const [x180, y180, z180] = offsetFor(180)
+  assert.ok(near(x180, -x0) && near(y180, -y0) && near(z180, z0), 'turned around: the camera moves to the other side')
+  const [x90, y90] = offsetFor(90)
+  assert.ok(near(x90, -y0) && near(y90, x0), 'rot turns counter-clockwise about +z, as the stage turns the cast')
+  const [xs, ys] = offsetFor(undefined)
+  assert.ok(near(xs, x0) && near(ys, y0), 'no rot is 0')
+})
+
 test('a part ref is followed as given', () => {
   const p = project()
   materializeScene3d(p, '/p', opts({ closeUp: { follow: { cast: 0, part: 'palm' }, distance: 1, lens: 50 } }))

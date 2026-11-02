@@ -103,9 +103,13 @@ export function scene3dStage({ env = process.env, exists = existsSync, log = log
  */
 const CLOSE_UP_DIR = [0.35, -0.9, 0.3]
 const CLOSE_UP_SECONDS = 86400
-export function closeUpCamera({ follow, distance, lens }) {
+export function closeUpCamera({ follow, distance, lens }, yawDeg = 0) {
   const k = distance / Math.hypot(...CLOSE_UP_DIR)
-  const offset = CLOSE_UP_DIR.map((x) => x * k)
+  // The offset turns with the cast's base `rot` (degrees about +z, as the stage turns a cast), so a cast turned around
+  // is still shot from its front. Keyed root turns are the stage's to evaluate; the base rot is what is known here.
+  const a = (yawDeg * Math.PI) / 180
+  const [x, y, z] = CLOSE_UP_DIR.map((v) => v * k)
+  const offset = [x * Math.cos(a) - y * Math.sin(a), x * Math.sin(a) + y * Math.cos(a), z]
   return {
     lens,
     shots: [{ start: 0, end: CLOSE_UP_SECONDS, from: { at: offset, look: [0, 0, 0] }, pov: { follow, offset, frame: 'world' } }],
@@ -184,7 +188,8 @@ export function materializeScene3d(project, projectDir, { env = process.env, exi
         if (!(closeUp.follow.cast < cast.length)) {
           throw new Scene3dError('scene3d_invalid', `${label}: look_at names cast ${closeUp.follow.cast}, and ${which} has ${cast.length} cast ${cast.length === 1 ? 'entry' : 'entries'}${cast.length ? ` (0..${cast.length - 1})` : ''}.`)
         }
-        sceneJson = JSON.stringify({ ...sceneData, camera: closeUpCamera(closeUp) })
+        const rot = cast[closeUp.follow.cast]?.rot
+        sceneJson = JSON.stringify({ ...sceneData, camera: closeUpCamera(closeUp, typeof rot === 'number' && Number.isFinite(rot) ? rot : 0) })
       }
       item.src = stage
       item.props = { ...props, sceneFile, sceneJson, inPoint }
