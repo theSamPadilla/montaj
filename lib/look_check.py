@@ -233,8 +233,20 @@ def _composited(item):
     return isinstance(kfs, list) and any(isinstance(k, dict) and k.get("prop") == "opacity" for k in kfs)
 
 
-def _full_frame(item):
-    """An item drawn over the whole frame: an opaque overlay, or a clip at scale 1 with no offset."""
+def _contain_fills(item, frame):
+    """A contain-fit clip fills `frame` (w, h) only when its picture (source size, after sourceCrop) has the frame's
+    shape; unknown source dims or no frame read as letterboxed."""
+    sw, sh = _num(item.get("sourceWidth")), _num(item.get("sourceHeight"))
+    if not (frame and sw > 0 and sh > 0):
+        return False
+    c = item.get("sourceCrop") if isinstance(item.get("sourceCrop"), dict) else {}
+    pic = (sw * _num(c.get("w", 1), 1)) / (sh * _num(c.get("h", 1), 1))
+    return abs(pic / (frame[0] / frame[1]) - 1) < 0.01
+
+
+def _full_frame(item, frame=None):
+    """An item drawn over the whole frame: an opaque overlay, or a clip at scale 1 with no offset. A clip's fit is the
+    render's (timeline-core geometry): cover for an image, contain for a video unless it says cover or fill (§669)."""
     sx = _num(item.get("scaleX", item.get("scale", 1)), 1)
     sy = _num(item.get("scaleY", item.get("scale", 1)), 1)
     if abs(_num(item.get("offsetX"))) > 0.5 or abs(_num(item.get("offsetY"))) > 0.5 or sx < 0.999 or sy < 0.999:
@@ -245,7 +257,10 @@ def _full_frame(item):
         return False
     if item.get("type") == "overlay":
         return item.get("opaque") is True
-    return item.get("type") in VISUAL and item.get("fit", "cover") != "contain"
+    if item.get("type") not in VISUAL:
+        return False
+    fit = item.get("fit") or ("cover" if item.get("type") == "image" else "contain")
+    return fit != "contain" or _contain_fills(item, frame)
 
 
 def data_issues(project, project_dir):
@@ -281,7 +296,7 @@ def data_issues(project, project_dir):
             where = "past the footage" if footage > 0 and e > footage + 0.05 else "outside the timeline"
             out.append({"t": r2(s), "id": str(seg.get("id") or "caption"), "text": f"caption {where}"})
     out += _black(rows, end)
-    out += _hidden(rows)
+    out += _hidden(rows, design_size(project))
     out += merge_track_issues(project)
     return out
 
@@ -402,14 +417,15 @@ def _black(rows, end):
     return out
 
 
-def _hidden(rows):
-    """An item that a full-frame one stacked above it hides (the render's stacking: video tracks below the rest)."""
+def _hidden(rows, frame=None):
+    """An item that a full-frame one stacked above it hides (the render's stacking: video tracks below the rest).
+    `frame` is the design canvas (w, h), for whether a contain-fit video fills it."""
     pos = layer_positions(rows)
     out = []
     layered = [(ti, it) for ti, row in enumerate(rows) if ti > 0 for it in row]
     for ti, low in layered:
         for tj, high in layered:
-            if tj == ti or pos[tj] <= pos[ti] or not _full_frame(high):
+            if tj == ti or pos[tj] <= pos[ti] or not _full_frame(high, frame):
                 continue
             s = max(_num(low.get("start")), _num(high.get("start")))
             e = min(_num(low.get("end")), _num(high.get("end")))
