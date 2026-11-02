@@ -261,10 +261,10 @@ def test_an_ingest_waits_past_the_default_lock_timeout(tmp_path, monkeypatch):
     assert [s["src"] for s in json.loads(pj.read_text())["sources"]] == [staged]
 
 
-def test_delete_is_refused_while_an_ingest_runs(workspace, monkeypatch):
-    """The recorder writes a take into the seed's folder before the ingest job
-    appends it to `sources`: deleting the (still empty-looking) seed meanwhile
-    would delete the only copy."""
+def test_delete_stops_a_running_ingest_and_keeps_the_take_it_was_adding(workspace, monkeypatch):
+    """§631/§682: the recorder writes a take into the seed's folder before the ingest job appends it to `sources`.
+    Deleting the (still empty-looking) seed stops the job and moves that file to the workspace's `_uploads/`, so
+    the only copy survives; the delete is not refused."""
     seed_id, pj, take = _seed_with_take_file(workspace)
     monkeypatch.setattr(projects_mod, "_ingest_jobs", {})
 
@@ -276,21 +276,16 @@ def test_delete_is_refused_while_an_ingest_runs(workspace, monkeypatch):
     r = client.post(f"/api/projects/{seed_id}/sources", json={"path": str(new_take)})
     assert r.status_code == 202, r.text
     job = projects_mod._ingest_jobs[r.json()["job_id"]]
-    assert job.project_id == seed_id
+    assert job.project_id == seed_id and job.path == str(new_take)
 
-    r = client.delete(f"/api/projects/{seed_id}")
-    assert r.status_code == 409, r.text
-    assert r.json()["detail"]["error"] == "ingest_running"
-    assert new_take.is_file() and take.is_file() and pj.is_file()
-
-    # Another project's ingest does not block this one; a finished job does not either.
-    job.project_id = "someone-else"
-    assert not projects_mod._ingest_running(seed_id)
-    job.project_id = seed_id
-    job.status = "done"
+    # Another project's ingest does not matter to this one.
+    other = projects_mod._IngestJob("someone-else")
+    projects_mod._ingest_jobs["other"] = other
     r = client.delete(f"/api/projects/{seed_id}")
     assert r.status_code in (200, 204), r.text
+    assert job.cancelled and not other.cancelled
     assert not pj.parent.exists()
+    assert (workspace / "_uploads" / "take-2.mp4").read_bytes() == b"second take", "the take it was adding is kept"
 
 
 def _lock_is_free(pj, timeout=2.0) -> bool:

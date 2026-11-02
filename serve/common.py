@@ -14,6 +14,25 @@ from lib.project_lock import PROJECT_READ_ONLY_MESSAGE
 MONTAJ_ROOT = Path(__file__).resolve().parent.parent
 
 
+# §682: where a deleted project's folder is moved before it is removed (in the workspace, so the move is one rename).
+DELETING_DIR = ".montaj-deleting"
+
+# §682: the subprocesses a project's own requests have running (a step), so deleting the project can stop them first.
+_project_procs: "dict[str, set]" = {}
+
+
+def kill_project_procs(project_id: str) -> int:
+    """Kill every tracked subprocess running for `project_id` (a step's), and say how many."""
+    procs = list(_project_procs.pop(project_id, ()))
+    for proc in procs:
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+    return len(procs)
+
+
 class DuplicateProjectId(Exception):
     """Two or more topmost (non-nested) project.json folders claim the same id,
     so the resolver cannot say which folder the id means and refuses rather than
@@ -94,6 +113,12 @@ def is_nested_project_json(path: Path, workspace: Path) -> bool:
     `<project>/render/versions/<commit>/project.json`, a snapshot carrying the
     project's own id. Plain folders above a project (`teamA/abc`) hold no
     project.json, so nested layouts are unaffected."""
+    try:
+        # §682: a deleted project waits here to be removed; it is never a project.
+        if DELETING_DIR in path.relative_to(workspace).parts:
+            return True
+    except ValueError:
+        pass
     folder = path.parent.parent
     while folder != workspace and folder != folder.parent:
         if (folder / "project.json").is_file():
@@ -352,6 +377,7 @@ async def run_subprocess(
     cwd: str | None = None,
     env: dict | None = None,
     stop_grace: float | None = None,
+    track: str | None = None,
 ) -> tuple[str, str, int]:
     """Run *cmd*, return (stdout, stderr, returncode); a 504 after *timeout* s.
 
@@ -359,7 +385,10 @@ async def run_subprocess(
     and given that many seconds to exit (and undo its work) before a kill, and a
     cancel of the awaiting task stops the child the same way, waiting for it to
     exit, before the cancel propagates. Without it the timeout kills at once
-    and a cancel leaves the child running, as always."""
+    and a cancel leaves the child running, as always.
+
+    `track` (a project id, §682): the child is listed under it while it runs, so
+    deleting that project can stop it (`kill_project_procs`)."""
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -367,6 +396,8 @@ async def run_subprocess(
         cwd=cwd,
         env=env,
     )
+    if track:
+        _project_procs.setdefault(track, set()).add(proc)
     try:
         stdout_b, stderr_b = await asyncio.wait_for(
             proc.communicate(), timeout=timeout,
@@ -385,6 +416,13 @@ async def run_subprocess(
         if stop_grace is not None:
             await stop_gently_uncancellable(proc, stop_grace)
         raise
+    finally:
+        if track:
+            live = _project_procs.get(track)
+            if live is not None:
+                live.discard(proc)
+                if not live:
+                    _project_procs.pop(track, None)
     return stdout_b.decode(), stderr_b.decode(), proc.returncode
 
 

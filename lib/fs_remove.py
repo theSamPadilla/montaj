@@ -29,6 +29,11 @@ def _handler(func, path, exc):
                      if os.path.isdir(path) else stat.S_IWRITE)
         except OSError:
             pass
+        # §682: removing an entry needs its parent writable (a folder locked in Finder, a read-only checkout).
+        try:
+            os.chmod(os.path.dirname(path) or ".", stat.S_IRWXU)
+        except OSError:
+            pass
     delays = _RETRY_DELAYS if busy else (0,)
     last = exc
     for d in delays:

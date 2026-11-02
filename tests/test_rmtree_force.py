@@ -115,9 +115,37 @@ def test_always_busy_propagates_and_route_answers_json(workspace, monkeypatch):
     monkeypatch.setattr(shutil, "_use_fd_functions", False)
     with pytest.raises(OSError):
         rmtree_force(d)
+    # §682: the folder is renamed out of the workspace first, so a file nobody can remove does not fail the delete.
+    r = client.delete(f"/api/projects/{pid}")
+    assert r.status_code == 204, r.text
+    assert not d.exists() and not (d / "project.json").exists()
+
+
+def test_a_folder_that_cannot_be_renamed_is_removed_in_place_and_a_failure_says_so_plainly(workspace, monkeypatch):
+    pid, d = _project(workspace)
+    monkeypatch.setattr("lib.fs_remove.time.sleep", lambda s: None)
+    monkeypatch.setattr(os, "rename", lambda *a, **k: (_ for _ in ()).throw(OSError(18, "cross-device")))
+    monkeypatch.setattr(os, "unlink", _busy_unlink(10**9))
+    monkeypatch.setattr(shutil, "_use_fd_functions", False)
     r = client.delete(f"/api/projects/{pid}")
     assert r.status_code == 500
-    assert "delete_failed" in r.text
+    detail = r.json()["detail"]
+    assert detail["error"] == "delete_failed"
+    assert str(d) not in r.text and "in use" not in r.text, "no raw path or errno text"
+
+
+def test_the_deleted_folder_leaves_the_workspace_at_once_and_the_sweep_removes_leftovers(workspace):
+    from serve.routes import projects as projects_mod
+    from serve.common import DELETING_DIR, find_project_dir
+    pid, d = _project(workspace)
+    assert client.delete(f"/api/projects/{pid}").status_code == 204
+    assert not (d / "project.json").exists()
+    assert find_project_dir(workspace, pid) is None, "a project in .montaj-deleting is not a project"
+    left = workspace / DELETING_DIR / f"{pid}-leftover"
+    left.mkdir(parents=True)
+    (left / "project.json").write_text("{}")
+    projects_mod.sweep_deleting()
+    assert not (workspace / DELETING_DIR).exists()
 
 
 def test_ignore_errors_swallows(tmp_path, monkeypatch):
@@ -129,3 +157,17 @@ def test_ignore_errors_swallows(tmp_path, monkeypatch):
     monkeypatch.setattr(shutil, "_use_fd_functions", False)
     rmtree_force(d, ignore_errors=True)
     assert d.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory permissions")
+def test_an_entry_in_a_read_only_folder_is_removed(tmp_path):
+    d = tmp_path / "p"
+    (d / "locked").mkdir(parents=True)
+    (d / "locked" / "f").write_text("x")
+    os.chmod(d / "locked", 0o555)
+    try:
+        rmtree_force(d)
+    finally:
+        if (d / "locked").exists():
+            os.chmod(d / "locked", 0o755)
+    assert not d.exists()

@@ -72,6 +72,9 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
     workspace = resolve_workspace()
     workspace.mkdir(parents=True, exist_ok=True)
+    # §682: finish removing what a delete moved aside before serve stopped.
+    from serve.routes.projects import sweep_deleting
+    loop.run_in_executor(None, sweep_deleting)
 
     broadcaster = SSEBroadcaster()
     watcher = ProjectWatcher(workspace, broadcaster, loop)
