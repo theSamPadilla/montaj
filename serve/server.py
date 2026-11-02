@@ -101,6 +101,8 @@ async def lifespan(app: FastAPI):
     kill_source_downloads()
     from serve.audio_conform import shutdown as shutdown_audio_conform
     shutdown_audio_conform()
+    from serve.mix_loudness import shutdown as shutdown_mix_loudness
+    shutdown_mix_loudness()
     watcher.stop()
     overlay_watcher.stop()
     lockfile.remove()

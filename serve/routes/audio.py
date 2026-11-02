@@ -1,11 +1,12 @@
-"""Conformed audio cache endpoints: POST /api/audio/conform, GET /api/audio/conformed."""
+"""Conformed audio cache endpoints: POST /api/audio/conform, GET /api/audio/conformed.
+The export mix's loudness for the editor preview (§660): POST /api/projects/{id}/mix-loudness."""
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from serve import audio_conform
-from serve.common import _allowed_file_roots, _is_under, bad_request, forbidden
+from serve import audio_conform, mix_loudness
+from serve.common import _allowed_file_roots, _is_under, bad_request, forbidden, get_project_dir
 
 router = APIRouter(prefix="/api")
 
@@ -38,3 +39,12 @@ def conform(body: ConformBody):
 @router.get("/audio/conformed")
 def conformed(path: str):
     return {"path": path, **audio_conform.lookup(_checked(path))}
+
+
+@router.post("/projects/{project_id}/mix-loudness")
+def mix_loudness_status(project_dir: Path = Depends(get_project_dir)):
+    """`{status: running|ready|silent|failed|off}`; `ready` adds `inputI`, `targetI`
+    and `gainDb` (target - inputI, the level the export's loudnorm brings the mix
+    to). Starts the measurement, or joins it, or answers from the cache: ask again
+    until it is not `running`. See serve/mix_loudness.py."""
+    return mix_loudness.start(project_dir)
