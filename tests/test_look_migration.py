@@ -143,6 +143,16 @@ def _make_project(workspace: Path, project_id: str, name: str = "proj", *,
     return project_dir, src
 
 
+def _attach_current_proxy(project_dir: Path, src: Path) -> Path:
+    """The item already points at its current proxy (a project the migration has nothing to do for)."""
+    from lib.proxy import proxy_path_for
+
+    proxy = Path(proxy_path_for(os.path.realpath(str(src))))
+    proxy.write_bytes(b"proxy")
+    _set_fields(project_dir, proxySrc=str(proxy))
+    return proxy
+
+
 def _write(project_dir: Path, project: dict) -> None:
     (project_dir / "project.json").write_text(json.dumps(project, indent=2))
 
@@ -327,6 +337,7 @@ def test_sdr_source_schedules_nothing(workspace, encodes, probe_hdr):
     """An untagged master of an SDR source is a live colour-conformance master,
     not a stale tone-map — it carries no look and must be left alone."""
     project_dir, src = _make_project(workspace, PID)
+    _attach_current_proxy(project_dir, src)      # §671: an item with no proxy now has one encoded
     _, master = _legacy_artifacts(src)
     probe_hdr[str(src)] = SDR_INFO
     _set_fields(project_dir, normalizedSrc=str(master))
@@ -341,6 +352,7 @@ def test_hdr_project_master_untouched(workspace, encodes, probe_hdr):
     """The tone-map (and its look tag) only exists on the HDR→SDR path. An HDR
     project's masters are never tagged, so there is nothing to migrate."""
     project_dir, src = _make_project(workspace, PID, color_space="hdr_hlg")
+    _attach_current_proxy(project_dir, src)      # §671: an item with no proxy now has one encoded
     stem = src.with_suffix("")
     master = Path(f"{stem}_normalized_hdr_hlg.mp4")
     master.write_bytes(b"hdr-master")
@@ -397,6 +409,7 @@ def test_window_cache_is_not_migrated(workspace, encodes, probe_hdr):
     play the wrong window. Only a field naming THIS item's own full-source
     master is migrated."""
     project_dir, src = _make_project(workspace, PID)
+    _attach_current_proxy(project_dir, src)      # §671: an item with no proxy now has one encoded
     window = src.parent / "clip_window_0.mp4"
     window.write_bytes(b"window")
     _set_fields(project_dir, normalizedSrc=str(window), normalizedInPoint=12.0)
@@ -473,6 +486,7 @@ def test_overlay_track_video_items_are_migrated(workspace, encodes, probe_hdr):
     """`proxySrc` lives on overlay-track video items too — the pass walks every
     track, not just tracks[0]."""
     project_dir, src = _make_project(workspace, PID)
+    _attach_current_proxy(project_dir, src)      # §671: an item with no proxy now has one encoded
     overlay_src = project_dir / "presenter.MOV"
     overlay_src.write_bytes(b"source")
     stale = project_dir / "presenter_proxy_hable1.mp4"
@@ -526,6 +540,8 @@ def test_clean_project_is_not_rewritten(workspace, encodes, probe_hdr):
     from lib.project_tracks import normalize_tracks
 
     project_dir, src = _make_project(workspace, PID)
+
+    _attach_current_proxy(project_dir, src)      # §671: an item with no proxy now has one encoded
     before = json.loads((project_dir / "project.json").read_text())
     expected = normalize_tracks(before)
 
@@ -942,6 +958,7 @@ def test_vivid1_master_is_requeued_at_natural1(workspace, probe_hdr, monkeypatch
 
 def test_vivid1_master_is_repointed_when_natural1_exists(workspace, encodes, probe_hdr):
     project_dir, src = _make_project(workspace, PID)
+    _attach_current_proxy(project_dir, src)      # §671: an item with no proxy now has one encoded
     stem = src.with_suffix("")
     vivid = Path(f"{stem}_normalized_sdr_bt709_vivid1.mp4")
     natural = Path(f"{stem}_normalized_sdr_bt709_natural1.mp4")
@@ -960,6 +977,7 @@ def test_vivid1_tagged_path_that_is_not_this_items_master_is_left_alone(workspac
     vivid1-tagged file of another source, or one elsewhere, is user-written as
     far as the migration can tell, and a window cache keeps its own timing."""
     project_dir, src = _make_project(workspace, PID)
+    _attach_current_proxy(project_dir, src)      # §671: an item with no proxy now has one encoded
     foreign = project_dir / "other_normalized_sdr_bt709_vivid1.mp4"
     foreign.write_bytes(b"foreign")
     _set_fields(project_dir, normalizedSrc=str(foreign), normalizedInPoint=4.0)
@@ -998,3 +1016,79 @@ def test_eager_vivid1_src_master_keeps_its_look_this_release(workspace, encodes,
     assert encodes.proxy[0][0] == os.path.realpath(master)
     assert encodes.proxy[0][1].endswith(f"_normalized_sdr_bt709_vivid1_proxy_natural1_{PROXY_FORMAT}.mp4")
     assert _item(_read(project_dir))["src"] == str(master)
+
+
+def test_open_adopts_a_proxy_older_than_its_master_for_an_item_without_one(workspace, encodes, probe_hdr, monkeypatch):
+    """§671: a synced copy has no proxySrc, and its files were written in any order, so a current-look proxy can read
+    as older than the master. It is taken, not re-encoded."""
+    from lib.proxy import proxy_path_for
+
+    project_dir, src = _make_project(workspace, PID)
+    proxy = Path(proxy_path_for(os.path.realpath(str(src))))
+    proxy.write_bytes(b"proxy")
+    old = os.path.getmtime(str(src)) - 3600
+    os.utime(proxy, (old, old))
+    monkeypatch.setattr(projects_mod, "_media_seconds", lambda path: 5.0)     # as long as its master
+
+    body = _open_and_settle(PID, project_dir)
+
+    assert encodes.total == 0
+    assert _item(body)["proxySrc"] == str(proxy)
+    assert _item(_read(project_dir))["proxySrc"] == str(proxy)
+
+
+def test_open_encodes_the_proxy_of_an_item_that_has_none_anywhere(workspace, encodes, probe_hdr):
+    """§671: no proxySrc and no proxy on disk (a synced copy, a pre-proxy project): the encode is queued and its
+    write-back points the item at it."""
+    project_dir, src = _make_project(workspace, PID)
+    assert "proxySrc" not in _item(_read(project_dir))
+
+    _open_and_settle(PID, project_dir)
+
+    assert len(encodes.proxy) == 1
+    assert _item(_read(project_dir))["proxySrc"] == encodes.proxy[0][1]
+
+
+def test_a_proxy_of_a_replaced_master_is_not_adopted_and_is_encoded_again(workspace, encodes, probe_hdr, monkeypatch):
+    """The master was replaced under the same name: the old proxy is a different length, so it is not taken."""
+    from lib.proxy import proxy_path_for
+
+    project_dir, src = _make_project(workspace, PID)
+    proxy = Path(proxy_path_for(os.path.realpath(str(src))))
+    proxy.write_bytes(b"proxy")
+    old = os.path.getmtime(str(src)) - 3600
+    os.utime(proxy, (old, old))
+    monkeypatch.setattr(projects_mod, "_media_seconds", lambda path: 5.0 if path == str(proxy) else 12.0)
+
+    _open_and_settle(PID, project_dir)
+
+    assert len(encodes.proxy) == 1
+
+
+def test_an_unreadable_proxy_is_not_adopted(workspace, encodes, probe_hdr, monkeypatch):
+    from lib.proxy import proxy_path_for
+
+    project_dir, src = _make_project(workspace, PID)
+    proxy = Path(proxy_path_for(os.path.realpath(str(src))))
+    proxy.write_bytes(b"proxy")
+    old = os.path.getmtime(str(src)) - 3600
+    os.utime(proxy, (old, old))
+    monkeypatch.setattr(projects_mod, "_media_seconds", lambda path: None)
+
+    _open_and_settle(PID, project_dir)
+
+    assert len(encodes.proxy) == 1
+
+
+def test_an_empty_proxy_file_is_not_adopted(workspace, encodes, probe_hdr, monkeypatch):
+    from lib.proxy import proxy_path_for
+
+    project_dir, src = _make_project(workspace, PID)
+    Path(proxy_path_for(os.path.realpath(str(src)))).write_bytes(b"")
+    old = os.path.getmtime(str(src)) - 3600
+    os.utime(proxy_path_for(os.path.realpath(str(src))), (old, old))
+    monkeypatch.setattr(projects_mod, "_media_seconds", lambda path: 5.0)
+
+    _open_and_settle(PID, project_dir)
+
+    assert len(encodes.proxy) == 1

@@ -2890,6 +2890,28 @@ async def migrate_project_look(
         return project
 
 
+def _media_seconds(path: str) -> float | None:
+    """The duration of a media file, None when it cannot be read."""
+    from lib.common import get_duration
+
+    try:
+        return float(get_duration(path))
+    except (Exception, SystemExit):
+        return None
+
+
+def _proxy_is_of(proxy: str, master: str) -> bool:
+    """True when `proxy` is a non-empty file as long as `master` (within 0.1 s): the proxy of this master, not of one
+    that was replaced under the same name. Unreadable media never matches."""
+    try:
+        if not os.path.isfile(proxy) or os.path.getsize(proxy) == 0:
+            return False
+    except OSError:
+        return False
+    a, b = _media_seconds(proxy), _media_seconds(master)
+    return a is not None and b is not None and abs(a - b) <= 0.1
+
+
 async def _migrate_project_look(
     project_id: str,
     project_dir: Path,
@@ -2914,11 +2936,11 @@ async def _migrate_project_look(
     # a migrated (or SDR-source, or carousel) project reaches the return below
     # having touched neither ffprobe nor the disk beyond a few isfile() calls.
     proxy_stale: list[dict] = []
-    # Items with no proxySrc at all. Never scheduled from here (a pre-proxy
-    # project stays on the manual migration), only ADOPTED: repointed when the
-    # proxy is already fresh on disk, or attached to an encode already queued.
-    # serve defers every create-time proxy to the background queue, so a save
-    # that raced that queue's write-back must heal on the next open.
+    # Items with no proxySrc at all: repointed when their proxy is already on
+    # disk, attached to an encode already queued, else encoded (§671: a synced
+    # copy has no proxySrc, and the preview needs one). serve also defers every
+    # create-time proxy to the background queue, so a save that raced that
+    # queue's write-back heals on the next open.
     proxy_missing: list[dict] = []
     master_candidates: list[dict] = []
     for item in items:
@@ -3042,12 +3064,18 @@ async def _migrate_project_look(
         if real_in is None:
             continue
         out = proxy_path_for(real_in)
-        if is_proxy_fresh(out, real_in):
+        # An item with no pointer takes a current-look proxy that is on disk even when its mtime reads older than the
+        # master: a synced copy (Studio Sync drops `proxySrc`) is written file by file, in any order, so the mtime
+        # order says nothing about whether the proxy was made from this master. What does: it is not empty and plays
+        # as long as the master (a master replaced under the same name does not match).
+        if is_proxy_fresh(out, real_in) or await asyncio.to_thread(_proxy_is_of, out, real_in):
             edits[key] = out
             continue
         pending = units.get(("proxy", out)) or _look_migration_pending("proxy", out)
         if pending is not None:
             pending.targets.append((project_id, str(project_dir), "proxySrc", key[0], key[1], broadcaster))
+        else:
+            _schedule("proxy", key, real_in, out)     # no proxy anywhere: encode it, as for a stale one
 
     for item in master_candidates:
         src = item["src"]
@@ -3987,8 +4015,8 @@ async def _queue_previews_for_changed_items(
       * an UNCHANGED item is never even considered, so resaving an old
         project (a rename, a status flip, moving a clip that already has a
         proxy) never starts encoding its whole library — this is what keeps
-        "never scheduled from open" (`_migrate_project_look`'s deliberate
-        adopt-only behaviour) true for save too.
+        "never encodes the whole library on a save" (`_migrate_project_look`'s
+        adopt-or-encode behaviour, §671) true for save too.
       * non-video items (images, audio, overlays) are excluded by
         `_look_migration_items` itself, exactly as they are for import.
 
