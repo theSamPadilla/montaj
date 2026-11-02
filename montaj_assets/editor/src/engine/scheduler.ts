@@ -107,6 +107,7 @@ import {
   projectEnd as timelineProjectEnd,
   resolveAt,
   sourceWindow,
+  videoFitFor,
 } from '@bycrux/timeline-core'
 import type { ItemCrossfade, Scene, SourceWindow } from '@bycrux/timeline-core'
 import type { EditorProject as Project, VisualItem, VisualTrack } from '../schema'
@@ -114,6 +115,7 @@ import type { ClipTimebase, MasterClock } from './audio-clock'
 import type { FrameServer } from './frame-server'
 import { audioEnd, effectiveItemAudio, enabledTrackItems, enabledTracks, withEnabledItemTracks } from '../video/timeline/timeline-model'
 import { perAxisRatio } from '../video/preview/transformStyle'
+import { fitRatios, type VideoFit } from '../video/preview/sourceCropStyle'
 
 // ── Tuning constants ────────────────────────────────────────────────────────
 
@@ -215,6 +217,30 @@ export function containFitPlan(
   }
 }
 
+/**
+ * A source rect (in decoded pixels) drawn into the frame by a video's fit
+ * (§669), as the export's fit step draws its (cropped) picture: contain inside
+ * the frame, centred (`containFitPlan`'s algebra); fill stretched onto it;
+ * cover over it, which on a canvas is the whole frame drawn from the centred
+ * frame-aspect cut of the rect, exactly the part the export's increase-scale
+ * and centred crop keep.
+ */
+export function fitRectPlan(
+  sx: number, sy: number, sw: number, sh: number,
+  frameWidth: number, frameHeight: number,
+  fit: VideoFit,
+): DrawPlan {
+  if (fit === 'cover') {
+    const a = frameWidth / frameHeight
+    const cw = sw / sh > a ? sh * a : sw
+    const ch = sw / sh > a ? sh : sw / a
+    return { sx: sx + (sw - cw) / 2, sy: sy + (sh - ch) / 2, sw: cw, sh: ch, dx: 0, dy: 0, dw: frameWidth, dh: frameHeight }
+  }
+  if (fit === 'fill') return { sx, sy, sw, sh, dx: 0, dy: 0, dw: frameWidth, dh: frameHeight }
+  const plan = containFitPlan(sw, sh, frameWidth, frameHeight)
+  return { ...plan, sx, sy }
+}
+
 export interface SourceCropDrawInput {
   crop: { x: number; y: number; w: number; h: number } | undefined
   /** The ITEM's intrinsic source dims. Absent ⇒ no crop; see the guard note below. */
@@ -225,6 +251,8 @@ export interface SourceCropDrawInput {
   codedHeight: number
   frameWidth: number
   frameHeight: number
+  /** The item's fit (§669); 'contain' when absent. */
+  fit?: VideoFit
 }
 
 /**
@@ -262,7 +290,7 @@ export interface SourceCropDrawInput {
  * disposition is the "parity-safe" guard, so the engine gates on the item.
  */
 export function sourceCropDrawPlan(input: SourceCropDrawInput): DrawPlan | null {
-  const { crop, sourceWidth, sourceHeight, codedWidth, codedHeight, frameWidth, frameHeight } =
+  const { crop, sourceWidth, sourceHeight, codedWidth, codedHeight, frameWidth, frameHeight, fit = 'contain' } =
     input
   // sourceCropStyle.ts:32 — all four dims required.
   if (!sourceWidth || !sourceHeight || !frameWidth || !frameHeight) return null
@@ -272,20 +300,19 @@ export function sourceCropDrawPlan(input: SourceCropDrawInput): DrawPlan | null 
   // sourceCropStyle.ts:35 — a full-frame crop is the default and needs nothing.
   if (crop.x === 0 && crop.y === 0 && crop.w === 1 && crop.h === 1) return null
 
+  // §669: cover and fill draw the crop region (in the DECODED frame, see
+  // below) through the fit, as the export fits its cropped picture.
+  if (fit !== 'contain') {
+    return fitRectPlan(crop.x * codedWidth, crop.y * codedHeight, crop.w * codedWidth, crop.h * codedHeight,
+      frameWidth, frameHeight, fit)
+  }
+
   const frameAspect = frameWidth / frameHeight
   const cropAspect = (sourceWidth * crop.w) / (sourceHeight * crop.h)
 
   // Contain-fit the crop region into the frame → its displayed size as a ratio
-  // of the frame's own dimensions. Verbatim from sourceCropStyle.ts:44-50.
-  let cropWRatio: number
-  let cropHRatio: number
-  if (cropAspect >= frameAspect) {
-    cropWRatio = 1
-    cropHRatio = frameAspect / cropAspect
-  } else {
-    cropHRatio = 1
-    cropWRatio = cropAspect / frameAspect
-  }
+  // of the frame's own dimensions. The same `fitRatios` sourceCropStyle.ts uses.
+  const { w: cropWRatio, h: cropHRatio } = fitRatios(cropAspect, frameAspect, 'contain')
 
   return {
     // The crop sub-rect inside the DECODED frame. Expressed against the coded
@@ -315,16 +342,18 @@ function sampledCrop(
 }
 
 /** What a paused canvas draw depends on besides the media position: the crop at
- *  the tick (sampled when keyed), its source size and the box aspect. Part of the
- *  paused repaint key, so a crop edit repaints (PV55 review). */
+ *  the tick (sampled when keyed), its source size, the box aspect and the fit.
+ *  Part of the paused repaint key, so a crop or fit edit repaints (PV55 review). */
 function drawKeyOf(active: ActiveClip): string {
   const c = sampledCrop(active.item, active.t)
   const crop = c ? `${c.x},${c.y},${c.w},${c.h}` : ''
-  return `#${crop}/${active.item.sourceWidth ?? ''}x${active.item.sourceHeight ?? ''}/${perAxisRatio(active.item)}`
+  return `#${crop}/${active.item.sourceWidth ?? ''}x${active.item.sourceHeight ?? ''}/${perAxisRatio(active.item)}/${videoFitFor(active.item)}`
 }
 
 /**
- * The crop plan when the item has one, the contain-fit default otherwise.
+ * The crop plan when the item has one, else the whole decoded frame by the
+ * item's fit (§669: contain, the default, cover or fill; timeline-core
+ * `videoFitFor`, the rule the export reads).
  *
  * Per-axis scale: the canvas sits in the item's media box
  * (`transformStyle.ts`'s `mediaBoxStyle`), stretched over a box whose aspect is
@@ -335,7 +364,7 @@ function drawKeyOf(active: ActiveClip): string {
  * as it always was.
  */
 export function drawPlanFor(
-  item: Pick<VisualItem, 'sourceCrop' | 'sourceWidth' | 'sourceHeight' | 'scale' | 'scaleX' | 'scaleY'> & Partial<Pick<VisualItem, 'start' | 'end' | 'keyframes'>>,
+  item: Pick<VisualItem, 'sourceCrop' | 'sourceWidth' | 'sourceHeight' | 'scale' | 'scaleX' | 'scaleY'> & Partial<Pick<VisualItem, 'start' | 'end' | 'keyframes' | 'fit'>>,
   codedWidth: number,
   codedHeight: number,
   frameWidth: number,
@@ -345,6 +374,7 @@ export function drawPlanFor(
 ): DrawPlan {
   const k = perAxisRatio(item)
   const fitWidth = frameWidth * k
+  const fit = videoFitFor(item as VisualItem)
   const cropped = sourceCropDrawPlan({
     crop: sampledCrop(item, t),
     sourceWidth: item.sourceWidth,
@@ -353,8 +383,13 @@ export function drawPlanFor(
     codedHeight,
     frameWidth: fitWidth,
     frameHeight,
+    fit,
   })
-  const plan = cropped ?? containFitPlan(codedWidth, codedHeight, fitWidth, frameHeight)
+  const plan = cropped ?? (fit === 'contain'
+    ? containFitPlan(codedWidth, codedHeight, fitWidth, frameHeight)
+    : codedWidth && codedHeight && fitWidth && frameHeight
+      ? fitRectPlan(0, 0, codedWidth, codedHeight, fitWidth, frameHeight, fit)
+      : containFitPlan(codedWidth, codedHeight, fitWidth, frameHeight))
   return k === 1 ? plan : { ...plan, dx: plan.dx / k, dw: plan.dw / k }
 }
 

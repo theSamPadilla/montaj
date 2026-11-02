@@ -54,7 +54,7 @@ import { blurFilterStep, VIDEO_BLUR_FORMAT, IMAGE_BLUR_FORMAT } from './item-blu
 import { pMap } from './p-map.js'
 import {
   geometryFor, geometryAt, toRotatedPixelBox, toPixelBox, compileTrackExprInfo,
-  transitionProgress, hasCropKeyframes, imageFitFor, isFullFrameCrop, CROP_KEYFRAME_PROPS, blendModeOf,
+  transitionProgress, hasCropKeyframes, imageFitFor, videoFitFor, isFullFrameCrop, CROP_KEYFRAME_PROPS, blendModeOf,
   blurOf, blurSigmaPx, blurTypeOf,
 } from '@bycrux/timeline-core'
 
@@ -360,6 +360,17 @@ export function decreaseFitSize(inW, inH, boxW, boxH, divisibleBy = 1) {
     height = Math.floor(height / d) * d
   }
   return { width, height }
+}
+
+/**
+ * The part of an inW x inH picture a cover fit into boxW x boxH shows (§669),
+ * at the size it is shown: the box's aspect cut from the picture's middle,
+ * scaled down to the box when it is larger, never up.
+ */
+export function coverWindowSize(inW, inH, boxW, boxH) {
+  const a = boxW / boxH
+  const cut = inW / inH > a ? { width: inH * a, height: inH } : { width: inW, height: inW / a }
+  return cut.width > boxW ? { width: boxW, height: boxH } : cut
 }
 
 /**
@@ -1159,7 +1170,8 @@ function oddCropSafe(pixFmt) {
  * of reading past the rect. In a format where an odd crop x breaks the chroma
  * (oddCropSafe) the window moves on even x only. The caller has checked
  * `hasCropKeyframes` and `cropSourceSize` (the size every video crop is cut
- * in).
+ * in). A `cover` fit (§669) cuts the window at the box's aspect, so the
+ * rect covers it and the head's increase-fit only scales it.
  * Returns `{ chain, width, height }`, or `{ hold: reason }` for a rect that is
  * not finite and positive (the caller then holds the crop at the segment start).
  *
@@ -1167,7 +1179,7 @@ function oddCropSafe(pixFmt) {
  *   unrotated box when the box itself animates): the shown size, and the curve
  *   tolerance
  */
-function animatedVideoCrop(item, fitW, fitH, timeOffset, duration, onCap, budgetPx = MAX_ANIMATED_CROP_PX) {
+function animatedVideoCrop(item, fitW, fitH, timeOffset, duration, onCap, budgetPx = MAX_ANIMATED_CROP_PX, fit = 'contain') {
   const { width: SW, height: SH } = cropSourceSize(item)
   const sampled = sampleCropRects(item, 'video', timeOffset, duration)
   if (!sampled) return { hold: NOT_A_RECT }
@@ -1179,7 +1191,7 @@ function animatedVideoCrop(item, fitW, fitH, timeOffset, duration, onCap, budget
   }
   const RW = Math.max(2, Math.round(maxW / 2) * 2)
   const RH = Math.max(2, Math.round(maxH / 2) * 2)
-  const shown = decreaseFitSize(RW, RH, fitW, fitH)
+  const shown = fit === 'cover' ? coverWindowSize(RW, RH, fitW, fitH) : decreaseFitSize(RW, RH, fitW, fitH)
   // D1: the fixed crop is the SHOWN size, which nothing after it enlarges:
   //  - the head's decrease-fit fits into this same fitW x fitH, so on this size
   //    it is a no-op (the box is even, one side equals it, the other is inside
@@ -1617,6 +1629,10 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   const padW = anim?.needsAnimatedChain ? anim.peakW : scaledW
   const padH = anim?.needsAnimatedChain ? anim.peakH : scaledH
 
+  // How the footage fits its box (§669): 'contain' (the default, and every
+  // video before §669), 'cover' or 'fill' (timeline-core `videoFitFor`).
+  const fit = videoFitFor(item)
+
   // Optional source crop (clips workflow vertical reframe). Cut in the pixels
   // of the file decoded (§668, cropSourceSize); no-op without the item's source
   // dims. Even dims keep ffmpeg/x264 happy.
@@ -1639,7 +1655,7 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     if (!cropSize) {
       console.warn(`${who}: its crop is keyframed but it has no sourceWidth/sourceHeight, so it renders uncropped`)
     } else {
-      movingCrop = animatedVideoCrop(item, padW, padH, seekOffset, duration, warnIfCapped(item, 'video'), cropBudgetPx)
+      movingCrop = animatedVideoCrop(item, padW, padH, seekOffset, duration, warnIfCapped(item, 'video'), cropBudgetPx, fit)
       if (movingCrop.hold) {
         const held = geometryAt(item, 'video', seekOffset).sourceCrop
         sc = isFiniteCrop(held) && held.w > 0 && held.h > 0 ? held : null
@@ -1762,9 +1778,10 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
 
   // ── The pad fill: transparent where the preview shows nothing ─────────────
   //
-  // The pad fills the part of the box the decrease-fit footage does not cover.
-  // The editor preview and sample_frame (which composites a video frame through
-  // the image path's `contain` fit) show that area as EMPTY — whatever sits
+  // The pad fills the part of the box the decrease-fit footage does not cover
+  // (a `contain` fit; cover and fill leave none). The editor preview and
+  // sample_frame (which composites a video frame through the image path's fit,
+  // the video's own) show that area as EMPTY — whatever sits
   // underneath shows through. `pad`'s default fill is opaque black, so before
   // this fill existed the export drew black bars there instead, and on a
   // remove_bg cutout they blacked out everything behind the presenter.
@@ -1811,9 +1828,10 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     ? planItemMask(item, padW, padH, seekOffset, duration, opts.fps ?? 30, opts.maskBase)
     : null
   let transparentPad = item.probedAlpha === true || mask !== null
-  if (!transparentPad && footageW && footageH) {
-    const fit = decreaseFitSize(footageW, footageH, padW, padH, (conversionStep || cutoutGrade) ? 2 : 1)
-    transparentPad = padW - fit.width > 1 || padH - fit.height > 1
+  // A cover or fill fit fills the box: there is no gap to make transparent.
+  if (!transparentPad && footageW && footageH && fit === 'contain') {
+    const fitted = decreaseFitSize(footageW, footageH, padW, padH, (conversionStep || cutoutGrade) ? 2 : 1)
+    transparentPad = padW - fitted.width > 1 || padH - fitted.height > 1
   }
   const padAlphaFmt = (conversionStep || isHdr(projectColorSpace)) ? 'yuva444p10le' : 'yuva420p'
 
@@ -1840,7 +1858,7 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     const animated = anim?.needsAnimatedChain
       ? { kind: 'video', peakW: anim.peakW, peakH: anim.peakH, offset: seekOffset, duration, fps: opts.fps ?? 30 }
       : undefined
-    const fitted = footageW && footageH && !conversionStep && !cutoutGrade
+    const fitted = footageW && footageH && !conversionStep && !cutoutGrade && fit === 'contain'
       ? decreaseFitSize(footageW, footageH, padW, padH, 1) : null
     const unitX = fitted ? footageW / fitted.width : 1
     const unitY = fitted ? footageH / fitted.height : 1
@@ -1861,9 +1879,11 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
       const step = blurFilterStep(item, { vw, vh, format, alpha, name, unitX, unitY, animated, picture, box, precise })
       preBlur = step ? `${step},` : ''
     } else {
-      const fit = footageW && footageH ? decreaseFitSize(footageW, footageH, padW, padH, divisibleBy ? 2 : 1) : null
-      const picture = fit ? { w: fit.width, h: fit.height, exact: true } : { w: padW, h: padH, exact: false }
-      if (!fit) warnBlurOnBox('video', item, box)
+      // A cover or fill fit's picture is the box itself.
+      const shown = fit !== 'contain' ? { width: padW, height: padH }
+        : footageW && footageH ? decreaseFitSize(footageW, footageH, padW, padH, divisibleBy ? 2 : 1) : null
+      const picture = shown ? { w: shown.width, h: shown.height, exact: true } : { w: padW, h: padH, exact: false }
+      if (!shown) warnBlurOnBox('video', item, box)
       const step = blurFilterStep(item, { vw, vh, format, alpha, name, animated, picture, box, precise })
       postBlur = step ? `${step},` : ''
     }
@@ -1880,10 +1900,17 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // goldens say so.
   // trimStep first: it counts in source seconds, before the speed setpts.
   const cutoutMatrix = sdrCutoutMatrix ? ':in_color_matrix=bt601:out_color_matrix=bt709' : ''
+  // The fit (§669), into the peak box when the box animates. contain fits
+  // inside and the pad below letterboxes; cover scales to fill and crops the
+  // overflow, centred; fill stretches. Both of those leave the pad nothing to
+  // add. The box is even, so cover's crop and fill's size need no rounding.
+  const fitStep = (w, h) => fit === 'cover'
+    ? `scale=${w}:${h}:force_original_aspect_ratio=increase${divisibleBy}${cutoutMatrix},crop=${w}:${h},`
+    : fit === 'fill'
+      ? `scale=${w}:${h}${cutoutMatrix},`
+      : `scale=${w}:${h}:force_original_aspect_ratio=decrease${divisibleBy}${cutoutMatrix},`
   const head = `[${idx}:v]${trimStep}${untaggedTag}${ptsStep},${cropStep}${preBlur}` +
-    (anim?.needsAnimatedChain
-      ? `scale=${anim.peakW}:${anim.peakH}:force_original_aspect_ratio=decrease${divisibleBy}${cutoutMatrix},`
-      : `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease${divisibleBy}${cutoutMatrix},`)
+    (anim?.needsAnimatedChain ? fitStep(anim.peakW, anim.peakH) : fitStep(scaledW, scaledH))
   // What follows the pad: the varying resize (and its rotate), or the static
   // rotate. Each starts with its own comma, and the static one may be empty.
   const afterPad = anim?.needsAnimatedChain

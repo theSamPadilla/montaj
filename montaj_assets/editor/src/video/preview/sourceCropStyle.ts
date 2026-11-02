@@ -15,9 +15,16 @@
 //
 // Requires the source's intrinsic pixel dims (to know the crop region's aspect
 // ratio). Without them — or without a crop — returns null and the caller keeps
-// the default `object-contain` full-frame behavior.
+// the full-frame element, drawn with `object-fit` set to the item's fit.
+//
+// §669: a video's `fit` decides how the crop region sits in the frame, as the
+// export's fit step after its crop does: contain (the default) inside it,
+// letterboxed; cover over it, overflowing on one axis, centred, the frame's
+// overflow-hidden box trimming the rest; fill exactly on it, stretched.
 
 import type { CSSProperties } from 'react'
+
+export type VideoFit = 'cover' | 'contain' | 'fill'
 
 export interface SourceCropInput {
   crop: { x: number; y: number; w: number; h: number }
@@ -25,6 +32,21 @@ export interface SourceCropInput {
   sourceHeight: number
   frameWidth: number
   frameHeight: number
+  /** The item's fit (timeline-core `videoFitFor`); 'contain' when absent. */
+  fit?: VideoFit
+}
+
+/**
+ * The size a picture of `pictureAspect` (width / height) is drawn at in a frame
+ * of `frameAspect` under `fit`, as ratios of the frame: contain fits it inside
+ * (one ratio 1, the other at most 1), cover over it (one ratio 1, the other at
+ * least 1), fill on it (both 1). Centred by the caller.
+ */
+export function fitRatios(pictureAspect: number, frameAspect: number, fit: VideoFit = 'contain'): { w: number; h: number } {
+  if (fit === 'fill') return { w: 1, h: 1 }
+  const wider = pictureAspect >= frameAspect
+  if (fit === 'cover') return wider ? { w: pictureAspect / frameAspect, h: 1 } : { w: 1, h: frameAspect / pictureAspect }
+  return wider ? { w: 1, h: frameAspect / pictureAspect } : { w: pictureAspect / frameAspect, h: 1 }
 }
 
 export function sourceCropVideoStyle(input: SourceCropInput): CSSProperties | null {
@@ -37,24 +59,16 @@ export function sourceCropVideoStyle(input: SourceCropInput): CSSProperties | nu
   const frameAspect = frameWidth / frameHeight
   const cropAspect = (sourceWidth * crop.w) / (sourceHeight * crop.h)
 
-  // Contain-fit the crop region into the frame → its displayed size as a ratio
-  // of the frame's own dimensions.
-  let cropWRatio: number
-  let cropHRatio: number
-  if (cropAspect >= frameAspect) {
-    cropWRatio = 1
-    cropHRatio = frameAspect / cropAspect
-  } else {
-    cropHRatio = 1
-    cropWRatio = cropAspect / frameAspect
-  }
+  // Fit the crop region into the frame by the item's fit → its displayed size
+  // as a ratio of the frame's own dimensions.
+  const { w: cropWRatio, h: cropHRatio } = fitRatios(cropAspect, frameAspect, input.fit)
 
   // The full (uncropped) video's displayed size as a ratio of the frame.
   const videoWRatio = cropWRatio / crop.w
   const videoHRatio = cropHRatio / crop.h
 
   // Position the video so the crop sub-rect's top-left aligns, then center the
-  // contained region within the frame (the letterbox offset).
+  // fitted region within the frame (the letterbox offset, or cover's overflow).
   const leftRatio = (1 - cropWRatio) / 2 - crop.x * videoWRatio
   const topRatio = (1 - cropHRatio) / 2 - crop.y * videoHRatio
 

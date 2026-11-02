@@ -41,12 +41,14 @@ const SCENE3D_PRELOAD_S = 1.5
 const SCENE3D_LINGER_S = 0.5
 
 // Synced video overlay — seeks to the correct position within the item's inPoint/outPoint range
-function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlaying, muted, volume = 1, visible, cropStyle, onSrcError }: {
+function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlaying, muted, volume = 1, visible, cropStyle, fit = 'contain', onSrcError }: {
   src: string; currentTime: number; itemStart: number; inPoint: number; speed?: number
   /** The clip's EFFECTIVE mute and volume (`effectiveItemAudio`): its track's settings folded in. */
   isPlaying: boolean; muted?: boolean; volume?: number; visible: boolean
-  /** The item's `sourceCrop` as CSS (`sourceCropVideoStyle`), or null to contain the whole source. */
+  /** The item's `sourceCrop` as CSS (`sourceCropVideoStyle`), or null to fit the whole source by `fit`. */
   cropStyle?: React.CSSProperties | null
+  /** The item's fit (§669, timeline-core `videoFitFor`): the whole source's object-fit when there is no crop. */
+  fit?: 'cover' | 'contain' | 'fill'
   onSrcError?: () => void
 }) {
   const ref = useRef<HTMLVideoElement>(null)
@@ -137,7 +139,8 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlayi
       }}
       playsInline
       className={cropStyle ? 'pointer-events-none' : 'absolute inset-0 w-full h-full object-contain pointer-events-none'}
-      style={{ ...cropStyle, opacity: visible ? 1 : 0 }}
+      // The fit (§669) inline, over the class's contain, so cover and fill need no class of their own.
+      style={{ ...(cropStyle ?? { objectFit: fit }), opacity: visible ? 1 : 0 }}
     />
   )
 }
@@ -977,11 +980,13 @@ export default function OverlayItemsLayer({
           if (item.type === 'video' && item.src) {
             const audio = effectiveItemAudio(trackOfItem.get(item.id), item)
             // The export crops the source BEFORE fitting it to the box
-            // (encode-segment.js: `crop=` ahead of `scale=…:decrease`), and only
+            // (encode-segment.js: `crop=` ahead of the fit's `scale`), and only
             // when the item records its source dims; `sourceCropVideoStyle` makes
-            // the same call. It fits to the box's aspect, hence the ratio.
+            // the same call. It fits to the box's aspect, hence the ratio, by
+            // the item's fit (`g.fit`, §669).
             // The crop is the SAMPLED one at the playhead (`g`, PV55 phase 2), so
             // a keyframed crop animates here as it does in the export.
+            const videoFit = g.fit ?? 'contain'
             const cropStyle = g.sourceCrop
               ? sourceCropVideoStyle({
                   crop: g.sourceCrop,
@@ -989,6 +994,7 @@ export default function OverlayItemsLayer({
                   sourceHeight: item.sourceHeight ?? 0,
                   frameWidth: RENDER_W * perAxisRatio({ scaleX, scaleY }),
                   frameHeight: RENDER_H,
+                  fit: videoFit,
                 })
               : null
             return (
@@ -996,7 +1002,7 @@ export default function OverlayItemsLayer({
                 <MediaBox scaleX={scaleX} scaleY={scaleY} mask={comp?.mask}
                   blur={{ item, src: fileUrl(item.nobg_preview_src
                     ?? (isProxyUsable(item.proxySrc) ? item.proxySrc : undefined)
-                    ?? item.src), crop: g.sourceCrop, renderScale, canvasW: RENDER_W, canvasH: RENDER_H, scaleX, scaleY, playing: isPlaying }}>
+                    ?? item.src), crop: g.sourceCrop, fit: videoFit, renderScale, canvasW: RENDER_W, canvasH: RENDER_H, scaleX, scaleY, playing: isPlaying }}>
                   <OverlayVideo
                     // This is a THIRD src-precedence chain, deliberately not
                     // @bycrux/timeline-core's `playbackSrcFor` (see
@@ -1039,6 +1045,7 @@ export default function OverlayItemsLayer({
                     volume={audio.volume}
                     visible={visible}
                     cropStyle={cropStyle}
+                    fit={videoFit}
                     key={`vid-${item.id}`}
                   />
                 </MediaBox>

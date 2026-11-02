@@ -488,9 +488,9 @@ export interface Geometry {
   /** 0-1. */
   opacity: number
   /**
-   * `'contain'` ALWAYS for video (never reads `item.fit`); the item's own
-   * tri-state (default `'cover'`) for image, or `'cover'` from
-   * {@link geometryAt} when its crop is keyframed ({@link imageFitFor});
+   * The item's own tri-state: default `'contain'` for video
+   * ({@link videoFitFor}), default `'cover'` for image, or `'cover'` from
+   * {@link geometryAt} when an image's crop is keyframed ({@link imageFitFor});
    * `undefined` for overlay and any other kind — a JSX overlay has no fit
    * concept to fabricate.
    */
@@ -543,8 +543,8 @@ export declare function geometryFor(item: GeometryItem, kind: ItemKind): Geometr
  * CONSTRUCTION and a keyframe-free project keeps producing a byte-identical
  * ffmpeg filter graph. Only the eleven transform and crop {@link KeyframeProp}
  * values move geometry (the mask props are {@link maskAt}'s). The four crop props are folded into ONE `sourceCrop` for images
- * and video (PV55); such an image resolves `fit: 'cover'` (a video keeps
- * 'contain'); otherwise
+ * and video (PV55); such an image resolves `fit: 'cover'` (a video
+ * {@link videoFitFor}); otherwise
  * `fit`/`sourceCrop`/`sourceWidth`/`sourceHeight` are forwarded exactly as the
  * static path forwards them (`sourceCrop` by reference, never cloned). The
  * per-prop fallback is `??` and never `||`, so a legitimately animated 0
@@ -563,6 +563,8 @@ export declare const CROP_KEYFRAME_PROPS: ReadonlyArray<'cropX' | 'cropY' | 'cro
 export declare function hasCropKeyframes(item: GeometryItem | null | undefined): boolean
 /** The fit an image is drawn with: 'cover' whenever its crop is keyframed, else `item.fit ?? 'cover'`. */
 export declare function imageFitFor(item: GeometryItem): 'cover' | 'contain' | 'fill'
+/** The fit a video is drawn with (§669): `item.fit` when 'cover' or 'fill' ('fill' covers while its crop is keyframed), else 'contain'. */
+export declare function videoFitFor(item: GeometryItem): 'cover' | 'contain' | 'fill'
 
 /**
  * The editor-CSS adapter. Verbatim port of `videoTransformBoxPct`

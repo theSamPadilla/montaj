@@ -104,13 +104,14 @@
 //
 // ── fit ───────────────────────────────────────────────────────────────────
 //
-//   video   — ALWAYS 'contain', regardless of what `item.fit` says. The video
-//             branch of both buildVideoItemFilterParts (render) and the
-//             editor's <video object-fit> path use
-//             `force_original_aspect_ratio=decrease` / `object-fit: contain`
-//             unconditionally; `item.fit` is never read for a video item
-//             anywhere in the render pipeline. Fabricating tri-state fit for
-//             video would imply a knob that does not exist.
+//   video   — tri-state 'cover' | 'contain' | 'fill' (§669), default
+//             'contain' (`videoFitFor`): absent or unknown is 'contain', which
+//             is what every video was drawn with before §669, so a project
+//             without `fit` renders as it always did. The crop (sourceCrop) is
+//             cut first and the fit applies to the cropped region, in render
+//             (buildVideoItemFilterParts), sample_frame and the editor. A
+//             keyframed crop with 'fill' covers, as an image's does: the moving
+//             crop cannot stretch per frame.
 //   image   — tri-state 'cover' | 'contain' | 'fill', default 'cover'.
 //             encode-segment.js:169 `const fit = item.fit ?? 'cover'`;
 //             render.js:599 `imageItems.push({ ...base, fit: item.fit ?? 'cover' })`;
@@ -330,7 +331,7 @@
 // `rotation`, `opacity`) and the four crop props (`cropX`, `cropY`, `cropW`,
 // `cropH`, PV55). The crop four are folded back into ONE `sourceCrop` object,
 // and only for the kinds in `CROP_KEYFRAME_KINDS` (images and video); such an
-// image resolves `fit: 'cover'`, a video keeps 'contain'. For every other kind, and for an image with
+// image resolves `fit: 'cover'`, a video `videoFitFor`. For every other kind, and for an image with
 // no crop track, `sourceCrop` is forwarded exactly as the static path forwards
 // it — BY REFERENCE, never cloned. `fit`, `sourceWidth` and `sourceHeight` are
 // still NOT keyframeable. A track naming any other prop is simply never
@@ -378,7 +379,7 @@ import { sampleTrack } from './curves.js'
  * @property {number} [offsetX]      Percent of frame WIDTH. Default 0.
  * @property {number} [offsetY]      Percent of frame HEIGHT. Default 0.
  * @property {number} [opacity]      0-1. Default 1.
- * @property {'cover' | 'contain' | 'fill'} [fit] Images only; ignored for video.
+ * @property {'cover' | 'contain' | 'fill'} [fit] Images (default 'cover') and video (default 'contain').
  * @property {{x: number, y: number, w: number, h: number}} [sourceCrop]
  *   Sub-rect of the SOURCE, as ratios of the source's own dimensions.
  *   Forwarded verbatim — see the module header.
@@ -410,9 +411,9 @@ import { sampleTrack } from './curves.js'
  * @property {number} offsetY  Percent of frame height.
  * @property {number} opacity  0-1.
  * @property {'cover' | 'contain' | 'fill' | undefined} fit
- *   'contain' ALWAYS for video (never `item.fit`); the item's own tri-state
- *   (default 'cover') for image, or 'cover' from `geometryAt` when its crop is
- *   keyframed (`imageFitFor`); `undefined` for overlay and anything else —
+ *   The item's own tri-state: default 'contain' for video (`videoFitFor`),
+ *   default 'cover' for image, or 'cover' from `geometryAt` when an image's crop
+ *   is keyframed (`imageFitFor`); `undefined` for overlay and anything else —
  *   see the module header for why each of these is honest, not fabricated.
  * @property {{x: number, y: number, w: number, h: number} | undefined} sourceCrop
  *   Forwarded verbatim, by reference; from `geometryAt`, a fresh object
@@ -430,7 +431,7 @@ import { sampleTrack } from './curves.js'
  * @returns {'cover' | 'contain' | 'fill' | undefined}
  */
 function fitFor(item, kind) {
-  if (kind === 'video') return 'contain'
+  if (kind === 'video') return videoFitFor(item)
   if (kind === 'image') return item.fit ?? 'cover'
   return undefined
 }
@@ -449,8 +450,8 @@ const CROP_PROP_SET = new Set(CROP_KEYFRAME_PROPS)
 /**
  * Which kinds `geometryAt` samples crop tracks for: images (PV55 phase 1) and
  * video (phase 2). An overlay has no source frame, so its crop tracks are
- * ignored. A video keeps its own 'contain' fit; only an image is forced to
- * 'cover'. The same switch lives in `canKeyframeProp` and `engine/validate.py`.
+ * ignored. A video keeps its own fit (`videoFitFor`); only an image is forced
+ * to 'cover'. The same switch lives in `canKeyframeProp` and `engine/validate.py`.
  * @type {ReadonlySet<string>}
  */
 const CROP_KEYFRAME_KINDS = new Set(['image', 'video'])
@@ -481,6 +482,20 @@ export function hasCropKeyframes(item) {
  */
 export function imageFitFor(item) {
   return hasCropKeyframes(item) ? 'cover' : (item.fit ?? 'cover')
+}
+
+/**
+ * The fit a VIDEO is drawn with (§669): the item's own 'cover' or 'fill', and
+ * 'contain' otherwise, absent included, which is how every video was drawn
+ * before `fit` was read for one. With a keyframed crop 'fill' covers, as an
+ * image's does: the moving crop holds the box's aspect and cannot stretch.
+ * @param {GeometryItem} item
+ * @returns {'cover' | 'contain' | 'fill'}
+ */
+export function videoFitFor(item) {
+  const fit = item?.fit
+  if (fit === 'fill') return hasCropKeyframes(item) ? 'cover' : 'fill'
+  return fit === 'cover' ? 'cover' : 'contain'
 }
 
 /**
@@ -562,7 +577,7 @@ function trackFor(tracks, prop) {
  * filter graph. Only the eleven props src/curves.js names can be animated.
  * The four crop props are folded into ONE `sourceCrop` for the kinds in
  * `CROP_KEYFRAME_KINDS` (images and video); such an image resolves `fit:
- * 'cover'`, a video keeps 'contain'; otherwise `fit`/`sourceCrop`/`sourceWidth`/`sourceHeight` are
+ * 'cover'`, a video `videoFitFor`; otherwise `fit`/`sourceCrop`/`sourceWidth`/`sourceHeight` are
  * forwarded exactly as the static path forwards them (`sourceCrop` by
  * reference, never cloned).
  *

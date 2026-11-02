@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react'
-import { blurAngleOf, blurCenterOf, blurOf, blurTypeOf, containsTime, geometryAt, hasCropKeyframes, maskAt, transitionPairs } from '@bycrux/timeline-core'
+import { blurAngleOf, blurCenterOf, blurOf, blurTypeOf, containsTime, geometryAt, hasCropKeyframes, maskAt, transitionPairs, videoFitFor } from '@bycrux/timeline-core'
 import { videoTransformContainerStyle, videoTransformBoxPct, mediaBoxStyle, perAxisRatio, zoomTo, type VideoTransform } from './transformStyle'
 import type { EditorProject as Project, VisualItem } from '../../schema'
 import type { OverlayFactory } from '../../types'
@@ -668,6 +668,8 @@ function PreviewSurface({
   // export does; the memo then depends on the playhead. An un-keyframed clip
   // keys on a constant, so its memo is not recomputed per frame.
   const cropKeyed = !!activeClip && hasCropKeyframes(activeClip)
+  // The clip's fit (§669): contain unless it says cover or fill, as the export reads it.
+  const baseFit = activeClip ? videoFitFor(activeClip) : 'contain'
   const cropTime = cropKeyed ? currentTime : 0
   const cropStyle = useMemo(() => {
     const crop = activeClip
@@ -685,13 +687,15 @@ function PreviewSurface({
       sourceHeight: sh,
       frameWidth: frameSize.w * xfRatio,
       frameHeight: frameSize.h,
+      fit: baseFit,
     })
-  }, [activeClip, videoDims, frameSize, xfRatio, cropKeyed, cropTime])
+  }, [activeClip, videoDims, frameSize, xfRatio, cropKeyed, cropTime, baseFit])
 
-  // The default full-frame style (no crop). object-contain letterboxes the source.
+  // The default full-frame style (no crop): the clip's fit (§669) as object-fit;
+  // contain, the default, letterboxes the source.
   const baseVideoStyle = cropStyle
     ? { ...cropStyle }
-    : { position: 'absolute' as const, inset: 0, width: '100%', height: '100%', objectFit: 'contain' as const }
+    : { position: 'absolute' as const, inset: 0, width: '100%', height: '100%', objectFit: baseFit }
 
   // ── Base-video on-canvas transform (position + zoom) ─────────────────────────
   // The selected tracks[0] video shows drag/resize handles like an overlay: drag
@@ -770,6 +774,7 @@ function PreviewSurface({
     item: blurred,
     src: fileUrl(blurred.src ?? ''),
     crop: cropKeyed ? geometryAt(blurred, 'video', localTimeOf(blurred, currentTime)).sourceCrop : blurred.sourceCrop,
+    fit: videoFitFor(blurred),
     renderScale, canvasW: RENDER_W, canvasH: RENDER_H, scaleX: baseSx, scaleY: baseSy,
     knownSize: videoDims,
     // A spin or zoom reads the engine's canvas (the picture's rect of it) or the active <video> slot.

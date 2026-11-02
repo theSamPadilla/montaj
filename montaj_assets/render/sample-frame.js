@@ -207,6 +207,8 @@ const SHORT_EDGE_TARGET = 1080
  *    (item-blur.js, precise); 27's entries hold such a still from 8-bit copies.
  * 29: a video's crop is cut in the decoded frame's pixels (§668); 28's
  *    entries hold a crop cut in the item's source size.
+ * 30: a video's `fit` is honoured (§669); 29's entries hold such a clip
+ *    contained.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -214,7 +216,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 29
+const SAMPLE_CACHE_VERSION = 30
 
 // The still's composite canvas (`format=rgba`), which a blend mode converts from and back to.
 const SAMPLE_CANVAS_PIX_FMT = 'rgba'
@@ -2067,14 +2069,12 @@ async function sampleFrameAt({
         rotation: ri.geometry.rotation,
         opacity, // the shared rule — see the note above the branch
         // TRAP: buildImageItemFilterParts defaults to 'cover' when fit is
-        // omitted, which CROPS the frame to fill its box. Production video is
-        // ALWAYS contain-fit — buildVideoItemFilterParts' own scale step uses
-        // force_original_aspect_ratio=decrease unconditionally, never reading
-        // item.fit at all (see @bycrux/timeline-core/src/geometry.js's fit
-        // note). Forwarding sourceCrop above without ALSO forcing 'contain'
-        // here would silently drag the wrong (image) fit rule onto a video
-        // frame and crop content the crop step didn't already remove.
-        fit: 'contain',
+        // omitted, which CROPS the frame to fill its box. A video's fit is its
+        // own, default 'contain' (timeline-core `videoFitFor`, §669), already
+        // resolved on the geometry: pass it always, never let the image
+        // default stand in. The frame is already cropped, so the fit applies
+        // to the cropped region, as buildVideoItemFilterParts applies it.
+        fit: ri.geometry.fit,
       }
     } else {
       pseudoItem = {

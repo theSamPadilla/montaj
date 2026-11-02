@@ -52,6 +52,18 @@ test('an upper-track video crops its source first, then contains it in its per-a
   assert.match(p.chain, /crop=1206:1414:0:0,scale=1032:1210:force_original_aspect_ratio=decrease,pad=1032:1210:\(ow-iw\)\/2:\(oh-ih\)\/2/)
 })
 
+test('§669: an upper-track cover video crops its source first, then covers its per-axis box', () => {
+  const item = {
+    type: 'video', src: '/screen.mp4', start: 0, end: 4, inPoint: 0, fit: 'cover',
+    sourceCrop: { x: 0, y: 0, w: 1, h: 0.5393 }, sourceWidth: 1206, sourceHeight: 2622, ...UPPER_BOX,
+  }
+  const p = placed(buildVideoItemFilterParts(item, VW, VH, 1, '[base]', SDR).filterParts)
+  assert.deepEqual({ width: p.width, height: p.height, x: p.x, y: p.y }, toPixelBox(geometryFor(item, 'video'), VW, VH))
+  assert.equal(p.mode, 'increase')
+  // The same crop AHEAD of the fit; then cover: fill the box, crop the overflow to it, nothing left to pad.
+  assert.match(p.chain, /crop=1206:1414:0:0,scale=1032:1210:force_original_aspect_ratio=increase,crop=1032:1210,pad=1032:1210:/)
+})
+
 test('a tracks[0] presenter is contained in its per-axis box', () => {
   const item = {
     type: 'video', src: '/presenter.mp4', start: 0, end: 4, inPoint: 0, probedWidth: 1920, probedHeight: 1080,

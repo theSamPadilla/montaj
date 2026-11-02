@@ -26,6 +26,7 @@ import {
   toRotatedPixelBox,
   isFullFrameCrop,
   designCanvas,
+  videoFitFor,
 } from '../index.js'
 
 /** Float compare. */
@@ -600,17 +601,29 @@ describe('fit: image tri-state, default cover', () => {
   })
 })
 
-describe('fit: video is ALWAYS contain, even when item.fit says otherwise', () => {
-  test('no fit field on a video item -> contain', () => {
+describe('fit: video tri-state (§669), default contain', () => {
+  test('no fit field on a video item -> contain, as every video was drawn before', () => {
     assert.equal(geometryFor({}, 'video').fit, 'contain')
   })
 
-  test("item.fit: 'cover' on a video item is IGNORED -> still contain", () => {
-    assert.equal(geometryFor({ fit: 'cover' }, 'video').fit, 'contain')
+  test("item.fit: 'cover' and 'fill' on a video item are honoured", () => {
+    assert.equal(geometryFor({ fit: 'cover' }, 'video').fit, 'cover')
+    assert.equal(geometryFor({ fit: 'fill' }, 'video').fit, 'fill')
+    assert.equal(geometryFor({ fit: 'contain' }, 'video').fit, 'contain')
   })
 
-  test("item.fit: 'fill' on a video item is IGNORED -> still contain", () => {
-    assert.equal(geometryFor({ fit: 'fill' }, 'video').fit, 'contain')
+  test('an unknown fit on a video item -> contain', () => {
+    assert.equal(geometryFor({ fit: 'stretch' }, 'video').fit, 'contain')
+  })
+
+  test("geometryAt keeps the video's fit; a keyframed crop turns 'fill' into 'cover'", () => {
+    const crop = [{ prop: 'cropW', points: [{ t: 0, value: 0.5 }, { t: 1, value: 1 }] }]
+    const scale = [{ prop: 'scale', points: [{ t: 0, value: 0.5 }, { t: 1, value: 1 }] }]
+    assert.equal(geometryAt({ fit: 'cover', keyframes: scale }, 'video', 0.5).fit, 'cover')
+    assert.equal(geometryAt({ fit: 'fill', keyframes: scale }, 'video', 0.5).fit, 'fill')
+    assert.equal(geometryAt({ fit: 'fill', keyframes: crop }, 'video', 0.5).fit, 'cover')
+    assert.equal(geometryAt({ keyframes: crop }, 'video', 0.5).fit, 'contain')
+    assert.equal(videoFitFor({ fit: 'fill', keyframes: crop }), 'cover')
   })
 })
 
@@ -1688,9 +1701,9 @@ describe('geometryAt: the non-keyframeable fields pass through untouched', () =>
   })
 
   test('fit follows the same per-kind rules as geometryFor on the animated path', () => {
-    // video is ALWAYS 'contain' (item.fit is never read); image is the item's
-    // own tri-state; overlay and anything else is undefined.
-    assert.equal(geometryAt(item, 'video', 2).fit, 'contain', 'video ignores item.fit')
+    // video and image are the item's own tri-state (§669 for video); overlay
+    // and anything else is undefined.
+    assert.equal(geometryAt(item, 'video', 2).fit, 'fill', 'video honours item.fit')
     assert.equal(geometryAt(item, 'image', 2).fit, 'fill', 'image honours item.fit')
     assert.equal(geometryAt(item, 'overlay', 2).fit, undefined, 'an overlay has no fit concept')
     const noFit = { keyframes: [linearTrack('scale', 0.5, 1)] }

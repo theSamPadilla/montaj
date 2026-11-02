@@ -99,7 +99,7 @@ export interface ItemBlurInput {
   src?: string
   /** The crop at the playhead (`geometryAt(...).sourceCrop`). */
   crop?: Crop
-  /** An image's fit. Videos are always contain-fitted, as the export fits them. */
+  /** The clip's fit: an image's (default cover), or a video's (§669: contain unless 'cover' or 'fill'), as the export fits them. */
   fit?: 'cover' | 'contain' | 'fill'
   /** Screen pixels per design-canvas pixel. */
   renderScale: number
@@ -139,7 +139,7 @@ const known = (s: Size | null | undefined): s is Size => !!s && drawable(s.w) &&
  * (a `cover` or `fill` image) or is not known yet.
  */
 export function pictureSizeFor(item: VisualItem, crop: Crop | undefined, fit: ItemBlurInput['fit'], natural: Size | null | undefined): Size | null {
-  if (item.type === 'image' && fit !== 'contain') return null
+  if (fillsBox(item, fit)) return null
   const stored = item.type === 'video' && drawable(item.sourceWidth ?? 0) && drawable(item.sourceHeight ?? 0)
     ? { w: item.sourceWidth as number, h: item.sourceHeight as number }
     : null
@@ -148,6 +148,12 @@ export function pictureSizeFor(item: VisualItem, crop: Crop | undefined, fit: It
   // A video's crop needs its stored size, as the export's does; without one it renders uncropped.
   const cropApplies = crop && drawable(crop.w) && drawable(crop.h) && (item.type === 'image' || stored)
   return cropApplies ? { w: size.w * crop.w, h: size.h * crop.h } : size
+}
+
+/** Whether the clip's picture is its whole box: a `cover` or `fill` image (an image's fit defaults to cover), or a
+ *  video whose fit is `cover` or `fill` (§669; a video's defaults to contain). */
+function fillsBox(item: VisualItem, fit: ItemBlurInput['fit']): boolean {
+  return item.type === 'image' ? fit !== 'contain' : fit === 'cover' || fit === 'fill'
 }
 
 const isRadial = (item: VisualItem) => {
@@ -220,11 +226,16 @@ export function radialBlurSpec(input: Omit<ItemBlurInput, 'src' | 'knownSize'>, 
   const base = { type, amount: blurOf(item), center: blurCenterOf(item), scale }
   const whole: FracRect = { x: 0, y: 0, w: 1, h: 1 }
   const cropRect = crop && drawable(crop.w) && drawable(crop.h) ? crop : null
-  if (item.type === 'image' && fit !== 'contain') {
-    if (fit === 'fill') return { ...base, pictureRect: whole, sourceRect: cropRect ?? undefined }
-    // cover: the centred part of the (cropped) image at the box's aspect.
+  const stored = item.type === 'video' && drawable(item.sourceWidth ?? 0) && drawable(item.sourceHeight ?? 0)
+  if (fillsBox(item, fit)) {
+    // The engine canvas spans the box and draws the fit itself: the picture is all of it.
+    if (item.type === 'video' && input.engineCanvas) return { ...base, pictureRect: whole, sourceRect: whole }
+    // A video's crop needs its stored size, as the export's does.
+    const ownCrop = cropRect && (item.type === 'image' || stored) ? cropRect : null
+    if (fit === 'fill') return { ...base, pictureRect: whole, sourceRect: ownCrop ?? undefined }
+    // cover: the centred part of the (cropped) picture at the box's aspect.
     if (!known(natural)) return null
-    const c = cropRect ?? whole
+    const c = ownCrop ?? whole
     const a = (natural.w * c.w) / (natural.h * c.h)
     const boxA = boxW / boxH
     const sourceRect = a > boxA
@@ -236,7 +247,6 @@ export function radialBlurSpec(input: Omit<ItemBlurInput, 'src' | 'knownSize'>, 
   if (!picture) return null
   const pictureRect = pictureRectInBox(boxW, boxH, picture.w, picture.h)
   if (input.engineCanvas) return { ...base, pictureRect, sourceRect: pictureRect }
-  const stored = item.type === 'video' && drawable(item.sourceWidth ?? 0) && drawable(item.sourceHeight ?? 0)
   const cropApplies = cropRect && (item.type === 'image' || stored)
   return { ...base, pictureRect, sourceRect: cropApplies ? cropRect : undefined }
 }
@@ -417,7 +427,9 @@ export function useItemBlur(input: ItemBlurInput | null): ItemBlurParts {
   const videoSize = useVideoNaturalSize(needsVideo ? input?.src : undefined)
   const imageSize = useImageNaturalSize(needsImage ? input?.src : undefined)
   if (!input || !wants) return NONE
-  const natural = item?.type === 'image' ? imageSize : (known(videoSize) ? videoSize : input.knownSize)
+  const storedSize = item?.type === 'video' && drawable(item.sourceWidth ?? 0) && drawable(item.sourceHeight ?? 0)
+    ? { w: item.sourceWidth as number, h: item.sourceHeight as number } : null
+  const natural = item?.type === 'image' ? imageSize : (storedSize ?? (known(videoSize) ? videoSize : input.knownSize))
   if (isRadial(input.item)) {
     const radial = radialBlurSpec(input, natural ?? null)
     return radial ? { ...NONE, radial: { ...radial, playing: !!input.playing } } : NONE
