@@ -8,7 +8,7 @@ them at project resolution, and writes a PNG.
 With --scene, it renders one 3D alone instead, over the project's whole frame,
 --at seconds into that 3D: a 3D no timeline item shows can be checked too.
 """
-import os, re, sys, argparse, subprocess, json, tempfile
+import os, re, sys, argparse, subprocess, json, tempfile, math
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
@@ -42,8 +42,20 @@ SHEET_TILE_WIDTH = 360
 SHEET_SHORT_EDGE = 1080
 
 
+def look_at_args(look_at, distance, lens):
+    """The node flags for look_at, a close-up on one bone of every 3D on screen (§673); [] without it."""
+    if look_at is None:
+        return []
+    cmd = ["--look-at", json.dumps(look_at, separators=(",", ":"))]
+    if distance is not None:
+        cmd += ["--distance", str(distance)]
+    if lens is not None:
+        cmd += ["--lens", str(lens)]
+    return cmd
+
+
 def sample_frames(project, times, frames_dir, raw=False, scene=None, sdr_curve=None, prefer_proxy=False,
-                  no_captions=False, timeout=None, errors=None):
+                  no_captions=False, timeout=None, errors=None, look=()):
     """Render every time in ONE node process into frames_dir (f_0000.png...); return the paths in order. Several times
     (a sheet) composite at SHEET_SHORT_EDGE; one time keeps the project's size. The process gets `timeout` seconds,
     else 120 a time.
@@ -66,6 +78,7 @@ def sample_frames(project, times, frames_dir, raw=False, scene=None, sdr_curve=N
         cmd += ["--scene", scene]
     if sdr_curve is not None:
         cmd += ["--sdr-curve", sdr_curve]
+    cmd += list(look)
     if len(times) > 1 and not raw:
         cmd += ["--max-short-edge", str(SHEET_SHORT_EDGE)]
     try:
@@ -127,6 +140,13 @@ def main():
     parser.add_argument("--no-captions", action="store_true",
                         help="Sample the frame without the captions overlay, so the picture under a caption can be read. "
                              "With --raw or --scene it changes nothing.")
+    parser.add_argument("--look-at", default=None,
+                        help="A close-up of the 3D on screen, JSON {cast: i, bone: name} or {cast: i, part: name}: "
+                             "every 3D in the frame is drawn from a camera on that bone or part instead of its own.")
+    parser.add_argument("--distance", type=float, default=None,
+                        help="With --look-at: metres from the bone to the camera (default 0.5)")
+    parser.add_argument("--lens", type=float, default=None,
+                        help="With --look-at: the lens in mm (default 50)")
     parser.add_argument("--out", default=None,
                         help="Output PNG path (default: <project_dir>/render/samples/frame-<at>s.png; "
                              "with several --at, the sheet: sheet-<first>-<last>s.png)")
@@ -148,6 +168,29 @@ def main():
         fail("invalid_args", "Pass --at (one or more times) or --every.")
     if len(times) > MAX_TIMES:
         fail("invalid_args", f"{len(times)} times > {MAX_TIMES}; raise --every or pick fewer times.")
+
+    look_at = None
+    if args.look_at is None:
+        if args.distance is not None or args.lens is not None:
+            fail("invalid_args", "--distance and --lens go with --look-at.")
+    else:
+        if args.raw:
+            fail("invalid_args", "--look-at closes in on a 3D; it cannot combine with --raw.")
+        try:
+            look_at = json.loads(args.look_at)
+        except ValueError:
+            look_at = None
+        bad = "look_at is {cast: i, bone: name} or {cast: i, part: name}"
+        if not isinstance(look_at, dict) or set(look_at) not in ({"cast", "bone"}, {"cast", "part"}):
+            fail("invalid_look_at", f"{bad} (got {args.look_at!r}).")
+        key = "bone" if "bone" in look_at else "part"
+        if type(look_at["cast"]) is not int or look_at["cast"] < 0:
+            fail("invalid_look_at", f"{bad}: cast is the cast entry's number, 0 or more (got {look_at['cast']!r}).")
+        if not isinstance(look_at[key], str) or not look_at[key]:
+            fail("invalid_look_at", f"{bad}: {key} is a name (got {look_at[key]!r}).")
+        for flag, v in (("distance", args.distance), ("lens", args.lens)):
+            if v is not None and not (math.isfinite(v) and v > 0):
+                fail("invalid_args", f"--{flag} is a number above 0 (got {v}).")
 
     if args.raw and args.scene is not None:
         fail("invalid_args", "--raw samples the timeline's source; it cannot combine with --scene.")
@@ -222,7 +265,7 @@ def main():
         with tempfile.TemporaryDirectory() as work:
             paths = sample_frames(args.project, times, work, raw=args.raw, scene=args.scene,
                                   sdr_curve=sdr_forward, prefer_proxy=args.prefer_proxy,
-                                  no_captions=args.no_captions, errors=errors)
+                                  no_captions=args.no_captions, errors=errors, look=look_at_args(look_at, args.distance, args.lens))
             labels = [t if p else f"{t:.2f}s failed" for p, t in zip(paths, times)]
             if errors:
                 from PIL import Image
@@ -256,6 +299,7 @@ def main():
         cmd += ["--scene", args.scene]
     if sdr_forward is not None:
         cmd += ["--sdr-curve", sdr_forward]
+    cmd += look_at_args(look_at, args.distance, args.lens)
 
     env = node_child_env()
 

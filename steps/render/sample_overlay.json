@@ -1,6 +1,6 @@
 {
   "name": "sample_overlay",
-  "description": "Render one frame of an overlay JSX to PNG via Puppeteer; optionally return per-element bounding-box and overflow measurements as JSON.",
+  "description": "Render one frame of an overlay JSX to PNG; optionally return per-element bounding-box and overflow measurements as JSON.",
   "input": {
     "type": "jsx",
     "description": "Absolute path to the overlay JSX file"

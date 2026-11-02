@@ -94,6 +94,24 @@ export function scene3dStage({ env = process.env, exists = existsSync, log = log
   return stage
 }
 
+/**
+ * §673: a close-up camera on one bone or part, in place of the scene's own: one POV shot over all time that rides
+ * `follow` ({cast: i, bone} | {cast: i, part}, as the stage's camera shots take it) and looks at it, `distance` metres
+ * away, in world axes: in front of a Blender-front cast (-y), a little to one side and above, so a hand is seen from a
+ * three-quarter view and the eye never sits on, or straight over, the point it looks at. The stage resolves the ref
+ * live, so the bone's place is not needed here.
+ */
+const CLOSE_UP_DIR = [0.35, -0.9, 0.3]
+const CLOSE_UP_SECONDS = 86400
+export function closeUpCamera({ follow, distance, lens }) {
+  const k = distance / Math.hypot(...CLOSE_UP_DIR)
+  const offset = CLOSE_UP_DIR.map((x) => x * k)
+  return {
+    lens,
+    shots: [{ start: 0, end: CLOSE_UP_SECONDS, from: { at: offset, look: [0, 0, 0] }, pov: { follow, offset, frame: 'world' } }],
+  }
+}
+
 /** A cut's clock for a scene item (§657): [[item time, scene second, length]], sorted, first at 0, lengths over 0. */
 function validTimeMap(map) {
   if (!Array.isArray(map) || map.length === 0) return false
@@ -117,8 +135,11 @@ function validTimeMap(map) {
  * `only` (§651) picks the scene items to rewrite; the rest stay `engine:scene3d`, unread. A sampled frame passes the
  * items on screen at its time: each scene's text is inlined whole (a real one is 25 to 33 MB), so materializing a
  * project of 24 scenes held 620 MB of text, and the sample's JSON copy of it passed V8's 512 MB string limit.
+ *
+ * `closeUp` (§673, a sample's look_at: {follow, distance, lens}) replaces each rewritten scene's camera with
+ * closeUpCamera, in the text handed to the stage only; the scene's file is not touched.
  */
-export function materializeScene3d(project, projectDir, { env = process.env, exists = existsSync, read = (f) => readFileSync(f, 'utf8'), log = logToStderr, only = null } = {}) {
+export function materializeScene3d(project, projectDir, { env = process.env, exists = existsSync, read = (f) => readFileSync(f, 'utf8'), log = logToStderr, only = null, closeUp = null } = {}) {
   let n = 0
   for (const track of trackItems(project)) {
     for (const item of track ?? []) {
@@ -157,6 +178,13 @@ export function materializeScene3d(project, projectDir, { env = process.env, exi
       }
       if (!sceneData || typeof sceneData !== 'object' || Array.isArray(sceneData) || !sceneData.model || typeof sceneData.model !== 'object') {
         throw new Scene3dError('scene3d_invalid', `${label}: ${which} has no model in it.`)
+      }
+      if (closeUp) {
+        const cast = Array.isArray(sceneData.cast) ? sceneData.cast : []
+        if (!(closeUp.follow.cast < cast.length)) {
+          throw new Scene3dError('scene3d_invalid', `${label}: look_at names cast ${closeUp.follow.cast}, and ${which} has ${cast.length} cast ${cast.length === 1 ? 'entry' : 'entries'}${cast.length ? ` (0..${cast.length - 1})` : ''}.`)
+        }
+        sceneJson = JSON.stringify({ ...sceneData, camera: closeUpCamera(closeUp) })
       }
       item.src = stage
       item.props = { ...props, sceneFile, sceneJson, inPoint }

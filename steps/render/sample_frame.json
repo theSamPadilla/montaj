@@ -1,6 +1,6 @@
 {
   "name": "sample_frame",
-  "description": "Render a fully composited project frame at a given timestamp to PNG, or at several timestamps to one labelled sheet (video + image items + active overlay JSXs + the captions, drawn as the export draws them; no audio). With scene, render one 3D alone over the project's whole frame, at seconds into it.",
+  "description": "Render a composited project frame at a time to PNG, or at several timestamps to one labelled sheet (video + image items + active overlay JSXs + the captions, drawn as the export draws them; no audio). With scene, render one 3D alone over the project's whole frame, at seconds into it.",
   "input": {
     "type": "project",
     "description": "The project id, its folder, or the absolute path of its project.json"
@@ -60,6 +60,24 @@
       "required": false,
       "default": false,
       "description": "Sample the frame without the captions overlay, to read the picture under a caption. No effect with raw or scene."
+    },
+    {
+      "name": "look-at",
+      "type": "json",
+      "required": false,
+      "description": "A close-up of the 3D on screen, e.g. a 40 px hand: {\"cast\": 0, \"bone\": \"hand_r\"} or {\"cast\": 0, \"part\": \"name\"}. Every 3D in the frame is drawn from a camera on that bone or part (a three-quarter view from the front) instead of its own; the scene is not edited. A frame with no 3D on screen answers look_at_no_3d. Not with raw."
+    },
+    {
+      "name": "distance",
+      "type": "float",
+      "required": false,
+      "description": "With look-at: metres from the bone to the camera. 0.5 when left out."
+    },
+    {
+      "name": "lens",
+      "type": "float",
+      "required": false,
+      "description": "With look-at: the lens in mm. 50 when left out."
     },
     {
       "name": "out",

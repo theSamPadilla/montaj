@@ -420,3 +420,76 @@ def test_sample_frames_without_an_errors_list_fails_naming_the_time(frames_node_
     assert errors == [{"at": 1.0, "error": "Could not open encoder before EOF"}]
     with pytest.raises(SystemExit):
         sample_frame.sample_frames(str(project), [1.0, 2.0], str(tmp_path / "g"))
+
+
+# ── look-at: a close-up on one bone of every 3D on screen (§673) ─────────────
+
+def _look(tmp_path, *extra, env=None, at=("--at", "1")):
+    project = _write_project(tmp_path, "sdr_bt709")
+    return run_step_env(STEP, env if env is not None else {}, "--project", str(project), *at,
+                        "--out", str(tmp_path / "s.png"), *extra)
+
+
+def test_look_at_distance_and_lens_reach_node(fake_node_env, tmp_path):
+    proc = _look(tmp_path, "--look-at", '{"cast": 1, "bone": "hand_r"}', "--distance", "0.4", "--lens", "85", env=fake_node_env)
+    assert proc.returncode == 0, proc.stderr
+    argv = json.loads(proc.stdout)
+    assert json.loads(argv[argv.index("--look-at") + 1]) == {"cast": 1, "bone": "hand_r"}
+    assert argv[argv.index("--distance") + 1] == "0.4"
+    assert argv[argv.index("--lens") + 1] == "85.0"
+
+
+def test_look_at_part_is_accepted_and_the_rest_default(fake_node_env, tmp_path):
+    proc = _look(tmp_path, "--look-at", '{"cast": 0, "part": "palm"}', env=fake_node_env)
+    argv = json.loads(proc.stdout)
+    assert json.loads(argv[argv.index("--look-at") + 1]) == {"cast": 0, "part": "palm"}
+    assert "--distance" not in argv and "--lens" not in argv
+
+
+def test_no_look_at_sends_none_of_the_three(fake_node_env, tmp_path):
+    argv = json.loads(_look(tmp_path, env=fake_node_env).stdout)
+    assert not {"--look-at", "--distance", "--lens"} & set(argv)
+
+
+@pytest.mark.parametrize("value", [
+    "not json", "[]", '{"cast": 0}', '{"bone": "hand_r"}', '{"cast": "0", "bone": "hand_r"}', '{"cast": -1, "bone": "hand_r"}',
+    '{"cast": true, "bone": "hand_r"}', '{"cast": 0, "bone": 5}', '{"cast": 0, "bone": ""}',
+    '{"cast": 0, "bone": "a", "part": "b"}', '{"cast": 0, "bone": "a", "x": 1}', '{"prop": 0, "part": "a"}',
+])
+def test_look_at_bad_shape_is_a_clear_error(value, tmp_path):
+    proc = _look(tmp_path, "--look-at", value)
+    assert_error(proc, "invalid_look_at")
+    assert "look_at" in json.loads(proc.stderr)["message"]
+
+
+@pytest.mark.parametrize("flag,value", [("--distance", "0"), ("--distance", "-1"), ("--distance", "nan"), ("--distance", "inf"),
+                                        ("--lens", "0"), ("--lens", "-35"), ("--lens", "nan")])
+def test_look_at_distance_and_lens_must_be_above_zero(flag, value, tmp_path):
+    proc = _look(tmp_path, "--look-at", '{"cast": 0, "bone": "b"}', flag, value)
+    assert_error(proc, "invalid_args")
+
+
+def test_distance_and_lens_need_look_at(tmp_path):
+    assert_error(_look(tmp_path, "--distance", "0.4"), "invalid_args")
+    assert_error(_look(tmp_path, "--lens", "50"), "invalid_args")
+
+
+def test_look_at_cannot_combine_with_raw(tmp_path):
+    assert_error(_look(tmp_path, "--raw", "--look-at", '{"cast": 0, "bone": "b"}'), "invalid_args")
+
+
+def test_look_at_reaches_node_with_several_times(frames_node_env, tmp_path):
+    proc = _look(tmp_path, "--look-at", '{"cast": 0, "bone": "b"}', "--distance", "0.3", env=frames_node_env, at=("--at", "1", "--at", "2"))
+    assert proc.returncode == 0, proc.stderr
+    call = json.loads((Path(frames_node_env["PATH"].split(os.pathsep)[0]) / "calls.jsonl").read_text().splitlines()[-1])
+    assert call[call.index("--distance") + 1] == "0.3"
+    assert "--look-at" in call
+
+
+def test_schema_declares_look_at_distance_lens():
+    from tests.conftest import REPO_ROOT
+    schema = json.loads((REPO_ROOT / "steps" / "render" / "sample_frame.json").read_text())
+    by = {p["name"]: p for p in schema["params"]}
+    assert by["look-at"]["type"] == "json" and by["look-at"].get("required") is False
+    assert by["distance"]["type"] == "float" and by["distance"].get("required") is False
+    assert by["lens"]["type"] == "float" and by["lens"].get("required") is False

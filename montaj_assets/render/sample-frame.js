@@ -393,6 +393,9 @@ if (isMain) {
   let clampToEndArg = false
   let maxShortEdgeArg = null
   let sceneArg      = null
+  let lookAtArg     = null
+  let distanceArg   = null
+  let lensArg       = null
   // shared
   let outArg        = null
   let jobsArg       = null
@@ -426,6 +429,9 @@ if (isMain) {
     if (a === '--no-captions')  { noCaptionsArg  = true; continue }
     if (a === '--raw')          { rawArg = true; continue }
     if (a === '--scene')        { sceneArg      = argv[++i] ?? null; if (sceneArg === null) fail('missing_argument', '--scene needs a 3D id, or \'\' for the project\'s own'); continue }
+    if (a === '--look-at')      { try { lookAtArg = JSON.parse(argv[++i]) } catch { fail('invalid_look_at', '--look-at is not valid JSON') }; continue }
+    if (a === '--distance')     { distanceArg   = Number(argv[++i]); continue }
+    if (a === '--lens')         { lensArg       = Number(argv[++i]); continue }
     if (a === '--out')          { outArg        = argv[++i]; continue }
     if (a === '--jobs')         { jobsArg       = argv[++i]; continue }
     if (a === '--project-dir')  { projectDirArg = argv[++i]; continue }
@@ -481,6 +487,8 @@ if (isMain) {
   } else if (mode === 'frame') {
     if (!projectArg) fail('missing_argument', '--project <path> is required for --mode frame')
     if (atArg == null) fail('missing_argument', '--at <seconds> is required for --mode frame')
+    // §673: look_at, a close-up on one bone for every 3D on screen (distance 0.5 m, lens 50 mm when not given).
+    const lookAt = lookAtArg ? { follow: lookAtArg, distance: distanceArg ?? 0.5, lens: lensArg ?? 50 } : null
     const sampleAt = (at, outPath, session = null) => sceneArg !== null
       ? sampleScene({
         projectJson: resolve(projectArg),
@@ -488,6 +496,7 @@ if (isMain) {
         atSeconds: at,
         outPath,
         sdrCurve: sdrCurveArg,
+        lookAt,
       })
       : (rawArg ? sampleRawFrame : sampleFrame)({
         projectJson: resolve(projectArg),
@@ -496,6 +505,7 @@ if (isMain) {
         sdrCurve: sdrCurveArg,
         preferProxy: preferProxyArg,
         noCaptions: noCaptionsArg,
+        lookAt,
         clampToEnd: clampToEndArg,
         ...(projectDirArg ? { projectDir: resolve(projectDirArg) } : {}),
         ...(rawArg ? {} : { session, maxShortEdge: maxShortEdgeArg }),
@@ -511,7 +521,7 @@ if (isMain) {
         mkdirSync(dir, { recursive: true })
         const outPaths = atArgs.map((_, k) => join(dir, `f_${String(k).padStart(4, '0')}.png`))
         const got = sceneArg !== null
-          ? await sampleScenes({ projectJson: resolve(projectArg), scene: sceneArg, times: atArgs, outPaths, sdrCurve: sdrCurveArg })
+          ? await sampleScenes({ projectJson: resolve(projectArg), scene: sceneArg, times: atArgs, outPaths, sdrCurve: sdrCurveArg, lookAt })
           : await sampleInSessions({ count: atArgs.length, label: (k) => atArgs[k], lanes: lanesFor(atArgs.length), keepGoing: true, sampleWith: (k, session) => sampleAt(atArgs[k], outPaths[k], session) })
         const failed = got.filter((r) => r.error)
         if (failed.length === got.length) throw failed[0].error
@@ -1509,6 +1519,7 @@ async function sampleFrameAt({
   projectDir: projectDirOpt = null,
   session = null,
   maxShortEdge = null,
+  lookAt = null,
 }, seen = {}) {
   if (!outPath) throw new Error('outPath is required')
   if (atSeconds == null) throw new Error('atSeconds is required')
@@ -1547,12 +1558,15 @@ async function sampleFrameAt({
   // PL89g: a projectDir given wins over the file's folder (look's backdrop project is kept in the samples folder).
   // §651: only the 3D items on screen at this time (after the clamp): each inlines its whole scene, and 24 of them
   // (620 MB) passed V8's string limit in the copy below. The rest are never drawn in this frame.
-  materializeScene3d(project, projectDirOpt || (projectPath ? dirname(projectPath) : null), { only: onScreenAt(atSeconds) })
+  const rewritten = materializeScene3d(project, projectDirOpt || (projectPath ? dirname(projectPath) : null), { only: onScreenAt(atSeconds), closeUp: lookAt })
+  if (lookAt && rewritten === 0) {
+    throw new Scene3dError('look_at_no_3d', `look_at closes in on a 3D, and no 3D is on screen at ${atSeconds} s.`)
+  }
 
   // Cache key
   // PL89c: a sheet's frame at the design canvas is its own entry, never a full-size sample's.
   const cap = Number.isFinite(maxShortEdge) && maxShortEdge > 0 ? Math.round(maxShortEdge) : null
-  const cacheKey = buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve, preferProxy, SAMPLE_CACHE_VERSION, cap, noCaptions)
+  const cacheKey = buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve, preferProxy, SAMPLE_CACHE_VERSION, cap, noCaptions, lookAt)
   const cachePng = join(CACHE_DIR, `${cacheKey}.png`)
   const cacheInputs = join(CACHE_DIR, `${cacheKey}.inputs.json`)
 
@@ -2219,7 +2233,7 @@ async function sampleFrameAt({
  * @param {string|null} [opts.sdrCurve]
  * @returns {Promise<{ pngPath: string }>}
  */
-export async function sampleScene({ projectJson, scene, atSeconds, outPath, sdrCurve = null }) {
+export async function sampleScene({ projectJson, scene, atSeconds, outPath, sdrCurve = null, lookAt = null }) {
   if (typeof projectJson !== 'string') throw new Error('a 3D is sampled from its project.json path')
   if (typeof scene !== 'string') throw new Error('scene must be a 3D id, or an empty string for the project\'s own')
   if (typeof atSeconds !== 'number' || !Number.isFinite(atSeconds) || atSeconds < 0) {
@@ -2237,7 +2251,7 @@ export async function sampleScene({ projectJson, scene, atSeconds, outPath, sdrC
     }]],
     audio: { tracks: [] },
   }
-  return sampleFrame({ projectJson: alone, projectDir: dirname(projectPath), atSeconds: 0, outPath, sdrCurve })
+  return sampleFrame({ projectJson: alone, projectDir: dirname(projectPath), atSeconds: 0, outPath, sdrCurve, lookAt })
 }
 
 /**
@@ -2265,7 +2279,7 @@ export function scenesAlone({ settings = {}, scene, times }) {
  * at 0 and runs to the last time, so every time shares one page and is a frame of it: a time lands on the project's
  * frame grid (within half a frame), as an export shows it. One time is sampleScene's, exact.
  */
-export async function sampleScenes({ projectJson, scene, times, outPaths, sdrCurve = null, newSession, frameTimeoutMs }) {
+export async function sampleScenes({ projectJson, scene, times, outPaths, sdrCurve = null, lookAt = null, newSession, frameTimeoutMs }) {
   if (typeof projectJson !== 'string') throw new Error('a 3D is sampled from its project.json path')
   if (typeof scene !== 'string') throw new Error('scene must be a 3D id, or an empty string for the project\'s own')
   for (const t of times) {
@@ -2279,7 +2293,7 @@ export async function sampleScenes({ projectJson, scene, times, outPaths, sdrCur
     count: times.length,
     order,
     label: (k) => times[k],
-    sampleWith: (k, session) => sampleFrame({ projectJson: alone, projectDir: dirname(projectPath), atSeconds: frames[k] / fps, outPath: outPaths[k], sdrCurve, session }),
+    sampleWith: (k, session) => sampleFrame({ projectJson: alone, projectDir: dirname(projectPath), atSeconds: frames[k] / fps, outPath: outPaths[k], sdrCurve, lookAt, session }),
     ...(newSession ? { newSession } : {}),
     ...(frameTimeoutMs ? { frameTimeoutMs } : {}),
     lanes: lanesFor(times.length),
@@ -2515,7 +2529,7 @@ function overlaySourceCacheComponent(project, projectPath) {
  * per-overlay-render key instead).
  */
 function buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve = null, preferProxy = false,
-                            version = SAMPLE_CACHE_VERSION, maxShortEdge = null, noCaptions = false) {
+                            version = SAMPLE_CACHE_VERSION, maxShortEdge = null, noCaptions = false, lookAt = null) {
   let mtime = '0'
   if (projectPath) {
     try { mtime = String(statSync(projectPath).mtimeMs) } catch {}
@@ -2536,7 +2550,8 @@ function buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve = null, pr
   // moves when the manifest does.
   const raw = [RESOLVER_VERSION, `sample-v${version}`, mtime, String(atSeconds), colorSpace,
                MASTER_LOOK, sdrCurve ?? MASTER_LOOK, preferProxy ? 'proxy' : 'master',
-               overlaySources, ...(maxShortEdge ? [`short-${maxShortEdge}`] : []), ...(noCaptions ? ['no-captions'] : [])].join('|')
+               overlaySources, ...(maxShortEdge ? [`short-${maxShortEdge}`] : []), ...(noCaptions ? ['no-captions'] : []),
+               ...(lookAt ? [`look-${JSON.stringify([lookAt.follow, lookAt.distance, lookAt.lens])}`] : [])].join('|')
   return createHash('sha256').update(raw).digest('hex')
 }
 
