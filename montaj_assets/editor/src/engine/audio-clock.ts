@@ -44,6 +44,7 @@
 import { sampleAtOrBefore, type ChunkSource } from './demux'
 import { audioWorkletSource, RING_PROCESSOR_NAME } from './audio-worklet-source'
 import { getSharedAudioContext } from '../video/preview/audio-context'
+import { masterInput } from '../video/preview/master-bus'
 import { createStreamStretch } from './time-stretch'
 
 // ── Tuning constants ────────────────────────────────────────────────────────
@@ -591,7 +592,8 @@ async function createAudioClock(
   const gainNode = ctx.createGain()
   gainNode.gain.value = options.volume
   node.connect(gainNode)
-  gainNode.connect(ctx.destination)
+  // §660: into the page's master bus (the loudness level), not straight out.
+  gainNode.connect(masterInput(ctx))
 
   if (ctx.state === 'suspended') {
     // Best effort only: a resume outside a user-gesture call stack is not

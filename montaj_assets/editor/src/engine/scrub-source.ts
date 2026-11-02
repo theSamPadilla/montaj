@@ -52,6 +52,7 @@
  * cut releases it, then falls out of the LRU on its own.
  */
 import { getSharedAudioContext, latencySeconds } from '../video/preview/audio-context'
+import { masterInput } from '../video/preview/master-bus'
 import { sampleAtOrBefore, type ChunkSource } from './demux'
 import { normalizeAudioCodec, audioTrackIsDecodable } from './audio-clock'
 import type { AcquiredDemux } from './index'
@@ -408,7 +409,8 @@ export function createScrubSource(options: ScrubSourceOptions): ScrubSource {
     src.buffer = buffer
     const gain = ctx.createGain()
     src.connect(gain)
-    gain.connect(ctx.destination)
+    // §660: through the master bus, so a scrub is heard at the playback level.
+    gain.connect(masterInput(ctx))
     const handle = { src, gain }
     live.add(handle)
     src.onended = () => {

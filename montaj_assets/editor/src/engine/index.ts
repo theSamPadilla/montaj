@@ -81,6 +81,7 @@
 import { designCanvas, sourceWindow } from '@bycrux/timeline-core'
 import type { EditorProject as Project, VisualItem } from '../schema'
 import { peekSharedAudioContext, latencySeconds } from '../video/preview/audio-context'
+import { releaseMasterLevel, setMasterLevel } from '../video/preview/master-bus'
 import {
   createMasterClock,
   createWallClock,
@@ -97,6 +98,7 @@ import {
   type ProjectMixPlan,
 } from './mix/audio-plan'
 import { createConformClient, type ConformClient } from './mix/conform-client'
+import { createLoudnessClient, type LoudnessClient } from './mix/loudness-client'
 import {
   createMixClock,
   type MixClock,
@@ -234,6 +236,12 @@ export interface EngineMixerDeps {
   audioSourcePaths?: (project: Project) => string[]
   /** Default a same-origin `createConformClient()`, which the engine disposes. An injected one is the caller's. */
   conform?: ConformClient
+  /**
+   * §660: the level the preview plays at, the export's loudness levelling.
+   * Default a same-origin `createLoudnessClient` for the project, which the
+   * engine disposes; an injected one is the caller's. `false`: no levelling.
+   */
+  loudness?: LoudnessClient | false
 }
 
 /**
@@ -1424,6 +1432,31 @@ function createMixerControl(
   }
 }
 
+// ── §660: the level the preview plays at ───────────────────────────────────
+
+/**
+ * The project's loudness level onto the page's master bus
+ * (video/preview/master-bus.ts), which every path the preview plays sound
+ * through ends in: the mixer, and today's per-clip clocks and lanes alike. A
+ * muted host has no mixer deps and so no level. On dispose the level goes back
+ * to 0 dB, unless a newer engine has set its own since.
+ */
+function createLoudnessControl(mixer: EngineMixerDeps, project: Project): { update(p: Project): void; dispose(): void } | null {
+  if (mixer.loudness === false) return null
+  const owner = {}
+  const client = mixer.loudness ?? createLoudnessClient({ projectId: project.id })
+  const unsubscribe = client.onGain((db) => setMasterLevel(owner, db))
+  client.update(project)
+  return {
+    update: (next) => client.update(next),
+    dispose() {
+      unsubscribe()
+      if (!mixer.loudness) client.dispose()
+      releaseMasterLevel(owner)
+    },
+  }
+}
+
 /** The shared context's output latency, 0 until something on the gesture stack made one. */
 function sharedContextLatency(): number {
   const ctx = peekSharedAudioContext()
@@ -1492,6 +1525,7 @@ export function createEngine(project: Project, deps: EngineDeps): Engine {
 
   const mixer =
     deps.mixer === false ? null : createMixerControl(deps.mixer ?? {}, scheduler, deps, () => currentProject)
+  const loudness = deps.mixer === false ? null : createLoudnessControl(deps.mixer ?? {}, project)
 
   return {
     attach(next: HTMLCanvasElement | null) {
@@ -1550,6 +1584,7 @@ export function createEngine(project: Project, deps: EngineDeps): Engine {
       sizeCanvas()
       scheduler.setProject(next)
       mixer?.projectChanged(next)
+      loudness?.update(next)
     },
     status: () => scheduler.status(),
     stats(): EngineStats {
@@ -1589,6 +1624,7 @@ export function createEngine(project: Project, deps: EngineDeps): Engine {
       host.disposeAll()
       // After the scheduler, which never disposes the project clock it was handed.
       mixer?.dispose()
+      loudness?.dispose()
       paintTimesMs = []
     },
   }

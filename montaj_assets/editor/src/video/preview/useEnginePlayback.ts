@@ -71,6 +71,7 @@ import {
   type MixerState,
 } from '../../engine'
 import { getSharedAudioContext, resumeAudioContextFromGesture } from './audio-context'
+import { masterInput } from './master-bus'
 import { laneSourceExhausted } from './audioLane'
 import type { EditorProject as Project, VisualItem } from '../../schema'
 import { enabledTrackItems } from '../timeline/timeline-model'
@@ -448,14 +449,15 @@ export function useEnginePlayback(
         el = new Audio()
         el.preload = 'auto'
         map.set(track.id, el)
-        // element → GainNode → destination, on the SHARED context (volume > 1.0).
+        // element → GainNode → master bus, on the SHARED context (volume > 1.0;
+        // §660: the bus carries the loudness level, as it does for the mixer).
         // createMediaElementSource can only be called once per element.
         const ctx = getSharedAudioContext()
         const source = ctx.createMediaElementSource(el)
         const gain = ctx.createGain()
         gain.gain.value = mutedRef.current ? 0 : (track.volume ?? 1)
         source.connect(gain)
-        gain.connect(ctx.destination)
+        gain.connect(masterInput(ctx))
         gains.set(track.id, gain)
       }
       if (srcMap.get(track.id) !== track.src) {

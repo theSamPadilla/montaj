@@ -17,6 +17,8 @@ import type { EditorProject as Project, VisualItem } from '../../schema'
 import type { ConformedSource, ConformLookup, ProjectMixPlan } from '../mix/audio-plan'
 import type { ConformClient } from '../mix/conform-client'
 import type { MixClock, MixClockStats, MixParam, MixPlan } from '../mix/mix-clock'
+import type { LoudnessClient } from '../mix/loudness-client'
+import { masterLevelDb } from '../../video/preview/master-bus'
 
 interface ServerState {
   disposed: boolean
@@ -725,5 +727,54 @@ describe('engine: the playhead and the canvas at the audible time', () => {
     r.at(1000)
     expect(last(r.times)).toEqual([1, 1])
     r.engine.dispose()
+  })
+})
+
+describe('engine: the loudness level (§660)', () => {
+  function fakeLoudness() {
+    const updates: Project[] = []
+    const listeners = new Set<(db: number) => void>()
+    let disposed = false
+    const client: LoudnessClient = {
+      update: (p) => {
+        updates.push(p)
+      },
+      get gainDb() {
+        return 0
+      },
+      onGain: (fn) => {
+        listeners.add(fn)
+        return () => listeners.delete(fn)
+      },
+      dispose: () => {
+        disposed = true
+      },
+    }
+    return { client, updates, emit: (db: number) => listeners.forEach((fn) => fn(db)), disposed: () => disposed }
+  }
+
+  it('tells the client the project at once and on every edit, and its level becomes the master level', () => {
+    const l = fakeLoudness()
+    const p0 = project()
+    const engine = createEngine(p0, { fileUrl: (p) => p, requestFrame: () => 1, cancelFrame: () => {}, mixer: { createMixClock: () => Promise.reject(new Error('no worklet')), loudness: l.client } })
+    expect(l.updates).toEqual([p0])
+    const p1 = project([mainClip({ volume: 0.5 })])
+    engine.updateProject(p1)
+    expect(l.updates).toEqual([p0, p1])
+    l.emit(7.5)
+    expect(masterLevelDb()).toBe(7.5)
+    engine.dispose()
+    // Its level goes with it; an injected client is the caller's to dispose.
+    expect(masterLevelDb()).toBe(0)
+    expect(l.disposed()).toBe(false)
+  })
+
+  it('a muted host (no mixer) and `loudness: false` level nothing', () => {
+    const l = fakeLoudness()
+    const engine = createEngine(project(), { fileUrl: (p) => p, requestFrame: () => 1, cancelFrame: () => {}, mixer: false })
+    engine.dispose()
+    const off = createEngine(project(), { fileUrl: (p) => p, requestFrame: () => 1, cancelFrame: () => {}, mixer: { createMixClock: () => Promise.reject(new Error('x')), loudness: false } })
+    off.dispose()
+    expect(l.updates).toEqual([])
   })
 })

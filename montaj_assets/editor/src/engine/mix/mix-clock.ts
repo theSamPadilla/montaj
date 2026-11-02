@@ -35,6 +35,7 @@
  */
 import type { MasterClockStats } from '../audio-clock'
 import { getSharedAudioContext, latencySeconds } from '../../video/preview/audio-context'
+import { masterInput } from '../../video/preview/master-bus'
 import { mixProcessorSource } from './mix-processor-source'
 import { mixWorkerSource } from './mix-worker-source'
 import {
@@ -152,7 +153,7 @@ export type MixContextLike = Pick<BaseAudioContext, 'sampleRate' | 'destination'
 export interface MixClockOptions {
   /** Default: the page's shared context. Never closed. */
   context?: MixContextLike
-  /** Where the mix goes. Default `context.destination`; `null` leaves it unconnected. */
+  /** Where the mix goes. Default the context's master bus (§660, master-bus.ts); `null` leaves it unconnected. */
   destination?: AudioNode | null
   /** Timeline seconds the clock starts at, paused. Default 0. */
   startTime?: number
@@ -237,7 +238,7 @@ export async function createMixClock(options: MixClockOptions = {}): Promise<Mix
       startTime,
     },
   })
-  const destination = options.destination === undefined ? ctx.destination : options.destination
+  const destination = options.destination === undefined ? masterInput(ctx) : options.destination
   let worker: MixWorkerLike
   try {
     if (destination) node.connect(destination)
