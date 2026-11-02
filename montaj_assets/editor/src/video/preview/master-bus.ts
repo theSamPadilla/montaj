@@ -17,9 +17,10 @@
  *    number is known, and whenever there is no target.
  *  - **limiter** stands in for loudnorm's -1 dBTP ceiling, so a raised quiet
  *    mix does not clip on its peaks: a compressor with a hard knee and a high
- *    ratio, just under -1 dBFS, with a fast attack. Its fixed 6 ms look-ahead
- *    (the Web Audio compressor's pre-delay) delays the preview's sound by that
- *    much, well inside lip-sync tolerance.
+ *    ratio, just under -1 dBFS, with a fast attack. Its fixed look-ahead
+ *    delays the preview's sound (`LIMITER_LOOKAHEAD_S`); the engine's clocks
+ *    add it to the output latency they take off (`masterBusLatencyS`), so the
+ *    picture stays with the sound.
  *  - **trim** takes off the makeup gain the Web Audio compressor adds on its
  *    own (`limiterMakeupDb`), so a signal under the ceiling comes out exactly
  *    as the gain set it.
@@ -43,6 +44,15 @@ export const LIMITER = {
   attackS: 0.001,
   releaseS: 0.1,
 } as const
+
+/**
+ * The limiter's look-ahead: every sample through the bus comes out this much
+ * later. The Web Audio API exposes no node latency, so it is the compressor
+ * kernel's fixed pre-delay, 6 ms, in Chromium and in WebKit, whose
+ * DynamicsCompressorNode is the same kernel. It does not change with the
+ * compressor's parameters.
+ */
+export const LIMITER_LOOKAHEAD_S = 0.006
 
 /** A new level's time constant: 63% there in 0.25 s, 95% in 0.75 s. */
 export const MASTER_RAMP_TAU_S = 0.25
@@ -124,6 +134,16 @@ export function masterInput(ctx: Pick<MasterContextLike, 'destination'> & Partia
     buses.set(ctx, bus)
   }
   return bus.input
+}
+
+/**
+ * The delay the bus adds on `ctx`, in seconds: the limiter's look-ahead once
+ * `ctx` has a bus (every engine source connects through `masterInput`), 0 for
+ * a context that plays straight to its destination. A clock that takes the
+ * output latency off its picture time adds this to it.
+ */
+export function masterBusLatencyS(ctx: object | null | undefined): number {
+  return ctx && buses.has(ctx) ? LIMITER_LOOKAHEAD_S : 0
 }
 
 /** Set the preview's level (dB) on the shared context's bus, ramped. `owner` is whoever answers for it. */

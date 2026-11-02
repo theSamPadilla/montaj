@@ -18,7 +18,7 @@ import type { ConformedSource, ConformLookup, ProjectMixPlan } from '../mix/audi
 import type { ConformClient } from '../mix/conform-client'
 import type { MixClock, MixClockStats, MixParam, MixPlan } from '../mix/mix-clock'
 import type { LoudnessClient } from '../mix/loudness-client'
-import { masterLevelDb } from '../../video/preview/master-bus'
+import { LIMITER_LOOKAHEAD_S, masterInput, masterLevelDb } from '../../video/preview/master-bus'
 
 interface ServerState {
   disposed: boolean
@@ -688,6 +688,26 @@ describe('engine: the playhead and the canvas at the audible time', () => {
     r.at(1000)
     expect(last(r.times)![0]).toBeCloseTo(0.965, 9)
     expect(last(r.times)![1]).toBe(1)
+    r.engine.dispose()
+  })
+
+  it('adds the master bus\'s look-ahead once the bus is in the path, and only then', () => {
+    const ctx = stubCtx(0.03, 0.005)
+    const r = wallRig()
+    r.engine.play()
+    r.at(1000)
+    expect(last(r.times)![0]).toBeCloseTo(0.965, 9)
+    const param = () => ({ value: 0, setTargetAtTime: () => {} })
+    const node = () => ({ connect: () => {}, disconnect: () => {} })
+    Object.assign(ctx, {
+      currentTime: 0,
+      destination: node(),
+      createGain: () => ({ ...node(), gain: param() }),
+      createDynamicsCompressor: () => ({ ...node(), threshold: param(), knee: param(), ratio: param(), attack: param(), release: param() }),
+    })
+    masterInput(ctx as unknown as Parameters<typeof masterInput>[0])
+    r.at(2000)
+    expect(last(r.times)![0]).toBeCloseTo(2 - 0.035 - LIMITER_LOOKAHEAD_S, 9)
     r.engine.dispose()
   })
 

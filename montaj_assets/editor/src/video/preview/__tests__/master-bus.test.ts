@@ -8,10 +8,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   LIMITER,
+  LIMITER_LOOKAHEAD_S,
   MASTER_RAMP_TAU_S,
   createMasterBus,
   dbToGain,
   limiterMakeupDb,
+  masterBusLatencyS,
   masterInput,
   masterLevelDb,
   releaseMasterLevel,
@@ -204,5 +206,22 @@ describe('the page\'s bus', () => {
     const createGain = vi.fn()
     expect(masterInput(asCtx({ currentTime: 0, destination, createGain }))).toBe(destination)
     expect(createGain).not.toHaveBeenCalled()
+  })
+})
+
+describe('the limiter\'s look-ahead', () => {
+  it('is the compressor\'s fixed 6 ms, reported for a context only once its bus is in the path', () => {
+    expect(LIMITER_LOOKAHEAD_S).toBe(0.006)
+    const { ctx } = fakeContext()
+    expect(masterBusLatencyS(ctx)).toBe(0)
+    masterInput(asCtx(ctx))
+    expect(masterBusLatencyS(ctx)).toBe(LIMITER_LOOKAHEAD_S)
+    expect(masterBusLatencyS(null)).toBe(0)
+  })
+
+  it('is never reported for a context that plays straight to its destination', () => {
+    const ctx = { currentTime: 0, destination: new FakeNode('destination') }
+    masterInput(asCtx(ctx))
+    expect(masterBusLatencyS(ctx)).toBe(0)
   })
 })

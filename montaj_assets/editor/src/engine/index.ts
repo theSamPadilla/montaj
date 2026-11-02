@@ -81,7 +81,7 @@
 import { designCanvas, sourceWindow } from '@bycrux/timeline-core'
 import type { EditorProject as Project, VisualItem } from '../schema'
 import { peekSharedAudioContext, latencySeconds } from '../video/preview/audio-context'
-import { releaseMasterLevel, setMasterLevel } from '../video/preview/master-bus'
+import { masterBusLatencyS, releaseMasterLevel, setMasterLevel } from '../video/preview/master-bus'
 import {
   createMasterClock,
   createWallClock,
@@ -1457,10 +1457,14 @@ function createLoudnessControl(mixer: EngineMixerDeps, project: Project): { upda
   }
 }
 
-/** The shared context's output latency, 0 until something on the gesture stack made one. */
+/**
+ * The shared context's output latency, 0 until something on the gesture stack
+ * made one. §660: plus the master bus's look-ahead once the bus is in the path
+ * (today's per-clip clocks play through it).
+ */
 function sharedContextLatency(): number {
   const ctx = peekSharedAudioContext()
-  return ctx ? latencySeconds(ctx) : 0
+  return ctx ? latencySeconds(ctx) + masterBusLatencyS(ctx) : 0
 }
 
 export function createEngine(project: Project, deps: EngineDeps): Engine {

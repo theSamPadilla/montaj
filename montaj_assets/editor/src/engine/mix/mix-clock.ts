@@ -35,7 +35,7 @@
  */
 import type { MasterClockStats } from '../audio-clock'
 import { getSharedAudioContext, latencySeconds } from '../../video/preview/audio-context'
-import { masterInput } from '../../video/preview/master-bus'
+import { masterBusLatencyS, masterInput } from '../../video/preview/master-bus'
 import { mixProcessorSource } from './mix-processor-source'
 import { mixWorkerSource } from './mix-worker-source'
 import {
@@ -354,8 +354,10 @@ export async function createMixClock(options: MixClockOptions = {}): Promise<Mix
     return v
   }
 
+  // §660: the master bus's look-ahead delays the mix too, when it plays through the bus.
+  const busLatency = options.destination === undefined ? masterBusLatencyS(ctx) : 0
   const latency = (): number =>
-    latencySeconds({ outputLatency: ctx.outputLatency ?? 0, baseLatency: ctx.baseLatency ?? 0 })
+    latencySeconds({ outputLatency: ctx.outputLatency ?? 0, baseLatency: ctx.baseLatency ?? 0 }) + busLatency
 
   const displayNow = (): number => {
     if (!playing) {

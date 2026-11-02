@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest'
 import type { MasterClock } from '../../audio-clock'
 import { createMixClock, clampRate, type MixClock, type MixClockOptions } from '../mix-clock'
 import { MIX_CACHE_BYTES, MIX_MAX_EXTRAPOLATION_MS, MIX_PROCESSOR_NAME, type MixReport } from '../mix-protocol'
+import { LIMITER_LOOKAHEAD_S } from '../../../video/preview/master-bus'
 
 interface Sent {
   msg: Record<string, unknown>
@@ -343,6 +344,30 @@ describe('displayNow()', () => {
     expect(r.clock.displayNow()).toBeCloseTo(0.485, 9)
     r.setNow(2100)
     expect(r.clock.displayNow()).toBeCloseTo(0.505, 9)
+  })
+
+  it('takes the master bus\'s look-ahead off too, only when the mix plays through the bus', async () => {
+    // A context that can build the bus: the default destination is its input.
+    const node = () => ({ connect: () => {}, disconnect: () => {} })
+    const param = () => ({ value: 0, setTargetAtTime: () => {} })
+    const capable = () => ({
+      sampleRate: 48000,
+      destination: { dest: true } as unknown as AudioDestinationNode,
+      outputLatency: 0.02,
+      baseLatency: 0.005,
+      currentTime: 0,
+      createGain: () => ({ ...node(), gain: param() }),
+      createDynamicsCompressor: () => ({ ...node(), threshold: param(), knee: param(), ratio: param(), attack: param(), release: param() }),
+    })
+    const viaBus = await rig({ startTime: 1, context: capable() })
+    viaBus.clock.play()
+    viaBus.setNow(1100)
+    expect(viaBus.clock.displayNow()).toBeCloseTo(1.1 - 0.025 - LIMITER_LOOKAHEAD_S, 9)
+    // An explicit destination bypasses the bus: the latency is the context's alone.
+    const direct = await rig({ startTime: 1, context: capable(), destination: null })
+    direct.clock.play()
+    direct.setNow(1100)
+    expect(direct.clock.displayNow()).toBeCloseTo(1.1 - 0.025, 9)
   })
 
   it('subtracts rate x latency at other rates', async () => {
