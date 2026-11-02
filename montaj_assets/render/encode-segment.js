@@ -259,6 +259,27 @@ export function parseVideoGeometry(probe) {
 }
 
 /**
+ * The size a video item's `sourceCrop` fractions are cut in (§668): the file
+ * the encoder actually DECODES, as shown (render.js stamps `probedWidth` /
+ * `probedHeight` from it, rotation applied, as ffmpeg's autorotate shows it).
+ * That file is often not the one the crop was authored on: a converted copy
+ * (normalizedSrc, an HDR normalize) of an iPhone clip stored 1920x1440 at -90
+ * is 1308x1744, and a crop cut in the 1440x1920 the item records asks for more
+ * pixels than it has (ffmpeg: "Invalid too big ... size"). The item's own
+ * `sourceWidth` / `sourceHeight` are the size only while nothing was probed
+ * (dry runs, a failed ffprobe). They still gate the crop, as before: without
+ * them it is not cut (KNOWN-DIVERGENCES `sourcecrop-missing-dims-silent-drop`).
+ *
+ * @returns {{ width: number, height: number } | null}
+ */
+export function cropSourceSize(item) {
+  if (!(item.sourceWidth > 0 && item.sourceHeight > 0)) return null
+  return item.probedWidth > 0 && item.probedHeight > 0
+    ? { width: item.probedWidth, height: item.probedHeight }
+    : { width: item.sourceWidth, height: item.sourceHeight }
+}
+
+/**
  * Probe a video file's display size, whether its pixel format has alpha, and
  * that format. One ffprobe; null on any failure. render.js calls this once per
  * unique final `src` and stamps the result on `probedWidth` / `probedHeight` /
@@ -1137,8 +1158,8 @@ function oddCropSafe(pixFmt) {
  * by validate's 1% tolerance (or by the even rounding) trims a sliver instead
  * of reading past the rect. In a format where an odd crop x breaks the chroma
  * (oddCropSafe) the window moves on even x only. The caller has checked
- * `hasCropKeyframes` and a positive `sourceWidth`/`sourceHeight` (the size every
- * video crop is in).
+ * `hasCropKeyframes` and `cropSourceSize` (the size every video crop is cut
+ * in).
  * Returns `{ chain, width, height }`, or `{ hold: reason }` for a rect that is
  * not finite and positive (the caller then holds the crop at the segment start).
  *
@@ -1147,8 +1168,7 @@ function oddCropSafe(pixFmt) {
  *   tolerance
  */
 function animatedVideoCrop(item, fitW, fitH, timeOffset, duration, onCap, budgetPx = MAX_ANIMATED_CROP_PX) {
-  const SW = item.sourceWidth
-  const SH = item.sourceHeight
+  const { width: SW, height: SH } = cropSourceSize(item)
   const sampled = sampleCropRects(item, 'video', timeOffset, duration)
   if (!sampled) return { hold: NOT_A_RECT }
   let maxW = 0
@@ -1597,8 +1617,10 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   const padW = anim?.needsAnimatedChain ? anim.peakW : scaledW
   const padH = anim?.needsAnimatedChain ? anim.peakH : scaledH
 
-  // Optional source crop (clips workflow vertical reframe). Needs source pixel
-  // dims; no-op without them. Even dims keep ffmpeg/x264 happy.
+  // Optional source crop (clips workflow vertical reframe). Cut in the pixels
+  // of the file decoded (§668, cropSourceSize); no-op without the item's source
+  // dims. Even dims keep ffmpeg/x264 happy.
+  const cropSize = cropSourceSize(item)
   let cropStep = ''
   // The size the `scale` step below receives, when it is known: the crop's own
   // output when a crop runs, otherwise the display size render.js probed.
@@ -1614,7 +1636,7 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   let movingCrop = null
   if (hasCropKeyframes(item)) {
     const who = `[montaj] video item ${item.id ?? item.src ?? '(unnamed)'}`
-    if (!(item.sourceWidth > 0 && item.sourceHeight > 0)) {
+    if (!cropSize) {
       console.warn(`${who}: its crop is keyframed but it has no sourceWidth/sourceHeight, so it renders uncropped`)
     } else {
       movingCrop = animatedVideoCrop(item, padW, padH, seekOffset, duration, warnIfCapped(item, 'video'), cropBudgetPx)
@@ -1629,11 +1651,11 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     cropStep = `${movingCrop.chain},`
     footageW = movingCrop.width
     footageH = movingCrop.height
-  } else if (sc && item.sourceWidth && item.sourceHeight) {
-    const cw = Math.round(item.sourceWidth  * sc.w / 2) * 2  // even: x264 needs even dims
-    const ch = Math.round(item.sourceHeight * sc.h / 2) * 2  // even: x264 needs even dims
-    const cx = Math.round(item.sourceWidth  * sc.x)          // origin NOT even-rounded (offsets don't require it)
-    const cy = Math.round(item.sourceHeight * sc.y)          // origin NOT even-rounded
+  } else if (sc && cropSize) {
+    const cw = Math.round(cropSize.width  * sc.w / 2) * 2  // even: x264 needs even dims
+    const ch = Math.round(cropSize.height * sc.h / 2) * 2  // even: x264 needs even dims
+    const cx = Math.round(cropSize.width  * sc.x)          // origin NOT even-rounded (offsets don't require it)
+    const cy = Math.round(cropSize.height * sc.y)          // origin NOT even-rounded
     cropStep = `crop=${cw}:${ch}:${cx}:${cy},`
     footageW = cw
     footageH = ch

@@ -43,10 +43,13 @@ SHEET_SHORT_EDGE = 1080
 
 
 def sample_frames(project, times, frames_dir, raw=False, scene=None, sdr_curve=None, prefer_proxy=False,
-                  no_captions=False, timeout=None):
+                  no_captions=False, timeout=None, errors=None):
     """Render every time in ONE node process into frames_dir (f_0000.png...); return the paths in order. Several times
     (a sheet) composite at SHEET_SHORT_EDGE; one time keeps the project's size. The process gets `timeout` seconds,
-    else 120 a time."""
+    else 120 a time.
+
+    A time that fails fails alone (§668): node answers it with a JSON line in place of its path. Given an `errors`
+    list, its path is None and {"at", "error"} is appended to `errors`; without one, the call fails naming it."""
     timeout = timeout if timeout is not None else 120 * len(times)
     cmd = ["node", SAMPLE_FRAME_JS, "--mode", "frame", "--project", project]
     for t in times:
@@ -75,7 +78,19 @@ def sample_frames(project, times, frames_dir, raw=False, scene=None, sdr_curve=N
     paths = proc.stdout.decode("utf-8", errors="replace").splitlines()
     if len(paths) != len(times):
         fail("sample_failed", f"sample_frame expected {len(times)} frame paths, got {len(paths)}: {err}")
-    missing = [p for p in paths if not os.path.isfile(p)]
+    for i, line in enumerate(paths):
+        if not line.startswith("{"):
+            continue
+        try:
+            reason = str(json.loads(line).get("message") or "failed")
+        except (ValueError, AttributeError):
+            reason = line
+        reason = re.sub(r"^at [^ ]+s: ", "", reason)
+        if errors is None:
+            fail("sample_failed", f"sample_frame failed at {times[i]}s: {reason}")
+        errors.append({"at": times[i], "error": reason})
+        paths[i] = None
+    missing = [p for p in paths if p is not None and not os.path.isfile(p)]
     if missing:
         fail("sample_failed", f"sample_frame reported frames that do not exist: {missing[0]}")
     return paths
@@ -202,18 +217,31 @@ def main():
             }) + "\n")
 
     if len(times) > 1:
+        # §668: a time that fails is a grey tile labelled "failed", named in `errors`; the rest still make the sheet.
+        errors = []
         with tempfile.TemporaryDirectory() as work:
             paths = sample_frames(args.project, times, work, raw=args.raw, scene=args.scene,
                                   sdr_curve=sdr_forward, prefer_proxy=args.prefer_proxy,
-                                  no_captions=args.no_captions)
+                                  no_captions=args.no_captions, errors=errors)
+            labels = [t if p else f"{t:.2f}s failed" for p, t in zip(paths, times)]
+            if errors:
+                from PIL import Image
+                with Image.open(next(p for p in paths if p)) as im:
+                    size = im.size
+                grey = os.path.join(work, "failed.png")
+                Image.new("RGB", size, (64, 64, 64)).save(grey)
+                paths = [p or grey for p in paths]
             os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
             stem, ext = os.path.splitext(out)
             outs = []
             for k, i in enumerate(range(0, len(times), SHEET_TIMES)):
                 dest = out if k == 0 else f"{stem}-{k + 1}{ext}"
-                look_sheet(paths[i:i + SHEET_TIMES], times[i:i + SHEET_TIMES], dest)
+                look_sheet(paths[i:i + SHEET_TIMES], labels[i:i + SHEET_TIMES], dest)
                 outs.append(os.path.abspath(dest))
-        print("\n".join(outs))
+        if errors:
+            print(json.dumps({"path": "\n".join(outs), "type": "image", "errors": errors}))
+        else:
+            print("\n".join(outs))
         return
 
     cmd = ["node", SAMPLE_FRAME_JS, "--mode", "frame", "--project", args.project,

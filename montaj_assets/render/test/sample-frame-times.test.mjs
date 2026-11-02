@@ -53,6 +53,35 @@ test('a failing time exits 1 naming the time', { skip: !hasFfmpeg }, () => {
   assert.match(p.stderr, /1s/)
 })
 
+test('§668: a time that fails fails alone; its line names the time and the reason, the rest are frames', { skip: !hasFfmpeg }, () => {
+  const { dir, pj } = fixture()
+  const fd = join(dir, 'frames')
+  const p = spawnSync('node', [SCRIPT, '--mode', 'frame', '--project', pj,
+    '--at', '0.5', '--at', '99', '--at', '1', '--frames-dir', fd], { encoding: 'utf8' })
+  assert.equal(p.status, 0, p.stderr)
+  const lines = p.stdout.trim().split('\n')
+  assert.equal(lines.length, 3, p.stdout)
+  assert.equal(lines[0], join(fd, 'f_0000.png'))
+  assert.equal(lines[2], join(fd, 'f_0002.png'))
+  for (const l of [lines[0], lines[2]]) assert.ok(existsSync(l))
+  const bad = JSON.parse(lines[1])
+  assert.equal(bad.at, 99)
+  assert.equal(bad.error, 'sample_failed')
+  assert.match(bad.message, /99s/)
+  assert.match(bad.message, /past project end/)
+  assert.ok(!existsSync(join(fd, 'f_0001.png')))
+})
+
+test('§668: when every time fails the call still fails, naming the first time', { skip: !hasFfmpeg }, () => {
+  const { dir, pj } = fixture()
+  const p = spawnSync('node', [SCRIPT, '--mode', 'frame', '--project', pj,
+    '--at', '98', '--at', '99', '--frames-dir', join(dir, 'f')], { encoding: 'utf8' })
+  assert.equal(p.status, 1)
+  const err = JSON.parse(p.stderr.trim().split('\n').pop())
+  assert.equal(err.error, 'sample_failed')
+  assert.match(err.message, /98s/)
+})
+
 test('one --at still needs --out and prints that path', { skip: !hasFfmpeg }, () => {
   const { dir, pj } = fixture()
   const out = join(dir, 'one.png')

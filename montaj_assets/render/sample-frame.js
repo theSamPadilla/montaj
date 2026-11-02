@@ -205,6 +205,8 @@ const SHORT_EDGE_TARGET = 1080
  *    `blurX`, `blurY`). 26's entries hold such a clip sharp.
  * 28: on an HDR canvas spin and zoom move their copies in about 16 bits
  *    (item-blur.js, precise); 27's entries hold such a still from 8-bit copies.
+ * 29: a video's crop is cut in the decoded frame's pixels (§668); 28's
+ *    entries hold a crop cut in the item's source size.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -212,7 +214,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 28
+const SAMPLE_CACHE_VERSION = 29
 
 // The still's composite canvas (`format=rgba`), which a blend mode converts from and back to.
 const SAMPLE_CANVAS_PIX_FMT = 'rgba'
@@ -498,6 +500,9 @@ if (isMain) {
       })
     // Several times: one process, one frame file per time in the order given, one path per line.
     // PL89: one session for all of them (createSampleSession): one browser, each overlay page loaded once.
+    // §668: a time that fails fails alone. Its line is a JSON object, {"at", "error", "message"}, in place of a path
+    // (a path never starts with "{"), and the other times keep their frames. Only when every time fails does the
+    // call fail, with the first time's error, as one failing time did before.
     const sampled = manyTimes
       ? (async () => {
         const dir = resolve(framesDirArg)
@@ -505,20 +510,22 @@ if (isMain) {
         const outPaths = atArgs.map((_, k) => join(dir, `f_${String(k).padStart(4, '0')}.png`))
         const got = sceneArg !== null
           ? await sampleScenes({ projectJson: resolve(projectArg), scene: sceneArg, times: atArgs, outPaths, sdrCurve: sdrCurveArg })
-          : await sampleInSessions({ count: atArgs.length, label: (k) => atArgs[k], lanes: lanesFor(atArgs.length), sampleWith: (k, session) => sampleAt(atArgs[k], outPaths[k], session) })
-        return { pngPath: got.map((r) => r.pngPath).join('\n') }
+          : await sampleInSessions({ count: atArgs.length, label: (k) => atArgs[k], lanes: lanesFor(atArgs.length), keepGoing: true, sampleWith: (k, session) => sampleAt(atArgs[k], outPaths[k], session) })
+        const failed = got.filter((r) => r.error)
+        if (failed.length === got.length) throw failed[0].error
+        return {
+          pngPath: got.map((r, k) => r.error
+            ? JSON.stringify({ at: atArgs[k], error: frameErrorCode(r.error), message: r.error.message })
+            : r.pngPath).join('\n'),
+        }
       })()
       : sampleAt(atArg, resolve(outArg))
     sampled.then(result => {
       // PL89f: then exit, so a browser handle left open somewhere can never hold the step (and the app's call) open.
       process.stdout.write(result.pngPath + '\n', () => process.exit(0))
     }).catch(err => {
-      // A 3D item's refusal keeps its own code (render/scene3d.js), so `--scene nope` answers scene3d_scene_missing.
-      // §651: a frame too large to sample says so (sample_too_large), never V8's bare "Invalid string length".
-      const error = isThreeFrameBlank(err) ? 'three_frame_blank' : err instanceof Scene3dError ? err.code
-        : err.sampleError === 'sample_too_large' ? err.sampleError
-        : isStringLengthError(err) ? (err = tooLargeError(err, null)).sampleError : 'sample_failed'
-      process.stderr.write(JSON.stringify({ error, message: err.message }) + '\n')
+      if (isStringLengthError(err)) err = tooLargeError(err, null)
+      process.stderr.write(JSON.stringify({ error: frameErrorCode(err), message: err.message }) + '\n')
       process.exit(1)
     })
   } else if (mode === 'overlay-strip') {
@@ -707,13 +714,26 @@ export function createSampleSession({ maxPages = SESSION_MAX_PAGES, closeCapMs =
 }
 
 /**
+ * The error code a failed frame answers with. A 3D item's refusal keeps its own code (render/scene3d.js), so
+ * `--scene nope` answers scene3d_scene_missing. §651: a frame too large to sample says so (sample_too_large), never
+ * V8's bare "Invalid string length" (the caller turns that error into tooLargeError's first).
+ */
+export function frameErrorCode(err) {
+  return isThreeFrameBlank(err) ? 'three_frame_blank' : err instanceof Scene3dError ? err.code
+    : err?.sampleError === 'sample_too_large' ? err.sampleError
+    : isStringLengthError(err) ? 'sample_too_large' : 'sample_failed'
+}
+
+/**
  * PL89: frames `order` (indices, default 0..count-1) through sampling sessions, so a sheet always comes back: in the
  * order given (split into `lanes` contiguous runs side by side, each with its own sessions), a session shared until a
  * frame fails or takes over `frameTimeoutMs`. That frame's session is aborted (a
  * stuck page goes with its browser), the frame is sampled alone (`sampleWith(k, null)`), and the frames after it get a
  * new session. Only a frame that fails alone too fails the call, named by `label(k)` seconds. Results by index.
+ * With `keepGoing`, a frame that fails alone fails only itself (§668): its result is `{ error }`, the error named by
+ * its time, and the frames after it are sampled as usual.
  */
-export async function sampleInSessions({ count, sampleWith, order = [...Array(count).keys()], label = (k) => k, newSession = () => createSampleSession(), frameTimeoutMs = SESSION_FRAME_TIMEOUT_MS, lanes = 1 }) {
+export async function sampleInSessions({ count, sampleWith, order = [...Array(count).keys()], label = (k) => k, newSession = () => createSampleSession(), frameTimeoutMs = SESSION_FRAME_TIMEOUT_MS, lanes = 1, keepGoing = false }) {
   const out = new Array(count)
   // PL89c: contiguous runs of the order, one per lane, side by side; each lane is the sequence below with its own session.
   const n = Math.max(1, Math.min(lanes, order.length))
@@ -748,7 +768,8 @@ export async function sampleInSessions({ count, sampleWith, order = [...Array(co
           out[k] = await sampleWith(k, null)
         } catch (err) {
           err.message = `at ${label(k)}s: ${err.message}`
-          throw err
+          if (!keepGoing) throw err
+          out[k] = { error: err }
         }
       }
     } finally {
@@ -1844,14 +1865,15 @@ async function sampleFrameAt({
     // (see the step-order note there): cropping first means the conversion
     // only pays for pixels that survive. The crop is a no-op without both
     // sourceWidth/sourceHeight, matching that function's own gate — see
-    // KNOWN-DIVERGENCES.md "sourcecrop-missing-dims-silent-drop".
+    // KNOWN-DIVERGENCES.md "sourcecrop-missing-dims-silent-drop" — and is cut
+    // in the decoded frame's pixels (§668, sourceCropFilter).
     //
     // There is no scale/pad step here: this extract produces one full-size
     // source frame, and buildImageItemFilterParts does the canvas fit when the
     // frame is composited (Step 3). So nothing is ever padded before the
     // conversion, which is the property encode-segment's ordering protects.
     const vfParts = []
-    const crop = sourceCropFilter(ri.geometry, useProxy)
+    const crop = sourceCropFilter(ri.geometry)
     if (crop) vfParts.push(crop)
     // The proxy is ungraded SDR. One built from an untagged source by an older
     // montaj is untagged too, and ffmpeg would decode it as BT.601 where the
@@ -2344,24 +2366,19 @@ function resolveProjectPaths(projectJson, projectDir) {
 }
 
 /** The source-crop filter for one video item's frame extract, or null when the item has no crop (or not both
- *  source dimensions). The proxy form splices the crop fractions into ffmpeg expressions as text, so each must be
- *  a finite number (§563). */
-export function sourceCropFilter(geometry, useProxy) {
+ *  source dimensions, the gate render keeps too). Cut in the DECODED frame's own pixels (§668): the fractions go
+ *  into ffmpeg expressions on `iw`/`ih`, which are the frame as decoded and autorotated, whatever file that is (the
+ *  master, its converted copy, an SDR layer, the proxy). The item's sourceWidth/sourceHeight are the ORIGINAL's, and
+ *  a 1308x1744 copy of a 1440x1920 clip has fewer pixels than a crop cut in them. Same rounding as render's
+ *  (encode-segment.js cropSourceSize). Each fraction is spliced into the graph as text, so it must be a finite
+ *  number (§563). */
+export function sourceCropFilter(geometry) {
   const sc = geometry.sourceCrop
   if (!(sc && geometry.sourceWidth && geometry.sourceHeight)) return null
-  if (useProxy) {
-    // The proxy is smaller than the master, so a crop in master pixels
-    // falls outside it. Same rounding as below, from the decoded size.
-    const [x, y, w, h] = ['x', 'y', 'w', 'h'].map(k => finiteNumber(sc[k], `sourceCrop.${k}`))
-    const cw = `2*round(iw*${w}/2)`   // even: x264 needs even dims
-    const ch = `2*round(ih*${h}/2)`
-    return `crop=w=${cw}:h=${ch}:x=round(iw*${x}):y=round(ih*${y})`
-  }
-  const cw = Math.round(geometry.sourceWidth  * sc.w / 2) * 2  // even: x264 needs even dims
-  const ch = Math.round(geometry.sourceHeight * sc.h / 2) * 2  // even: x264 needs even dims
-  const cx = Math.round(geometry.sourceWidth  * sc.x)          // origin NOT even-rounded
-  const cy = Math.round(geometry.sourceHeight * sc.y)          // origin NOT even-rounded
-  return `crop=${cw}:${ch}:${cx}:${cy}`
+  const [x, y, w, h] = ['x', 'y', 'w', 'h'].map(k => finiteNumber(sc[k], `sourceCrop.${k}`))
+  const cw = `2*round(iw*${w}/2)`   // even: x264 needs even dims
+  const ch = `2*round(ih*${h}/2)`
+  return `crop=w=${cw}:h=${ch}:x=round(iw*${x}):y=round(ih*${y})`
 }
 
 /**

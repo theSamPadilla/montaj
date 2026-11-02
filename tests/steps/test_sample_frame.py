@@ -288,7 +288,13 @@ def frames_node_env(tmp_path_factory) -> dict:
                 os.makedirs(fd, exist_ok=True)
             if os.environ.get("FAKE_SHORT"):
                 n -= 1
+            bad = [int(x) for x in os.environ.get("FAKE_FAIL", "").split(",") if x]
+            ats = [a[i + 1] for i, x in enumerate(a) if x == "--at"]
             for i in range(n):
+                if i in bad:
+                    print(json.dumps({{"at": float(ats[i]), "error": "sample_failed",
+                                      "message": "at %ss: Could not open encoder before EOF" % ats[i]}}))
+                    continue
                 p = os.path.join(fd, "f_%04d.png" % i)
                 Image.new("RGB", (640, 360), (i * 20, 0, 0)).save(p)
                 print(p)
@@ -378,3 +384,39 @@ def test_wrong_number_of_frame_paths_fails_naming_both(frames_node_env, tmp_path
                         "--at", "1", "--at", "2", "--at", "3")
     assert proc.returncode != 0
     assert "sample_failed" in proc.stderr and "expected 3" in proc.stderr and "got 2" in proc.stderr
+
+
+# ── §668: a time that fails fails alone ───────────────────────────────────────
+
+def test_a_failed_time_fails_alone_and_is_named_in_errors(frames_node_env, tmp_path):
+    from PIL import Image
+    project = _write_project(tmp_path, None)
+    proc = run_step_env(STEP, {**frames_node_env, "FAKE_FAIL": "1"}, "--project", str(project),
+                        "--at", "1", "--at", "2", "--at", "3")
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["type"] == "image"
+    assert out["path"] == str(tmp_path / "render" / "samples" / "sheet-1.0-3.0s.png")
+    assert Image.open(out["path"]).size[0] > 0
+    assert out["errors"] == [{"at": 2.0, "error": "Could not open encoder before EOF"}]
+
+
+def test_no_failed_time_keeps_the_bare_path(frames_node_env, tmp_path):
+    project = _write_project(tmp_path, None)
+    proc = run_step_env(STEP, frames_node_env, "--project", str(project), "--at", "1", "--at", "2")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == str(tmp_path / "render" / "samples" / "sheet-1.0-2.0s.png")
+
+
+def test_sample_frames_without_an_errors_list_fails_naming_the_time(frames_node_env, tmp_path, monkeypatch):
+    from steps.render import sample_frame
+    monkeypatch.setenv("PATH", frames_node_env["PATH"])
+    monkeypatch.setenv("FAKE_LOG", frames_node_env["FAKE_LOG"])
+    monkeypatch.setenv("FAKE_FAIL", "0")
+    project = _write_project(tmp_path, None)
+    errors = []
+    paths = sample_frame.sample_frames(str(project), [1.0, 2.0], str(tmp_path / "f"), errors=errors)
+    assert paths[0] is None and paths[1].endswith("f_0001.png")
+    assert errors == [{"at": 1.0, "error": "Could not open encoder before EOF"}]
+    with pytest.raises(SystemExit):
+        sample_frame.sample_frames(str(project), [1.0, 2.0], str(tmp_path / "g"))

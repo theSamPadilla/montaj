@@ -210,6 +210,16 @@ test('sampleInSessions: a frame that fails in its session is sampled alone; fail
   assert.ok(y.made.every((s) => s.closed || s.aborted), 'every session ends closed')
 })
 
+test('sampleInSessions keepGoing (§668): a frame failing alone fails only itself, named by time; the rest are sampled', async () => {
+  const z = sessions()
+  const out = await sampleInSessions({ count: 3, label: (k) => [1, 99, 2][k], keepGoing: true,
+    sampleWith: (k) => (k === 1 ? Promise.reject(new Error('past project end')) : Promise.resolve(`f${k}`)), newSession: z.newSession })
+  assert.equal(out[0], 'f0')
+  assert.equal(out[2], 'f2')
+  assert.equal(out[1].error.message, 'at 99s: past project end')
+  assert.ok(z.made.every((s) => s.closed || s.aborted), 'every session ends closed')
+})
+
 test('sampleInSessions: frames run in the order given and come back by index', async () => {
   const z = sessions()
   const ran = []
