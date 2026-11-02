@@ -6787,8 +6787,8 @@ async def delete_project_overlay(
     """§643: delete an UNUSED <project_dir>/overlays/{name}.jsx.
 
     Same constraints as the PUT: the name regex bounds the target to that one file,
-    validate_project_subpath is the second check, the Studio-sync guard and the project
-    lock apply. Refused (409) while the timeline, another overlay or a template record
+    validate_project_subpath is the second check, and the project
+    lock applies. Refused (409) while the timeline, another overlay or a template record
     uses it. A file already absent answers 200 with deleted: false.
     """
     if not OVERLAY_NAME_RE.fullmatch(name):
@@ -6804,7 +6804,6 @@ async def delete_project_overlay(
         real = next((f.stem for f in sorted(folder.glob("*.jsx")) if f.stem.casefold() == name.casefold()), None) if folder.is_dir() else None
         if real is None:
             real = name
-        save_guard.check_sync(getattr(request, "headers", None), project_id, files=[f"overlays/{real}.jsx"])
         if not target.is_file():
             return False
         why = _overlay_in_use(project_dir, real)

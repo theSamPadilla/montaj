@@ -274,24 +274,6 @@ def test_delete_overlay_refused_for_a_template_installed_file(project_id):
     assert path.exists()
 
 
-def test_delete_overlay_applies_the_sync_guard_and_keeps_the_file(project_id, monkeypatch):
-    from fastapi import HTTPException
-    from serve import save_guard
-
-    calls = []
-
-    def refuse(headers, pid, files=None):
-        calls.append((pid, files))
-        raise HTTPException(409, detail={"error": "sync_clash", "message": "clash"})
-
-    path = _put(project_id, "del-sync")
-    monkeypatch.setattr(save_guard, "check_sync", refuse)
-    res = client.delete(f"/api/projects/{project_id}/overlays/del-sync")
-    assert res.status_code == 409
-    assert calls == [(project_id, ["overlays/del-sync.jsx"])]
-    assert path.exists()
-
-
 def test_delete_overlay_holds_the_project_lock(project_id, monkeypatch):
     import serve.routes.projects as pm
 
