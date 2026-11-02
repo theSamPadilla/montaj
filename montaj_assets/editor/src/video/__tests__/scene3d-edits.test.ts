@@ -96,3 +96,32 @@ describe('a 3D item keeps its picture in place', () => {
     expect(back).toMatchObject({ start: 3.5, props: { inPoint: 0 } })
   })
 })
+
+// §657: a cut inside a 3D item leaves `props.timeMap`, [[item time, scene second, length]] pieces; the editor's head
+// edits move the map with the head so the picture never jumps, and `inPoint` stays the scene second at item time 0.
+describe('a 3D item with a time map keeps its picture in place', () => {
+  const MAP = [[0, 0, 1], [1, 3, 2]] // plays scene 0-1, then 3-5
+  const mapped = (start: number, end: number) => scene('m', start, end, { scene: 'lab', inPoint: 0, timeMap: MAP })
+  const sceneAt = (item: VisualItem, t: number) => {
+    const props = item.props as { inPoint: number; timeMap: number[][] }
+    const local = t - item.start
+    const piece = [...props.timeMap].reverse().find((p) => p[0] <= local + 1e-9) ?? props.timeMap[0]
+    return piece[1] + (local - piece[0])
+  }
+
+  it('a head trim shifts the pieces and drops what was trimmed away', () => {
+    const item = mapped(10, 13)
+    const trimmed = computeResizedItem(item as Draggable, 'start', 11.5)
+    expect(trimmed).toMatchObject({ start: 11.5, end: 13 })
+    for (const t of [11.5, 12, 12.9]) expect(sceneAt(trimmed, t)).toBeCloseTo(sceneAt(item, t))
+    expect((trimmed.props as { timeMap: number[][] }).timeMap[0][0]).toBe(0)
+    expect((trimmed.props as { inPoint: number }).inPoint).toBeCloseTo(sceneAt(item, 11.5))
+  })
+
+  it('the right half of a split continues where the left half ended', () => {
+    const p = splitAtTime(project([mapped(10, 13)]), 10.5, 'm')
+    const [left, right] = itemsOf(p, 0)
+    for (const t of [10.6, 11.2, 12.8]) expect(sceneAt(right, t)).toBeCloseTo(sceneAt(mapped(10, 13), t))
+    expect(sceneAt(left, 10.4)).toBeCloseTo(0.4)
+  })
+})

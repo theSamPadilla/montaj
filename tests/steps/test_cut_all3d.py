@@ -84,3 +84,20 @@ def test_an_all_3d_timeline_cuts_its_narration_and_ripples_everything(tmp_path, 
     seg = p["captions"]["segments"][0]
     last = vo[-1]
     assert abs(seg["start"] - last["start"]) < 0.1 and abs(seg["end"] - last["end"]) < 0.1
+
+
+def test_a_shot_a_cut_falls_inside_gets_a_time_map_so_its_scene_stays_on_its_words(tmp_path, monkeypatch):
+    make(tmp_path)
+    run(tmp_path, monkeypatch)
+    answer = run(tmp_path, monkeypatch, "--plan", str(tmp_path / "cut-plan.md"))
+    p = json.loads((tmp_path / "project.json").read_text())
+    sh1, sh2 = p["tracks"][0]["items"]
+    # sh1 played scene seconds 0 to 2.5; the 1.04 to 1.76 silence is gone: it plays 0-1.04, then 1.76 on
+    m1 = sh1["props"]["timeMap"]
+    assert m1[0][:2] == [0.0, 0.0] and abs(m1[0][2] - 1.04) < 0.02
+    assert abs(m1[1][0] - 1.04) < 0.02 and abs(m1[1][1] - 1.76) < 0.02
+    assert sh1["props"]["inPoint"] == 0.0
+    # sh2 started at scene 0 of its own, 2.5 into the timeline: its map starts where the cut left it
+    m2 = sh2["props"]["timeMap"]
+    assert m2[0][0] == 0.0 and all(len(x) == 3 for x in m2)
+    assert answer["scene3d"][0]["id"] == "sh1"

@@ -625,11 +625,11 @@ def test_report_shape(fx):
 # ---------------------------------------------------------------- 3D items (§558)
 
 
-def _with_scene3d(fx, a, b, in_point=0.0):
+def _with_scene3d(fx, a, b, in_point=0.0, time_map=None):
     project = copy.deepcopy(fx.project)
+    props = {"scene": "main", "inPoint": in_point, **({"timeMap": time_map} if time_map else {})}
     project["tracks"].append({"id": "trk-3d", "items": [
-        {"id": "s3d", "type": "overlay", "src": "engine:scene3d", "start": a, "end": b,
-         "props": {"scene": "main", "inPoint": in_point}}]})
+        {"id": "s3d", "type": "overlay", "src": "engine:scene3d", "start": a, "end": b, "props": props}]})
     return project
 
 
@@ -646,7 +646,9 @@ def test_a_3d_item_over_a_cut_is_never_cut_up_and_says_what_was_removed(fx, tmp_
         assert r.tmap.forward(2.0 + (lo + hi) / 2 - 1.5) is None
     assert s["start"] == pytest.approx(r.tmap.forward(r.tmap.first_kept(2.0)), abs=1e-5)
     assert s["end"] - s["start"] == pytest.approx(7.0 - sum(hi - lo for lo, hi in removed), abs=1e-3)
-    assert s["props"] == {"scene": "main", "inPoint": 1.5}
+    # §657: the cut's map is the item's clock from here on; inPoint stays the scene second at item time 0
+    assert s["props"] == {"scene": "main", "inPoint": 1.5, "timeMap": [[t, a, pytest.approx(b - a, abs=1e-3)] for a, b, t in f["map"]]}
+    assert s["props"]["timeMap"][0][:2] == [0.0, 1.5]
     assert not [x for x in r.report.flagged if x["id"] == "s3d" and x["kind"] != "scene3d_timing"]
     assert_valid(tmp_path, r.project)
 
@@ -733,3 +735,15 @@ def test_restored_speech_lines_are_stamped_when_the_track_is(fx):
     new = [s for s in r.project["captions"]["segments"] if s["id"] == "cap-7"]
     assert len(new) == 1 and new[0]["auto"] == stamp(new[0]["text"])
     assert not any(is_persons(s) for s in r.project["captions"]["segments"])
+
+
+def test_a_second_cut_composes_with_the_first_cuts_time_map(fx):
+    """A shot that already has a timeMap maps through it: the new map names scene seconds the old clock played (here
+    10-13 and 20-24), never item time read as scene time from inPoint."""
+    old = [[0.0, 10.0, 3.0], [3.0, 20.0, 4.0]]
+    r = run(fx, fx.text.replace(A1_CUT_FROM, A1_CUT_TO), project=_with_scene3d(fx, 2.0, 9.0, in_point=10.0, time_map=old))
+    (f,) = flags(r.report, "scene3d_timing")
+    for s0, s1, _ in f["map"]:
+        assert any(lo - 1e-3 <= s0 and s1 <= hi + 1e-3 for lo, hi in ((10.0, 13.0), (20.0, 24.0))), (s0, s1)
+    props = item(r.project, "s3d")["props"]
+    assert props["inPoint"] == props["timeMap"][0][1]

@@ -59,6 +59,10 @@ def test_a_3d_item_moves_only_where_its_camera_or_its_cast_does(tmp_path):
     assert [t for t, _ in holds(doc([over(0), [scene("orbit", 10, 16)]]), tmp_path)] == [0.0, 16.0]
     walk = holds(doc([over(0), [scene("walk", 10, 16)]]), tmp_path)
     assert [t for t, _ in walk] == [0.0, 11.5, 16.0], "the walk plays 10.2-11.5; the 4.5 s after it is still"
+    # §657: a shot whose cut left a timeMap moves where its scene second plays now, not at inPoint plus item time
+    cut = scene("walk", 10, 16)
+    cut["props"] = {"scene": "walk", "inPoint": 0, "timeMap": [[0, 0, 0.1], [0.1, 0.9, 5.9]]}
+    assert [t for t, _ in holds(doc([over(0), [cut]]), tmp_path)] == [0.0, 11.4, 16.0]
 
 
 def test_an_overlay_using_motion_counts_as_moving(tmp_path):

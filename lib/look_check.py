@@ -23,7 +23,7 @@ import json
 import os
 import re
 
-from lib import footage_credit
+from lib import footage_credit, scene_time
 from lib.project_tracks import enabled_track_items
 
 MAX_TIMES = 12
@@ -863,7 +863,7 @@ def mark_cover_issues(project, project_dir, item, measurement, frame_w, frame_h,
         scene = re.sub(r"-\d+$", "", name)
         under = next((it for it in scenes if (it.get("props") or {}).get("scene") in (name, scene)
                       and _num(it.get("start")) <= t <= _num(it.get("end"))), None)
-        st = t - _num(under.get("start")) + _num((under.get("props") or {}).get("inPoint")) if under else _num(mark.get("at"))
+        st = scene_time.scene_at(under.get("props") or {}, t - _num(under.get("start"))) if under else _num(mark.get("at"))
         row = next((r for r in reversed(rows) if isinstance(r, dict) and _num(r.get("t")) <= st + 1e-6), rows[0])
         size = mark.get("size") if isinstance(mark.get("size"), dict) else {}
         short = min(_num(size.get("width"), frame_w), _num(size.get("height"), frame_h)) or min(frame_w, frame_h)
@@ -967,7 +967,7 @@ def _scene_motion(item, project_dir):
     differ or it is cut into shots; else each cast move that is not a hold, while it plays (its model's moves.json)."""
     s, e = _num(item.get("start")), _num(item.get("end"))
     props = item.get("props") or {}
-    sid, inpoint = props.get("scene"), _num(props.get("inPoint"))
+    sid = props.get("scene")
     models = os.path.join(project_dir, "models")
     scene = _read_json(os.path.join(models, "scenes", sid, "scene.json") if sid else os.path.join(models, "scene.json"))
     if not isinstance(scene, dict):
@@ -985,7 +985,10 @@ def _scene_motion(item, project_dir):
             if any(h in name.lower() for h in HOLD_MOVES):
                 continue
             dur = _num((lib.get(name) or {}).get("duration"), 0)
-            a = s + _num(m.get("start")) - inpoint
+            at = scene_time.item_at(props, _num(m.get("start")))
+            if at is None:
+                continue        # it starts past the last kept second: never plays
+            a = s + at
             b = a + dur if dur > 0 else e
             if b > s and a < e:
                 spans.append((max(a, s), min(b, e)))

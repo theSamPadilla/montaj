@@ -94,6 +94,18 @@ export function scene3dStage({ env = process.env, exists = existsSync, log = log
   return stage
 }
 
+/** A cut's clock for a scene item (§657): [[item time, scene second, length]], sorted, first at 0, lengths over 0. */
+function validTimeMap(map) {
+  if (!Array.isArray(map) || map.length === 0) return false
+  let end = 0
+  for (const [i, p] of map.entries()) {
+    if (!Array.isArray(p) || p.length !== 3 || !p.every((x) => typeof x === 'number' && Number.isFinite(x))) return false
+    if (p[0] < 0 || p[1] < 0 || p[2] <= 0 || (i === 0 && p[0] > 1e-6) || p[0] < end - 1e-6) return false
+    end = p[0] + p[2]
+  }
+  return true
+}
+
 /**
  * Rewrites every scene item of `project` into a plain overlay item. `projectDir` is the folder holding project.json.
  * Throws Scene3dError (`scene3d_stage_unavailable`, `scene3d_scene_missing`, `scene3d_invalid`) naming the item.
@@ -125,6 +137,9 @@ export function materializeScene3d(project, projectDir, { env = process.env, exi
       const inPoint = props.inPoint === undefined ? 0 : props.inPoint
       if (typeof inPoint !== 'number' || !Number.isFinite(inPoint) || inPoint < 0) {
         throw new Scene3dError('scene3d_invalid', `${label}: inPoint must be 0 or more seconds (got ${JSON.stringify(props.inPoint)}).`)
+      }
+      if (props.timeMap !== undefined && !validTimeMap(props.timeMap)) {
+        throw new Scene3dError('scene3d_invalid', `${label}: timeMap is [[item time, scene second, length]] pieces in order, the first at item time 0 (got ${JSON.stringify(props.timeMap)}).`)
       }
       const stage = scene3dStage({ env, exists, log })
       const sceneFile = name === undefined ? join(projectDir, 'models', 'active.json') : join(projectDir, 'models', 'scenes', name, 'active.json')

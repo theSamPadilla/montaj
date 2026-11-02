@@ -83,6 +83,7 @@ test('every refusal names its cause and carries a stable code: no stage, a missi
     try { refuses(projectOf(scene({})), bare.project, bare.env, 'scene3d_scene_missing', /project's own/) } finally { rmSync(bare.dir, { recursive: true, force: true }) }
     for (const name of ['Hands', '../x', '', 7, 'a/b']) refuses(projectOf(scene({ scene: name })), w.project, w.env, 'scene3d_invalid', /its 3D must be named with lowercase letters, digits and - \(got/)
     for (const inPoint of [-1, 'soon', NaN, null]) refuses(projectOf(scene({ scene: 'hands', inPoint })), w.project, w.env, 'scene3d_invalid', /inPoint/)
+    for (const timeMap of [[], [[0, 0]], [[1, 0, 2]], [[0, 0, 0]], [[0, 0, 2], [1, 3, 1]], 'x']) refuses(projectOf(scene({ scene: 'hands', timeMap })), w.project, w.env, 'scene3d_invalid', /timeMap/)
     refuses(projectOf(scene({ scene: 'hands' })), null, w.env, 'scene3d_invalid', /project's folder/)
   } finally { rmSync(w.dir, { recursive: true, force: true }) }
 })
@@ -240,4 +241,14 @@ test('collectPuppeteerSegments: a 3D stage spec carries scene3d: true, any other
     else process.env[SCENE3D_STAGE_ENV] = before
     rmSync(w.dir, { recursive: true, force: true })
   }
+})
+
+test('a well-formed timeMap passes through to the stage untouched', () => {
+  const w = world({ scenes: ['hands'] })
+  try {
+    const timeMap = [[0, 0, 1.04], [1.04, 1.76, 0.74]]
+    const p = projectOf(scene({ scene: 'hands', inPoint: 0, timeMap }))
+    materializeScene3d(p, w.project, { env: w.env })
+    assert.deepEqual(p.tracks[0][0].props.timeMap, timeMap)
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
 })

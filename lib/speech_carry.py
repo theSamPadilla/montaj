@@ -112,6 +112,7 @@ from dataclasses import dataclass, field, fields
 from lib.caption_group import group
 from lib.caption_marks import carry_stamp, stamp, stamped
 from lib.common import fail
+from lib import scene_time
 from lib.item_ids import id_suffix
 from lib.keyframe_curves import rebase
 from lib.project_tracks import normalize_tracks, replace_track_items
@@ -740,16 +741,23 @@ class _Carry:
             ns = min(news)
             length = max(n0 + hi - lo for lo, hi, n0 in merged) - ns
         it["start"], it["end"] = _r6(ns, it["start"]), _r6(ns + length, it["end"])
-        offset = float((it.get("props") or {}).get("inPoint") or 0)
+        props = it.get("props") or {}
         local, mapping, placed = 0.0, [], []
         for lo, hi, n0 in merged:
             t = local if in_order else n0 - ns
-            mapping.append([round(offset + lo - a, 3), round(offset + hi - a, 3), round(t, 3)])
+            # scene seconds through the item's clock as it was: its timeMap if an earlier cut left one, else inPoint
+            for s0, s1, dx in scene_time.pieces_between(props, lo - a, hi - a):
+                mapping.append([s0, s1, t + dx])
             placed.append((lo, hi, t))
             local += hi - lo
         self._scene3d_keyframes(it, a, placed)
+        # the new clock: the cut's map is the item's own from here on, and inPoint stays the scene second at item time 0
+        gone = [(s0, s1) for lo, hi in removed for s0, s1, _ in scene_time.pieces_between(props, lo - a, hi - a)]
+        pieces = scene_time.pieces_of(mapping)
+        it["props"] = {**props, "timeMap": pieces, "inPoint": pieces[0][1]}
         self.flag("scene3d_timing" if in_order else "scene3d_reordered", it.get("id"),
-                  removed=[[round(offset + lo - a, 3), round(offset + hi - a, 3)] for lo, hi in removed], map=mapping,
+                  removed=[[round(s0, 3), round(s1, 3)] for s0, s1 in gone],
+                  map=[[round(s0, 3), round(s1, 3), round(t, 3)] for s0, s1, t in mapping],
                   **{"from": round(a, 2), "to": round(it["start"], 2)})
         self.counts["overlays"] += 1
         return True
