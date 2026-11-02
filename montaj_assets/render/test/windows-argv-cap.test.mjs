@@ -183,9 +183,10 @@ describe('no render source builds an inline -filter_complex spawn', () => {
     // encode-segment.js's runFfmpeg, which makes that call for every spawn
     // (§116: its two encodes, the segment and the short-part join, share it, so
     // counting only the helper's one call read the join as inline). Its own
-    // inner call is then not a route of its own. filter-script.js itself is the
-    // helper and is excluded. Comments are stripped first. The leaf tests prove
-    // the routes are live.
+    // inner call is then not a route of its own; a module that imports it from
+    // encode-segment.js (mix-loudness.js, §660) routes through it the same way.
+    // filter-script.js itself is the helper and is excluded. Comments are
+    // stripped first. The leaf tests prove the routes are live.
     const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/.*$/gm, '$1')
     const count = (src, re) => (src.match(re) || []).length
     const hits = sources
@@ -194,7 +195,8 @@ describe('no render source builds an inline -filter_complex spawn', () => {
         const src = strip(readFileSync(join(RENDER_DIR, f), 'utf8'))
         const direct = count(src, /\bexternalizeFilterGraph\(/g)
         const runner = /\bfunction runFfmpeg\([^)]*\)\s*\{[^]*?\bexternalizeFilterGraph\(/.test(src)
-        const runs = runner ? count(src, /\brunFfmpeg\(/g) - count(src, /\bfunction runFfmpeg\(/g) : 0
+        const imported = /\bimport\s*\{[^}]*\brunFfmpeg\b[^}]*\}\s*from\s*'\.\/encode-segment\.js'/.test(src)
+        const runs = runner || imported ? count(src, /\brunFfmpeg\(/g) - count(src, /\bfunction runFfmpeg\(/g) : 0
         return [f, count(src, /['"]-filter_complex['"]/g), direct - (runner ? 1 : 0) + runs]
       })
       .filter(([, literals, routes]) => literals > routes)

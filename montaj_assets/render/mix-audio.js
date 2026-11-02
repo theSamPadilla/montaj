@@ -240,7 +240,13 @@ export function loudnessFilter(inLabel, lufs) {
  *  value here (Number('-inf') is NaN, so it is spelled out). `null` when the
  *  block is missing or unparseable, which callers treat as "not known silent". */
 export function parseLoudnormInputI(stderr) {
-  const m = /"input_i"\s*:\s*"([^"]+)"/.exec(stderr ?? '')
+  return parseLoudnormField(stderr, 'input_i')
+}
+
+/** One numeric field of that block (`input_i`, `input_tp`, `input_lra`, ...),
+ *  read the same way: `-inf` is -Infinity, missing or unparseable is null. */
+export function parseLoudnormField(stderr, field) {
+  const m = new RegExp(`"${field}"\\s*:\\s*"([^"]+)"`).exec(stderr ?? '')
   if (!m) return null
   const raw = m[1].trim().toLowerCase()
   if (raw === '-inf') return -Infinity
@@ -255,15 +261,16 @@ export function isSilentInputI(inputI) {
   return inputI !== null && inputI !== undefined && !(inputI > -70)
 }
 
-/** Measure (decode only, nothing encoded) whether the audio ffmpeg would feed
- *  into loudnorm is silent. `args` select the audio: inputs plus, for a
- *  filter graph, `-filter_complex ... -map [label]`.
+/** Measure (decode only, nothing encoded) the audio ffmpeg would feed into
+ *  loudnorm, with loudnorm's own measurement: `{inputI, inputTP, inputLRA}`
+ *  (LUFS, dBTP, LU; each null when the block lacks it), or null when ffmpeg
+ *  fails. `inputs` are ffmpeg input args; `graph` (`{parts, label}`, as
+ *  `buildMixGraph` returns) selects the audio, and without one it is input 0's.
+ *  A kill throws: it is not an answer.
  *
- *  Why this exists: loudnorm over digital silence shorter than its ~3 s window
- *  emits NaN samples and the AAC encoder behind it aborts with "Input contains
- *  (near) NaN/+-Inf", failing the whole render. Silence has nothing to
- *  normalize, so the callers skip loudnorm when this says true. */
-function audioIsSilent(inputs, lufs, graph = null) {
+ *  The export's own pre-pass (audioIsSilent) and the editor preview's level
+ *  (mix-loudness.js, §660) both read the mix through this. */
+export function measureLoudness(inputs, lufs, graph = null) {
   const measure = `loudnorm=I=${lufs}:TP=-1:LRA=11:print_format=json`
   const select = graph
     ? ['-filter_complex', [...graph.parts, `${graph.label}${measure}[m]`].join(';'), '-map', '[m]']
@@ -276,12 +283,41 @@ function audioIsSilent(inputs, lufs, graph = null) {
   } finally {
     script.cleanup()
   }
-  // A kill is not a "not silent" answer: report it rather than carry on.
   const killed = syncResultError(result, { child: 'ffmpeg', phase: 'loudness-measure',
     message: `ffmpeg loudness measure failed:\n${ffmpegErrorTail(result.stderr)}` })
   if (killed) throw killed
-  if (result.status !== 0) return false
-  return isSilentInputI(parseLoudnormInputI(result.stderr))
+  if (result.status !== 0) return null
+  return {
+    inputI: parseLoudnormField(result.stderr, 'input_i'),
+    inputTP: parseLoudnormField(result.stderr, 'input_tp'),
+    inputLRA: parseLoudnormField(result.stderr, 'input_lra'),
+  }
+}
+
+/** Whether the audio ffmpeg would feed into loudnorm is silent (measureLoudness).
+ *
+ *  Why this exists: loudnorm over digital silence shorter than its ~3 s window
+ *  emits NaN samples and the AAC encoder behind it aborts with "Input contains
+ *  (near) NaN/+-Inf", failing the whole render. Silence has nothing to
+ *  normalize, so the callers skip loudnorm when this says true. A failed
+ *  measurement is not silent. */
+function audioIsSilent(inputs, lufs, graph = null) {
+  const m = measureLoudness(inputs, lufs, graph)
+  return m ? isSilentInputI(m.inputI) : false
+}
+
+/**
+ * The export's final audio mix: `canvasInputArgs` (one ffmpeg input whose
+ * audio is the clips' own, input 0) plus every unmuted lane, mixed by
+ * buildAudioTrackFilters. `{inputs, parts, label}`: `label` is the mix,
+ * before any loudnorm. mixAudioIntoVideo builds its graph here, and so does
+ * mix-loudness.js's measurement (§660), so the two cannot drift.
+ */
+export function buildMixGraph(audioTracks, canvasInputArgs) {
+  const unmuted = (audioTracks ?? []).filter(t => !t.muted)
+  const inputs = [...canvasInputArgs, ...buildAudioTrackInputs(unmuted)]
+  const { filterParts, audioLabel } = buildAudioTrackFilters(unmuted, 1, '[0:a]')
+  return { inputs, parts: filterParts, label: audioLabel }
 }
 
 /**
@@ -339,12 +375,9 @@ export function mixAudioIntoVideo(videoPath, audioTracks, outputPath, { loudness
     return
   }
 
-  const inputs = ['-i', videoPath]
-  inputs.push(...buildAudioTrackInputs(unmuted))
-
   // [0:a] = audio stream from the input video (assumed present; chunked path
   // always produces a silent audio stream via anullsrc in compose.js)
-  const { filterParts, audioLabel } = buildAudioTrackFilters(unmuted, 1, '[0:a]')
+  const { inputs, parts: filterParts, label: audioLabel } = buildMixGraph(unmuted, ['-i', videoPath])
 
   let ln = loudnessFilter(audioLabel, loudness)
   // Measure the mix BEFORE loudnorm; a silent mix skips it (see audioIsSilent).

@@ -2721,4 +2721,6 @@ export { normalizeIfNeeded, killNormalizeTree, failLine, stampSourceProbes, getT
          resolveProjectPaths, validateProjectFiles, audioTrackNoSrcMessage, repointStaleUntaggedMasters, prepareVideoItems, prepareSdrPass, outputSize,
          stripExtraAudioStreams,
          // The editor export (nle/graphics.js) builds its segments the render's way.
-         designCanvasFor, bundleSegmentSpec }
+         designCanvasFor, bundleSegmentSpec,
+         // §660: mix-loudness.js measures the mix of the project as the render loads it.
+         loadRenderProject }
