@@ -1396,8 +1396,13 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   // No alpha pin on the rotate: all three fit chains already run through
   // `format=rgba`, so the transparent pad and `c=black@0.0` corners are
   // representable exactly as the static path assumes.
+  // The opacity mixer goes before the animated resize (§672): behind it ffmpeg's converter was configured on the
+  // first frame and drew every later one at the first frame's size. The fit chains end in `format=rgba`, so the
+  // mixer has its alpha plane here.
+  const op = opacityFilterStep(item, 'op' + idx, imgOffset, duration, opts?.fps ?? 30)
+  const opInChain = anim?.needsAnimatedChain && op ? `,${op}` : ''
   const animStep = anim?.needsAnimatedChain
-    ? `,scale=w='${anim.boxWExpr}':h='${anim.boxHExpr}':eval=frame${animatedRotateStep(anim, false)}`
+    ? `${opInChain},scale=w='${anim.boxWExpr}':h='${anim.boxHExpr}':eval=frame${animatedRotateStep(anim, false)}`
     : ''
   // Rotate AFTER the fit chain, BEFORE setpts: the fit chain is what establishes
   // the scaledW×scaledH box rotation is defined against, and setpts is timing,
@@ -1443,8 +1448,7 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   // Static opacity keeps its plain mixer; a keyframed one is a sendcmd-driven
   // mixer sampled at the segment's fps (a missing fps means 30: sample-frame
   // renders one instant, and Task 6 gives it a sampled scalar instead).
-  const op = opacityFilterStep(item, 'op' + idx, imgOffset, duration, opts?.fps ?? 30)
-  if (op) {
+  if (op && !opInChain) {
     filterParts.push(`${src}${op}[imgop${idx}]`)
     src = `[imgop${idx}]`
   }
@@ -1827,7 +1831,11 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   const mask = opts.maskBase
     ? planItemMask(item, padW, padH, seekOffset, duration, opts.fps ?? 30, opts.maskBase)
     : null
-  let transparentPad = item.probedAlpha === true || mask !== null
+  // §672: a clip's opacity is colorchannelmixer's `aa`, which needs an alpha plane: on an opaque 4:2:0 frame it is
+  // silently ignored (measured on ffmpeg 8.1.2: aa=0.5 left the pixel at full red). So an item with an opacity pads
+  // through an alpha format, like a letterboxed one.
+  const op = opacityFilterStep(item, 'op' + idx, seekOffset, duration, opts.fps ?? 30)
+  let transparentPad = item.probedAlpha === true || mask !== null || op !== null
   // A cover or fill fit fills the box: there is no gap to make transparent.
   if (!transparentPad && footageW && footageH && fit === 'contain') {
     const fitted = decreaseFitSize(footageW, footageH, padW, padH, (conversionStep || cutoutGrade) ? 2 : 1)
@@ -1913,8 +1921,13 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     (anim?.needsAnimatedChain ? fitStep(anim.peakW, anim.peakH) : fitStep(scaledW, scaledH))
   // What follows the pad: the varying resize (and its rotate), or the static
   // rotate. Each starts with its own comma, and the static one may be empty.
+  // The opacity mixer goes BEFORE the animated resize on that chain (§672): like `rotate` and the colour conversion
+  // it cannot follow a changing frame size. Behind the resize ffmpeg's format negotiation gave it a converter
+  // configured on the first frame, which drew every later frame at the first frame's size (a landing card stuck
+  // at its first scale, a blurred one at its largest, both out of place), and only a keyframed item has one.
+  const opInChain = anim?.needsAnimatedChain && op ? `,${op}` : ''
   const afterPad = anim?.needsAnimatedChain
-    ? `,scale=w='${anim.boxWExpr}':h='${anim.boxHExpr}':eval=frame` +
+    ? `${opInChain},scale=w='${anim.boxWExpr}':h='${anim.boxHExpr}':eval=frame` +
       `${animatedRotateStep(anim, true, isHdr(projectColorSpace))}`
     : rotateFilterStep(box, true, isHdr(projectColorSpace))
   // A mask (§616) goes BETWEEN the two: after pad, which made the box the
@@ -1954,8 +1967,8 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   let src = `[vid${idx}]`
   // Static opacity keeps its plain mixer; a keyframed one is a sendcmd-driven
   // mixer sampled once per frame at the segment's fps (item-opacity.js, §616).
-  const op = opacityFilterStep(item, 'op' + idx, seekOffset, duration, opts.fps ?? 30)
-  if (op) {
+  // On an animated-size chain it is already in the chain, before the resize.
+  if (op && !opInChain) {
     filterParts.push(`${src}${op}[vidop${idx}]`)
     src = `[vidop${idx}]`
   }

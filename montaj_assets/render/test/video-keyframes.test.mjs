@@ -164,12 +164,39 @@ describe('SP9d — an opacity track is sampled, not compiled to an expression', 
     assert.ok(step, 'an opacity track emits a sendcmd step')
     assert.match(step, /colorchannelmixer@op1 aa /)
     assert.match(step, /,colorchannelmixer@op1=aa=0\[vidop1\]$/)
-    assert.equal(chainOf(r), chainOf(plain), 'the geometry chain is unchanged')
+    // Unchanged but for the pad, which goes through an alpha format so the mixer has an alpha plane (§672).
+    const alphaPad = (c) => c.replace(/,pad=([^,[]+)/, ',format=yuva420p,pad=$1:color=black@0.0')
+    assert.equal(chainOf(r), alphaPad(chainOf(plain)), 'the geometry chain is unchanged')
   })
 
   test('an opacity curve alone does not push the item onto the animated path', () => {
     const r = buildVideo(videoItem({ keyframes: [track('opacity', [{ t: 0, value: 0 }, { t: 3, value: 1 }])] }))
     assert.ok(!chainOf(r).includes('eval=frame'))
+  })
+})
+
+describe('§672 — opacity on a keyframed-size video', () => {
+  const sized = (extra = {}) => videoItem({
+    keyframes: [track('scale', [{ t: 0, value: 0.2 }, { t: 1, value: 0.45 }]), track('opacity', [{ t: 0, value: 0 }, { t: 1, value: 1 }])],
+    ...extra,
+  })
+  const parts = (r) => r.filterParts.join(';')
+
+  test('the opacity mixer sits before the animated resize: behind it the box froze at its first size', () => {
+    const g = parts(buildVideo(sized(), { fps: 30 }))
+    const mixer = g.indexOf('colorchannelmixer@op1=aa=0')
+    const resize = g.indexOf('eval=frame')
+    assert.ok(mixer > 0 && resize > mixer, g)
+    assert.ok(!/\[vidop1\]/.test(g), 'no separate step after the resize')
+  })
+
+  test('the pad goes through an alpha format, or the mixer has no alpha plane to write and opacity is ignored', () => {
+    assert.match(parts(buildVideo(sized(), { fps: 30 })), /format=yuva420p,pad=[^,]*:color=black@0\.0/)
+    assert.match(parts(buildVideo(videoItem({ opacity: 0.5 }))), /format=yuva420p,pad=[^,]*:color=black@0\.0/)
+  })
+
+  test('an item with no opacity keeps its opaque pad', () => {
+    assert.ok(!parts(buildVideo(videoItem({}))).includes('yuva420p'))
   })
 })
 
