@@ -113,7 +113,7 @@ describe('a 3D item with a time map keeps its picture in place', () => {
     const item = mapped(10, 13)
     const trimmed = computeResizedItem(item as Draggable, 'start', 11.5)
     expect(trimmed).toMatchObject({ start: 11.5, end: 13 })
-    for (const t of [11.5, 12, 12.9]) expect(sceneAt(trimmed, t)).toBeCloseTo(sceneAt(item, t))
+    for (const t of [11.5, 12, 12.9]) expect(sceneAt(trimmed as VisualItem, t)).toBeCloseTo(sceneAt(item, t))
     expect((trimmed.props as { timeMap: number[][] }).timeMap[0][0]).toBe(0)
     expect((trimmed.props as { inPoint: number }).inPoint).toBeCloseTo(sceneAt(item, 11.5))
   })
