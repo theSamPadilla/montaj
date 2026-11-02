@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { containsTime, geometryAt, hasCropKeyframes, maskAt, resolveAt } from '@bycrux/timeline-core'
 import { isProxyUsable, markProxyFailed } from './proxySupport'
+import { HELD_SEEK_EPS, rateFits, setPlaybackRate } from './playbackRate'
 import { mediaBoxStyle, perAxisRatio } from './transformStyle'
 import { sourceCropVideoStyle } from './sourceCropStyle'
 import { compositeParts, type MaskStyle } from './itemComposite'
@@ -57,6 +58,12 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlayi
   const visibleRef   = useRef(visible)
   useEffect(() => { isPlayingRef.current = isPlaying }, [isPlaying])
   useEffect(() => { visibleRef.current   = visible   }, [visible])
+  // HELD: a speed no <video> can play (outside [0.0625, 16], `rateFits`), e.g.
+  // an AI-made 0.05x near-freeze. The element stays paused and follows project
+  // time by seeking instead of playing.
+  const held = !rateFits(speed)
+  const heldRef = useRef(held)
+  heldRef.current = held
 
   // This element is not wired through a Web Audio graph (unlike the base
   // track's slots in useVideoPlayback.ts), so its own mute and volume ARE what
@@ -95,11 +102,16 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlayi
     if (v.readyState < 2) return
     const target = inPoint + speed * (currentTime - itemStart)
     const drift = Math.abs(v.currentTime - target)
+    if (held) {
+      // Re-seek only when the frame would change, and never over a seek in flight.
+      if (!v.seeking && drift > HELD_SEEK_EPS) v.currentTime = Math.max(inPoint, target)
+      return
+    }
     if (!v.paused && drift < 1.5) return
     if (drift > 0.3) {
       v.currentTime = Math.max(inPoint, target)
     }
-  }, [currentTime, itemStart, inPoint, speed])
+  }, [currentTime, itemStart, inPoint, speed, held])
 
   // Play/pause sync — only play when visible; pause when pre-loading or past end
   useEffect(() => {
@@ -110,14 +122,14 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlayi
     // fires. `preservesPitch` matters only for an audible overlay; harmless
     // otherwise. Set before play(); a fresh src load resets rate to 1, so the
     // dependency list re-runs this whenever speed changes under us.
-    v.playbackRate = speed
+    setPlaybackRate(v, speed)
     v.preservesPitch = true
-    if (isPlaying && visible) {
+    if (isPlaying && visible && !held) {
       v.play().catch(() => {})
     } else {
       v.pause()
     }
-  }, [isPlaying, visible, speed])
+  }, [isPlaying, visible, speed, held])
 
   return (
     <video
@@ -133,7 +145,7 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlayi
         // After a mid-clip seek the browser may have paused to buffer — restart if we should be playing
         const v = ref.current
         if (!v) return
-        if (isPlayingRef.current && visibleRef.current && v.paused) {
+        if (isPlayingRef.current && visibleRef.current && !heldRef.current && v.paused) {
           v.play().catch(() => {})
         }
       }}

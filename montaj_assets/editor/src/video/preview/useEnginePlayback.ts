@@ -58,6 +58,7 @@
  *    routes to the scheduler's `preparing` picture, not to a src downgrade).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { setPlaybackRate } from './playbackRate'
 import { audioWindow } from '@bycrux/timeline-core'
 import {
   createEngine,
@@ -118,7 +119,7 @@ const IDLE_STATUS: EngineStatus = {
  * for engines that only understand those.
  */
 function applyLaneRate(el: HTMLAudioElement, rate: number): void {
-  el.playbackRate = rate
+  setPlaybackRate(el, rate)
   el.preservesPitch = true
   const vendor = el as unknown as { mozPreservesPitch?: boolean; webkitPreservesPitch?: boolean }
   if ('mozPreservesPitch' in vendor) vendor.mozPreservesPitch = true

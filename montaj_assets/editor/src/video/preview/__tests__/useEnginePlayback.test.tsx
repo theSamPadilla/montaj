@@ -565,6 +565,21 @@ describe('useEnginePlayback audio lanes', () => {
     expect(el.preservesPitch).toBe(true)
   })
 
+  it('a shuttle rate past what an element plays is clamped, never thrown', () => {
+    const { view, engine } = setup(withAudio())
+    const el = audioEls[0]
+    let rate = 1
+    // Chrome's setter: [0.0625, 16], NotSupportedError outside it.
+    Object.defineProperty(el, 'playbackRate', {
+      get: () => rate,
+      set: (v: number) => { if (!(v >= 0.0625 && v <= 16)) throw new DOMException('out of range', 'NotSupportedError'); rate = v },
+      configurable: true,
+    })
+    act(() => { view.result.current.setRate(20) })
+    expect(engine.rates).toContain(20)
+    expect(el.playbackRate).toBe(16)
+  })
+
   it('a lane re-synced from the engine tick inherits the current transport rate', () => {
     const { view, engine } = setup(withAudio())
     const el = audioEls[0]

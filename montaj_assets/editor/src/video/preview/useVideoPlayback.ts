@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { HELD_SEEK_EPS, rateFits, setPlaybackRate } from './playbackRate'
 import {
   sourceWindow,
   playbackSrcFor as resolvePlaybackSrc,
@@ -218,6 +219,11 @@ export function useVideoPlayback(
   const gapFromRef    = useRef(0)
   const gapTargetRef  = useRef(0)
   const gapNextIdxRef = useRef(0)
+  // A HELD clip: one whose speed no <video> can play (outside [0.0625, 16],
+  // `rateFits`), e.g. an AI-made 0.05x near-freeze. The gap clock drives time
+  // through it with the element paused and the picture kept by seeking to
+  // `inPoint + S·(t − start)`. Its index into `clips` while the clock does so.
+  const heldIdxRef    = useRef<number | null>(null)
 
   // Keep fileUrl in a ref so callbacks that captured it early don't go stale
   const fileUrlRef = useRef(fileUrl)
@@ -745,18 +751,60 @@ export function useVideoPlayback(
       gapRAFRef.current = null
     }
     inGapRef.current = false
+    heldIdxRef.current = null
   }, [])
+
+  /** The source time a held clip shows at project time `t` (loop-aware, never past its outPoint). */
+  function heldSourceTime(clip: VisualItem, t: number): number {
+    const speed = clipSpeed(clip)
+    const inPoint = effectiveInPoint(clip)
+    const outPoint = effectiveOutPoint(clip)
+    const elapsed = Math.max(0, speed * (t - clip.start))
+    if (clip.loop && outPoint != null && outPoint > inPoint) return inPoint + (elapsed % (outPoint - inPoint))
+    return outPoint != null ? Math.min(inPoint + elapsed, outPoint) : inPoint + elapsed
+  }
+
+  /** Keep a held clip's paused element on the frame for `t`; re-seek only when the frame would change. */
+  function seekHeld(video: HTMLVideoElement, clip: VisualItem, t: number, force = false) {
+    if (!video.paused) video.pause()
+    const target = heldSourceTime(clip, t)
+    if (force || (!video.seeking && Math.abs(video.currentTime - target) > HELD_SEEK_EPS)) video.currentTime = target
+  }
 
   const tickGap = useCallback(function tickGap() {
     if (!inGapRef.current) return
     const elapsed = (performance.now() - gapWallRef.current) / 1000
     const t = Math.min(gapFromRef.current + elapsed, gapTargetRef.current)
     lastTimeRef.current = t
+    const held = heldIdxRef.current !== null ? clips[heldIdxRef.current] : undefined
+    if (held) {
+      const v = getActiveVideo()
+      if (v) seekHeld(v, held, t)
+    }
     emitTime(t)
 
     if (t < gapTargetRef.current) {
       gapRAFRef.current = requestAnimationFrame(tickGap)
       return
+    }
+
+    if (held) {
+      // The held clip is over. Hand on the way handleTimeUpdate does at an
+      // outPoint: through a gap to the next clip, on through trailing
+      // overlays/audio, or (below) straight into a contiguous next clip.
+      heldIdxRef.current = null
+      const after = clips[gapNextIdxRef.current]
+      const gapTo = after?.src ? (after.start > held.end + 0.02 ? after.start : null)
+        : (held.end < projectEnd ? projectEnd : null)
+      if (gapTo !== null) {
+        setShowVideo(false)
+        gapFromRef.current   = held.end
+        gapWallRef.current   = performance.now()
+        gapTargetRef.current = gapTo
+        if (!after?.src) gapNextIdxRef.current = clips.length
+        gapRAFRef.current    = requestAnimationFrame(tickGap)
+        return
+      }
     }
 
     // Gap over — transition to next clip (or end of project)
@@ -778,7 +826,7 @@ export function useVideoPlayback(
     if (nv) {
       const src = fileUrlRef.current(playbackSrcFor(nc))
       if (preloadSrcRef.current !== src) { nv.src = src; nv.currentTime = effectiveInPoint(nc) }
-      nv.playbackRate = clipSpeed(nc)
+      setPlaybackRate(nv, clipSpeed(nc))
       const gain = ensureVideoGain(ns)
       if (gain) gain.gain.value = videoGain(nc)
       playSoon(nv)
@@ -788,11 +836,36 @@ export function useVideoPlayback(
     setActiveSlot(ns)
     setShowVideo(true)
     preloadSrcRef.current = ''
-  }, [clips, videoTrack, emitTime])
+  }, [clips, videoTrack, emitTime, projectEnd])
+
+  /**
+   * Drive the held clip `clips[idx]` from project time `t` with the gap clock:
+   * its element paused (this pause is ours, so `handlePause` ignores it) and
+   * seeked frame by frame, until `clip.end`, where `tickGap` hands on.
+   */
+  function startHeld(idx: number, t: number) {
+    const clip = clips[idx]
+    if (!clip) return
+    inGapRef.current      = true
+    heldIdxRef.current    = idx
+    gapFromRef.current    = t
+    gapWallRef.current    = performance.now()
+    gapTargetRef.current  = clip.end
+    gapNextIdxRef.current = idx + 1
+    lastTimeRef.current   = t
+    const video = getActiveVideo()
+    if (video) seekHeld(video, clip, t, true)
+    if (gapRAFRef.current !== null) cancelAnimationFrame(gapRAFRef.current)
+    gapRAFRef.current = requestAnimationFrame(tickGap)
+    setIsPlaying(true)
+  }
 
   // Scrub: seek active slot when currentTime jumps externally
   useEffect(() => {
     if (Math.abs(currentTime - lastTimeRef.current) < 0.05) return
+    // A held clip's clock pauses its element: a scrub out of it while playing
+    // must start the element it lands on again (below).
+    const wasHeld = heldIdxRef.current !== null
     cancelGap()
     playIntentRef.current++
     lastTimeRef.current = currentTime
@@ -851,7 +924,7 @@ export function useVideoPlayback(
       const inPoint = effectiveInPoint(clip)
       const clipOutPoint = effectiveOutPoint(clip)
       const speed = clipSpeed(clip)
-      video.playbackRate = speed
+      setPlaybackRate(video, speed)
       if (clip.loop && clipOutPoint != null) {
         // loopDur is in SOURCE seconds; loopOffsetRef holds PROJECT seconds.
         const loopDur = clipOutPoint - inPoint
@@ -863,11 +936,15 @@ export function useVideoPlayback(
         loopOffsetRef.current = 0
         video.currentTime = Math.max(inPoint, inPoint + speed * (currentTime - clip.start))
       }
+      if (isPlayingRef.current && !rateFits(speed)) startHeld(clipIdx, currentTime)
+      else if (wasHeld && isPlayingRef.current && video.paused) playSoon(video)
     } finally {
       // Delay clearing seekingRef so the pause/play events the browser fires
       // during currentTime assignment don't toggle isPlaying
       setTimeout(() => {
         seekingRef.current = false
+        // A clock (a gap, a held clip) owns playback state: the element is paused under it.
+        if (inGapRef.current) return
         // Sync isPlaying state and audio to video's actual state after seek settles
         const v = getActiveVideo()
         if (!v) return
@@ -917,11 +994,20 @@ export function useVideoPlayback(
         preloadSrcRef.current = nextSrc
         inactiveVideo.src = nextSrc
         inactiveVideo.currentTime = effectiveInPoint(clips[nextIdx])
-        inactiveVideo.playbackRate = clipSpeed(clips[nextIdx])
+        setPlaybackRate(inactiveVideo, clipSpeed(clips[nextIdx]))
         const inactiveSlot = (1 - slot) as 0 | 1
         const nextGain = ensureVideoGain(inactiveSlot)
         if (nextGain) nextGain.gain.value = videoGain(clips[nextIdx])
       }
+    }
+
+    // A held clip that started playing (a press of play, a switch into it):
+    // hand it to the held clock from where the playhead is. Paused, it reports
+    // nothing: its element sits only within a frame of the playhead (see
+    // `seekHeld`), which at 0.05x is a third of a second of project time.
+    if (!rateFits(clipSpeed(clip))) {
+      if (!video.paused) startHeld(activeIdxRef.current, Math.min(Math.max(lastTimeRef.current, clip.start), clip.end))
+      return
     }
 
     // A normalized cache can encode a few ms SHORTER than its computed window
@@ -978,7 +1064,7 @@ export function useVideoPlayback(
               nextVideo.src = nextSrc
               nextVideo.currentTime = effectiveInPoint(next)
             }
-            nextVideo.playbackRate = clipSpeed(next)
+            setPlaybackRate(nextVideo, clipSpeed(next))
             const nextGain = ensureVideoGain(nextSlot)
             if (nextGain) nextGain.gain.value = videoGain(next)
             playSoon(nextVideo)
@@ -1118,10 +1204,11 @@ export function useVideoPlayback(
     const inVideoClip = clips.some(c => t >= c.start && t < c.end)
     if (!inVideoClip || inGapRef.current) {
       if (gapRAFRef.current !== null) {
-        // Currently playing through gap → pause
+        // Currently playing through gap (or a held clip) → pause
         cancelAnimationFrame(gapRAFRef.current)
         gapRAFRef.current = null
         inGapRef.current  = false
+        heldIdxRef.current = null
         setIsPlaying(false)
       } else {
         // Paused in gap/image section → find next video clip and advance via gap clock
