@@ -143,10 +143,11 @@ export interface MixSegment {
   curveOut?: MixCurve
   /**
    * Mix stage: the order the export sums its sources in. Default 0. A ducked
-   * segment's sidechain key is the sum of every segment at a LOWER stage, as
-   * the export keys each ducked lane by the mix built before it (the clips'
-   * audio, then the lanes in order: render/mix-audio.js:154-186). Same-stage
-   * segments are never in each other's key.
+   * segment's sidechain key is the sum of every segment at a LOWER stage.
+   * Same-stage segments are never in each other's key. The plan puts the
+   * export's speech bus (the clips and every lane not ducked) at one stage and
+   * every ducked lane at the next, as the export keys each ducked lane by the
+   * whole speech bus (render/mix-audio.js `buildAudioTrackFilters`).
    */
   stage?: number
   /** Duck this segment under the lower stages (see `stage`). Absent or null: not ducked. */

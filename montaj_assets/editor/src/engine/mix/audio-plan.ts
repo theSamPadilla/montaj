@@ -20,7 +20,7 @@
  * | a lane's window               | timeline-core `audioSourceWindow`: mix-audio.js:133-136                |
  * | a lane's fades                | `afade` starting at `start`, and ending at the DECLARED `end` (none without one), curves `tri`/`exp`/`log`: mix-audio.js:82-109 |
  * | a lane's volume and mute      | `volume=`, a muted lane left out of the mix: mix-audio.js:155-158      |
- * | ducking                       | `sidechaincompress` keyed by the mix built before the lane: mix-audio.js:162-179 (see `stage` and `duck` in mix-protocol.ts) |
+ * | ducking                       | every ducked lane `sidechaincompress`ed against the whole speech bus (the clips plus every lane not ducked, wherever it sits in `audio.tracks`), never against another ducked lane: mix-audio.js `buildAudioTrackFilters` (see `stage` and `duck` in mix-protocol.ts) |
  *
  * ## The sources are the ORIGINALS
  *
@@ -89,8 +89,14 @@ export interface ProjectMixPlan {
   unconformedOverlays: string[]
 }
 
-/** The clips' audio mixes at this stage; lane `i` of `audio.tracks` at `i + 1`, the export's order. */
-export const CLIP_STAGE = 0
+/**
+ * The speech bus's stage: the clips' audio and every lane that is not ducked,
+ * wherever it sits in `audio.tracks`. The export mixes all of them first and
+ * keys every ducked lane by that sum (mix-audio.js `buildAudioTrackFilters`).
+ */
+export const SPEECH_STAGE = 0
+/** Every ducked lane's stage: one above the speech, all at one stage, so no ducked lane keys another. */
+export const DUCKED_STAGE = 1
 
 /** The `threshold=` the export passes to sidechaincompress (mix-audio.js:176). */
 export const EXPORT_DUCK_THRESHOLD = 0.02
@@ -209,8 +215,8 @@ export function buildMixPlan(project: EditorProject, lookup: ConformLookup): Pro
 
   const lanes = project.audio?.tracks
   if (Array.isArray(lanes)) {
-    lanes.forEach((lane, i) => {
-      const seg = laneSegment(lane, i, lookup, unconformedLanes, addOnce)
+    lanes.forEach((lane) => {
+      const seg = laneSegment(lane, lookup, unconformedLanes, addOnce)
       if (seg === null) return
       seg.id = uniqueId(seg.id)
       segments.push(seg)
@@ -261,7 +267,7 @@ function clipSegment(
     srcIn,
     speed: speed !== null && speed > 0 ? speed : 1,
     gain: finite(volume) ?? 1,
-    stage: CLIP_STAGE,
+    stage: SPEECH_STAGE,
   }
 }
 
@@ -281,7 +287,6 @@ function clipSegment(
  */
 function laneSegment(
   lane: AudioTrack,
-  index: number,
   lookup: ConformLookup,
   unconformed: string[],
   addOnce: (list: string[], src: string) => void,
@@ -309,7 +314,7 @@ function laneSegment(
     srcIn: win.inPoint,
     speed: 1,
     gain: finite(lane.volume) ?? 1,
-    stage: CLIP_STAGE + 1 + index,
+    stage: SPEECH_STAGE,
   }
   if (fadeIn > 0) {
     seg.fadeIn = fadeIn
@@ -320,6 +325,9 @@ function laneSegment(
     seg.curveOut = fadeCurve(lane.fadeOutCurve)
   }
   const duck = exportDuckParams(lane.ducking)
-  if (duck !== null) seg.duck = duck
+  if (duck !== null) {
+    seg.duck = duck
+    seg.stage = DUCKED_STAGE
+  }
   return seg
 }

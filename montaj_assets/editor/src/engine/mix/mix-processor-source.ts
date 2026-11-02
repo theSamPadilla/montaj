@@ -38,9 +38,10 @@
  *     queues and the report objects are built in `onmessage`, and the report
  *     and clock messages reuse one object each (the structured clone that
  *     `postMessage` makes is the only per-report cost, ~20 times a second).
- *  6. **Ducking** (§190 T3), as the export applies it: render/mix-audio.js:162-179
- *     runs a ducked lane through ffmpeg `sidechaincompress`, keyed by the mix
- *     built before it. Segments mix in `stage` order, so when a stage begins
+ *  6. **Ducking** (§190 T3), as the export applies it: render/mix-audio.js
+ *     runs a ducked lane through ffmpeg `sidechaincompress`, keyed by the speech
+ *     bus (the plan stages it below every ducked lane, audio-plan.ts
+ *     `DUCKED_STAGE`). Segments mix in `stage` order, so when a stage begins
  *     the output buffers hold exactly the lower stages' sum, before the bus
  *     gain: that is the key. A ducked segment's detector runs over it on every
  *     frame the clock renders, active or not (the export's runs through the

@@ -219,7 +219,7 @@ describe('lanes', () => {
       srcIn: 2,
       speed: 1,
       gain: 1.4,
-      stage: 1,
+      stage: 0,
       fadeIn: 0.5,
       curveIn: 'log',
     })
@@ -227,10 +227,11 @@ describe('lanes', () => {
       tlEnd: 30,
       fadeOut: 3,
       curveOut: 'linear',
-      stage: 2,
+      stage: 1,
       duck: { threshold: 0.02, ratio: 8, attackMs: 300, releaseMs: 500 },
     })
-    expect(segOf(p, 'lane:sfx')!.stage).toBe(3)
+    // The speech bus (clips and every lane not ducked) at one stage, the ducked lanes one above it.
+    expect(segOf(p, 'lane:sfx')!.stage).toBe(0)
     expect(segOf(p, 'clip:A')!.stage).toBe(0)
     expect(segOf(p, 'lane:sfx')!.duck).toBeUndefined()
   })

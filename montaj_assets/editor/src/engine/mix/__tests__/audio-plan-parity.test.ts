@@ -259,52 +259,94 @@ describe('ducking == the export (mix-audio.js sidechaincompress)', () => {
     }
   })
 
-  it('each ducked lane is keyed by what the export keys it by: the clips and the unmuted lanes before it', () => {
-    const lanes = [
-      { id: 'vo', src: '/a/vo.m4a', start: 0, end: 9 },
-      { id: 'off', src: '/a/off.m4a', start: 0, end: 9, muted: true },
-      { id: 'music', src: '/a/music.m4a', start: 0, end: 9, ducking: { enabled: true } },
-      { id: 'sfx', src: '/a/sfx.m4a', start: 2, end: 3 },
-      { id: 'bed', src: '/a/bed.m4a', start: 0, end: 9, ducking: { enabled: true, depth: -6 } },
-    ] as AudioTrack[]
-    // The export: follow every label through the graph to the sources it carries.
+  // Each case: the lanes in audio.tracks order. The old plan keyed a ducked
+  // lane by the lanes BEFORE it, which differs from the export in every case
+  // below (a voice listed after its bed, a sound after it, two beds).
+  const DUCK_CASES: Array<{ name: string; lanes: AudioTrack[] }> = [
+    {
+      name: 'a voice before, a muted lane, a sound after, two beds',
+      lanes: [
+        { id: 'vo', src: '/a/vo.m4a', start: 0, end: 9 },
+        { id: 'off', src: '/a/off.m4a', start: 0, end: 9, muted: true },
+        { id: 'music', src: '/a/music.m4a', start: 0, end: 9, ducking: { enabled: true } },
+        { id: 'sfx', src: '/a/sfx.m4a', start: 2, end: 3 },
+        { id: 'bed', src: '/a/bed.m4a', start: 0, end: 9, ducking: { enabled: true, depth: -6 } },
+      ] as AudioTrack[],
+    },
+    {
+      name: 'the voiceover on a lane after the music it ducks',
+      lanes: [
+        { id: 'music', src: '/a/music.m4a', start: 0, end: 9, ducking: { enabled: true } },
+        { id: 'vo', src: '/a/vo.m4a', start: 0, end: 9 },
+      ] as AudioTrack[],
+    },
+    {
+      name: 'two beds first, then a sound and the voice',
+      lanes: [
+        { id: 'music', src: '/a/music.m4a', start: 0, end: 9, ducking: { enabled: true, depth: -18 } },
+        { id: 'bed', src: '/a/bed.m4a', start: 0, end: 9, ducking: { enabled: true, depth: -6, attack: 0.1 } },
+        { id: 'sfx', src: '/a/sfx.m4a', start: 2, end: 3 },
+        { id: 'vo', src: '/a/vo.m4a', start: 0, end: 9 },
+      ] as AudioTrack[],
+    },
+  ]
+
+  /**
+   * The export's sidechain key of each ducked lane, read out of its own graph:
+   * every label is followed to the sources it carries (a lane's own input
+   * chain starts one; a split copies; a mix unites; a compressor carries its
+   * main input and records its key input's sources against the lane).
+   */
+  function exportDuckKeys(lanes: AudioTrack[]): Map<string, Set<string>> {
     const unmuted = lanes.filter((l) => !l.muted)
-    const parts = exportLaneFilters(lanes, 1, '[0:a]').filterParts
+    const { filterParts, audioLabel } = exportLaneFilters(lanes, 1, '[0:a]')
+    const labelsOf = (s: string | undefined) => (s ? [...s.matchAll(/\[([^\]]+)\]/g)].map((m) => `[${m[1]}]`) : [])
     const carries = new Map<string, Set<string>>([['[0:a]', new Set(['clips'])]])
-    const exportKey = new Map<string, Set<string>>()
-    for (const part of parts) {
-      const labels = [...part.matchAll(/\[([^\]]+)\]/g)].map((m) => `[${m[1]}]`)
-      const out = labels[labels.length - 1]
-      const ins = labels.slice(0, -1)
+    const keys = new Map<string, Set<string>>()
+    for (const part of filterParts) {
+      const ins = labelsOf(/^(?:\[[^\]]+\])+/.exec(part)?.[0])
+      const outs = labelsOf(/(?:\[[^\]]+\])+$/.exec(part)?.[0])
       // Lane inputs are numbered from 1; input 0 is the clips' audio.
       const laneIn = /^\[([1-9]\d*):a\]/.exec(part)
-      if (/asplit=2/.test(part)) {
-        for (const l of labels.slice(1)) carries.set(l, new Set(carries.get(labels[0])))
-      } else if (laneIn) {
-        carries.set(out, new Set([unmuted[Number(laneIn[1]) - 1].id]))
+      if (laneIn) {
+        for (const o of outs) carries.set(o, new Set([unmuted[Number(laneIn[1]) - 1].id!]))
       } else if (/sidechaincompress/.test(part)) {
-        exportKey.set([...carries.get(ins[0])!][0], carries.get(ins[1])!)
-        carries.set(out, new Set(carries.get(ins[0])))
+        const main = carries.get(ins[0])!
+        expect(main.size).toBe(1)
+        keys.set([...main][0], new Set(carries.get(ins[1])!))
+        carries.set(outs[0], new Set(main))
       } else {
-        carries.set(out, new Set(ins.flatMap((l) => [...carries.get(l)!])))
+        const all = new Set(ins.flatMap((l) => [...carries.get(l)!]))
+        for (const o of outs) carries.set(o, all)
       }
     }
-    expect([...exportKey.keys()]).toEqual(['music', 'bed'])
+    // The export's mix carries the clips and every unmuted lane.
+    expect([...carries.get(audioLabel)!].sort()).toEqual(['clips', ...unmuted.map((l) => l.id!)].sort())
+    return keys
+  }
 
-    // The plan: a ducked segment's key is every segment at a lower stage.
-    const project: EditorProject = {
-      ...laneProject(lanes),
-      tracks: [{ id: 't0', items: [{ id: 'A', type: 'video', src: '/m/A.mp4', start: 0, end: 9 }] }],
-    }
-    const segs = buildMixPlan(project, lookupAll()).plan.segments
-    const nameOf = (s: MixSegment) => (s.id.startsWith('clip:') ? 'clips' : s.id.slice('lane:'.length))
-    for (const [lane, key] of exportKey) {
-      const ducked = segs.find((s) => s.id === `lane:${lane}`)!
-      expect(ducked.duck, lane).toBeTruthy()
-      const planKey = new Set(segs.filter((s) => (s.stage ?? 0) < (ducked.stage ?? 0)).map(nameOf))
-      expect([...planKey].sort(), lane).toEqual([...key].sort())
-    }
-  })
+  for (const { name, lanes } of DUCK_CASES) {
+    it(`each ducked lane is keyed by what the export keys it by: ${name}`, () => {
+      const exportKey = exportDuckKeys(lanes)
+      expect([...exportKey.keys()].sort()).toEqual(lanes.filter((l) => !l.muted && l.ducking?.enabled).map((l) => l.id!).sort())
+
+      // The plan: a ducked segment's key is every segment at a lower stage
+      // (mix-protocol.ts `stage`; the worklet holds it, mix-duck.test.ts).
+      const project: EditorProject = {
+        ...laneProject(lanes),
+        tracks: [{ id: 't0', items: [{ id: 'A', type: 'video', src: '/m/A.mp4', start: 0, end: 9 }] }],
+      }
+      const segs = buildMixPlan(project, lookupAll()).plan.segments
+      const nameOf = (s: MixSegment) => (s.id.startsWith('clip:') ? 'clips' : s.id.slice('lane:'.length))
+      for (const [lane, key] of exportKey) {
+        const ducked = segs.find((s) => s.id === `lane:${lane}`)!
+        const e = exportLane(lanes.find((l) => l.id === lane)!).duck!
+        expect(ducked.duck, lane).toEqual({ threshold: e.threshold, ratio: e.ratio, attackMs: e.attack, releaseMs: e.release })
+        const planKey = new Set(segs.filter((s) => (s.stage ?? 0) < (ducked.stage ?? 0)).map(nameOf))
+        expect([...planKey].sort(), lane).toEqual([...key].sort())
+      }
+    })
+  }
 })
 
 // ── Clips: render.js collectAllItems + encode-segment.js encodeSegment ──────
