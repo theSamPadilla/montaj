@@ -473,14 +473,6 @@ def test_validate_project_source_crop_is_checked_on_object_shape(tmp_path):
         v.validate_project(path)
 
 
-def test_validate_project_primary_clip_must_be_video_or_image_type(tmp_path):
-    clip = {**VALID_PRIMARY_CLIP, "type": "overlay"}
-    data = {**VALID_PROJECT, "tracks": [[clip]]}
-    path = _write_project(tmp_path, "project.json", data)
-    with pytest.raises(SystemExit):
-        v.validate_project(path)
-
-
 def test_validate_project_accepts_an_image_item_on_track_0(tmp_path):
     # The renderer composites image items on tracks[0] and the editor previews
     # them, so a still background (a photo, a screenshot card) is a valid
@@ -1197,3 +1189,20 @@ def test_validate_project_accepts_a_good_mask(tmp_path):
     clip = {**VALID_PRIMARY_CLIP, "mask": {"shape": "ellipse"}, "blendMode": "screen", "opacity": 0.5}
     data = {**VALID_PROJECT, "tracks": [{"id": "trk-0", "items": [clip]}]}
     assert v.validate_project(_write_project(tmp_path, "project.json", data))["valid"] is True
+
+
+def test_validate_project_accepts_an_overlay_on_track_0(tmp_path):
+    """An all-3D or all-graphics timeline puts its overlays on tracks[0]; the renderer draws them there (§657)."""
+    shot = {"id": "sh-0", "type": "overlay", "src": "engine:scene3d", "start": 0.0, "end": 3.0}
+    data = {**VALID_PROJECT, "tracks": [[shot]]}
+    path = _write_project(tmp_path, "project.json", data)
+    v.validate_project(path)
+
+
+def test_validate_project_overlay_on_track_0_still_needs_required_fields(tmp_path, capsys):
+    shot = {"id": "sh-0", "type": "overlay", "start": 0.0, "end": 3.0}  # no src
+    data = {**VALID_PROJECT, "tracks": [[shot]]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+    assert "missing required field 'src'" in capsys.readouterr().err

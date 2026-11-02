@@ -27,9 +27,9 @@ FOREACH_PATH_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)
 # PRIMARY_CLIP_REQUIRED and VISUAL_ITEM_REQUIRED are currently the same set but kept
 # separate — primary clips and overlay items are expected to diverge in future parts.
 PRIMARY_CLIP_REQUIRED = {"id", "type", "src", "start", "end"}
-# tracks[0] item types: the renderer and editor composite both footage and stills
-# on the primary track.
-PRIMARY_CLIP_TYPES = ("video", "image")
+# tracks[0] item types: the renderer and editor composite footage, stills and overlays
+# on the first track (an all-3D or all-graphics timeline has nothing else there).
+PRIMARY_CLIP_TYPES = ("video", "image", "overlay")
 VISUAL_ITEM_REQUIRED = {"id", "type", "src", "start", "end"}
 
 
@@ -607,7 +607,7 @@ def validate_project(path):
                         if field not in item:
                             fail("missing_field", f"tracks[0] item missing required field '{field}': {item.get('id', '?')}")
                     if item.get("type") not in PRIMARY_CLIP_TYPES:
-                        fail("invalid_primary_clip", f"tracks[0] item '{item.get('id', '?')}' must have type 'video' or 'image', got '{item.get('type')}'")
+                        fail("invalid_primary_clip", f"tracks[0] item '{item.get('id', '?')}' must have type 'video', 'image' or 'overlay', got '{item.get('type')}'")
                     s, e = item.get("start"), item.get("end")
                     if isinstance(s, (int, float)) and isinstance(e, (int, float)):
                         # Permit start == end == 0.0: init.py writes these as placeholders;
