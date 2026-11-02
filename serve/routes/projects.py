@@ -1904,6 +1904,7 @@ async def list_projects(status: str | None = None):
     # colliding entries, the array shape unchanged.
     folders_by_id: dict[str, list[str]] = {}
     parsed: list[dict] = []
+    own_folder: dict[int, str] = {}
     for p in sorted(found, key=lambda f: f.stat().st_mtime, reverse=True):
         try:
             proj = json.loads(p.read_text())
@@ -1912,6 +1913,7 @@ async def list_projects(status: str | None = None):
         if not isinstance(proj, dict):
             continue
         parsed.append(proj)
+        own_folder[id(proj)] = str(p.parent)
         pid = proj.get("id")
         if pid:
             folders_by_id.setdefault(pid, []).append(str(p.parent))
@@ -1926,6 +1928,8 @@ async def list_projects(status: str | None = None):
         if len(folders) > 1:
             proj["duplicate"] = True
             proj["duplicateFolders"] = folders
+            # §682: which of them this entry is, so its card deletes its own copy (DELETE ?folder=).
+            proj["folder"] = own_folder.get(id(proj))
         projects.append(proj)
     return projects
 

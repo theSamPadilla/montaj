@@ -180,10 +180,12 @@ def test_list_projects_flags_duplicated_ids(workspace):
     for p in dups:
         assert p["duplicate"] is True
         assert sorted(p["duplicateFolders"]) == sorted([str(a), str(b)])
+    # §682: each entry says which folder is its own, so its card deletes that copy.
+    assert {p["name"]: p["folder"] for p in dups} == {"Original": str(a), "Copy": str(b)}
     # The unique id is untouched: no duplicate fields.
     assert len(uniq) == 1
     assert "duplicate" not in uniq[0]
-    assert "duplicateFolders" not in uniq[0]
+    assert "duplicateFolders" not in uniq[0] and "folder" not in uniq[0]
 
 
 def test_list_projects_does_not_flag_a_version_snapshot(workspace):
