@@ -3,7 +3,7 @@ without walking into projects' own folders."""
 import os
 from pathlib import Path
 
-from serve.common import is_nested_project_json, topmost_project_jsons
+from serve.common import DELETING_DIR, is_nested_project_json, topmost_project_jsons
 
 
 def _old(ws: Path):
@@ -84,3 +84,14 @@ def test_a_broken_link_or_a_folder_named_project_json_neither_counts_nor_stops_t
     old = [p for p in _old(ws) if p.is_file()]  # the old callers skipped what they could not read
     assert new == old
     assert ws / "odd" / "inner" / "project.json" in new
+
+
+def test_a_project_waiting_in_the_deleting_folder_is_not_a_project(tmp_path):
+    ws = tmp_path / "Montaj"
+    _tree(ws)
+    for rel in (f"{DELETING_DIR}/gone", f"teamZ/{DELETING_DIR}/gone2"):
+        p = ws / rel / "project.json"
+        p.parent.mkdir(parents=True)
+        p.write_text("{}")
+    assert sorted(topmost_project_jsons(ws)) == _old(ws)
+    assert not any(DELETING_DIR in p.parts for p in topmost_project_jsons(ws))
