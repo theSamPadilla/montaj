@@ -154,7 +154,11 @@ def test_argv_is_the_renders_argv_plus_estimate(tmp_path, monkeypatch):
     calls = _spawn(monkeypatch, _ok())
     _estimate(project_dir, body)
 
-    assert calls[0]["argv"] == captured["cmd"] + ["--estimate"]
+    # §697: the render also carries --speech-set (loudness only); an estimate plans no loudness and writes nothing.
+    cmd = list(captured["cmd"])
+    i = cmd.index("--speech-set")
+    del cmd[i:i + 2]
+    assert calls[0]["argv"] == cmd + ["--estimate"]
 
 
 def test_the_pictures_colour_space_rides_on_the_answer(tmp_path, monkeypatch):

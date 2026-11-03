@@ -78,6 +78,18 @@ def main(project_path=None, out=None, workers=None, clean=False, scale=None, mon
         if clean:        cmd.append("--clean")
         if export:       cmd += ["--export", export]
         if sdr_curve:    cmd += ["--sdr-curve", sdr_curve]
+        if project_path and os.path.isfile(project_path):
+            # §697: loudness is measured on the speech; the caller decides what that is.
+            try:
+                from lib.speech_set import write_speech_set
+                with open(project_path, "r", encoding="utf-8") as f:
+                    doc = json.load(f)
+                if isinstance(doc, dict):
+                    set_file = write_speech_set(doc, os.path.dirname(os.path.abspath(project_path)),
+                                                "speech-set-export.json")
+                    cmd += ["--speech-set", str(set_file)]
+            except Exception:
+                pass  # no flag: render falls back to the whole mix
 
     env                = node_child_env()
     env["MONTAJ_ROOT"] = str(montaj_root or _MONTAJ_ROOT)

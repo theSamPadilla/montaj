@@ -85,6 +85,7 @@ from lib.types.colorspace import ALL_COLOR_SPACES
 from lib.workflow import read_workflow
 from lib.normalize import SEEK_PREROLL_S
 from cli.deps import render_runtime_dir
+from lib.speech_set import write_speech_set
 from project.carousel_normalize import normalize_carousel_assets
 
 logger = logging.getLogger(__name__)
@@ -5926,6 +5927,24 @@ def _render_js_args(project_dir: Path, project_path: Path, body: dict, *, overri
     return script_args, output_path
 
 
+def _with_speech_set(script_args: list[str], project_dir: Path, project_json: Path) -> list[str]:
+    """`script_args` with `--speech-set <file>` (§697), the set computed from the project JSON actually rendered
+    (a converged copy included) and sources resolved against the real project dir. Any earlier flag is replaced.
+    A project that cannot be read leaves the args as they are: render then falls back to the whole mix."""
+    args = list(script_args)
+    if "--speech-set" in args:
+        i = args.index("--speech-set")
+        del args[i:i + 2]
+    try:
+        doc = json.loads(Path(project_json).read_text())
+        if not isinstance(doc, dict):
+            return args
+        name = "speech-set-export.json"
+        return [*args, "--speech-set", str(write_speech_set(doc, project_dir, name))]
+    except (OSError, ValueError):
+        return args
+
+
 def _estimate_overrides(body: dict) -> list[str]:
     """render.js --estimate's stand-ins for settings the export window has not
     saved yet: ``--resolution WxH`` from a body `resolution` of two positive
@@ -6204,6 +6223,7 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
         if converged_input is not None:
             render_input = converged_input
             script_args = [str(converged_input), *script_args[1:]]
+        script_args = _with_speech_set(script_args, project_dir, Path(script_args[0]))
 
     # The slot was free at the top, but this request has awaited since (the
     # final mark's project lock, git commits): a second POST or a carousel's

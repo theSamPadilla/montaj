@@ -27,12 +27,13 @@ from pathlib import Path
 
 from cli.deps import render_runtime_dir
 from lib.common import node_child_env
+from lib.speech_set import members, speech_set, write_speech_set
 from lib.proc import detached_kwargs, kill_tree
 from serve.audio_conform import _low_priority
 from serve.common import MONTAJ_ROOT
 
 # Bump when the measurement changes, so an older answer is never reused.
-MEASURE_VERSION = 1
+MEASURE_VERSION = 2
 # A measurement decodes every clip and lane once (far faster than real time);
 # past this it is killed, process tree and all, and answers `failed`.
 JOB_TIMEOUT_S = 300
@@ -94,9 +95,37 @@ def _stat(path: str, project_dir: Path):
     return [str(p), st.st_size, st.st_mtime_ns]
 
 
+def _speech_key_view(project: dict, project_dir: Path, sset: dict) -> dict:
+    """What changes the speech bus, and nothing else (§697): a non-speech lane's or
+    clip's volume, mute, fade or src is level the master gain never re-measures."""
+    clips, lanes = members(project, project_dir)
+    tracks = project.get("tracks") or []
+    stats = set()
+    for src in sset["srcs"]:
+        stats.add(tuple(_stat(src, project_dir)))
+        stats.add(tuple(_stat(str(Path(src).with_suffix(".json")), project_dir)))
+    return {
+        "set": sset,
+        "clips": [[ti, ii, _item_view(item) if item.get("type") == "video" else item, _track_view({**tracks[ti], "items": []})
+                   if isinstance(tracks[ti], dict) else None] for ti, ii, item in clips],
+        "lanes": lanes,
+        "stats": sorted(stats, key=str),
+    }
+
+
 def cache_key(project: dict, project_dir: Path) -> str:
-    """A key over everything that changes the export's mix, and nothing else."""
+    """A key over everything that changes the loudness measured, and nothing else.
+
+    With speech, only the speech bus counts; without, the whole mix."""
     settings = project.get("settings") or {}
+    sset = speech_set(project, project_dir)
+    if sset["srcs"]:
+        view = {
+            "v": MEASURE_VERSION,
+            "settings": {"loudness": settings.get("loudness"), "fps": settings.get("fps")},
+            "speech": _speech_key_view(project, project_dir, sset),
+        }
+        return hashlib.sha1(json.dumps(view, sort_keys=True, default=str).encode()).hexdigest()
     view = {
         "v": MEASURE_VERSION,
         # fps: the planner cuts the clips on the frame grid.
@@ -123,7 +152,8 @@ def _answer(result: dict) -> dict:
         if not isinstance(i, (int, float)) or not isinstance(target, (int, float)):
             return {"status": "failed", "error": "no integrated loudness in the measurement"}
         return {"status": "ready", "inputI": i, "targetI": target, "gainDb": round(target - i, 2),
-                "inputTP": result.get("inputTP"), "inputLRA": result.get("inputLRA")}
+                "inputTP": result.get("inputTP"), "inputLRA": result.get("inputLRA"),
+                **({"basis": result["basis"]} if "basis" in result else {})}
     if status == "silent":
         return {"status": "silent", "targetI": target}
     if status == "off":
@@ -138,7 +168,13 @@ def _measure(project_json: Path) -> dict:
         raise RuntimeError("node or mix-loudness.js not found")
     env = node_child_env()
     env["MONTAJ_ROOT"] = str(MONTAJ_ROOT)
-    argv, extra = _low_priority([node, str(script), "--project", str(project_json)])
+    try:
+        project = json.loads(project_json.read_text())
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"project.json unreadable: {exc}") from None
+    set_file = write_speech_set(project, project_json.parent)
+    argv, extra = _low_priority([node, str(script), "--project", str(project_json),
+                                 "--speech-set", str(set_file)])
     detach = detached_kwargs()
     if "creationflags" in detach:
         extra["creationflags"] = extra.get("creationflags", 0) | detach.pop("creationflags")
