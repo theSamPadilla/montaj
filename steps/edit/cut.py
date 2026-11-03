@@ -874,28 +874,34 @@ def _stands(project, recut):
 
 
 def _over(project):
-    """The cut the project carries, as a hash of its marker (None with no marker): a plan made over it says so in its
-    header. Each cut writes a new marker, so a plan over an earlier cut never matches."""
+    """The cut the project carries, as a hash of its marker's string fields (None with no marker): a plan made over it
+    says so in its header. Each cut writes a new `at`, so a plan over an earlier cut never matches; a number re-saved
+    as another spelling (1.0 as 1) changes nothing."""
     m = project.get(MARKER_KEY)
     if not isinstance(m, dict):
         return None
-    return hashlib.sha256(json.dumps(m, sort_keys=True).encode()).hexdigest()[:12]
+    ids = [str(m.get(k)) for k in ("at", "planStamp", "planHash", "tracksRev")]
+    return hashlib.sha256(json.dumps(ids).encode()).hexdigest()[:12]
 
 
 _OVER_RE = re.compile(r" · over ([0-9a-f]+)\s*-->\s*$")
 
 
 def _waiting(project, project_dir):
-    """§692: cut-plan.md was made over the cut the project carries and is not applied yet (a recut's). A plain cut plans
-    it again on that same base, so a plan made stale (a transcript written again) is never stuck behind "Already cut".
-    A plan made before that cut (the first pass's) is not one: planning again would cut the cut's output twice."""
+    """§692: the stamp of cut-plan.md when it was made over the cut the project carries and is not applied yet (a
+    recut's), else None. A plain cut plans it again on that same base, so a plan made stale (a transcript written
+    again) is never stuck behind "Already cut". A plan made before that cut (the first pass's) is not one: planning
+    again would cut the cut's output twice."""
     over = _over(project)
     path = os.path.join(project_dir, PLAN_FILE)
     if over is None or os.path.islink(path) or not os.path.isfile(path):
-        return False
+        return None
     with open(path, encoding="utf-8", errors="replace") as f:
-        head = [f.readline() for _ in range(2)]
-    return any((m := _OVER_RE.search(ln.strip())) and m.group(1) == over for ln in head)
+        head = [f.readline().strip() for _ in range(2)]
+    if not any((m := _OVER_RE.search(ln)) and m.group(1) == over for ln in head):
+        return None
+    sil, speech = _SILENCE_HEADER.match(head[0]), speech_text._HEADER_RE.match(head[0])
+    return sil.group(2) if sil else speech.group(2) if speech else None
 
 
 def _audio_spine(project, project_dir, clips=None):
@@ -1342,7 +1348,8 @@ def main():
 
 def _make_plan(args, project_path, project_dir):
     first = _load(project_path)
-    recut = args.recut or _waiting(first, project_dir)      # §692: a waiting recut plan is planned again as one
+    waiting = None if args.recut else _waiting(first, project_dir)   # §692: a waiting recut plan is planned again as one
+    recut = args.recut or waiting is not None
     if _stands(first, recut):
         print(json.dumps(_already_cut(first), ensure_ascii=False))
         return
@@ -1365,7 +1372,7 @@ def _make_plan(args, project_path, project_dir):
     transcribed, failed, warnings = _transcribe_missing(first_l, track_id, project_path, project_dir,
                                                         args.model, args.language or "auto")
     disk = _load(project_path)        # read again after the long part
-    if _stands(disk, args.recut or _waiting(disk, project_dir)) and not changed:     # another run cut it meanwhile
+    if _stands(disk, args.recut or _waiting(disk, project_dir) is not None) and not changed:     # another run cut it meanwhile
         print(json.dumps(_already_cut(disk), ensure_ascii=False))
         return
     disk_s, spine, left = _spine(disk, project_dir, words=True, clips=args.clips) if spine else (disk, spine, [])
@@ -1384,6 +1391,10 @@ def _make_plan(args, project_path, project_dir):
     title = disk.get("name") or disk.get("id") or os.path.basename(project_dir)
     threshold = args.silence_threshold if args.silence_threshold is not None else SILENCE_THRESHOLD_DB
     b = _build(project_path, project_dir, disk_l, track_id, language, warnings, max_pause, breath, threshold)
+    if waiting is not None and not changed and waiting == (b["d"].stamp if b["d"] is not None else _silence_stamp(b, track_id)):
+        # the waiting plan still holds on this base (an apply with nothing to cut writes no marker): nothing to plan
+        print(json.dumps(_already_cut(disk), ensure_ascii=False))
+        return
     if args.silence_threshold is not None and b["d"] is not None:
         warnings.insert(0, THRESHOLD_SPEECH_WARNING)       # §577: it never reaches a clip with a transcript
     answer = {"project": disk.get("id"), "mode": "plan", "speech": key}

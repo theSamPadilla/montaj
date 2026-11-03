@@ -26,6 +26,10 @@ VOICEOVER = "voiceover"
 JOIN_FADE_IN, JOIN_FADE_OUT = 0.008, 0.012
 # Items of one audio source may overlap by a crossfade at most; more is two voices at once.
 MAX_OVERLAP_S = 0.5
+# An entry's fields that belong to its file (speech_build's source fields, the file's name, its normalized copy): never
+# lent to a piece of another file (§692)
+_FILE_FIELDS = ("label", "normalizedSrc", "normalizedInPoint", "proxySrc", "sourceDuration", "sourceWidth",
+                "sourceHeight", "sourceCreatedAt")
 _EPS = 1e-6
 
 
@@ -212,13 +216,14 @@ class Lift:
         lifted = tracks.pop(k)
         items = [it for it in sorted(lifted.get("items", []), key=lambda x: float(x.get("start", 0)))
                  if it.get("src") and float(it.get("end", 0)) > float(it.get("start", 0))]
+        # a piece's group: the entry it came from, of its own file (a piece of another file only borrows the fields)
+        group = lambda it: (id(self._origin_of(it["id"], it)), it["src"])
         first, last = {}, {}
         for it in items:
-            o = id(self._origin_of(it["id"], it))
-            first.setdefault(o, it["id"])
-            last[o] = it["id"]
-        entries = [self._entry(it, outer_in=first.get(id(self._origin_of(it["id"], it))) == it["id"],
-                               outer_out=last.get(id(self._origin_of(it["id"], it))) == it["id"]) for it in items]
+            first.setdefault(group(it), it["id"])
+            last[group(it)] = it["id"]
+        entries = [self._entry(it, outer_in=first.get(group(it)) == it["id"], outer_out=last.get(group(it)) == it["id"])
+                   for it in items]
         if not isinstance(out.get("audio"), dict):
             out["audio"] = {}
         rest = list(out["audio"].get("tracks") or [])
@@ -247,16 +252,18 @@ class Lift:
         orig = self._origin_of(it["id"], it) or {}
         entry = {k: copy.deepcopy(v) for k, v in orig.items()
                  if k not in ("id", "start", "end", "inPoint", "outPoint", "fadeIn", "fadeOut", "_in", "_out")}
-        if orig.get("src") != it["src"]:
-            for k in ("normalizedSrc", "sourceDuration"):      # of the other file
+        other = orig.get("src") != it["src"]
+        if other:
+            for k in _FILE_FIELDS:
                 entry.pop(k, None)
         # the file is the piece's own: its in and out points are that file's times, whatever entry lent the rest
         entry.update({"id": it["id"], "src": it["src"], "start": it["start"], "end": it["end"],
                       "inPoint": it["inPoint"], "outPoint": it["outPoint"]})
         o_in, o_out = orig.get("_in", orig.get("inPoint")), orig.get("_out", orig.get("outPoint"))
-        moved_in = o_in is None or abs(float(it["inPoint"]) - float(o_in)) > _EPS
-        moved_out = o_out is None or abs(float(it["outPoint"]) - float(o_out)) > _EPS
-        fade_in, fade_out = orig.get("fadeIn"), orig.get("fadeOut")
+        # another file's piece: both edges are the cut's, and the entry's own fades are not its
+        moved_in = other or o_in is None or abs(float(it["inPoint"]) - float(o_in)) > _EPS
+        moved_out = other or o_out is None or abs(float(it["outPoint"]) - float(o_out)) > _EPS
+        fade_in, fade_out = (None, None) if other else (orig.get("fadeIn"), orig.get("fadeOut"))
         if moved_in:
             fade_in = max(float(fade_in or 0), JOIN_FADE_IN) if outer_in else JOIN_FADE_IN
         if moved_out:

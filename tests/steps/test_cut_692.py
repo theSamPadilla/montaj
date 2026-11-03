@@ -50,8 +50,9 @@ def sidecar(path, words):
         {"text": t, "offsets": {"from": a, "to": b}} for t, a, b in words]}))
 
 
-def make(d):
-    """Take 2 on the timeline as the voiceover; take 1 a source no item plays (an earlier cut took it)."""
+def make(d, **vo):
+    """Take 2 on the timeline as the voiceover; take 1 a source no item plays (an earlier cut took it). vo: more fields
+    of take 2's item."""
     wav(d / "take1.wav", *TAKE1, seed=1)
     dur2 = wav(d / "take2.wav", *TAKE2, seed=2)
     project = {
@@ -60,7 +61,7 @@ def make(d):
         "sources": [{"id": "take1", "type": "audio", "src": "take1.wav"},
                     {"id": "take2", "type": "audio", "src": "take2.wav"}],
         "audio": {"tracks": [{"id": "vo", "type": "voiceover", "src": "take2.wav", "start": 0.0, "end": dur2,
-                              "inPoint": 0.0, "outPoint": dur2, "volume": 1}]},
+                              "inPoint": 0.0, "outPoint": dur2, "volume": 1, **vo}]},
     }
     (d / "project.json").write_text(json.dumps(project, indent=2))
 
@@ -94,8 +95,12 @@ def b1_into_cut(text, words):
     return "\n".join(lines)
 
 
+TAKE2_FILE = {"label": "Take 2", "proxySrc": "take2.proxy.wav", "sourceWidth": 0, "sourceHeight": 0,
+              "sourceCreatedAt": "2026-10-01T00:00:00Z", "normalizedInPoint": 0.0, "sourceDuration": 5.6}
+
+
 def test_an_earlier_row_of_a_take_no_item_plays_plays_from_its_own_file(tmp_path, monkeypatch):
-    make(tmp_path)
+    make(tmp_path, **TAKE2_FILE)
     plan = run(tmp_path, monkeypatch)
     assert "B = take1.wav" in plan["text"] and "B1 What if instead of training. [earlier]" in plan["text"]
     edited = b1_into_cut(plan["text"], 2)
@@ -106,6 +111,18 @@ def test_an_earlier_row_of_a_take_no_item_plays_plays_from_its_own_file(tmp_path
     assert first["src"] == "take1.wav", f"B1 plays take 1's times from {first['src']}"
     assert 0.2 < first["inPoint"] < first["outPoint"] < 1.0
     assert all(a["src"] == "take2.wav" for a in items[1:])
+    assert not set(TAKE2_FILE) & set(first), "take 2's own fields are not take 1's"
+    assert all(a["label"] == "Take 2" for a in items[1:])
+
+
+def test_a_put_back_take_takes_neither_the_fades_nor_the_first_place_of_the_take_it_borrows_from(tmp_path, monkeypatch):
+    make(tmp_path, fadeIn=0.3)
+    plan = run(tmp_path, monkeypatch)
+    (tmp_path / "cut-plan.md").write_text(b1_into_cut(plan["text"], 2))
+    run(tmp_path, monkeypatch, "--plan", str(tmp_path / "cut-plan.md"))
+    items = sorted(load(tmp_path)["audio"]["tracks"], key=lambda a: a["start"])
+    assert items[0]["src"] == "take1.wav" and items[0]["fadeIn"] == cc.speech_source.JOIN_FADE_IN
+    assert items[1]["src"] == "take2.wav" and items[1]["fadeIn"] == 0.3, "take 2's own first piece keeps its fade"
 
 
 def test_a_plain_cut_plans_a_stale_recut_plan_again_as_a_recut(tmp_path, monkeypatch, capsys):
@@ -143,3 +160,31 @@ def test_the_seams_name_a_short_word_that_plays(tmp_path, monkeypatch):
     (tmp_path / "cut-plan.md").write_text(b1_into_cut(plan["text"], 2))
     applied = run(tmp_path, monkeypatch, "--plan", str(tmp_path / "cut-plan.md"))
     assert any(s.split(" | ")[1].startswith("That same year,") for s in applied["seams"]), applied["seams"]
+
+
+def test_a_recut_with_nothing_to_cut_leaves_no_plan_waiting(tmp_path, monkeypatch):
+    """A voiceover with no usable speech: its recut has nothing to cut and writes nothing, so the plan made over the
+    cut still names it. It is not waiting: a plain cut answers already-cut, not a plan, every time."""
+    make(tmp_path)
+    for name in ("take1", "take2"):
+        (tmp_path / f"{name}.json").write_text(json.dumps({"transcription": []}))
+
+    def no_words(input_path, out=None, **kw):
+        prefix = out or str(Path(input_path).with_suffix(""))
+        Path(prefix + ".json").write_text(json.dumps({"transcription": []}))
+        Path(prefix + ".srt").write_text("")
+        return {"words": prefix + ".json", "srt": prefix + ".srt"}
+    monkeypatch.setattr(cc, "transcribe_file", no_words)
+    assert run(tmp_path, monkeypatch)["silence"] is True
+    run(tmp_path, monkeypatch, "--plan", str(tmp_path / "cut-plan.md"))
+    run(tmp_path, monkeypatch, "--recut")
+    again = run(tmp_path, monkeypatch, "--plan", str(tmp_path / "cut-plan.md"))
+    assert "Nothing to cut." in again.get("warnings", [])
+    assert run(tmp_path, monkeypatch)["mode"] == "already-cut"
+
+
+def test_the_cut_a_plan_was_made_over_is_named_the_same_after_a_resave():
+    m = {"at": "2026-11-02T10:00:00Z", "planStamp": "abc", "planHash": "def", "tracksRev": "r1", "maxPause": 1.0,
+         "kept": {"seconds": 3.0}}
+    assert cc._over({cc.MARKER_KEY: m}) == cc._over({cc.MARKER_KEY: {**m, "maxPause": 1, "kept": {"seconds": 3}}})
+    assert cc._over({cc.MARKER_KEY: m}) != cc._over({cc.MARKER_KEY: {**m, "at": "2026-11-02T10:00:01Z"}})
