@@ -372,7 +372,7 @@ export class FilmstripStore {
   /** Per `${projectId}|${item id}`: the strip key it is waiting on and since when. */
   private settling = new Map<string, { key: string; since: number; timer: ReturnType<typeof setTimeout> | null }>()
   /** Per `${projectId}|${item id}`: the last strip that was ready, drawn while a new key waits. */
-  private lastReady = new Map<string, { src: string; key: string }>()
+  private lastReady = new Map<string, { src: string; key: string; base?: string }>()
 
   /** Stop every overlay file watch and settle timer. Call on unmount. */
   dispose(): void {
@@ -566,11 +566,14 @@ export class FilmstripStore {
     const fps = ctx.fps ?? 30
     const durationSec = item.end - item.start
     const [width, height] = ctx.resolution ?? [1080, 1920]
-    const key = `ovl|${ctx.projectId}|${src}|${width}x${height}|${stableJson(props ?? {})}|${stableJson(item.googleFonts ?? [])}|${durationSec}|${fps}|${rev}|${ctx.tileWidth ?? ''}`
+    // `base` is the key without the file's revision: a key that differs from the
+    // drawn strip's only there is a rewrite of the file (an AI saving it again).
+    const base = `ovl|${ctx.projectId}|${src}|${width}x${height}|${stableJson(props ?? {})}|${stableJson(item.googleFonts ?? [])}|${durationSec}|${fps}|${ctx.tileWidth ?? ''}`
+    const key = `${base}|${rev}`
     const entry = this.indexEntries.get(key)
     if (entry?.status === 'ready' && entry.data) {
       const prev = this.lastReady.get(owner)
-      this.lastReady.set(owner, { src, key })
+      this.lastReady.set(owner, { src, key, base })
       if (prev && prev.key !== key) this.releaseStrip(prev.key, entry.data)
       return { data: entry.data, tiles: entry.tiles }
     }
@@ -588,8 +591,10 @@ export class FilmstripStore {
       st = { key, since: Date.now(), timer: null }
       this.settling.set(owner, st)
     }
-    // A first strip settles briefly; a re-request after a change waits longer.
-    const settleMs = fallback() ? OVERLAY_RESETTLE_MS : OVERLAY_SETTLE_MS
+    // A first strip, or one after the user's own edit (props, length), settles
+    // briefly; a rewrite of the file under a drawn strip waits OVERLAY_RESETTLE_MS.
+    const drawn = this.lastReady.get(owner)
+    const settleMs = fallback() && drawn?.base === base ? OVERLAY_RESETTLE_MS : OVERLAY_SETTLE_MS
     const left = settleMs - (Date.now() - st.since)
     const waiting = left > 0
     const gesture = !waiting && !!ctx.gestureActive?.()

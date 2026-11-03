@@ -34,6 +34,10 @@ HEAVY_STEPS = frozenset({
     "proxy", "normalize",
 })
 
+# Held encodes wait for the pause but never take the one-at-a-time slot: an encode
+# runs for minutes, and a short AI step queued behind it would wait out the cap.
+SERIAL_STEPS = HEAVY_STEPS - {"proxy", "normalize"}
+
 _lock: asyncio.Lock | None = None
 _lock_loop: asyncio.AbstractEventLoop | None = None
 
@@ -88,7 +92,7 @@ async def heavy_slot(name: str | None = None):
         except Exception:
             held = False
     got = False
-    if held:
+    if held and (name is None or name in SERIAL_STEPS):
         lock = _heavy_lock()
         try:
             await asyncio.wait_for(lock.acquire(), max(0.0, HOLD_CAP_SEC - (time.monotonic() - start)))
@@ -108,10 +112,11 @@ def _nice_bin() -> str | None:
     return shutil.which("nice")
 
 
-def low_priority(cmd: list[str]) -> list[str]:
+def low_priority(cmd: list[str], name: str | None = None) -> list[str]:
     """`cmd` run at POSIX niceness `NICE_LEVEL` (its children inherit it), so a
-    step never outbids the preview for the CPU. Windows, or no `nice`: as is."""
-    if sys.platform == "win32":
+    step never outbids the preview for the CPU. An `export_*` step (one the user
+    started and is waiting on) keeps normal priority. Windows, or no `nice`: as is."""
+    if sys.platform == "win32" or (name or "").startswith("export_"):
         return cmd
     nice = _nice_bin()
     return [nice, "-n", str(NICE_LEVEL), *cmd] if nice else cmd

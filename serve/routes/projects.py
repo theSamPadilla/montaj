@@ -35,6 +35,7 @@ from serve.common import (
     validate_project_subpath, _is_under, lands_on_project_file,
 )
 from serve import context as context_store
+from serve.playback_gate import heavy_slot, preview_playing
 from serve.caption_job import build_audio_mix_spec, narration_audio, caption_input_change, caption_input_fingerprint
 from serve.caption_theme import sanitize_theme, seed_prev
 from serve import provenance
@@ -493,10 +494,12 @@ async def _run_ingest_detached(
         job.phase = "staging"
         log(f"[ingest] staging {os.path.basename(path)}")
 
-        clip = await asyncio.to_thread(
-            ingest_source, project_dir, path, color_space, "eager", proxy=False,
-            should_stop=lambda: job.cancelled,
-        )
+        # §683: an import's colour normalize waits out the editor preview's playback (capped).
+        async with heavy_slot("normalize"):
+            clip = await asyncio.to_thread(
+                ingest_source, project_dir, path, color_space, "eager", proxy=False,
+                should_stop=lambda: job.cancelled,
+            )
         if job.cancelled:   # §682: the project was deleted while the file was read
             job.status, job.error = "error", "This project was deleted."
             return
@@ -7030,7 +7033,6 @@ async def report_context(
 async def read_playback():
     """Whether an editor preview is playing right now (§683), for the host's own
     heavy work to wait out. Cheap: no project is read. Always 200."""
-    from serve.playback_gate import preview_playing
     return {"playing": preview_playing()}
 
 

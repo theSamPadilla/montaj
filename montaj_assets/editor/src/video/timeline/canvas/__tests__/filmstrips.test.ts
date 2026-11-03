@@ -764,6 +764,21 @@ describe('FilmstripStore overlay strips', () => {
     expect(getFilmstrip.mock.calls[1][0].overlay.revision).toBe(3)
   })
 
+  it('the user\'s own edit of an overlay with a strip (its props) still asks after OVERLAY_SETTLE_MS', async () => {
+    const store = new FilmstripStore()
+    const getFilmstrip = vi.fn().mockResolvedValue(filmstripIndexFixture())
+    const ctx = () => queryCtx({ getFilmstrip, viewport: zoomedIn })
+    store.clipTiles(overlay(), r, ctx())
+    clock += OVERLAY_SETTLE_MS + 50
+    store.clipTiles(overlay(), r, ctx())
+    await flush()
+    store.clipTiles(overlay(), r, ctx())
+    store.clipTiles(overlay({ props: { text: 'bye', size: 3 } }), r, ctx())
+    clock += OVERLAY_SETTLE_MS + 50
+    store.clipTiles(overlay({ props: { text: 'bye', size: 3 } }), r, ctx())
+    expect(getFilmstrip).toHaveBeenCalledTimes(2)
+  })
+
   it('nothing is asked for while the preview plays; a paint after the pause asks', () => {
     const store = new FilmstripStore()
     const getFilmstrip = vi.fn().mockResolvedValue(filmstripIndexFixture())

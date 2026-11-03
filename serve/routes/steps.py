@@ -695,7 +695,7 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
     try:
         async with heavy_slot(name):
             stdout_text, stderr_text, returncode = await run_subprocess(
-                low_priority([sys.executable, str(py_path), *cli_args]),
+                low_priority([sys.executable, str(py_path), *cli_args], name),
                 timeout=timeout,
                 cwd=str(resolve_workspace()),
                 env=env,

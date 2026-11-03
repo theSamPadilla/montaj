@@ -107,3 +107,24 @@ def test_the_playback_route_answers_the_play_state(env):
         assert client.get("/api/playback").json() == {"playing": True}
         _playing(pid, False)
         assert client.get("/api/playback").json() == {"playing": False}
+
+
+def test_a_background_normalize_waits_for_the_pause(env, monkeypatch):
+    pid, pdir, ran = env
+    import asyncio as aio
+    from serve.jobs import create_job, get_job
+    calls = []
+    monkeypatch.setattr(steps_mod, "_normalize_sync", lambda *a: calls.append(a) or {"path": "/x.mp4", "skipped": False})
+
+    async def run():
+        _playing(pid, True)
+        job = create_job("normalize")
+        task = aio.create_task(steps_mod.run_normalize_job(job, "/in.mov", "sdr"))
+        await aio.sleep(0.2)
+        held = list(calls)
+        _playing(pid, False)
+        await aio.wait_for(task, 2)
+        return held, list(calls)
+
+    held, after = aio.run(run())
+    assert held == [] and len(after) == 1

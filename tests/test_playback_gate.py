@@ -135,7 +135,7 @@ def test_low_priority_without_nice_runs_as_is(monkeypatch):
 
 
 def test_the_queue_behind_held_work_is_capped_too(monkeypatch):
-    """A held job behind a long held one (a proxy encode) still runs by the cap."""
+    """A held job behind a long held one still runs by the cap."""
     monkeypatch.setattr(gate, "HOLD_CAP_SEC", 0.3)
 
     async def run():
@@ -143,7 +143,7 @@ def test_the_queue_behind_held_work_is_capped_too(monkeypatch):
         release = asyncio.Event()
 
         async def long_encode():
-            async with gate.heavy_slot("proxy"):
+            async with gate.heavy_slot("look"):
                 await release.wait()
 
         enc = asyncio.create_task(long_encode())
@@ -158,5 +158,75 @@ def test_the_queue_behind_held_work_is_capped_too(monkeypatch):
         await enc
         return waited
 
-    waited = asyncio.run(run())
+    waited = asyncio.run(asyncio.wait_for(run(), 3))
     assert waited < 0.6
+
+
+def test_a_held_encode_never_takes_the_one_at_a_time_slot():
+    """After the pause, a short AI step does not queue behind a minutes-long encode."""
+    async def run():
+        _report(True)
+        release = asyncio.Event()
+        started = asyncio.Event()
+
+        async def encode():
+            async with gate.heavy_slot("proxy"):
+                started.set()
+                await release.wait()
+
+        enc = asyncio.create_task(encode())
+        sample_ran = []
+
+        async def sample():
+            async with gate.heavy_slot("sample_frame"):
+                sample_ran.append(True)
+
+        s = asyncio.create_task(sample())
+        await asyncio.sleep(0.05)
+        _report(False)
+        await asyncio.wait_for(started.wait(), 1)
+        await asyncio.wait_for(s, 1)  # ran while the encode still runs
+        release.set()
+        await enc
+        return sample_ran
+
+    assert asyncio.run(asyncio.wait_for(run(), 3)) == [True]
+
+
+def test_a_cancel_while_holding_or_waiting_frees_the_slot():
+    async def run():
+        _report(True)
+
+        async def holder():
+            async with gate.heavy_slot("look"):
+                await asyncio.sleep(10)
+
+        async def waiter():
+            async with gate.heavy_slot("look"):
+                pass
+
+        h = asyncio.create_task(holder())
+        w = asyncio.create_task(waiter())
+        await asyncio.sleep(0.05)
+        _report(False)
+        await asyncio.sleep(0.05)  # holder has the slot, waiter queues on it
+        h.cancel()
+        w.cancel()
+        await asyncio.gather(h, w, return_exceptions=True)
+        _report(True)
+        t = asyncio.create_task(holder())
+        await asyncio.sleep(0.02)
+        _report(False)
+        await asyncio.sleep(0.05)
+        locked = gate._heavy_lock().locked()  # the new holder got the slot: it was free
+        t.cancel()
+        await asyncio.gather(t, return_exceptions=True)
+        return locked, gate._heavy_lock().locked()
+
+    assert asyncio.run(asyncio.wait_for(run(), 3)) == (True, False)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX nice")
+def test_an_export_step_keeps_normal_priority():
+    assert gate.low_priority(["python", "x.py"], "export_editor") == ["python", "x.py"]
+    assert gate.low_priority(["python", "x.py"], "sample_frame")[1:3] == ["-n", str(gate.NICE_LEVEL)]

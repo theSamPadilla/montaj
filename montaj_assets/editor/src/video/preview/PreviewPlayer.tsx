@@ -624,6 +624,9 @@ function PreviewSurface({
   useEffect(() => {
     onPlayingChangeRef.current?.(isPlaying)
   }, [isPlaying])
+  // A preview that goes away (an AI clears the timeline) is not playing any
+  // more: the host's work that waits out playback must not wait on it (§683).
+  useEffect(() => () => onPlayingChangeRef.current?.(false), [])
 
   // The scrub seam: only the engine path can decode a grain, so the legacy
   // `<video>` fallback simply never fills this — that absence is the audible
