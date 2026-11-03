@@ -29,6 +29,7 @@ from urllib.parse import quote, urlparse
 from serve.common import (
     MONTAJ_ROOT,
     resolve_workspace, find_project_dir, get_project_dir, prime_project_dir_cache, is_nested_project_json,
+    DuplicateProjectId, DELETING_DIR, kill_project_procs,
     run_subprocess, stop_gently_uncancellable,
     not_found, bad_request, forbidden, server_error,
     validate_project_subpath, _is_under, lands_on_project_file,
@@ -379,11 +380,15 @@ class _IngestJob:
     connection — a dropped request must NOT abort it. Keyed by job_id, not
     project_id: unlike captions/renders, multiple imports may legitimately run
     concurrently for the same project (e.g. importing several files at once)."""
-    __slots__ = ("status", "phase", "result", "error", "code", "needed", "free", "project_id")
+    __slots__ = ("status", "phase", "result", "error", "code", "needed", "free", "project_id", "path", "task", "cancelled")
 
     def __init__(self, project_id: str | None = None) -> None:
-        # The project it adds to: delete_project refuses while one runs (§631).
+        # The project it adds to: deleting the project stops it (§631, §682).
         self.project_id: str | None = project_id
+        # §682: the file it adds and the task running it, so a delete can keep the file and cancel the task.
+        self.path: str | None = None
+        self.task: "asyncio.Task | None" = None
+        self.cancelled: bool = False
         self.status: str = "running"     # running | done | error
         self.phase: str = "staging"      # staging | normalizing | building proxy | done
         self.result: dict | None = None  # appended clip dict (done)
@@ -489,8 +494,12 @@ async def _run_ingest_detached(
         log(f"[ingest] staging {os.path.basename(path)}")
 
         clip = await asyncio.to_thread(
-            ingest_source, project_dir, path, color_space, "eager", proxy=False
+            ingest_source, project_dir, path, color_space, "eager", proxy=False,
+            should_stop=lambda: job.cancelled,
         )
+        if job.cancelled:   # §682: the project was deleted while the file was read
+            job.status, job.error = "error", "This project was deleted."
+            return
 
         job.phase = "normalizing"
         log(f"[ingest] normalized to project color space ({color_space})")
@@ -502,6 +511,9 @@ async def _run_ingest_detached(
         # and the lock may be held for a whole init (§631: a seed adopted while
         # this take lands). Timing out here would leave the take out of `sources`.
         async with project_lock_async(project_path, timeout=_INGEST_LOCK_TIMEOUT):
+            if job.cancelled or not project_path.is_file():
+                job.status, job.error = "error", "This project was deleted."
+                return
             raw = project_path.read_text()
             project = json.loads(raw)
             clip = {"id": _next_clip_id(project), **clip}
@@ -538,6 +550,9 @@ async def _run_ingest_detached(
 
         job.status, job.result, job.phase = "done", clip, "done"
         log(f"[ingest] added {clip['id']}")
+    except asyncio.CancelledError:
+        job.status, job.error = "error", "This project was deleted."
+        raise
     except Exception as e:
         if isinstance(e, DiskFull) or is_disk_full(e):
             # §541: one plain sentence and the numbers, never the errno text.
@@ -1890,6 +1905,7 @@ async def list_projects(status: str | None = None):
     # colliding entries, the array shape unchanged.
     folders_by_id: dict[str, list[str]] = {}
     parsed: list[dict] = []
+    own_folder: dict[int, str] = {}
     for p in sorted(found, key=lambda f: f.stat().st_mtime, reverse=True):
         try:
             proj = json.loads(p.read_text())
@@ -1898,6 +1914,7 @@ async def list_projects(status: str | None = None):
         if not isinstance(proj, dict):
             continue
         parsed.append(proj)
+        own_folder[id(proj)] = str(p.parent)
         pid = proj.get("id")
         if pid:
             folders_by_id.setdefault(pid, []).append(str(p.parent))
@@ -1912,6 +1929,8 @@ async def list_projects(status: str | None = None):
         if len(folders) > 1:
             proj["duplicate"] = True
             proj["duplicateFolders"] = folders
+            # §682: which of them this entry is, so its card deletes its own copy (DELETE ?folder=).
+            proj["folder"] = own_folder.get(id(proj))
         projects.append(proj)
     return projects
 
@@ -3701,11 +3720,31 @@ def _preserve_audio(proj: dict, project_dir_resolved: Path, uploads_dir: Path,
         _preserve_path(raw, project_dir_resolved, uploads_dir, preserved, moved)
 
 
+def _names_folder(d: Path, folder: str) -> bool:
+    """`folder` (a path, or a folder name) is `d`."""
+    wanted = folder.strip()
+    try:
+        same = Path(wanted).resolve() == d.resolve()
+    except OSError:
+        same = False
+    return same or d.name == wanted
+
+
+def _pick_folder(exc: DuplicateProjectId, folder: "str | None") -> Path:
+    """§682: the one of several folders claiming an id that `?folder=` names (its path, or its folder name), else the
+    duplicate refusal as it was: a delete never guesses which copy to remove."""
+    if folder:
+        for d in exc.dirs:
+            if _names_folder(d, folder):
+                return d
+    raise exc
+
+
 @router.delete("/projects/{project_id}")
 async def delete_project(
     project_id: str,
     preserve_assets: bool = False,
-    project_dir: Path = Depends(get_project_dir),
+    folder: str | None = None,
     request: Request = None,
 ):
     """Delete a project's workspace directory.
@@ -3742,14 +3781,16 @@ async def delete_project(
     them (`_rescue_dependents`), or nothing is deleted (409).
     """
     from fastapi.responses import Response
-    # §631: a take being ingested may already sit in this folder without being
-    # in `sources` (an untouched seed looks empty): deleting now could take the
-    # only copy of it. Refused until the job ends.
-    if _ingest_running(project_id):
-        raise HTTPException(409, detail={
-            "error": "ingest_running",
-            "message": "A file is still being added to this project. Try again when it finishes.",
-        })
+    # §682: with `?folder=` (a top-level folder claiming the id) the folder picked is the one deleted.
+    try:
+        project_dir = get_project_dir(project_id)
+    except DuplicateProjectId as e:
+        project_dir = _pick_folder(e, folder)
+    else:
+        # The folder asked for is no longer the one claiming the id (its copy was deleted already, a retry after a lost
+        # answer): nothing to delete, and never the other copy.
+        if folder and not _names_folder(project_dir, folder):
+            raise HTTPException(404, detail={"error": "not_found", "message": f"Project '{project_id}' not found"})
     broadcaster = getattr(getattr(getattr(request, "app", None), "state", None), "broadcaster", None)
     dependents = _dependents_of(project_id, project_dir)
     await _rescue_dependents(project_id, project_dir, broadcaster, dependents=dependents)
@@ -3808,10 +3849,13 @@ async def delete_project(
         # PL28: stop a YouTube download first, so yt-dlp is not writing into the
         # folder being removed.
         await _cancel_source_download(project_id)
+        # §682: and the project's own other writers (its render, an import, a step).
+        await _stop_project_writers(project_id, project_dir)
         try:
-            await _remove_project_dir(project_dir)
+            await _retire_project_dir(project_dir, project_id)
         except OSError as e:
-            raise server_error("delete_failed", f"Couldn't delete this project: {e}")
+            print(f"[montaj] delete_project {project_id}: {type(e).__name__} {e}")
+            raise server_error("delete_failed", "Couldn't delete this project. Try again.")
 
     if preserve_assets:
         return {"preserved": preserved}
@@ -3899,6 +3943,74 @@ async def _rescue_dependents(project_id: str, project_dir: Path, broadcaster: "S
             "message": f"\"{left[0]}\" uses files in this project that could not be copied into it, "
                        "so nothing was deleted.",
         })
+
+
+async def _stop_project_writers(project_id: str, project_dir: Path) -> None:
+    """§682: stop what is writing into the project's folder before it goes: its render, an import (the file an import was
+    adding that already sits in the folder is the only copy of a recorder's take: it goes to `_uploads/` first, §631), and
+    the steps running for it."""
+    proc = _render_procs.pop(project_id, None)
+    if proc is not None:
+        _kill_render_proc(proc)
+    _active_renders.discard(project_id)
+    uploads = resolve_workspace() / "_uploads"
+    folder = project_dir.resolve()
+    tasks = []
+    for job in list(_ingest_jobs.values()):
+        if job.status != "running" or job.project_id != project_id:
+            continue
+        job.cancelled = True
+        if job.path:
+            try:
+                src = Path(job.path)
+                if src.is_file() and _is_under(src.resolve(), folder):
+                    uploads.mkdir(parents=True, exist_ok=True)
+                    _move_into_uploads(src, uploads)
+            except OSError:
+                pass   # best effort: the delete goes on
+        if job.task is not None and not job.task.done():
+            job.task.cancel()
+            tasks.append(job.task)
+    if tasks:
+        await asyncio.wait(tasks, timeout=5)
+    kill_project_procs(project_id)
+
+
+_deleting_tasks: set = set()
+
+
+async def _retire_project_dir(project_dir: Path, project_id: str) -> None:
+    """§682: take the project out of the workspace in one step, then remove it in the background. The folder is renamed
+    to `<workspace>/.montaj-deleting/<id>-<hex>`, so a writer racing the removal can no longer fail the delete and
+    the project is gone from the first moment (project.json is not at its old place). What the removal leaves is swept at
+    start-up (`sweep_deleting`). A folder that cannot be renamed is removed in place, as before."""
+    workspace = resolve_workspace()
+    trash = workspace / DELETING_DIR
+    dest = trash / f"{project_id}-{secrets.token_hex(4)}"
+    try:
+        trash.mkdir(parents=True, exist_ok=True)
+        os.rename(project_dir, dest)
+    except OSError:
+        await _remove_project_dir(project_dir)
+        return
+    task = asyncio.ensure_future(asyncio.to_thread(rmtree_force, dest, True))
+    _deleting_tasks.add(task)
+    task.add_done_callback(_deleting_tasks.discard)
+
+
+def sweep_deleting() -> None:
+    """§682: remove what an earlier delete left in `.montaj-deleting/` (serve was stopped before it finished). Never raises."""
+    try:
+        trash = resolve_workspace() / DELETING_DIR
+        entries = list(trash.iterdir()) if trash.is_dir() else []
+    except OSError:
+        return
+    for entry in entries:
+        rmtree_force(entry, True)
+    try:
+        trash.rmdir()
+    except OSError:
+        pass
 
 
 async def _remove_project_dir(project_dir: Path) -> None:
@@ -5352,6 +5464,7 @@ async def ingest_project_source(
         _run_ingest_detached(project_id, project_dir, path, color_space, broadcaster, job,
                              provenance_entry=entry)
     )
+    job.path, job.task = path, task
     _ingest_task_refs.add(task)
     task.add_done_callback(_ingest_task_refs.discard)
     return JSONResponse({"job_id": job_id}, status_code=202)

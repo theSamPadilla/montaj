@@ -679,12 +679,23 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
     # refuses to serve them ("Path is outside the allowed roots") and the
     # filmstrips/waveform images silently never appeared. Inputs are always
     # absolute, so nothing else depends on this cwd.
+    # §682: the project this run belongs to, so deleting it stops the step first.
+    tracked = None
+    for ref in named_refs:
+        try:
+            named = _named_project(ref)
+        except Exception:
+            named = None
+        if named is not None:
+            tracked = named[0]
+            break
     try:
         stdout_text, stderr_text, returncode = await run_subprocess(
             [sys.executable, str(py_path), *cli_args],
             timeout=timeout,
             cwd=str(resolve_workspace()),
             env=env,
+            track=tracked,
         )
     except HTTPException:
         raise
