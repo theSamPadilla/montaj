@@ -553,6 +553,23 @@ describe('engine in mixer mode', () => {
     r.engine.dispose()
   })
 
+  it('a ripple (the clip only moves) keeps its decoder and clock (§683)', async () => {
+    const r = await inMixer(1)
+    expect(serverInstances).toHaveLength(1)
+    const clocks = clockInstances.length
+    r.engine.updateProject(project([mainClip({ start: 0.4, end: 5.4 })]))
+    await flush()
+    expect(serverInstances).toHaveLength(1)
+    expect(serverInstances[0].disposed).toBe(false)
+    expect(clockInstances.length).toBe(clocks)
+    // A trim still rebuilds.
+    r.engine.updateProject(project([mainClip({ start: 0.4, end: 5.4, inPoint: 1 })]))
+    await flush()
+    expect(serverInstances).toHaveLength(2)
+    expect(serverInstances[0].disposed).toBe(true)
+    r.engine.dispose()
+  })
+
   it('dispose disposes the MixClock, and leaves an injected conform client to its owner', async () => {
     const r = await inMixer()
     r.engine.dispose()

@@ -209,6 +209,18 @@ describe('EngineSourceHost.retain — trim, mute and volume edits', () => {
     engine.dispose()
   })
 
+  it('rebuilds the session when only start moves on the audio-clock path (its clock maps from build time)', async () => {
+    const item = videoItem()
+    const engine = createEngine(videoProject(item), { fileUrl: (p) => p, nowMs: () => 0 })
+    engine.seek(0)
+    await flush()
+    engine.updateProject(videoProject({ ...item, start: 0.5, end: 5.5 }))
+    await flush()
+    expect(clockInstances).toHaveLength(2)
+    expect(clockInstances[0].disposed).toBe(true)
+    engine.dispose()
+  })
+
   it('pushes a volume-only change to the live clock instead of rebuilding', async () => {
     const item = videoItem({ volume: 1 })
     const engine = createEngine(videoProject(item), { fileUrl: (p) => p, nowMs: () => 0 })

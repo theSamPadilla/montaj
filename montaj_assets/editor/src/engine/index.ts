@@ -565,7 +565,7 @@ class EngineSourceHost implements SourceHost {
       const changed =
         !want ||
         want.src !== session.src ||
-        want.item.start !== session.start ||
+        (want.item.start !== session.start && !this.canShift(session, want)) ||
         sourceWindow(want.item, 'preview').inPoint !== session.inPoint ||
         // Mute decides the clock's KIND, so it respawns, but only where a clip
         // has an audio clock at all: in mixer mode the plan carries mute.
@@ -579,6 +579,15 @@ class EngineSourceHost implements SourceHost {
         // the demotion loop below for why the reverse is NOT a respawn.
         (!!want.exclusiveServer && !session.exclusive)
       if (changed) this.dropSession(clipId)
+    }
+    // §683: a clip that only MOVED (a ripple: an AI's cut upstream shifts every
+    // clip after it) keeps its decoder; see `canShift`.
+    for (const request of requests) {
+      const session = this.sessions.get(request.clipId)
+      if (session && request.item.start !== session.start && this.canShift(session, request)) {
+        session.start = request.item.start
+        session.source = { ...session.source!, timebase: { ...session.source!.timebase, start: request.item.start } }
+      }
     }
     // The other edge of `exclusiveServer`: a clip that STOPS being the incoming
     // side of a blend, which happens the instant the outgoing clip ends. By
@@ -813,6 +822,20 @@ class EngineSourceHost implements SourceHost {
    * change: it reads `state()` right after `retain`, and is told
    * (`sourceChanged`) when the async half lands.
    */
+  /**
+   * §683: whether a clip whose `start` moved can keep its session as is. In
+   * mixer mode it can: its clock is the project's wall clock, which no clip's
+   * timebase reaches, and the picture maps project time to source time from
+   * the project's items each tick, so only the stamped `start` and the
+   * timebase (read again if the session ever reclocks out of mixer mode) move.
+   * An audio-clock session still respawns: its clock decodes from a mapping
+   * fixed at build. A session still building respawns too (cheap; nothing is
+   * decoded yet).
+   */
+  private canShift(session: Session, request: SourceRequest): boolean {
+    return !!session.source && session.status === 'ready' && session.noAudioClock && !!request.noAudioClock
+  }
+
   private reclock(session: Session, request: SourceRequest): void {
     const source = session.source
     if (!source) return
