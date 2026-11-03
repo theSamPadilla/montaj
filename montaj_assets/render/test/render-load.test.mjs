@@ -5,6 +5,8 @@ import assert from 'node:assert/strict'
 import { defaultWorkerTarget, lowerPriority, RENDER_NICE_DEFAULT } from '../load.js'
 import { planWorkers2d, FREE_PER_WORKER_BYTES, LOW_MEMORY_MIN_WORKERS, RESERVE_MIN_BYTES } from '../memory.js'
 import { planChunks } from '../renderer.js'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 const GB = 1e9
 const segments = (n) => Array.from({ length: n }, (_, i) => ({ id: `s${i}`, frameCount: 600, props: {} }))
@@ -21,10 +23,13 @@ test('workers default to half the cores, never fewer than one, and the env wins'
 
 test('planChunks: with no count asked, a 12-core Mac renders with 6 workers; an explicit count still wins', () => {
   const memory = { readAvailable: () => 30 * GB, totalBytes: 36 * GB }
-  const plan = planChunks(segments(4), { chunkSize: 120, memory, cpus: 12 })
+  // hermetic: no user config file, no env
+  const plan = planChunks(segments(4), { chunkSize: 120, memory, cpus: 12, userConfig: {}, env: {} })
   assert.equal(plan.workerCount, 6)
   assert.equal(plan.targetWorkers, 6)
-  assert.equal(planChunks(segments(4), { workers: 12, chunkSize: 120, memory, cpus: 12 }).workerCount, 12)
+  assert.equal(planChunks(segments(4), { workers: 12, chunkSize: 120, memory, cpus: 12, userConfig: {}, env: {} }).workerCount, 12)
+  assert.equal(planChunks(segments(4), { chunkSize: 120, memory, cpus: 12, userConfig: { render: { workers: 3 } }, env: { MONTAJ_RENDER_WORKERS: '9' } }).workerCount, 3, 'the render config beats the env')
+  assert.equal(planChunks(segments(4), { chunkSize: 120, memory, cpus: 12, userConfig: {}, env: { MONTAJ_RENDER_WORKERS: '9' } }).workerCount, 9)
 })
 
 test('the render goes to low priority: nice 10 by default, off with 0, a refusal never stops the render', () => {
@@ -49,20 +54,44 @@ test('a 2D render runs fewer workers when memory is short, never below two, and 
   const roomy = planWorkers2d({ target: 6, jobs: 20, totalBytes: total, availableBytes: 30 * GB })
   assert.equal(roomy.workers, 6)
   assert.equal(roomy.limitedBy, null)
-  const tight = planWorkers2d({ target: 6, jobs: 20, totalBytes: total, availableBytes: 13 * GB })
-  // (13 - 9 reserve) / 0.8 = 5
-  assert.equal(tight.workers, Math.floor((13 * GB - 9 * GB) / FREE_PER_WORKER_BYTES))
+  // The 2D reserve is the 4 GB minimum (the 25% share is a 3D render's): this Mac's usual 9.5 GB free still runs all 6.
+  assert.equal(planWorkers2d({ target: 6, jobs: 20, totalBytes: total, availableBytes: 9.5 * GB }).workers, 6)
+  const tight = planWorkers2d({ target: 12, jobs: 20, totalBytes: total, availableBytes: 8 * GB })
+  assert.equal(tight.workers, Math.floor((8 * GB - RESERVE_MIN_BYTES) / FREE_PER_WORKER_BYTES))
   assert.equal(tight.limitedBy, 'memory')
+  assert.equal(tight.reserveBytes, RESERVE_MIN_BYTES)
   const starved = planWorkers2d({ target: 6, jobs: 20, totalBytes: total, availableBytes: 2 * GB })
   assert.equal(starved.workers, LOW_MEMORY_MIN_WORKERS)
   assert.equal(starved.limitedBy, 'memory')
-  // no reading (a caller that cannot read memory): as before
+  // no reading (a caller that cannot read memory, or a platform that gave none): the total-memory count alone
   assert.equal(planWorkers2d({ target: 6, jobs: 20, totalBytes: total }).workers, 6)
+  assert.equal(planWorkers2d({ target: 6, jobs: 20, totalBytes: total, availableBytes: NaN }).workers, 6)
   assert.ok(FREE_PER_WORKER_BYTES < 1.5 * GB && RESERVE_MIN_BYTES === 4 * GB)
 })
 
+test('the total-memory cap still binds a 2D render on a small Mac, and says so', () => {
+  const small = planWorkers2d({ target: 12, jobs: 20, totalBytes: 6 * GB, availableBytes: 20 * GB })
+  assert.equal(small.workers, 4, '6 GB / 1.5 GB')
+  assert.equal(small.limitedBy, 'memory')
+  assert.equal(small.availableBytes, null, 'reported as the total-memory plan, not as a free-memory one')
+})
+
+test('planChunks: no platform reading is no reading (os.freemem would always read as starved on a Mac)', () => {
+  const plan = planChunks(segments(4), { workers: 12, chunkSize: 120, memory: { readAvailable: () => null, totalBytes: 36 * GB }, userConfig: {}, env: {} })
+  assert.equal(plan.workerCount, 12)
+})
+
 test('planChunks reads the free memory for a 2D render too (so a busy Mac gets fewer workers)', () => {
-  const tight = planChunks(segments(4), { workers: 12, chunkSize: 120, memory: { readAvailable: () => 13 * GB, totalBytes: 36 * GB } })
+  const tight = planChunks(segments(4), { workers: 12, chunkSize: 120, memory: { readAvailable: () => 8 * GB, totalBytes: 36 * GB }, userConfig: {}, env: {} })
   assert.equal(tight.workerCount, 5)
   assert.equal(tight.memory.limitedBy, 'memory')
+})
+
+test('both entry points that render for a person lower their own priority before spawning anything', () => {
+  const dir = fileURLToPath(new URL('..', import.meta.url))
+  const render = readFileSync(`${dir}render.js`, 'utf8')
+  const editor = readFileSync(`${dir}export-editor.js`, 'utf8')
+  assert.match(render, /lowerPriority\(\{ log \}\)/)
+  assert.ok(render.indexOf('lowerPriority({ log })') < render.indexOf('rendering ${segmentSpecs.length} segment(s) with Puppeteer'))
+  assert.match(editor, /if \(isMain\) \{\s*\/\/ §698[^\n]*\n\s*lowerPriority\(/)
 })

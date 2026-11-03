@@ -36,6 +36,7 @@ import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, renameSync, rmSync
 import { dirname, join, resolve, relative, basename, sep, isAbsolute } from 'node:path'
 import { createHash } from 'node:crypto'
 import { isMain as isMainModule } from './is-main.js'
+import { lowerPriority } from './load.js'
 import { buildNleTimeline } from './nle/timeline.js'
 import { probeSources } from './nle/probe.js'
 import { renderNleGraphics, removeNleScratch } from './nle/graphics.js'
@@ -336,6 +337,8 @@ function parseArgs(argv) {
 }
 
 if (isMain) {
+  // §698: the editor export is a batch job too: low priority, which its Chrome and ffmpeg children inherit.
+  lowerPriority({ log: (m) => process.stderr.write(`${m}\n`) })
   const fail = (e) => {
     process.stderr.write(`${JSON.stringify({ error: e?.code && typeof e.code === 'string' && /^[a-z_]+$/.test(e.code) ? e.code : 'export_failed', message: e?.message ?? String(e) })}\n`)
     process.exit(1)

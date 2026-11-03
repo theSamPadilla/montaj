@@ -114,7 +114,7 @@ export function bakeTotal(segments, config = {}) {
  * configured count or the cores, lowered to what the memory available now
  * holds at what one worker of these segments holds (workerFootprint), and to
  * SCENE3D_MAX_WORKERS. A 2D-only render keeps 1.3.10's count
- * (planWorkers2d), with no memory read. `memory` is that plan, with
+ * (planWorkers2d), sized by the total memory and, since §698, the memory free now. `memory` is that plan, with
  * `footprint`.
  * A 3D segment (isScene3dSegment) is cut at most SCENE3D_MAX_CHUNK_FRAMES
  * output frames a chunk, whatever `chunkSize` says; `chunkSize` is the
@@ -127,11 +127,11 @@ export function bakeTotal(segments, config = {}) {
  * @returns {{ jobs: object[], workerCount: number, chunkSize: number, subframes: number, memory: object, targetWorkers: number }}
  */
 export function planChunks(segments, config = {}) {
-  const userConfig    = readMontajConfig()
+  const userConfig    = config.userConfig ?? readMontajConfig()
   const longest       = segments.reduce((m, s) => Math.max(m, windowOf(s).length), 0)
   // §698: half the cores unless something asks (load.js): a render leaves the machine room.
   const cpuCount      = config.cpus ?? os.cpus().length
-  const targetWorkers = config.workers ?? userConfig.render?.workers ?? defaultWorkerTarget({ cpus: cpuCount })
+  const targetWorkers = config.workers ?? userConfig.render?.workers ?? defaultWorkerTarget({ cpus: cpuCount, env: config.env ?? process.env })
   // Computed before chunkSize so the default can size on sub-frames — see
   // resolveChunkSize's doc comment.
   const subframes     = Math.max(1, Math.trunc(Number(config.motionBlur) || 1))
@@ -179,7 +179,9 @@ export function planChunks(segments, config = {}) {
         target: targetWorkers,
         jobs: jobs.length,
         totalBytes,
-        availableBytes: jobs.length > 0 ? (config.memory?.readAvailable ?? availableMemoryBytes)() : null,
+        // No platform reading (not vm_stat or /proc/meminfo) is no reading: os.freemem() counts free pages only and would
+        // always read as starved on a Mac.
+        availableBytes: jobs.length > 0 ? (config.memory?.readAvailable ?? (() => availableMemoryBytes({ freemem: () => null })))() : null,
       })),
     footprint,
   }

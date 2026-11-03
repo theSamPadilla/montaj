@@ -35,8 +35,8 @@ test('planChunks: with 3D, a 36 GB Mac with 6 GB available runs fewer workers th
 test('planChunks: a 2D-only render runs fewer workers on a busy Mac (§698), never below two', () => {
   const at = (availableBytes) => ({ readAvailable: () => availableBytes, totalBytes: TOTAL_36GB })
   assert.equal(planChunks(segments(4), { workers: 12, chunkSize: 120, memory: at(30 * GB) }).workerCount, 12, 'room: the count asked')
-  assert.equal(planChunks(segments(4), { workers: 12, chunkSize: 120, memory: at(13 * GB) }).workerCount, 5, '(13 - 9) / 0.8')
-  assert.equal(planChunks(segments(4), { workers: 12, chunkSize: 120, memory: at(6 * GB) }).workerCount, 2, 'starved: two, not one')
+  assert.equal(planChunks(segments(4), { workers: 12, chunkSize: 120, memory: at(8 * GB) }).workerCount, 5, '(8 - 4) / 0.8')
+  assert.equal(planChunks(segments(4), { workers: 12, chunkSize: 120, memory: at(3 * GB) }).workerCount, 2, 'starved: two, not one')
 })
 
 test('planChunks: with 3D, an explicit worker count is a ceiling memory lowers and never raises', () => {
@@ -119,7 +119,7 @@ test('memoryPlanLines: a 3D render memory lowers names available, reserve, perWo
   assert.deepEqual(memoryPlanLines(planChunks(stages(4), { workers: 12, chunkSize: 120, memory: memory(60 * GB) }).memory).slice(1),
     ['workers capped for 3d: one GPU draws every worker, workers=2 (asked 12, cap 2)'])
   assert.deepEqual(memoryPlanLines(planChunks(segments(4), { workers: 12, chunkSize: 120, memory: memory(1 * GB) }).memory),
-    ['workers lowered by memory: available=1.0GB reserve=9.0GB perWorker=0.8GB workers=2 (asked 12)'], '2D-only on a starved Mac (§698)')
+    ['workers lowered by memory: available=1.0GB reserve=4.0GB perWorker=0.8GB workers=2 (asked 12)'], '2D-only on a starved Mac (§698)')
   assert.deepEqual(memoryPlanLines(planChunks(segments(4), { workers: 12, chunkSize: 120, memory: memory(30 * GB) }).memory), [], '2D-only with room')
 })
 

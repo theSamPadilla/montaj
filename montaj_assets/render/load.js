@@ -8,7 +8,7 @@
  *
  * Both are configurable and both fail open: a render always runs, only slower.
  */
-import os from 'os'
+import os, { availableParallelism } from 'os'
 
 /** The nice level a render runs at: low, but a render that is alone still gets the whole machine. */
 export const RENDER_NICE_DEFAULT = 10
@@ -18,7 +18,7 @@ export const RENDER_NICE_DEFAULT = 10
  * (a positive integer) replaces it; the render config's `render.workers` and `--workers` still beat both.
  * Each worker is a headless Chrome and an ffmpeg encoder, so this is also the encoder count.
  */
-export function defaultWorkerTarget({ cpus = os.cpus().length, env = process.env } = {}) {
+export function defaultWorkerTarget({ cpus = (typeof availableParallelism === 'function' ? availableParallelism() : os.cpus().length), env = process.env } = {}) {
   const fromEnv = Number.parseInt(env.MONTAJ_RENDER_WORKERS, 10)
   if (Number.isInteger(fromEnv) && fromEnv > 0) return fromEnv
   return Math.max(1, Math.floor((Number(cpus) || 1) / 2))

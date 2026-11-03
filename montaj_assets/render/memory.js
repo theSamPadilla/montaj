@@ -370,26 +370,29 @@ export function planWorkers({ target, jobs, availableBytes, totalBytes, perWorke
 }
 
 /**
- * The worker count of a render with no 3D: 1.3.10's, unchanged (chunk-plan.js
- * workerCap before this file): the configured count or the cores, at most one
- * per PER_WORKER_BYTES of the machine's TOTAL memory, and never more than the
- * jobs. The memory available is not read: a 2D worker's budget is not
- * measured, and sizing by it would take a 4K 2D render on a busy Mac from 12
- * workers to 1. Same shape as planWorkers, with `availableBytes` null.
+ * The worker count of a render with no 3D: the configured count or half the cores (load.js), at most one per
+ * PER_WORKER_BYTES of the machine's TOTAL memory, never more than the jobs, and (§698), given a reading of the memory free
+ * now, at most what fits above RESERVE_MIN_BYTES at FREE_PER_WORKER_BYTES a worker, but never fewer than
+ * LOW_MEMORY_MIN_WORKERS (one worker alone would take a 4K render from minutes to an hour). `availableBytes` null: no
+ * reading, the total-memory count alone. Same shape as planWorkers.
  */
 export function planWorkers2d({ target, jobs, totalBytes, availableBytes = null }) {
   const asked = Math.max(1, Math.min(Math.max(1, target | 0), jobs))
   const byMemory = Math.max(1, Math.floor((Number(totalBytes) || 0) / PER_WORKER_BYTES))
-  // §698: with a reading of the memory free now, the workers fit what is free above the reserve (at what a worker really
-  // holds), but never fewer than LOW_MEMORY_MIN_WORKERS. No reading (null): the total-memory count alone, as before.
-  const byFree = availableBytes === null || availableBytes === undefined
-    ? Infinity
-    : Math.max(LOW_MEMORY_MIN_WORKERS, Math.floor((availableBytes - reserveBytes(totalBytes)) / FREE_PER_WORKER_BYTES))
+  // §698: with a reading of the memory free now, the workers fit what is free above the 2D reserve (RESERVE_MIN_BYTES: the
+  // 25% share is a 3D render's, whose workers hold 1.5 to 4.7 GB; a 2D worker holds under 1 GB), at what a worker really
+  // holds, but never fewer than LOW_MEMORY_MIN_WORKERS. No reading (null): the total-memory count alone, as before.
+  const read = availableBytes !== null && availableBytes !== undefined && Number.isFinite(availableBytes)
+  const byFree = read
+    ? Math.max(LOW_MEMORY_MIN_WORKERS, Math.floor((availableBytes - RESERVE_MIN_BYTES) / FREE_PER_WORKER_BYTES))
+    : Infinity
   const workers = jobs > 0 ? Math.min(asked, byMemory, byFree) : 0
   const limitedBy = jobs > 0 && workers < asked ? 'memory' : null
+  // When the TOTAL-memory count is what binds, the plan reports no free reading, so its log line says total memory.
+  const bindsOnFree = read && byFree < byMemory && workers === byFree && workers < asked
   return {
-    workers, asked, byMemory, availableBytes: availableBytes ?? null, totalBytes, reserveBytes: reserveBytes(totalBytes),
-    perWorkerBytes: availableBytes === null || availableBytes === undefined ? PER_WORKER_BYTES : FREE_PER_WORKER_BYTES, has3d: false, limitedBy,
+    workers, asked, byMemory, availableBytes: bindsOnFree ? availableBytes : null, totalBytes, reserveBytes: bindsOnFree ? RESERVE_MIN_BYTES : reserveBytes(totalBytes),
+    perWorkerBytes: bindsOnFree ? FREE_PER_WORKER_BYTES : PER_WORKER_BYTES, has3d: false, limitedBy,
   }
 }
 
