@@ -18,6 +18,7 @@ import { ffmpegErrorTail, describeFfmpegExit } from './ffmpeg-error.js'
 import { childKilledError, isChildKilled, syncResultError, CHILD_KILLED_PHASES } from './child-killed.js'
 import { adaptiveChunkSize } from './chunk-plan.js'
 import { availableMemoryBytes, workerFootprint, planWorkers, planWorkers2d, createMemoryGovernor, gb, isScene3dSegment, SCENE3D_MAX_WORKERS, SCENE3D_MAX_CHUNK_FRAMES } from './memory.js'
+import { defaultWorkerTarget } from './load.js'
 import { toFileHref } from './file-url.js'
 import { frameTimes, shutterOf, cameraCutFrames, SHUTTER_3D, motionBlurFilter } from './motion-blur.js'
 import { geometryAt } from '@bycrux/timeline-core'
@@ -127,7 +128,9 @@ export function bakeTotal(segments, config = {}) {
 export function planChunks(segments, config = {}) {
   const userConfig    = readMontajConfig()
   const longest       = segments.reduce((m, s) => Math.max(m, windowOf(s).length), 0)
-  const targetWorkers = config.workers ?? userConfig.render?.workers ?? os.cpus().length
+  // §698: half the cores unless something asks (load.js): a render leaves the machine room.
+  const cpuCount      = config.cpus ?? os.cpus().length
+  const targetWorkers = config.workers ?? userConfig.render?.workers ?? defaultWorkerTarget({ cpus: cpuCount })
   // Computed before chunkSize so the default can size on sub-frames — see
   // resolveChunkSize's doc comment.
   const subframes     = Math.max(1, Math.trunc(Number(config.motionBlur) || 1))
@@ -159,8 +162,8 @@ export function planChunks(segments, config = {}) {
 
   const footprint = workerFootprint(segments)
   const totalBytes = config.memory?.totalBytes ?? os.totalmem()
-  // A render with 3D is sized by the memory available now; a 2D-only one
-  // keeps 1.3.10's count, which reads none (memory.js planWorkers2d).
+  // A render with 3D is sized by the memory available now; a 2D-only one by the
+  // total memory and, since §698, by what is free now above the reserve (planWorkers2d).
   const memory = {
     ...(footprint.has3d
       ? planWorkers({
@@ -171,7 +174,12 @@ export function planChunks(segments, config = {}) {
         perWorkerBytes: footprint.bytes,
         has3d:          true,
       })
-      : planWorkers2d({ target: targetWorkers, jobs: jobs.length, totalBytes })),
+      : planWorkers2d({
+        target: targetWorkers,
+        jobs: jobs.length,
+        totalBytes,
+        availableBytes: jobs.length > 0 ? (config.memory?.readAvailable ?? availableMemoryBytes)() : null,
+      })),
     footprint,
   }
   return { jobs, workerCount: memory.workers, chunkSize, subframes, memory, targetWorkers }

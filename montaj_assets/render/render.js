@@ -31,6 +31,7 @@ import { fileURLToPath } from 'url'
 import { spawnSync, spawn } from 'child_process'
 
 import { bundleComponent, cleanupBundle } from './bundle.js'
+import { lowerPriority } from './load.js'
 import { isMain as isMainModule }        from './is-main.js'
 import { renderAllSegments, planChunks, currentRenderPlan, stopSignal, bakeTotal, createBakeProgress }  from './renderer.js'
 import { isChildKilled }              from './child-killed.js'
@@ -566,6 +567,10 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
     absProjectPath, projectJson, pristineProject, settings, fps, motionBlur,
     renderWidth, renderHeight, projectDir, workspaceDir, renderDir, segDir, outputPath,
   } = loadRenderProject(projectPath, { out, overrides })
+
+  // §698: a render is a batch job beside the app: low priority, which its Chrome and ffmpeg children inherit. Fails open.
+  const prio = lowerPriority({ log })
+  if (prio.applied) log(`render: priority lowered (nice ${prio.level}); MONTAJ_RENDER_NICE=0 keeps it normal`)
 
   // Concurrent-render guard. The segment wipe below is destructive — if a second
   // render starts while the first is still encoding, the wipe deletes the first

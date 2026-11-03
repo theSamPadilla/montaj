@@ -27,6 +27,14 @@ const GB = 1e9
  * cost, which a smaller capture does not shrink.
  */
 export const PER_WORKER_BYTES = 1.5 * GB
+
+/**
+ * What a 2D worker really holds, for sizing by the memory FREE now (§698). MEASURED 2026-11-03 (c7, a live export on a 12-core
+ * Mac): 0.4 to 0.8 GB resident a worker, so the top of that. PER_WORKER_BYTES stays the budget by TOTAL memory.
+ */
+export const FREE_PER_WORKER_BYTES = 0.8 * GB
+/** A 2D render never goes below this many workers for want of free memory: one worker alone would take a 4K render from minutes to an hour. */
+export const LOW_MEMORY_MIN_WORKERS = 2
 export const PER_WORKER_MIN_BYTES = 0.75 * GB
 const CAPTURE_4K_PIXELS = 3840 * 2160
 
@@ -369,14 +377,19 @@ export function planWorkers({ target, jobs, availableBytes, totalBytes, perWorke
  * measured, and sizing by it would take a 4K 2D render on a busy Mac from 12
  * workers to 1. Same shape as planWorkers, with `availableBytes` null.
  */
-export function planWorkers2d({ target, jobs, totalBytes }) {
+export function planWorkers2d({ target, jobs, totalBytes, availableBytes = null }) {
   const asked = Math.max(1, Math.min(Math.max(1, target | 0), jobs))
   const byMemory = Math.max(1, Math.floor((Number(totalBytes) || 0) / PER_WORKER_BYTES))
-  const workers = jobs > 0 ? Math.min(asked, byMemory) : 0
+  // §698: with a reading of the memory free now, the workers fit what is free above the reserve (at what a worker really
+  // holds), but never fewer than LOW_MEMORY_MIN_WORKERS. No reading (null): the total-memory count alone, as before.
+  const byFree = availableBytes === null || availableBytes === undefined
+    ? Infinity
+    : Math.max(LOW_MEMORY_MIN_WORKERS, Math.floor((availableBytes - reserveBytes(totalBytes)) / FREE_PER_WORKER_BYTES))
+  const workers = jobs > 0 ? Math.min(asked, byMemory, byFree) : 0
   const limitedBy = jobs > 0 && workers < asked ? 'memory' : null
   return {
-    workers, asked, byMemory, availableBytes: null, totalBytes, reserveBytes: reserveBytes(totalBytes),
-    perWorkerBytes: PER_WORKER_BYTES, has3d: false, limitedBy,
+    workers, asked, byMemory, availableBytes: availableBytes ?? null, totalBytes, reserveBytes: reserveBytes(totalBytes),
+    perWorkerBytes: availableBytes === null || availableBytes === undefined ? PER_WORKER_BYTES : FREE_PER_WORKER_BYTES, has3d: false, limitedBy,
   }
 }
 
