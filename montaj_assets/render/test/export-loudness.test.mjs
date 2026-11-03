@@ -57,9 +57,12 @@ function project(name, { sfx = 1, withSfx = true } = {}) {
   return join(dir, 'project.json')
 }
 
-function render(projectPath) {
+const NO_SPEECH = join(root, 'no-speech.json')
+writeFileSync(NO_SPEECH, JSON.stringify({ v: 1, items: [], positions: [], lanes: [], srcs: [] }))
+
+function render(projectPath, set = SPEECH) {
   const out = join(dirname(projectPath), 'out.mp4')
-  const r = spawnSync(process.execPath, [RENDER_JS, projectPath, '--out', out, '--speech-set', SPEECH],
+  const r = spawnSync(process.execPath, [RENDER_JS, projectPath, '--out', out, '--speech-set', set],
     { encoding: 'utf8', timeout: 180_000 })
   assert.equal(r.status, 0, r.stderr)
   return { out, stderr: r.stderr }
@@ -101,4 +104,18 @@ test('§697 the export applies exactly target - I of the speech, and speech alon
   assert.ok(Math.abs(Number(logged[1]) - (-14 - m.inputI)) <= 0.01, `gain ${logged[1]} dB, target - I = ${(-14 - m.inputI).toFixed(2)} dB`)
   const i = integrated(out)
   assert.ok(Math.abs(i - -14) <= 0.5, `export at ${i} LUFS, target -14`)
+})
+
+test('§697 with no speech the whole mix is measured at unity: the effect fader moves the effect by exactly its dB and the measurement not at all', { timeout: 400_000 }, async () => {
+  const fullPath = project('ns-full', { sfx: 1 })
+  const lowPath = project('ns-low', { sfx: 0.35 })
+  const noSet = { items: [], lanes: [] }
+  const mFull = await measureMixLoudness(fullPath, { speechSet: noSet })
+  const mLow = await measureMixLoudness(lowPath, { speechSet: noSet })
+  assert.equal(mFull.basis, 'mix')
+  assert.ok(Math.abs(mFull.inputI - mLow.inputI) <= 0.01, `measured ${mFull.inputI} then ${mLow.inputI} LUFS`)
+  const full = render(fullPath, NO_SPEECH)
+  const low = render(lowPath, NO_SPEECH)
+  const sfxDelta = bandRms(low.out, SFX_BAND) - bandRms(full.out, SFX_BAND)
+  assert.ok(Math.abs(sfxDelta - 20 * Math.log10(0.35)) <= 0.3, `effect moved ${sfxDelta.toFixed(2)} dB, its fader ${(20 * Math.log10(0.35)).toFixed(2)} dB`)
 })

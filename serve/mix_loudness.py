@@ -52,23 +52,38 @@ _AUDIO_FIELD = re.compile(r"volume|mute|fade|speed|duck|crossfade|transition|aud
 _SRC_FIELDS = ("src", "nobg_src", "normalizedSrc")
 
 
-def _item_view(item):
+_LEVEL_FIELD = re.compile(r"volume|gain", re.I)
+
+
+def _unity(entry):
+    """`entry` without its level fields: with no speech the whole mix is measured at unity
+    (render/mix-loudness.js), so a fader is not part of what is measured. Mutes, fades and
+    timing stay."""
+    if not isinstance(entry, dict):
+        return entry
+    return {k: v for k, v in entry.items() if not _LEVEL_FIELD.search(k)}
+
+
+def _item_view(item, unity=False):
     if not isinstance(item, dict):
         return item
     if item.get("type") in ("video", "image"):
-        return {k: v for k, v in item.items() if k in _ITEM_FIELDS or _AUDIO_FIELD.search(k)}
+        view = {k: v for k, v in item.items() if k in _ITEM_FIELDS or _AUDIO_FIELD.search(k)}
+        return _unity(view) if unity else view
     # Overlays and captions carry no sound, but where they sit sets the
     # timeline the clips are cut on and how long the mix runs.
     return {k: item.get(k) for k in ("type", "start", "end")}
 
 
-def _track_view(track):
+def _track_view(track, unity=False):
     if isinstance(track, list):  # the legacy shape: a bare list of items
-        return {"items": [_item_view(i) for i in track]}
+        return {"items": [_item_view(i, unity) for i in track]}
     if not isinstance(track, dict):
         return track
     view = {k: v for k, v in track.items() if k != "items" and _AUDIO_FIELD.search(k)}
-    view["items"] = [_item_view(i) for i in track.get("items") or []]
+    if unity:
+        view = _unity(view)
+    view["items"] = [_item_view(i, unity) for i in track.get("items") or []]
     return view
 
 
@@ -95,10 +110,28 @@ def _stat(path: str, project_dir: Path):
     return [str(p), st.st_size, st.st_mtime_ns]
 
 
-def _speech_key_view(project: dict, project_dir: Path, sset: dict) -> dict:
+_TIMING = ("start", "end", "inPoint", "outPoint")
+
+
+def _partners(tracks, ti, ii, item):
+    """Timing of the same-track items overlapping a speech clip: a crossfade shapes its audio."""
+    track = tracks[ti]
+    items = track if isinstance(track, list) else (track.get("items") if isinstance(track, dict) else None)
+    a, b = item.get("start"), item.get("end")
+    out = []
+    for j, other in enumerate(items or []):
+        if j == ii or not isinstance(other, dict):
+            continue
+        s, e = other.get("start"), other.get("end")
+        if all(isinstance(x, (int, float)) for x in (a, b, s, e)) and s < b and a < e:
+            out.append([j, {k: other.get(k) for k in _TIMING}])
+    return out
+
+
+def _speech_key_view(project: dict, project_dir: Path, sset: dict, found) -> dict:
     """What changes the speech bus, and nothing else (§697): a non-speech lane's or
     clip's volume, mute, fade or src is level the master gain never re-measures."""
-    clips, lanes = members(project, project_dir)
+    clips, lanes = found
     tracks = project.get("tracks") or []
     stats = set()
     for src in sset["srcs"]:
@@ -108,6 +141,7 @@ def _speech_key_view(project: dict, project_dir: Path, sset: dict) -> dict:
         "set": sset,
         "clips": [[ti, ii, _item_view(item) if item.get("type") == "video" else item, _track_view({**tracks[ti], "items": []})
                    if isinstance(tracks[ti], dict) else None] for ti, ii, item in clips],
+        "partners": [[ti, ii, _partners(tracks, ti, ii, item)] for ti, ii, item in clips],
         "lanes": lanes,
         "stats": sorted(stats, key=str),
     }
@@ -118,20 +152,22 @@ def cache_key(project: dict, project_dir: Path) -> str:
 
     With speech, only the speech bus counts; without, the whole mix."""
     settings = project.get("settings") or {}
-    sset = speech_set(project, project_dir)
+    found = members(project, project_dir)  # once: every sidecar check is behind it
+    sset = speech_set(project, project_dir, found)
     if sset["srcs"]:
         view = {
             "v": MEASURE_VERSION,
             "settings": {"loudness": settings.get("loudness"), "fps": settings.get("fps")},
-            "speech": _speech_key_view(project, project_dir, sset),
+            "speech": _speech_key_view(project, project_dir, sset, found),
         }
         return hashlib.sha1(json.dumps(view, sort_keys=True, default=str).encode()).hexdigest()
     view = {
         "v": MEASURE_VERSION,
         # fps: the planner cuts the clips on the frame grid.
         "settings": {"loudness": settings.get("loudness"), "fps": settings.get("fps")},
-        "tracks": [_track_view(t) for t in project.get("tracks") or []],
-        "lanes": (project.get("audio") or {}).get("tracks") or [],
+        # unity: no speech measures the whole mix with every volume at 1.0, so no fader is in the key
+        "tracks": [_track_view(t, unity=True) for t in project.get("tracks") or []],
+        "lanes": [_unity(l) for l in (project.get("audio") or {}).get("tracks") or []],
         "sources": sorted(_stat(p, project_dir) for p in set(_source_paths(project))),
     }
     return hashlib.sha1(json.dumps(view, sort_keys=True, default=str).encode()).hexdigest()

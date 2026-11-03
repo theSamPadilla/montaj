@@ -47,16 +47,18 @@ def _sidecar_has_transcription(path: str) -> bool:
     return isinstance(d, dict) and "transcription" in d
 
 
-def sidecar_for(item: dict) -> str | None:
+def sidecar_for(item: dict, has=_sidecar_has_transcription) -> str | None:
+    """The item's transcript sidecar, or None. `has` decides whether a sidecar file counts (default: it
+    holds a `transcription` key); speech_set passes a cached "holds a word" check."""
     src = item.get("src")
     if src:
         p = os.path.splitext(src)[0] + ".json"
-        if _sidecar_has_transcription(p):
+        if has(p):
             return p
     nsrc = item.get("normalizedSrc")
     if nsrc and item.get("normalizedInPoint") == 0:
         p = os.path.splitext(nsrc)[0] + ".json"
-        if _sidecar_has_transcription(p):
+        if has(p):
             return p
     return None
 
@@ -69,6 +71,19 @@ _MARKS = ("-", "\u2013", "\u2014", "...", "\u2026")
 
 def _is_word(text: str) -> bool:
     return any(c.isalnum() for c in text) or text.strip("\"'").endswith(_MARKS)
+
+
+def sidecar_has_words(path: str) -> bool:
+    """Whether the sidecar holds at least one word (`load_words` would return something)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return False
+    segs = d.get("transcription") if isinstance(d, dict) else None
+    return isinstance(segs, list) and any(
+        isinstance(s, dict) and (s.get("text") or "").strip() and _is_word((s.get("text") or "").strip())
+        for s in segs)
 
 
 def load_words(sidecar: str) -> list[Word]:

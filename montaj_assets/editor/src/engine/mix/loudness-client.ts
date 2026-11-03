@@ -39,6 +39,12 @@ export const LOUDNESS_POLL_MAX_MS = 4000
 export const LOUDNESS_GIVE_UP_MS = 6 * 60_000
 /** Consecutive transport failures before the level falls back to 0 dB. */
 export const LOUDNESS_MAX_ERRORS = 5
+/**
+ * While the editor is open the client asks again this often even when its own mix signature has not
+ * changed: a transcript appearing or changing moves the speech set (serve's key follows the sidecars),
+ * and the export's number with it, which the signature cannot see. A cache hit on serve is cheap.
+ */
+export const LOUDNESS_IDLE_REASK_MS = 30_000
 
 /**
  * The clamp. Down: the loudest real mix sits near 0 LUFS and the quietest
@@ -108,6 +114,8 @@ export interface LoudnessClientOptions {
   pollMaxMs?: number
   giveUpMs?: number
   maxErrors?: number
+  /** Idle re-ask period; default `LOUDNESS_IDLE_REASK_MS`. Uses the global `setTimeout`. */
+  idleMs?: number
 }
 
 export interface LoudnessClient {
@@ -132,6 +140,7 @@ export function createLoudnessClient(options: LoudnessClientOptions): LoudnessCl
   const pollMaxMs = options.pollMaxMs ?? LOUDNESS_POLL_MAX_MS
   const giveUpMs = options.giveUpMs ?? LOUDNESS_GIVE_UP_MS
   const maxErrors = options.maxErrors ?? LOUDNESS_MAX_ERRORS
+  const idleMs = options.idleMs ?? LOUDNESS_IDLE_REASK_MS
 
   const listeners = new Set<(db: number) => void>()
   const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
@@ -141,6 +150,24 @@ export function createLoudnessClient(options: LoudnessClientOptions): LoudnessCl
   let gen = 0
   let timer: unknown
   let disposed = false
+  let idleTimer: ReturnType<typeof setTimeout> | undefined
+  /** A request is on the wire. */
+  let fetching = false
+
+  const stopIdle = () => {
+    if (idleTimer !== undefined) clearTimeout(idleTimer)
+    idleTimer = undefined
+  }
+  /** Ask again, unchanged mix and all, unless something is already pending. The level holds until the answer. */
+  const idleTick = () => {
+    idleTimer = undefined
+    if (disposed || signature === null) return
+    if (timer === undefined && !fetching) void ask(gen, pollBaseMs, 0, 0)
+    idleTimer = setTimeout(idleTick, idleMs)
+  }
+  const startIdle = () => {
+    if (idleTimer === undefined && idleMs > 0) idleTimer = setTimeout(idleTick, idleMs)
+  }
 
   const setGain = (db: number) => {
     if (db === gainDb) return
@@ -171,16 +198,19 @@ export function createLoudnessClient(options: LoudnessClientOptions): LoudnessCl
     if (disposed || g !== gen) return
     let res: LoudnessResponse
     let body: unknown
+    fetching = true
     try {
       res = await doFetch(url, { method: 'POST', signal: controller?.signal })
       body = res.ok ? await res.json() : undefined
     } catch {
+      fetching = false
       if (disposed || g !== gen) return
       // A network error, or a 2xx whose body is not JSON (not serve answering).
       if (errors + 1 >= maxErrors) setGain(0)
       else later(() => void ask(g, Math.min(pollMaxMs, delayMs * 2), waitedMs + delayMs, errors + 1), delayMs)
       return
     }
+    fetching = false
     if (disposed || g !== gen) return
     if (!res.ok) {
       // 4xx: no such route (an older serve) or no such project. 5xx: may clear up.
@@ -208,9 +238,11 @@ export function createLoudnessClient(options: LoudnessClientOptions): LoudnessCl
         signature = null
         gen += 1
         cancel()
+        stopIdle()
         setGain(0)
         return
       }
+      startIdle()
       const next = mixSignature(project)
       if (next === signature) return
       signature = next
@@ -231,6 +263,7 @@ export function createLoudnessClient(options: LoudnessClientOptions): LoudnessCl
       if (disposed) return
       disposed = true
       cancel()
+      stopIdle()
       controller?.abort()
       listeners.clear()
     },

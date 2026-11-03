@@ -6,7 +6,7 @@
  * and ignores an answer for a mix that has since changed. The response shapes
  * are serve's (`serve/routes/audio.py`, `serve/mix_loudness.py`).
  */
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { EditorProject } from '../../../schema'
 import {
   LOUDNESS_DEBOUNCE_MS,
@@ -206,5 +206,57 @@ describe('asking serve', () => {
     await r.tick()
     expect(r.calls).toEqual([])
     expect(r.gains).toEqual([])
+  })
+})
+
+describe('the idle re-ask (a sidecar can change the export\'s number with the mix unchanged)', () => {
+  afterEach(() => vi.useRealTimers())
+
+  it('asks again every idle period with the same mix, holds the level meanwhile, and takes the new number', async () => {
+    vi.useFakeTimers()
+    let n = 0
+    const calls: string[] = []
+    const fetch = (url: string): Promise<LoudnessResponse> => {
+      calls.push(url)
+      n += 1
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(READY(n === 1 ? -20 : -17)) })
+    }
+    const client = createLoudnessClient({ projectId: 'p1', fetch, idleMs: 30_000 })
+    client.update(project())
+    await vi.advanceTimersByTimeAsync(LOUDNESS_DEBOUNCE_MS + 10)
+    expect(calls).toHaveLength(1)
+    expect(client.gainDb).toBe(6)
+    client.update(project()) // unchanged: nothing asked
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(calls).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(calls).toHaveLength(2)
+    expect(client.gainDb).toBe(3)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(calls).toHaveLength(3)
+    client.dispose()
+  })
+
+  it('stops on dispose and when the target goes', async () => {
+    vi.useFakeTimers()
+    const calls: string[] = []
+    const fetch = (url: string): Promise<LoudnessResponse> => {
+      calls.push(url)
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(READY(-20)) })
+    }
+    const a = createLoudnessClient({ projectId: 'p1', fetch, idleMs: 30_000 })
+    a.update(project())
+    await vi.advanceTimersByTimeAsync(LOUDNESS_DEBOUNCE_MS + 10)
+    a.dispose()
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(calls).toHaveLength(1)
+    const b = createLoudnessClient({ projectId: 'p1', fetch, idleMs: 30_000 })
+    b.update(project())
+    await vi.advanceTimersByTimeAsync(LOUDNESS_DEBOUNCE_MS + 10)
+    b.update(project({ loudness: null }))
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(calls).toHaveLength(2)
+    expect(vi.getTimerCount()).toBe(0)
+    b.dispose()
   })
 })

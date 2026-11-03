@@ -567,11 +567,11 @@ function loadRenderProject(projectPath, { out = null, overrides = null } = {}) {
  * `exportMasterGain`), or null with no settings.loudness. Logged with what it
  * was measured on. Imported when needed: mix-loudness.js imports this module.
  */
-async function measureMasterGain(absProjectPath, settings, speechSetPath) {
+async function measureMasterGain(absProjectPath, settings, speechSetPath, workDir) {
   if (settings.loudness === undefined || settings.loudness === null) return null
   const { exportMasterGain, readSpeechSet } = await import('./mix-loudness.js')
   log('measuring loudness...')
-  const { gainDb, measurement: m } = await exportMasterGain(absProjectPath, { speechSet: readSpeechSet(speechSetPath) })
+  const { gainDb, measurement: m } = await exportMasterGain(absProjectPath, { speechSet: readSpeechSet(speechSetPath), workDir })
   const sign = gainDb >= 0 ? '+' : ''
   const what = m.status === 'measured' ? `${m.basis} at ${m.inputI} LUFS`
     : m.status === 'failed' ? `measurement failed (${m.message})` : `${m.basis ?? 'mix'} ${m.status}`
@@ -726,7 +726,7 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
   //     level comes from (mix-loudness.js), on the project file this render was
   //     handed. Both composes below level by it. A failed or silent measurement
   //     is 0 dB, never a failed render.
-  const masterGainDb = await measureMasterGain(absProjectPath, settings, speechSetPath)
+  const masterGainDb = await measureMasterGain(absProjectPath, settings, speechSetPath, renderDir)
 
   // 3 to 4b. Conform every video item to the project's own colour space: the
   //     HDR pass, exactly what it always was. Skipped under --export sdr on

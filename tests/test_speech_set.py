@@ -42,7 +42,7 @@ def _doc():
 
 def test_speech_set_picks_voiceover_and_sidecar_clips(pd):
     s = speech_set(_doc(), pd)
-    assert s == {"v": 1, "items": ["a"], "lanes": ["vo"],
+    assert s == {"v": 1, "items": ["a"], "positions": [[0, 0]], "lanes": ["vo"],
                  "srcs": sorted([str(pd / "a.mp4"), str(pd / "vo.wav")])}
 
 
@@ -98,8 +98,52 @@ def test_no_speech_keeps_the_whole_mix_key(pd):
     assert speech_set(doc, pd)["srcs"] == []
     key = ml.cache_key(doc, pd)
     d = copy.deepcopy(doc)
-    d["audio"]["tracks"][0]["volume"] = 1.0
+    d["audio"]["tracks"][0]["volume"] = 1.0  # unity: the mix is measured at 1.0, so a fader is not in the key
+    d["tracks"][0]["items"][0]["volume"] = 0.3
+    assert ml.cache_key(d, pd) == key
+    d["audio"]["tracks"][0]["muted"] = True  # a mute still changes the mix
     assert ml.cache_key(d, pd) != key
+
+
+def test_sidecar_is_parsed_once_for_many_items_and_again_when_it_changes(pd, monkeypatch):
+    import os
+    from lib import speech_set as ss
+    ss._WORDS.clear()
+    calls = []
+    real = ss.sidecar_has_words
+    monkeypatch.setattr(ss, "sidecar_has_words", lambda p: calls.append(p) or real(p))
+    doc = _doc()
+    doc["tracks"][0]["items"] = [
+        {"id": f"c{i}", "type": "video", "src": "a.mp4", "start": i, "end": i + 1} for i in range(100)]
+    ml.cache_key(doc, pd)
+    ml.cache_key(doc, pd)
+    assert len(calls) == 1
+    st = (pd / "a.json").stat()
+    os.utime(pd / "a.json", ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+    ml.cache_key(doc, pd)
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("trans", [[], [{"text": "\u00b6\u00b6"}], [{"text": " "}]])
+def test_a_clip_transcribed_to_nothing_is_not_speech(pd, trans):
+    (pd / "b.json").write_text(json.dumps({"transcription": trans}))
+    assert speech_set(_doc(), pd)["items"] == ["a"]
+
+
+def test_key_follows_a_crossfade_partner_of_a_speech_clip(pd):
+    doc = _doc()
+    doc["tracks"][0]["items"][0]["end"] = 2.5  # a overlaps b (2..3)
+    key = ml.cache_key(doc, pd)
+    d = copy.deepcopy(doc)
+    d["tracks"][0]["items"][1]["start"] = 2.2
+    assert ml.cache_key(d, pd) != key
+
+
+def test_positions_name_clips_without_ids(pd):
+    doc = _doc()
+    del doc["tracks"][0]["items"][0]["id"]
+    s = speech_set(doc, pd)
+    assert s["items"] == [] and s["positions"] == [[0, 0]]
 
 
 def test_measure_passes_the_speech_set(pd, monkeypatch):

@@ -112,15 +112,16 @@ def test_running_then_ready_then_cached(client, project):
     assert not ml._running
 
 
-def test_a_lane_volume_change_measures_again(client, project):
+def test_a_lane_volume_change_does_not_measure_again(client, project):
+    # §697: with no speech the mix is measured at unity, so a fader is not part of the measurement.
     _write(project, _doc())
     first = _until_settled(client)
     doc = _doc()
     doc["audio"]["tracks"][0]["volume"] = 2.0
     _write(project, doc)
-    assert _post(client)["status"] == "running"
-    second = _until_settled(client)
-    assert second["inputI"] > first["inputI"]
+    second = _post(client)
+    assert second["status"] == "ready"
+    assert second["inputI"] == first["inputI"]
 
 
 def test_cache_key_follows_the_mix_and_nothing_else(project):
@@ -133,13 +134,13 @@ def test_cache_key_follows_the_mix_and_nothing_else(project):
         return ml.cache_key(doc, project)
 
     # What the mix is made of.
-    assert changed(lambda d: d["audio"]["tracks"][0].update(volume=0.5)) != key
     assert changed(lambda d: d["audio"]["tracks"][1]["ducking"].update(enabled=False)) != key
     assert changed(lambda d: d["tracks"][0]["items"][0].update(muted=True)) != key
     assert changed(lambda d: d["tracks"][0]["items"][0].update(end=1.5)) != key
-    assert changed(lambda d: d["tracks"][0].update(volume=0.5)) != key
     assert changed(lambda d: d["settings"].update(loudness=-16)) != key
-    # What it is not.
+    # What it is not (a fader: the whole mix is measured at unity).
+    assert changed(lambda d: d["audio"]["tracks"][0].update(volume=0.5)) == key
+    assert changed(lambda d: d["tracks"][0].update(volume=0.5)) == key
     assert changed(lambda d: d.update(name="renamed")) == key
     assert changed(lambda d: d["tracks"][0]["items"][0].update(offsetX=0.3)) == key
     assert changed(lambda d: d["tracks"][1]["items"][0]["props"].update(text="bye")) == key

@@ -21,7 +21,8 @@
  * where every timeline video/audio item not in `items` is muted and
  * audio.tracks keeps only the lanes in `lanes`; timing, fades and speeds are
  * untouched and nothing is written. No set, or one naming nothing, measures
- * the whole mix. `basis` in the answer says which ('speech' or 'mix').
+ * the whole mix with every volume at unity (a fader is absolute, never undone
+ * by the gain, and measures nothing new). `basis` in the answer says which ('speech' or 'mix').
  *
  * Nothing here rebuilds the mix by hand. The project is loaded, planned and
  * segmented exactly as the render does it (render.js `loadRenderProject`,
@@ -164,22 +165,54 @@ function namesSpeech(set) {
   return !!set && ((set.items?.length ?? 0) > 0 || (set.lanes?.length ?? 0) > 0)
 }
 
+/** A track's items: the legacy bare list is the items itself. */
+const itemsOf = (track) => (Array.isArray(track) ? track : track?.items ?? [])
+
 /**
  * Reduce a loaded project, in memory, to its speech: every timeline video or
- * audio item whose id is not in `set.items` is muted, and audio.tracks keeps
- * only the lanes in `set.lanes`. Nothing else changes (timing, fades, speeds).
+ * audio item that is not in the set is muted, and audio.tracks keeps only the
+ * lanes in `set.lanes`. Nothing else changes (timing, fades, speeds, and the
+ * speech items' own volumes: a speech gain change re-levels).
+ *
+ * An item is in the set by place when the set has `positions` ([track index,
+ * item index] pairs, which serve knows even for an item with no id or an id
+ * another track repeats), else by id.
  */
 export function speechOnly(projectJson, set) {
-  const items = new Set((set.items ?? []).map(String))
+  const ids = new Set((set.items ?? []).map(String))
+  const places = Array.isArray(set.positions) ? new Set(set.positions.map(([t, i]) => `${t}:${i}`)) : null
   const lanes = new Set((set.lanes ?? []).map(String))
-  for (const track of projectJson.tracks ?? []) {
-    for (const item of track.items ?? []) {
-      if ((item.type === 'video' || item.type === 'audio') && !items.has(String(item.id))) item.muted = true
-    }
-  }
+  ;(projectJson.tracks ?? []).forEach((track, ti) => {
+    itemsOf(track).forEach((item, ii) => {
+      if (!item || (item.type !== 'video' && item.type !== 'audio')) return
+      const speech = places ? places.has(`${ti}:${ii}`) : ids.has(String(item.id))
+      if (!speech) item.muted = true
+    })
+  })
   if (projectJson.audio?.tracks) {
     projectJson.audio.tracks = projectJson.audio.tracks.filter((t) => lanes.has(String(t.id)))
   }
+  return projectJson
+}
+
+const LEVEL_FIELD = /volume|gain/i
+
+/**
+ * With no speech the whole mix is measured at unity, in memory: every
+ * timeline item's, track's and audio lane's volume/gain field is dropped (1.0),
+ * and mutes, fades, ducking, timing and sources stay. A fader is then heard
+ * as set, never undone by the master gain, and moving one measures nothing
+ * new (serve's key leaves them out for the same reason).
+ */
+export function atUnity(projectJson) {
+  const strip = (o) => {
+    if (o && typeof o === 'object') for (const k of Object.keys(o)) if (LEVEL_FIELD.test(k)) delete o[k]
+  }
+  for (const track of projectJson.tracks ?? []) {
+    if (!Array.isArray(track)) strip(track)
+    for (const item of itemsOf(track)) strip(item)
+  }
+  for (const lane of projectJson.audio?.tracks ?? []) strip(lane)
   return projectJson
 }
 
@@ -201,7 +234,7 @@ export async function measureMixLoudness(projectPath, { speechSet = null, workDi
   const lufs = settings.loudness
   if (lufs === undefined || lufs === null) return { status: 'off' }
   const basis = namesSpeech(speechSet) ? 'speech' : 'mix'
-  const projectJson = basis === 'speech' ? speechOnly(loaded.projectJson, speechSet) : loaded.projectJson
+  const projectJson = basis === 'speech' ? speechOnly(loaded.projectJson, speechSet) : atUnity(loaded.projectJson)
 
   const base = workDir ? resolve(workDir) : tmpdir()
   mkdirSync(base, { recursive: true })

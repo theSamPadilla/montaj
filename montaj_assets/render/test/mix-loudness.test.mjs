@@ -16,7 +16,7 @@ import { FFMPEG } from '../ffmpeg-bin.js'
 import { compose } from '../compose.js'
 import { buildMixGraph, measureLoudness } from '../mix-audio.js'
 import { collectAllItems, stampSourceProbes, loadRenderProject } from '../render.js'
-import { audioOnlyGraph, measureMixLoudness } from '../mix-loudness.js'
+import { audioOnlyGraph, measureMixLoudness, speechOnly, atUnity } from '../mix-loudness.js'
 
 const tmp = mkdtempSync(join(tmpdir(), 'montaj-mix-loudness-'))
 after(() => rmSync(tmp, { recursive: true, force: true }))
@@ -27,7 +27,7 @@ function ff(...args) {
 }
 
 /** A 64x64 clip whose own audio is a quiet tone, a voiceover of quiet noise, and a ducked music bed. */
-function fixture(dir, { loudness = -14, silentClip = false, lanes = true } = {}) {
+function fixture(dir, { loudness = -14, silentClip = false, lanes = true, unity = false } = {}) {
   ff('-f', 'lavfi', '-i', 'testsrc=duration=4:size=64x64:rate=30',
     '-f', 'lavfi', '-i', silentClip ? 'anullsrc=r=48000:cl=stereo' : 'sine=f=330:r=48000:d=4',
     ...(silentClip ? [] : ['-af', 'volume=0.05']),
@@ -43,8 +43,8 @@ function fixture(dir, { loudness = -14, silentClip = false, lanes = true } = {})
     audio: {
       tracks: lanes
         ? [
-            { id: 'vo', src: 'vo.wav', start: 0.5, end: 3.5, volume: 1.5 },
-            { id: 'music', src: 'music.wav', start: 0, end: 4, volume: 0.8, fadeOut: 1, ducking: { enabled: true, depth: -12 } },
+            { id: 'vo', src: 'vo.wav', start: 0.5, end: 3.5, ...(unity ? {} : { volume: 1.5 }) },
+            { id: 'music', src: 'music.wav', start: 0, end: 4, ...(unity ? {} : { volume: 0.8 }), fadeOut: 1, ducking: { enabled: true, depth: -12 } },
           ]
         : [],
     },
@@ -102,7 +102,8 @@ test('audioOnlyGraph sinks a kept chain output nothing else reads', () => {
 
 test('measureMixLoudness reads the export\'s own mix: within 0.1 LU of the export, ducking and fades included', async () => {
   const dir = mkdtempSync(join(tmp, 'mix-'))
-  const projectPath = fixture(dir)
+  // At unity: with no speech the mix is measured at 1.0 volumes (the export applies the faders after the gain).
+  const projectPath = fixture(dir, { unity: true })
   const got = await measureMixLoudness(projectPath, { workDir: join(dir, 'work') })
   assert.equal(got.status, 'measured')
   assert.equal(got.targetI, -14)
@@ -187,7 +188,7 @@ test('§697 measureMixLoudness with a speech set measures the speech lane alone:
   const wa = await measureMixLoudness(join(loud, 'project.json'), { workDir: join(loud, 'work') })
   const wb = await measureMixLoudness(join(quiet, 'project.json'), { workDir: join(quiet, 'work') })
   assert.equal(wa.basis, 'mix')
-  assert.ok(Math.abs(wa.inputI - wb.inputI) > 1, `the whole mix should move with the SFX: ${wa.inputI} then ${wb.inputI} LUFS`)
+  assert.ok(Math.abs(wa.inputI - wb.inputI) <= 0.05, `the whole mix is measured at unity, so no fader moves it: ${wa.inputI} then ${wb.inputI} LUFS`)
 })
 
 test('§697 measureMixLoudness with a speech set mutes every timeline clip not in it: the b-roll fader does not move it', async () => {
@@ -200,7 +201,7 @@ test('§697 measureMixLoudness with a speech set mutes every timeline clip not i
   assert.ok(Math.abs(a.inputI - b.inputI) <= 0.05, `speech measured ${a.inputI} then ${b.inputI} LUFS`)
   const wa = await measureMixLoudness(join(loud, 'project.json'), { workDir: join(loud, 'work') })
   const wb = await measureMixLoudness(join(quiet, 'project.json'), { workDir: join(quiet, 'work') })
-  assert.ok(Math.abs(wa.inputI - wb.inputI) > 1, `the whole mix should move with the b-roll: ${wa.inputI} then ${wb.inputI} LUFS`)
+  assert.ok(Math.abs(wa.inputI - wb.inputI) <= 0.05, `the whole mix is measured at unity, so no fader moves it: ${wa.inputI} then ${wb.inputI} LUFS`)
 })
 
 test('§697 a speech set with no items and no lanes measures the whole mix', async () => {
@@ -225,4 +226,37 @@ test('§697 the CLI takes --speech-set <file> and says its basis', () => {
   assert.equal(line.basis, 'speech')
   const r2 = spawnSync(process.execPath, [cli, '--project', path], { encoding: 'utf8', timeout: 120_000 })
   assert.equal(JSON.parse(r2.stdout.trim().split('\n').pop()).basis, 'mix')
+})
+
+test('§697 speechOnly mutes by place: a legacy bare-list track is muted, and an id repeated on another track stays muted', () => {
+  const p = {
+    tracks: [
+      [{ id: 'x', type: 'video' }, { id: 'y', type: 'audio' }],            // legacy bare list
+      { items: [{ id: 'x', type: 'video' }, { type: 'video' }] },          // 'x' again; one with no id
+    ],
+    audio: { tracks: [] },
+  }
+  speechOnly(p, { items: ['x'], positions: [[1, 1]], lanes: [] })
+  assert.deepEqual(p.tracks[0].map((i) => !!i.muted), [true, true])
+  assert.deepEqual(p.tracks[1].items.map((i) => !!i.muted), [true, false])
+})
+
+test('§697 speechOnly without positions (an older set) still matches by id, on a bare list too', () => {
+  const p = { tracks: [[{ id: 'a', type: 'video' }, { id: 'b', type: 'video' }]] }
+  speechOnly(p, { items: ['a'], lanes: [] })
+  assert.deepEqual(p.tracks[0].map((i) => !!i.muted), [false, true])
+})
+
+test('§697 atUnity drops every volume/gain field and keeps mutes, fades and timing', () => {
+  const p = {
+    tracks: [
+      { id: 't', volume: 0.5, muted: true, items: [{ id: 'a', type: 'video', volume: 0.2, fadeIn: 1, start: 0, end: 2 }] },
+      [{ id: 'b', type: 'audio', volume: 3, muted: true }],
+    ],
+    audio: { tracks: [{ id: 'l', volume: 0.4, gainDb: -6, fadeOut: 1, muted: true, ducking: { enabled: true, depth: -12 } }] },
+  }
+  atUnity(p)
+  assert.deepEqual(p.tracks[0], { id: 't', muted: true, items: [{ id: 'a', type: 'video', fadeIn: 1, start: 0, end: 2 }] })
+  assert.deepEqual(p.tracks[1], [{ id: 'b', type: 'audio', muted: true }])
+  assert.deepEqual(p.audio.tracks[0], { id: 'l', fadeOut: 1, muted: true, ducking: { enabled: true, depth: -12 } })
 })

@@ -6223,7 +6223,6 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
         if converged_input is not None:
             render_input = converged_input
             script_args = [str(converged_input), *script_args[1:]]
-        script_args = _with_speech_set(script_args, project_dir, Path(script_args[0]))
 
     # The slot was free at the top, but this request has awaited since (the
     # final mark's project lock, git commits): a second POST or a carousel's
@@ -6235,6 +6234,16 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
             "message": f"A render for project {project_id} is already in progress.",
         })
     _active_renders.add(project_id)
+    speech_set_file = None
+    if project_type != "carousel":
+        try:
+            # Off the loop (it reads sidecars), and after the check above, so a refused render writes nothing.
+            script_args = await asyncio.to_thread(_with_speech_set, script_args, project_dir, Path(script_args[0]))
+        except BaseException:
+            _active_renders.discard(project_id)
+            raise
+        if "--speech-set" in script_args:
+            speech_set_file = Path(script_args[script_args.index("--speech-set") + 1])
     cmd = [node_bin, str(render_script), *script_args]
     job = _RenderJob()
     _render_jobs[project_id] = job
@@ -6244,6 +6253,9 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
     )
     _render_task_refs.add(task)
     task.add_done_callback(_render_task_refs.discard)
+    if speech_set_file is not None:
+        # The export's set is read once at the render's start; it goes when the render ends.
+        task.add_done_callback(lambda _t, f=speech_set_file: f.unlink(missing_ok=True))
 
     # Async mode: don't hold an SSE stream open — kick the detached render and
     # return immediately. Clients poll GET /render/status to follow progress and
