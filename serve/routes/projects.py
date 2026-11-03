@@ -35,7 +35,7 @@ from serve.common import (
     validate_project_subpath, _is_under, lands_on_project_file,
 )
 from serve import context as context_store
-from serve.playback_gate import heavy_slot, preview_playing
+from serve.playback_gate import heavy_slot, playback_env, preview_playing
 from serve.caption_job import build_audio_mix_spec, narration_audio, caption_input_change, caption_input_fingerprint
 from serve.caption_theme import sanitize_theme, seed_prev
 from serve import provenance
@@ -6186,6 +6186,8 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
 
     env = node_child_env()
     env["MONTAJ_ROOT"] = str(MONTAJ_ROOT)
+    # §698: the render yields its extra workers while the editor preview plays (render/playback.js).
+    env.update(playback_env())
 
     # Reserve the slot and kick the render off DETACHED, so it runs to completion
     # even if this SSE connection drops. A multi-minute render streamed through the

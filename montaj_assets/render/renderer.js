@@ -19,6 +19,7 @@ import { childKilledError, isChildKilled, syncResultError, CHILD_KILLED_PHASES }
 import { adaptiveChunkSize } from './chunk-plan.js'
 import { availableMemoryBytes, workerFootprint, planWorkers, planWorkers2d, createMemoryGovernor, gb, isScene3dSegment, SCENE3D_MAX_WORKERS, SCENE3D_MAX_CHUNK_FRAMES } from './memory.js'
 import { defaultWorkerTarget } from './load.js'
+import { createPlaybackThrottle, createPlaybackWatcher } from './playback.js'
 import { toFileHref } from './file-url.js'
 import { frameTimes, shutterOf, cameraCutFrames, SHUTTER_3D, motionBlurFilter } from './motion-blur.js'
 import { geometryAt } from '@bycrux/timeline-core'
@@ -342,6 +343,17 @@ export async function renderAllSegments(segments, config = {}) {
     acquire: (name, more) => (widened ? Promise.resolve(more()) : governor.acquire(name, more)),
     release: (name) => { if (!widened) governor.release(name) },
   }
+  // §698: while the editor preview plays, most workers rest before their next chunk (playback.js). Fails open.
+  const watcher = config.playback ? null : createPlaybackWatcher({
+    url: process.env.MONTAJ_RENDER_YIELD === '0' ? '' : (process.env.MONTAJ_PLAYBACK_URL ?? ''),
+  })
+  watcher?.start()
+  const throttle = createPlaybackThrottle({
+    workers: workerCount,
+    isPlaying: config.playback?.isPlaying ?? (() => watcher.isPlaying()),
+    ...(config.playback?.pollMs != null ? { pollMs: config.playback.pollMs } : {}),
+    log,
+  })
   const runs = []
   const widen = async () => {
     if (widened || running3d > 0 || queue.length === 0 || queue.some(isScene3dSegment) || firstFailure) return
@@ -371,7 +383,9 @@ export async function renderAllSegments(segments, config = {}) {
       let current = worker
       let jobsOnThisBrowser = 0
       try {
-      while (await gate.acquire(`worker ${workerIdx}`, () => queue.length > 0)) {
+      for (;;) {
+        await throttle.wait(workerIdx, () => queue.length > 0)
+        if (!(await gate.acquire(`worker ${workerIdx}`, () => queue.length > 0))) break
         const job = queue.shift()
         // Another worker can take the last job between the acquire and here.
         if (!job) { gate.release(`worker ${workerIdx}`); break }
@@ -443,6 +457,7 @@ export async function renderAllSegments(segments, config = {}) {
     k = runs.length
     settled.push(...await Promise.allSettled(batch))
   }
+  watcher?.stop()
   if (firstFailure) throw firstFailure
   const failed = settled.find(r => r.status === 'rejected')
   if (failed) throw failed.reason

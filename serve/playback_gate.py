@@ -120,3 +120,13 @@ def low_priority(cmd: list[str], name: str | None = None) -> list[str]:
         return cmd
     nice = _nice_bin()
     return [nice, "-n", str(NICE_LEVEL), *cmd] if nice else cmd
+
+
+def playback_env() -> dict[str, str]:
+    """The environment that lets a render the user started see the preview's play state (§698): serve's own
+    `GET /api/playback` on loopback, for the render to rest its extra workers while the preview plays. Empty when
+    serve's port is unknown (a render then never yields: fails open)."""
+    port = os.environ.get("MONTAJ_SERVE_PORT", "").strip()
+    if not port.isdigit():
+        return {}
+    return {"MONTAJ_PLAYBACK_URL": f"http://127.0.0.1:{port}/api/playback"}

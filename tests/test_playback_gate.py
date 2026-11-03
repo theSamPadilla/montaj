@@ -230,3 +230,30 @@ def test_a_cancel_while_holding_or_waiting_frees_the_slot():
 def test_an_export_step_keeps_normal_priority():
     assert gate.low_priority(["python", "x.py"], "export_editor") == ["python", "x.py"]
     assert gate.low_priority(["python", "x.py"], "sample_frame")[1:3] == ["-n", str(gate.NICE_LEVEL)]
+
+
+def test_playback_env_points_a_render_at_serves_own_play_state(monkeypatch):
+    """§698: a render the user started is given serve's loopback `GET /api/playback`, to rest its extra workers by."""
+    from serve import playback_gate
+
+    monkeypatch.setenv("MONTAJ_SERVE_PORT", "4123")
+    assert playback_gate.playback_env() == {"MONTAJ_PLAYBACK_URL": "http://127.0.0.1:4123/api/playback"}
+
+
+def test_playback_env_is_empty_without_a_known_port(monkeypatch):
+    """Fails open: no port, or a junk one, and the render simply never yields."""
+    from serve import playback_gate
+
+    monkeypatch.delenv("MONTAJ_SERVE_PORT", raising=False)
+    assert playback_gate.playback_env() == {}
+    monkeypatch.setenv("MONTAJ_SERVE_PORT", "not-a-port")
+    assert playback_gate.playback_env() == {}
+
+
+def test_the_export_render_is_started_with_the_playback_env():
+    """The one place serve starts render.js for an export passes it (a source check: starting a real render is not a unit test)."""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "serve" / "routes" / "projects.py").read_text()
+    assert "env.update(playback_env())" in src
+    assert src.count("env.update(playback_env())") == 1
