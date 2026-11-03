@@ -2,23 +2,25 @@
  * §660: the preview's master bus, so the preview plays at the level the
  * export will.
  *
- * The export levels its whole mix with one loudnorm to `settings.loudness`
- * (render/mix-audio.js `loudnessFilter`: `loudnorm=I=<target>:TP=-1:LRA=11`).
- * The preview mixes the same sources by the same rules, then sends the result
- * through ONE chain on the shared context:
+ * The export levels its mix by ONE static master gain (§697, "the way pro
+ * editors do"): `settings.loudness - I`, where I is the integrated loudness
+ * over the whole timeline, measured on the speech when the project has
+ * speech, else on the whole mix (render/mix-loudness.js), then a peak limiter
+ * at -1.5 dBFS (render/mix-audio.js `loudnessFilter`). Track and item volumes
+ * are absolute: a fader is heard as set and never re-levelled. The preview
+ * mixes the same sources by the same rules, then sends the result through ONE
+ * chain on the shared context:
  *
  *     sources → gain → limiter → trim → destination
  *
- *  - **gain** is the level: `target - inputI` dB, where `inputI` is the mix's
- *    integrated loudness measured through the export's own graph
- *    (engine/mix/loudness-client.ts asks serve for it). A static gain is the
- *    part of loudnorm's work that matters for loudness: its dynamic gain
- *    settles on exactly that offset for a mix within its LRA. 0 dB until a
- *    number is known, and whenever there is no target.
- *  - **limiter** stands in for loudnorm's -1 dBTP ceiling, so a raised quiet
- *    mix does not clip on its peaks: a compressor with a hard knee and a high
- *    ratio, just under -1 dBFS, with a fast attack. Its fixed look-ahead
- *    delays the preview's sound (`LIMITER_LOOKAHEAD_S`); the engine's clocks
+ *  - **gain** is the level: `target - inputI` dB, the export's own number
+ *    (engine/mix/loudness-client.ts asks serve for it). 0 dB until a number
+ *    is known, and whenever there is no target.
+ *  - **limiter** matches the export's (ffmpeg `alimiter`, limit -1.5 dBFS,
+ *    no auto-level), so a raised quiet mix does not clip on its peaks: a
+ *    compressor with a hard knee and a high ratio at -1.5 dBFS, with a fast
+ *    attack. Its fixed look-ahead delays the preview's sound
+ *    (`LIMITER_LOOKAHEAD_S`); the engine's clocks
  *    add it to the output latency they take off (`masterBusLatencyS`), so the
  *    picture stays with the sound.
  *  - **trim** takes off the makeup gain the Web Audio compressor adds on its
@@ -36,7 +38,7 @@
  */
 import { peekSharedAudioContext } from './audio-context'
 
-/** The limiter: a hard ceiling just under the export's -1 dBTP. */
+/** The limiter: a hard ceiling at -1.5 dBFS, the export's alimiter limit. */
 export const LIMITER = {
   thresholdDb: -1.5,
   kneeDb: 0,

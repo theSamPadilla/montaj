@@ -213,26 +213,52 @@ export function buildAudioTrackFilters(audioTracks = [], baseInputIdx, currentAu
   return { filterParts, audioLabel: `[aout${last}]` }
 }
 
-/** Final-pass loudness normalization. `lufs` is the integrated target
- *  (project settings.loudness); absent = no normalization.
+/** The export's leveling (§697): ONE static master gain, then a peak limiter.
  *
- *  `aresample=48000` after `loudnorm` is load-bearing, not decoration:
- *  loudnorm resamples internally to 192kHz to do its true-peak limiting, and
- *  without an explicit resample back down, the AAC encode downstream inherits
- *  that 192kHz stream and comes out at 96kHz instead — silently doubling the
- *  project's working sample rate. Every other stage in this pipeline (segment
- *  encode, concat) is 48kHz; this filter is the only one that would drift.
+ *  The gain is `settings.loudness - I`, I the integrated loudness of the
+ *  speech (or the whole mix when the project has none) over the entire
+ *  timeline, measured once by mix-loudness.js, the same number the editor
+ *  preview plays at (video/preview/master-bus.ts). A static gain, never a
+ *  dynamic loudnorm, so preview equals export and a fader is heard as set.
+ *
+ *  The limiter matches the preview's master bus: a ceiling at -1.5 dBFS
+ *  (LIMITER_LIMIT), 1 ms attack, 100 ms release. `level=disabled` is
+ *  load-bearing: alimiter's default auto-level would re-level its output, the
+ *  very thing this replaces. `latency=1` takes its look-ahead back off, so the
+ *  sound stays on the picture.
+ *
+ *  `aresample=48000` keeps the AAC encode downstream at the pipeline's 48 kHz.
  *
  *  `!Number.isFinite(lufs)`, not `typeof lufs !== 'number'`: `typeof NaN` is
  *  `'number'`, so the old check let a NaN settings.loudness sail through —
- *  `NaN < -30` and `NaN > -5` are both false, so the range check never fired
- *  either, and loudnorm would have received a literal `I=NaN`. */
-export function loudnessFilter(inLabel, lufs) {
+ *  `NaN < -30` and `NaN > -5` are both false, so the range check never fired. */
+export const LIMITER_CEILING_DB = -1.5
+const LIMITER_LIMIT = Number((10 ** (LIMITER_CEILING_DB / 20)).toFixed(6))
+/** The preview's clamp (editor/src/engine/mix/loudness-client.ts LOUDNESS_MIN/MAX_GAIN_DB). */
+export const MASTER_GAIN_MIN_DB = -30
+export const MASTER_GAIN_MAX_DB = 30
+
+/** The filter chain (no labels) that levels by `gainDb`. */
+export function levelChain(gainDb = 0) {
+  const g = Number.isFinite(gainDb) ? Number(gainDb.toFixed(4)) : 0
+  return `volume=${g}dB,alimiter=limit=${LIMITER_LIMIT}:attack=1:release=100:level=disabled:latency=1,aresample=48000`
+}
+
+export function loudnessFilter(inLabel, lufs, gainDb = 0) {
   if (lufs === undefined || lufs === null) return null
   if (!Number.isFinite(lufs) || lufs < -30 || lufs > -5) {
     throw new Error(`settings.loudness must be a number from -30 to -5 LUFS, got ${JSON.stringify(lufs)}`)
   }
-  return { part: `${inLabel}loudnorm=I=${lufs}:TP=-1:LRA=11,aresample=48000[aloud]`, label: '[aloud]' }
+  return { part: `${inLabel}${levelChain(gainDb)}[aloud]`, label: '[aloud]' }
+}
+
+/** The static master gain (dB) for a target and a measured integrated
+ *  loudness: `targetI - inputI`, clamped to -30..+30 dB as the preview clamps
+ *  it; 0 dB when either is unknown or the measurement is silent. */
+export function masterGainDb(targetI, inputI) {
+  if (!Number.isFinite(targetI) || !Number.isFinite(inputI) || isSilentInputI(inputI)) return 0
+  const g = Math.min(MASTER_GAIN_MAX_DB, Math.max(MASTER_GAIN_MIN_DB, targetI - inputI))
+  return Number(g.toFixed(4))
 }
 
 /** Pull `input_i` (integrated loudness, LUFS) out of loudnorm's
@@ -254,22 +280,23 @@ export function parseLoudnormField(stderr, field) {
   return Number.isFinite(v) ? v : null
 }
 
-/** loudnorm's absolute gate is -70 LUFS: at or under it there is nothing to
- *  normalize. Unknown (null) is NOT silent, so a failed measurement keeps the
- *  old behaviour of normalizing. */
+/** The measurement's absolute gate is -70 LUFS (BS.1770): at or under it
+ *  there is nothing to level, and the gain is 0 dB (masterGainDb). Unknown
+ *  (null) is not silent either; masterGainDb gives it 0 dB too. */
 export function isSilentInputI(inputI) {
   return inputI !== null && inputI !== undefined && !(inputI > -70)
 }
 
-/** Measure (decode only, nothing encoded) the audio ffmpeg would feed into
- *  loudnorm, with loudnorm's own measurement: `{inputI, inputTP, inputLRA}`
+/** Measure (decode only, nothing encoded) a mix's loudness, with loudnorm used
+ *  only as a meter (its print_format block): `{inputI, inputTP, inputLRA}`
  *  (LUFS, dBTP, LU; each null when the block lacks it), or null when ffmpeg
  *  fails. `inputs` are ffmpeg input args; `graph` (`{parts, label}`, as
  *  `buildMixGraph` returns) selects the audio, and without one it is input 0's.
  *  A kill throws: it is not an answer.
  *
- *  The export's own pre-pass (audioIsSilent) and the editor preview's level
- *  (mix-loudness.js, §660) both read the mix through this. */
+ *  mix-loudness.js (§660, §697) measures the level the preview and the
+ *  export share through this; mixAudioIntoVideo, handed no gain, measures the
+ *  mix it is given through it too. */
 export function measureLoudness(inputs, lufs, graph = null) {
   const measure = `loudnorm=I=${lufs}:TP=-1:LRA=11:print_format=json`
   const select = graph
@@ -294,23 +321,21 @@ export function measureLoudness(inputs, lufs, graph = null) {
   }
 }
 
-/** Whether the audio ffmpeg would feed into loudnorm is silent (measureLoudness).
- *
- *  Why this exists: loudnorm over digital silence shorter than its ~3 s window
- *  emits NaN samples and the AAC encoder behind it aborts with "Input contains
- *  (near) NaN/+-Inf", failing the whole render. Silence has nothing to
- *  normalize, so the callers skip loudnorm when this says true. A failed
- *  measurement is not silent. */
-function audioIsSilent(inputs, lufs, graph = null) {
+/** The gain for a mix nobody measured (mixAudioIntoVideo handed no gainDb):
+ *  the whole mix it is given, measured as mix-loudness.js measures, so a
+ *  direct caller still levels to the target. A silent or failed measurement
+ *  is 0 dB. render.js always hands the gain in (mix-loudness.js
+ *  `exportMasterGain`, the speech when there is speech). */
+function measuredGainDb(inputs, lufs, graph = null) {
   const m = measureLoudness(inputs, lufs, graph)
-  return m ? isSilentInputI(m.inputI) : false
+  return masterGainDb(lufs, m?.inputI ?? null)
 }
 
 /**
  * The export's final audio mix: `canvasInputArgs` (one ffmpeg input whose
  * audio is the clips' own, input 0) plus every unmuted lane, mixed by
  * buildAudioTrackFilters. `{inputs, parts, label}`: `label` is the mix,
- * before any loudnorm. mixAudioIntoVideo builds its graph here, and so does
+ * before the master gain. mixAudioIntoVideo builds its graph here, and so does
  * mix-loudness.js's measurement (§660), so the two cannot drift.
  */
 export function buildMixGraph(audioTracks, canvasInputArgs) {
@@ -329,8 +354,10 @@ export function buildMixGraph(audioTracks, canvasInputArgs) {
  * @param {string} outputPath
  * @param {object} [opts]
  * @param {number} [opts.loudness] — project settings.loudness (integrated LUFS target)
+ * @param {number} [opts.gainDb]   — the static master gain (§697, mix-loudness.js
+ *   `exportMasterGain`); absent, the whole mix given here is measured for it
  */
-export function mixAudioIntoVideo(videoPath, audioTracks, outputPath, { loudness } = {}) {
+export function mixAudioIntoVideo(videoPath, audioTracks, outputPath, { loudness, gainDb = null } = {}) {
   // Pre-filter: helpers also skip muted tracks internally, but we need the
   // count here for the early-exit branch and to avoid an empty filter graph.
   const unmuted = (audioTracks ?? []).filter(t => !t.muted)
@@ -344,26 +371,25 @@ export function mixAudioIntoVideo(videoPath, audioTracks, outputPath, { loudness
     // though the caption in schema.ts used to promise it only "applies when
     // project.audio.tracks is non-empty." `loudnessFilter` throws on an
     // out-of-range/non-finite value, so call it here purely to reuse that
-    // validation before touching ffmpeg.
+    // validation before touching ffmpeg. The leveling is the static gain and
+    // limiter (§697); silence through it stays silence (loudnorm, which turned
+    // short silence into NaN, is gone), so a silent timeline needs no skip.
     if (loudness !== undefined && loudness !== null) {
       loudnessFilter('[a]', loudness)
-      // A silent timeline (video-only clips) has nothing to normalize and
-      // loudnorm over short silence yields NaN: fall through to the copy.
-      if (!audioIsSilent(['-i', videoPath], loudness)) {
-        const result = spawnSync(FFMPEG, [
-          '-y', '-i', videoPath,
-          '-c:v', 'copy',
-          '-af', `loudnorm=I=${loudness}:TP=-1:LRA=11,aresample=48000`,
-          '-c:a', 'aac', '-b:a', '192k',
-          '-movflags', '+faststart',
-          outputPath,
-        ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
-        if (result.status !== 0) {
-          const message = `ffmpeg loudness normalize failed:\n${ffmpegErrorTail(result.stderr)}`
-          throw syncResultError(result, { child: 'ffmpeg', phase: 'loudness-normalize', message }) ?? new Error(message)
-        }
-        return
+      const g = Number.isFinite(gainDb) ? gainDb : measuredGainDb(['-i', videoPath], loudness)
+      const result = spawnSync(FFMPEG, [
+        '-y', '-i', videoPath,
+        '-c:v', 'copy',
+        '-af', levelChain(g),
+        '-c:a', 'aac', '-b:a', '192k',
+        '-movflags', '+faststart',
+        outputPath,
+      ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
+      if (result.status !== 0) {
+        const message = `ffmpeg loudness normalize failed:\n${ffmpegErrorTail(result.stderr)}`
+        throw syncResultError(result, { child: 'ffmpeg', phase: 'loudness-normalize', message }) ?? new Error(message)
       }
+      return
     }
     const result = spawnSync(FFMPEG, [
       '-y', '-i', videoPath, '-c', 'copy', outputPath,
@@ -379,11 +405,11 @@ export function mixAudioIntoVideo(videoPath, audioTracks, outputPath, { loudness
   // always produces a silent audio stream via anullsrc in compose.js)
   const { inputs, parts: filterParts, label: audioLabel } = buildMixGraph(unmuted, ['-i', videoPath])
 
-  let ln = loudnessFilter(audioLabel, loudness)
-  // Measure the mix BEFORE loudnorm; a silent mix skips it (see audioIsSilent).
-  if (ln && audioIsSilent(inputs, loudness, { parts: filterParts, label: audioLabel })) {
-    ln = null
-  }
+  // Validated before anything is measured (throws on a bad target).
+  const level = loudnessFilter(audioLabel, loudness) !== null
+  const g = !level ? 0 : Number.isFinite(gainDb) ? gainDb
+    : measuredGainDb(inputs, loudness, { parts: filterParts, label: audioLabel })
+  const ln = loudnessFilter(audioLabel, loudness, g)
   const parts = ln ? [...filterParts, ln.part] : filterParts
   const outLabel = ln ? ln.label : audioLabel
 

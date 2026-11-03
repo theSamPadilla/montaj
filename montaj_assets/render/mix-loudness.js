@@ -1,13 +1,27 @@
 #!/usr/bin/env node
 /**
- * mix-loudness.js — the integrated loudness of the export's final audio mix,
- * measured through the export's own graph, decoded only (§660).
+ * mix-loudness.js — the integrated loudness the export levels by, measured
+ * through the export's own graph, decoded only (§660, §697).
  *
- * The export levels the whole mix with ONE dynamic loudnorm
- * (mix-audio.js `loudnessFilter`, `settings.loudness` the target), after every
- * clip's and lane's volume, mute, fade and ducking. The editor preview plays
- * the same mix (editor/src/engine/mix/audio-plan.ts) and levels it with a
- * static master gain of `target - inputI`, which needs this number.
+ * The level is ONE static master gain for the whole program (§697, "the way
+ * pro editors do"): `settings.loudness - I`, where I is the integrated
+ * loudness over the entire timeline, measured on the SPEECH when the project
+ * has speech, else on the whole mix. The export applies that gain after every
+ * clip's and lane's volume, mute, fade and ducking (mix-audio.js
+ * `loudnessFilter`, then a peak limiter at -1.5 dBFS); the editor preview
+ * plays the same mix (editor/src/engine/mix/audio-plan.ts) through the same
+ * gain and an equivalent limiter (editor/src/video/preview/master-bus.ts).
+ * Both get I from here, so preview and export play at one level, and a fader
+ * on anything that is not speech is heard as set and never re-levelled away.
+ *
+ * What is speech is serve's to decide (voiceover lanes, clips with a
+ * transcript): it hands a speech set over (`--speech-set <file>`, JSON
+ * `{v: 1, items: [timeline item ids], lanes: [audio.tracks ids], srcs: [...]}`).
+ * With items or lanes in it, a copy of the project is measured in memory
+ * where every timeline video/audio item not in `items` is muted and
+ * audio.tracks keeps only the lanes in `lanes`; timing, fades and speeds are
+ * untouched and nothing is written. No set, or one naming nothing, measures
+ * the whole mix. `basis` in the answer says which ('speech' or 'mix').
  *
  * Nothing here rebuilds the mix by hand. The project is loaded, planned and
  * segmented exactly as the render does it (render.js `loadRenderProject`,
@@ -16,8 +30,7 @@
  * and each segment's audio is the graph `encodeSegment` builds (its dry run),
  * with the video chains left out (`audioOnlyGraph`). The segments' audio is
  * joined as compose.js joins them, then mixed with the lanes and measured by
- * mix-audio.js's own `buildMixGraph` and `measureLoudness`, the pair the
- * export's silence pre-pass reads the same mix through.
+ * mix-audio.js's own `buildMixGraph` and `measureLoudness`.
  *
  * Two things differ from an export, neither in the samples: the segments are
  * written as WAV and joined without the export's one AAC pass, and each clip
@@ -25,12 +38,12 @@
  * pass (that pass conforms the picture; the copy keeps the source's audio).
  * render/test/mix-loudness.test.mjs holds the result to an actual export.
  *
- * CLI: node mix-loudness.js --project <project.json>
- * stdout: one JSON line, {status: 'measured'|'silent', targetI, inputI,
- *         inputTP, inputLRA} or {status: 'off'} (no settings.loudness)
+ * CLI: node mix-loudness.js --project <project.json> [--speech-set <file>]
+ * stdout: one JSON line, {status: 'measured'|'silent', basis: 'speech'|'mix',
+ *         targetI, inputI, inputTP, inputLRA} or {status: 'off'} (no settings.loudness)
  * stderr: progress lines; on failure a JSON {error, message} line, exit 1
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 
@@ -39,7 +52,7 @@ import { pMap } from './p-map.js'
 import { planCompose } from './compose.js'
 import { plannedDescriptors } from './slice-run.js'
 import { encodeSegment, runFfmpeg, FFMPEG_STALL_MS } from './encode-segment.js'
-import { buildMixGraph, measureLoudness, isSilentInputI } from './mix-audio.js'
+import { buildMixGraph, measureLoudness, isSilentInputI, masterGainDb } from './mix-audio.js'
 import { assertInputsExist, fileInputsOf, ffmpegErrorTail } from './ffmpeg-error.js'
 import { loadRenderProject, collectPuppeteerSegments, collectAllItems, stampSourceProbes } from './render.js'
 
@@ -128,19 +141,67 @@ async function writeSegmentAudio(segment, wavPath, dir) {
 }
 
 /**
- * Measure the export's final mix of the project at `projectPath`.
+ * A speech set's file, read: `{items, lanes}` (arrays of ids), or null when
+ * there is none. A file that cannot be read or is not a set is said on stderr
+ * and read as no set (the whole mix): the level falls back, nothing fails.
+ */
+export function readSpeechSet(path) {
+  if (!path) return null
+  try {
+    const set = JSON.parse(readFileSync(path, 'utf8'))
+    if (!set || typeof set !== 'object' || (!Array.isArray(set.items) && !Array.isArray(set.lanes))) {
+      throw new Error('not a speech set ({items, lanes})')
+    }
+    return set
+  } catch (err) {
+    process.stderr.write(`mix-loudness: speech set ${path} unread (${err.message}); measuring the whole mix\n`)
+    return null
+  }
+}
+
+/** Whether `set` names any speech. */
+function namesSpeech(set) {
+  return !!set && ((set.items?.length ?? 0) > 0 || (set.lanes?.length ?? 0) > 0)
+}
+
+/**
+ * Reduce a loaded project, in memory, to its speech: every timeline video or
+ * audio item whose id is not in `set.items` is muted, and audio.tracks keeps
+ * only the lanes in `set.lanes`. Nothing else changes (timing, fades, speeds).
+ */
+export function speechOnly(projectJson, set) {
+  const items = new Set((set.items ?? []).map(String))
+  const lanes = new Set((set.lanes ?? []).map(String))
+  for (const track of projectJson.tracks ?? []) {
+    for (const item of track.items ?? []) {
+      if ((item.type === 'video' || item.type === 'audio') && !items.has(String(item.id))) item.muted = true
+    }
+  }
+  if (projectJson.audio?.tracks) {
+    projectJson.audio.tracks = projectJson.audio.tracks.filter((t) => lanes.has(String(t.id)))
+  }
+  return projectJson
+}
+
+/**
+ * Measure the integrated loudness the project at `projectPath` is levelled by:
+ * its speech when `speechSet` names any, else its whole final mix.
  *
  * @param {string} projectPath
  * @param {object} [opts]
+ * @param {object|null} [opts.speechSet]  {items, lanes} (readSpeechSet); null/absent = the whole mix
  * @param {string} [opts.workDir]  where the scratch dir goes (default the system temp dir); removed after
  * @param {number} [opts.concurrency]  segments decoded at once
- * @returns {Promise<{status: 'off'} | {status: 'measured'|'silent', targetI: number,
+ * @returns {Promise<{status: 'off'} | {status: 'measured'|'silent', basis: 'speech'|'mix', targetI: number,
  *   inputI?: number|null, inputTP?: number|null, inputLRA?: number|null}>}
  */
-export async function measureMixLoudness(projectPath, { workDir = null, concurrency = 2 } = {}) {
-  const { projectJson, settings, fps, renderWidth, renderHeight } = loadRenderProject(projectPath)
+export async function measureMixLoudness(projectPath, { speechSet = null, workDir = null, concurrency = 2 } = {}) {
+  const loaded = loadRenderProject(projectPath)
+  const { settings, fps, renderWidth, renderHeight } = loaded
   const lufs = settings.loudness
   if (lufs === undefined || lufs === null) return { status: 'off' }
+  const basis = namesSpeech(speechSet) ? 'speech' : 'mix'
+  const projectJson = basis === 'speech' ? speechOnly(loaded.projectJson, speechSet) : loaded.projectJson
 
   const base = workDir ? resolve(workDir) : tmpdir()
   mkdirSync(base, { recursive: true })
@@ -154,7 +215,7 @@ export async function measureMixLoudness(projectPath, { workDir = null, concurre
       outputPath: join(dir, 'mix.mp4'),
     })
     // An empty plan exports nothing, so there is nothing to level.
-    if (plan.empty) return { status: 'silent', targetI: lufs }
+    if (plan.empty) return { status: 'silent', basis, targetI: lufs }
 
     const wavs = await pMap(plan.segments, async (segment, k) => {
       const wav = join(dir, `seg-${String(k).padStart(4, '0')}.wav`)
@@ -168,10 +229,28 @@ export async function measureMixLoudness(projectPath, { workDir = null, concurre
     const graph = buildMixGraph(projectJson.audio?.tracks ?? [], ['-f', 'concat', '-safe', '0', '-i', list])
     const m = measureLoudness(graph.inputs, lufs, graph)
     if (!m) throw new Error('ffmpeg could not measure the mix')
-    return { status: isSilentInputI(m.inputI) ? 'silent' : 'measured', targetI: lufs, ...m }
+    return { status: isSilentInputI(m.inputI) ? 'silent' : 'measured', basis, targetI: lufs, ...m }
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+}
+
+/**
+ * The export's static master gain (§697), dB: `targetI - inputI` of
+ * measureMixLoudness, clamped as the preview clamps it (mix-audio.js
+ * `masterGainDb`). 0 dB for no target, a silent measurement or a failed one:
+ * the level then stays as mixed, and nothing fails. `measurement` is the
+ * answer (or `{status: 'failed', message}`), for the log.
+ */
+export async function exportMasterGain(projectPath, opts = {}) {
+  let measurement
+  try {
+    measurement = await measureMixLoudness(projectPath, opts)
+  } catch (err) {
+    return { gainDb: 0, measurement: { status: 'failed', message: err.message } }
+  }
+  const gainDb = measurement.status === 'measured' ? masterGainDb(measurement.targetI, measurement.inputI) : 0
+  return { gainDb, measurement }
 }
 
 if (isMain) {
@@ -179,11 +258,13 @@ if (isMain) {
   const at = argv.indexOf('--project')
   const projectPath = at >= 0 ? argv[at + 1] : null
   if (!projectPath) {
-    process.stderr.write('Usage: mix-loudness.js --project <project.json>\n')
+    process.stderr.write('Usage: mix-loudness.js --project <project.json> [--speech-set <file>]\n')
     process.exit(1)
   }
   try {
-    const result = await measureMixLoudness(projectPath)
+    const setAt = argv.indexOf('--speech-set')
+    const speechSet = setAt >= 0 ? readSpeechSet(argv[setAt + 1]) : null
+    const result = await measureMixLoudness(projectPath, { speechSet })
     process.stdout.write(JSON.stringify(result) + '\n')
   } catch (err) {
     process.stderr.write(JSON.stringify({ error: err.code ?? 'measure_failed', message: err.message }) + '\n')

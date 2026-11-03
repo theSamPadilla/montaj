@@ -1,13 +1,13 @@
 /**
  * §660: the preview's loudness level, asked of serve.
  *
- * The export levels its whole mix with one loudnorm to `settings.loudness`.
- * Serve measures the integrated loudness of that same mix through the
- * export's own graph (`POST /api/projects/{id}/mix-loudness`,
- * `serve/routes/audio.py` over `serve/mix_loudness.py` and
- * render/mix-loudness.js), and the preview plays at `target - inputI` dB
- * (video/preview/master-bus.ts), so a quiet voiceover plays at the level it
- * will be exported at.
+ * The export levels its mix by ONE static master gain, `settings.loudness -
+ * I` (§697), I the integrated loudness of the speech when the project has
+ * speech, else of the whole mix. Serve measures I through the export's own
+ * graph (`POST /api/projects/{id}/mix-loudness`, `serve/routes/audio.py` over
+ * `serve/mix_loudness.py` and render/mix-loudness.js, the same function the
+ * export takes its gain from), and the preview plays at `target - inputI` dB
+ * (video/preview/master-bus.ts), so preview and export play at one level.
  *
  * What this module leans on from serve:
  *
@@ -44,9 +44,10 @@ export const LOUDNESS_MAX_ERRORS = 5
  * The clamp. Down: the loudest real mix sits near 0 LUFS and the quietest
  * target is -30 LUFS (render.js accepts -30..-5), so -30 dB covers every
  * honest cut, and a cut can never hurt. Up: +30 dB brings a whisper-quiet
- * -44 LUFS mix to -14. Past that the measurement sits near loudnorm's -70 LUFS
+ * -44 LUFS mix to -14. Past that the measurement sits near the -70 LUFS
  * gate, where the "mix" is mostly noise floor, and a wrong number would blast
- * it into the speakers; the limiter caps the peaks, not the hiss.
+ * it into the speakers; the limiter caps the peaks, not the hiss. The export
+ * clamps its gain the same way (render/mix-audio.js `masterGainDb`).
  */
 export const LOUDNESS_MIN_GAIN_DB = -30
 export const LOUDNESS_MAX_GAIN_DB = 30

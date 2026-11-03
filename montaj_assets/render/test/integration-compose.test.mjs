@@ -318,8 +318,8 @@ test('compose: an audio track that starts partway through is audible in the expo
 // music bed / no voiceover track (audio coming entirely from the clips'
 // own baked-in soundtrack) silently skipped settings.loudness normalization
 // altogether, even though compose.js's step-4 comment claims the mix pass
-// runs whenever there's audio at all. Fixed: that branch now runs a final
-// loudnorm pass over the clip audio when settings.loudness is set.
+// runs whenever there's audio at all. Fixed: that branch now levels the clip
+// audio when settings.loudness is set (§697: by the static master gain).
 
 function sampleRateOf(path) {
   const probe = spawnSync('ffprobe', [
@@ -347,11 +347,13 @@ test('compose: settings.loudness normalizes clip audio even with zero project.au
   const outputPath = join(tmp, 'montaj-compose-loudness.mp4')
   rmSync(clip, { force: true })
   rmSync(outputPath, { force: true })
-  // A quiet clip (well below -14 LUFS) so normalization toward -14 is unmistakable.
+  // A quiet clip (well below -14 LUFS) so normalization toward -14 is
+  // unmistakable. §697: about -35 LUFS, inside the master gain's +30 dB
+  // clamp (the preview's), so one static gain lands it on the target.
   spawnSync('ffmpeg', [
     '-y', '-f', 'lavfi', '-i', 'testsrc=duration=3:size=640x360:rate=30',
     '-f', 'lavfi', '-i', 'sine=frequency=440:duration=3:sample_rate=48000',
-    '-af', 'volume=0.02',
+    '-af', 'volume=0.2',
     '-c:v', 'libx264', '-c:a', 'aac', '-shortest', clip,
   ], { encoding: 'utf8', timeout: 30_000 })
 
@@ -367,12 +369,13 @@ test('compose: settings.loudness normalizes clip audio even with zero project.au
   })
 
   assert.ok(existsSync(outputPath), 'output file should exist')
-  // loudnorm resamples internally to 192kHz; without the aresample=48000 fix
-  // this comes out at 96kHz instead of the pipeline's 48kHz.
-  assert.equal(sampleRateOf(outputPath), 48000, 'expected the AAC stream back at 48kHz, not loudnorm\'s internal working rate')
+  // The leveling ends in aresample=48000, so the AAC stream stays at the
+  // pipeline's 48kHz (the old loudnorm worked at 192kHz and leaked 96kHz).
+  assert.equal(sampleRateOf(outputPath), 48000, 'expected the AAC stream back at 48kHz')
 
+  // §697: one static gain of target - I lands a steady tone on the target.
   const measured = integratedLoudnessOf(outputPath)
-  assert.ok(Math.abs(measured - (-14)) < 2, `expected ~-14 LUFS after normalization, measured ${measured} LUFS`)
+  assert.ok(Math.abs(measured - (-14)) <= 0.5, `expected -14 LUFS after leveling, measured ${measured} LUFS`)
 
   rmSync(clip, { force: true })
   rmSync(outputPath, { force: true })
@@ -421,9 +424,9 @@ test('compose: settings.loudness absent and zero project.audio.tracks stays a pl
 // shorter than its ~3 s window emits NaN samples, and the AAC encoder behind it
 // aborts with "Input contains (near) NaN/+-Inf", so the whole render failed
 // on any silent project that had settings.loudness (the product-demo recipe
-// sets -14 and has no clip audio). There is nothing to normalize in silence,
-// so the mix pass now measures first and leaves a silent mix alone.
-// 1.5 s is deliberate: silence of 3 s or more does not trip the bug.
+// sets -14 and has no clip audio). §697 replaced loudnorm with a static gain
+// and a limiter, which pass silence through as silence; these stay as guards.
+// 1.5 s is deliberate: silence of 3 s or more did not trip the old bug.
 
 function audioStreamCount(path) {
   const probe = spawnSync('ffprobe', [
@@ -433,7 +436,7 @@ function audioStreamCount(path) {
   return (probe.stdout || '').trim().split('\n').filter(Boolean).length
 }
 
-test('compose: settings.loudness -16 on a video-only project with no audio tracks renders (silent timeline skips loudnorm)', async () => {
+test('compose: settings.loudness -16 on a video-only project with no audio tracks renders (silent timeline)', async () => {
   const clip = join(tmp, 'montaj-test-silent-loudness-clip.mp4')
   const outputPath = join(tmp, 'montaj-compose-silent-loudness.mp4')
   rmSync(clip, { force: true })
@@ -463,7 +466,7 @@ test('compose: settings.loudness -16 on a video-only project with no audio track
   rmSync(outputPath, { force: true })
 })
 
-test('compose: settings.loudness -16 with an all-silent audio track renders (silent mix skips loudnorm)', async () => {
+test('compose: settings.loudness -16 with an all-silent audio track renders (silent mix)', async () => {
   const clip = join(tmp, 'montaj-test-silent-track-clip.mp4')
   const bed = join(tmp, 'montaj-test-silent-bed.m4a')
   const outputPath = join(tmp, 'montaj-compose-silent-track.mp4')

@@ -1,18 +1,35 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { loudnessFilter } from '../mix-audio.js'
+import { loudnessFilter, masterGainDb } from '../mix-audio.js'
 
 test('no target means no filter', () => {
   assert.equal(loudnessFilter('[amid2]', undefined), null)
 })
-test('a target appends loudnorm with a -1 dBTP ceiling and resamples back to 48kHz', () => {
-  // loudnorm resamples internally to 192kHz for true-peak limiting; without an
-  // explicit aresample back down, the AAC encode downstream inherits that rate
-  // and the deliverable comes out at 96kHz instead of the pipeline's 48kHz.
-  assert.deepEqual(loudnessFilter('[amid2]', -14), {
-    part: '[amid2]loudnorm=I=-14:TP=-1:LRA=11,aresample=48000[aloud]',
+test('§697 a target appends ONE static gain, a -1.5 dBFS limiter that never auto-levels, and resamples to 48kHz', () => {
+  // The export levels by a static master gain (target - I, measured once on
+  // the speech or the whole mix), as the preview does, never a dynamic
+  // loudnorm: a fader is heard as set. The limiter matches the preview's
+  // master bus (-1.5 dBFS, fast attack, 100 ms release); level=disabled keeps
+  // alimiter from re-levelling its output, latency=1 keeps the sound on the picture.
+  assert.deepEqual(loudnessFilter('[amid2]', -14, 12.7), {
+    part: '[amid2]volume=12.7dB,alimiter=limit=0.841395:attack=1:release=100:level=disabled:latency=1,aresample=48000[aloud]',
     label: '[aloud]',
   })
+  assert.doesNotMatch(loudnessFilter('[a]', -14, 0).part, /loudnorm/)
+})
+test('§697 no gain given is 0 dB; a non-finite gain is 0 dB', () => {
+  assert.match(loudnessFilter('[a]', -14).part, /^\[a\]volume=0dB,alimiter=/)
+  assert.match(loudnessFilter('[a]', -14, NaN).part, /^\[a\]volume=0dB,alimiter=/)
+})
+test('§697 masterGainDb is target - I, clamped to -30..+30 as the preview clamps it, 0 when silent or unknown', () => {
+  assert.equal(masterGainDb(-14, -26.7), 12.7)
+  assert.equal(masterGainDb(-14, -8), -6)
+  assert.equal(masterGainDb(-14, -60), 30)
+  assert.equal(masterGainDb(-14, 20), -30)
+  assert.equal(masterGainDb(-14, -Infinity), 0)
+  assert.equal(masterGainDb(-14, -75), 0)
+  assert.equal(masterGainDb(-14, null), 0)
+  assert.equal(masterGainDb(null, -20), 0)
 })
 test('rejects targets outside -30..-5 LUFS', () => {
   assert.throws(() => loudnessFilter('[a]', -40), /loudness/)

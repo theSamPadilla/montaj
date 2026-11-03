@@ -73,6 +73,11 @@ export async function planCompose({
   // the poster-frame tonemap below (an HDR project's thumbnail). null uses the
   // master look, which is what every caller predating --sdr-curve gets.
   sdrCurve = null,
+  // §697: the static master gain (dB) the final mix is levelled by,
+  // `settings.loudness - I` (render.js measures I once, through
+  // mix-loudness.js `exportMasterGain`, on the speech when there is speech).
+  // null: mixAudioIntoVideo measures the whole mix it is handed for it.
+  masterGainDb = null,
   // Test hook: the fewest frames one encode is given (segment-plan.js
   // MIN_SEGMENT_FRAMES). 1 turns grouping off, i.e. the pre-5.20.5 path.
   _minSegmentFrames = MIN_SEGMENT_FRAMES,
@@ -89,8 +94,8 @@ export async function planCompose({
   const audioTracks = projectJson.audio?.tracks ?? []
   const loudness = projectJson.settings?.loudness
   // Also true with zero unmuted project.audio.tracks when settings.loudness is
-  // set: mixAudioIntoVideo's early-exit branch still needs to run a final
-  // loudnorm pass over the clips' own audio in that case (see mix-audio.js),
+  // set: mixAudioIntoVideo's early-exit branch still needs to level the
+  // clips' own audio by the master gain in that case (see mix-audio.js),
   // so the premix/mix machinery below must engage for it exactly as it would
   // for a real audio track.
   const hasAudio = audioTracks.some(t => !t.muted) || (loudness !== undefined && loudness !== null)
@@ -178,7 +183,7 @@ export async function planCompose({
 
   return {
     empty: false, groups, segments, leadingGap, vw, vh, fps, projectColorSpace,
-    audioTracks, loudness, hasAudio, outputPath, sdrCurve,
+    audioTracks, loudness, masterGainDb, hasAudio, outputPath, sdrCurve,
     segDir: outputPath + '.segments',
   }
 }
@@ -260,7 +265,7 @@ export function withOverlaysFor(part, overlaysFor) {
  * Phase 3: concat, mix audio, poster, remove the segments.
  */
 export function finishCompose(plan, encoded) {
-  const { outputPath, segDir, hasAudio, audioTracks, loudness, projectColorSpace, sdrCurve, leadingGap } = plan
+  const { outputPath, segDir, hasAudio, audioTracks, loudness, masterGainDb, projectColorSpace, sdrCurve, leadingGap } = plan
   const sorted = [...encoded].sort((x, y) => x.index - y.index)
   // 3. Concat all segments
   const preMixPath = hasAudio ? outputPath.replace(/(\.\w+)$/, '_premix$1') : outputPath
@@ -269,7 +274,7 @@ export function finishCompose(plan, encoded) {
   // 4. Mix independent audio tracks (concat output guaranteed to have audio
   //    because every segment produces AAC 48kHz — either from source or anullsrc)
   if (hasAudio) {
-    mixAudioIntoVideo(preMixPath, audioTracks, outputPath, { loudness })
+    mixAudioIntoVideo(preMixPath, audioTracks, outputPath, { loudness, gainDb: masterGainDb })
     rmSync(preMixPath, { force: true })
   }
 

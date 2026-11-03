@@ -1,7 +1,7 @@
 // render/test/mix-loudness.test.mjs
 //
-// §660: the editor preview levels its mix by the gain the export's loudnorm
-// will apply, so the measurement must read the export's own mix. These specs
+// §660, §697: the export and the editor preview level the mix by one static
+// gain, target - I, so the measurement must read the export's own mix. These specs
 // hold `measureMixLoudness` to an actual export of the same fixture: the
 // clips are composed by the export, mixed with the lanes by the export's own
 // graph and measured as mixAudioIntoVideo measures them, and the two
@@ -122,4 +122,107 @@ test('measureMixLoudness: no loudness target answers off, measuring nothing', as
   const dir = mkdtempSync(join(tmp, 'off-'))
   const got = await measureMixLoudness(fixture(dir, { loudness: null, lanes: false }), { workDir: join(dir, 'work') })
   assert.deepEqual(got, { status: 'off' })
+})
+
+// ── §697: the speech set ────────────────────────────────────────────────────
+//
+// The level is one static master gain measured on the SPEECH when the project
+// has speech (serve decides what that is and hands the set over), so a fader
+// on anything else is heard as it is and never re-levelled away.
+
+/** A silent 64x64 clip, a voiceover lane (300 Hz) and a sound-effect lane (3 kHz) at `sfxVolume`. */
+function laneFixture(dir, { sfxVolume = 1 } = {}) {
+  ff('-f', 'lavfi', '-i', 'testsrc=duration=3:size=64x64:rate=30', '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo',
+    '-t', '3', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', join(dir, 'clip.mp4'))
+  ff('-f', 'lavfi', '-i', 'sine=f=300:r=48000:d=3', '-af', 'volume=0.05', '-ac', '2', join(dir, 'vo.wav'))
+  ff('-f', 'lavfi', '-i', 'sine=f=3000:r=48000:d=2', '-af', 'volume=0.2', '-ac', '2', join(dir, 'sfx.wav'))
+  const project = {
+    id: 'lanes', name: 'lanes',
+    settings: { resolution: [64, 64], fps: 30, loudness: -14 },
+    tracks: [{ id: 'trk-0', items: [{ id: 'c1', type: 'video', src: 'clip.mp4', start: 0, end: 3, inPoint: 0, outPoint: 3 }] }],
+    audio: {
+      tracks: [
+        { id: 'vo', src: 'vo.wav', start: 0, end: 3, volume: 1 },
+        { id: 'sfx', src: 'sfx.wav', start: 0.5, end: 2.5, volume: sfxVolume },
+      ],
+    },
+  }
+  const path = join(dir, 'project.json')
+  writeFileSync(path, JSON.stringify(project))
+  return path
+}
+
+/** A talking clip (300 Hz) on track 0 and a loud b-roll clip (3 kHz) over it on track 1 at `brollVolume`. */
+function clipFixture(dir, { brollVolume = 1 } = {}) {
+  ff('-f', 'lavfi', '-i', 'testsrc=duration=3:size=64x64:rate=30', '-f', 'lavfi', '-i', 'sine=f=300:r=48000:d=3',
+    '-af', 'volume=0.05', '-t', '3', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', join(dir, 'talk.mp4'))
+  ff('-f', 'lavfi', '-i', 'testsrc=duration=2:size=64x64:rate=30', '-f', 'lavfi', '-i', 'sine=f=3000:r=48000:d=2',
+    '-af', 'volume=0.2', '-t', '2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', join(dir, 'broll.mp4'))
+  const project = {
+    id: 'clips', name: 'clips',
+    settings: { resolution: [64, 64], fps: 30, loudness: -14 },
+    tracks: [
+      { id: 'trk-0', items: [{ id: 'talk', type: 'video', src: 'talk.mp4', start: 0, end: 3, inPoint: 0, outPoint: 3 }] },
+      { id: 'trk-1', items: [{ id: 'broll', type: 'video', src: 'broll.mp4', start: 0.5, end: 2.5, inPoint: 0, outPoint: 2, volume: brollVolume }] },
+    ],
+    audio: { tracks: [] },
+  }
+  const path = join(dir, 'project.json')
+  writeFileSync(path, JSON.stringify(project))
+  return path
+}
+
+const VO_ONLY = { v: 1, items: [], lanes: ['vo'], srcs: [] }
+
+test('§697 measureMixLoudness with a speech set measures the speech lane alone: the SFX fader does not move it', async () => {
+  const loud = mkdtempSync(join(tmp, 'sfx-loud-'))
+  const quiet = mkdtempSync(join(tmp, 'sfx-quiet-'))
+  const a = await measureMixLoudness(laneFixture(loud, { sfxVolume: 1 }), { workDir: join(loud, 'work'), speechSet: VO_ONLY })
+  const b = await measureMixLoudness(laneFixture(quiet, { sfxVolume: 0.35 }), { workDir: join(quiet, 'work'), speechSet: VO_ONLY })
+  assert.equal(a.status, 'measured')
+  assert.equal(a.basis, 'speech')
+  assert.equal(b.basis, 'speech')
+  assert.ok(Math.abs(a.inputI - b.inputI) <= 0.05, `speech measured ${a.inputI} then ${b.inputI} LUFS`)
+
+  const wa = await measureMixLoudness(join(loud, 'project.json'), { workDir: join(loud, 'work') })
+  const wb = await measureMixLoudness(join(quiet, 'project.json'), { workDir: join(quiet, 'work') })
+  assert.equal(wa.basis, 'mix')
+  assert.ok(Math.abs(wa.inputI - wb.inputI) > 1, `the whole mix should move with the SFX: ${wa.inputI} then ${wb.inputI} LUFS`)
+})
+
+test('§697 measureMixLoudness with a speech set mutes every timeline clip not in it: the b-roll fader does not move it', async () => {
+  const loud = mkdtempSync(join(tmp, 'broll-loud-'))
+  const quiet = mkdtempSync(join(tmp, 'broll-quiet-'))
+  const set = { v: 1, items: ['talk'], lanes: [], srcs: [] }
+  const a = await measureMixLoudness(clipFixture(loud, { brollVolume: 1 }), { workDir: join(loud, 'work'), speechSet: set })
+  const b = await measureMixLoudness(clipFixture(quiet, { brollVolume: 0.35 }), { workDir: join(quiet, 'work'), speechSet: set })
+  assert.equal(a.basis, 'speech')
+  assert.ok(Math.abs(a.inputI - b.inputI) <= 0.05, `speech measured ${a.inputI} then ${b.inputI} LUFS`)
+  const wa = await measureMixLoudness(join(loud, 'project.json'), { workDir: join(loud, 'work') })
+  const wb = await measureMixLoudness(join(quiet, 'project.json'), { workDir: join(quiet, 'work') })
+  assert.ok(Math.abs(wa.inputI - wb.inputI) > 1, `the whole mix should move with the b-roll: ${wa.inputI} then ${wb.inputI} LUFS`)
+})
+
+test('§697 a speech set with no items and no lanes measures the whole mix', async () => {
+  const dir = mkdtempSync(join(tmp, 'nospeech-'))
+  const path = laneFixture(dir)
+  const none = await measureMixLoudness(path, { workDir: join(dir, 'work'), speechSet: { v: 1, items: [], lanes: [], srcs: [] } })
+  const mix = await measureMixLoudness(path, { workDir: join(dir, 'work') })
+  assert.equal(none.basis, 'mix')
+  assert.ok(Math.abs(none.inputI - mix.inputI) <= 0.01, `${none.inputI} vs ${mix.inputI}`)
+})
+
+test('§697 the CLI takes --speech-set <file> and says its basis', () => {
+  const dir = mkdtempSync(join(tmp, 'cli-'))
+  const path = laneFixture(dir)
+  const setPath = join(dir, 'speech.json')
+  writeFileSync(setPath, JSON.stringify(VO_ONLY))
+  const cli = join(import.meta.dirname, '..', 'mix-loudness.js')
+  const r = spawnSync(process.execPath, [cli, '--project', path, '--speech-set', setPath], { encoding: 'utf8', timeout: 120_000 })
+  assert.equal(r.status, 0, r.stderr)
+  const line = JSON.parse(r.stdout.trim().split('\n').pop())
+  assert.equal(line.status, 'measured')
+  assert.equal(line.basis, 'speech')
+  const r2 = spawnSync(process.execPath, [cli, '--project', path], { encoding: 'utf8', timeout: 120_000 })
+  assert.equal(JSON.parse(r2.stdout.trim().split('\n').pop()).basis, 'mix')
 })

@@ -228,7 +228,9 @@ describe('the audio mix, at the leaf', () => {
     assert.equal(calls.length, 2)
     assert.ok(calls[0].scripts.find((x) => x.opt === '-/filter_complex')?.content.includes('print_format=json'), 'first call is the silence measurement')
     const { filterParts, audioLabel } = buildAudioTrackFilters(TRACKS, 1, '[0:a]')
-    const expected = [...filterParts, loudnessFilter(audioLabel, -14).part].join(';')
+    // §697: no gain handed in, so the gain is the measured mix's; the stub
+    // prints no measurement, which is 0 dB.
+    const expected = [...filterParts, loudnessFilter(audioLabel, -14, 0).part].join(';')
     const argv = calls[1].argv
     assert.ok(argv.includes('-/filter_complex'), 'no -/filter_complex in argv')
     assert.ok(!argv.includes('-filter_complex'), '-filter_complex is still in argv')
@@ -238,6 +240,34 @@ describe('the audio mix, at the leaf', () => {
     assert.equal(dirname(s.path), tmp)
     assert.equal(existsSync(s.path), false)
     assert.deepEqual(scriptsIn(tmp), [])
+  })
+
+  test('§697 a gain handed in is applied as one static volume and the limiter, with no measurement and no loudnorm', () => {
+    const tmp = join(WORK, 'mix-tmp-gain')
+    mkdirSync(tmp, { recursive: true })
+    const oldTmp = process.env.TMPDIR
+    process.env.TMPDIR = tmp
+    const log = freshLog()
+    try {
+      mixAudioIntoVideo(join(WORK, 'v.mp4'), TRACKS, join(WORK, 'out.mp4'), { loudness: -14, gainDb: 7.25 })
+    } finally {
+      if (oldTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = oldTmp
+    }
+    const calls = readLog(log)
+    assert.equal(calls.length, 1, 'the gain was given: nothing is measured')
+    const graph = calls[0].scripts.find((x) => x.opt === '-/filter_complex').content
+    assert.match(graph, /volume=7\.25dB,alimiter=limit=0\.841395:[^;]*level=disabled[^;]*,aresample=48000\[aloud\]$/)
+    assert.doesNotMatch(graph, /loudnorm=I=/)
+  })
+
+  test('§697 no lanes: the clips\' own audio takes the same static gain and limiter', () => {
+    const log = freshLog()
+    mixAudioIntoVideo(join(WORK, 'v.mp4'), [], join(WORK, 'out.mp4'), { loudness: -14, gainDb: -3.5 })
+    const calls = readLog(log)
+    assert.equal(calls.length, 1)
+    const af = calls[0].argv[calls[0].argv.indexOf('-af') + 1]
+    assert.match(af, /^volume=-3\.5dB,alimiter=limit=0\.841395:.*level=disabled.*,aresample=48000$/)
+    assert.doesNotMatch(calls[0].argv.join(' '), /loudnorm=I=/)
   })
 
   test('ffmpeg exits non-zero: mixAudioIntoVideo throws, the script is gone', () => {

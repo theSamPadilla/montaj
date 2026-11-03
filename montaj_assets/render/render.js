@@ -263,7 +263,7 @@ if (isMain) {
   if (!argv.length || argv[0] === '--help') {
     process.stderr.write('Usage: render.js <project.json> [--out <path>] [--workers <n>] [--clean] '
       + '[--export <auto|sdr|both>] [--sdr-curve <id>] [--fps <n>] [--motion-blur <n>] '
-      + '[--estimate [--resolution <W>x<H>]]\n')
+      + '[--speech-set <file>] [--estimate [--resolution <W>x<H>]]\n')
     process.exit(1)
   }
 
@@ -277,6 +277,7 @@ if (isMain) {
   let resolutionArg = null
   let fpsArg       = null
   let motionBlurArg = null
+  let speechSetArg = null
 
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--out')        { outArg       = argv[++i]; continue }
@@ -288,6 +289,8 @@ if (isMain) {
     if (argv[i] === '--resolution') { resolutionArg = argv[++i]; continue }
     if (argv[i] === '--fps')        { fpsArg       = argv[++i]; continue }
     if (argv[i] === '--motion-blur') { motionBlurArg = argv[++i]; continue }
+    // §697: serve's speech set (mix-loudness.js), what the master gain is measured on.
+    if (argv[i] === '--speech-set') { speechSetArg = argv[++i]; continue }
     if (!projectArg) projectArg = argv[i]
   }
 
@@ -321,7 +324,7 @@ if (isMain) {
       .catch((err) => fail(err.code === 'missing_files' ? 'missing_files' : 'estimate_error', err.message))
   } else main(projectArg, {
     out: outArg, workers: workersArg, clean: cleanArg,
-    exportMode, sdrCurve, overrides,
+    exportMode, sdrCurve, overrides, speechSetPath: speechSetArg,
   }).catch(err => {
     // §128: a disk that ran out mid-render is said plainly, with the space the
     // render is expected to need (disk-space.js), never as a generic failure.
@@ -537,7 +540,7 @@ function loadRenderProject(projectPath, { out = null, overrides = null } = {}) {
   // Validated here, before normalisation and bundling, so a bad value fails fast.
   const motionBlur = (() => { try { return resolveMotionBlur(settings.motionBlur) } catch (e) { fail('invalid_argument', e.message) } })()
   // Same reasoning as motionBlur above: a bad settings.loudness should fail
-  // before any work starts, not surface as an opaque ffmpeg loudnorm error deep
+  // before any work starts, not surface as an opaque ffmpeg error deep
   // in the mix pass. loudnessFilter's own range/finiteness check is reused
   // here; the built filter string is discarded.
   try { loudnessFilter('[x]', settings.loudness) } catch (e) { fail('invalid_argument', e.message) }
@@ -559,7 +562,24 @@ function loadRenderProject(projectPath, { out = null, overrides = null } = {}) {
   }
 }
 
-async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdrCurve = null, overrides = null }) {
+/**
+ * §697: the export's static master gain, dB (mix-loudness.js
+ * `exportMasterGain`), or null with no settings.loudness. Logged with what it
+ * was measured on. Imported when needed: mix-loudness.js imports this module.
+ */
+async function measureMasterGain(absProjectPath, settings, speechSetPath) {
+  if (settings.loudness === undefined || settings.loudness === null) return null
+  const { exportMasterGain, readSpeechSet } = await import('./mix-loudness.js')
+  log('measuring loudness...')
+  const { gainDb, measurement: m } = await exportMasterGain(absProjectPath, { speechSet: readSpeechSet(speechSetPath) })
+  const sign = gainDb >= 0 ? '+' : ''
+  const what = m.status === 'measured' ? `${m.basis} at ${m.inputI} LUFS`
+    : m.status === 'failed' ? `measurement failed (${m.message})` : `${m.basis ?? 'mix'} ${m.status}`
+  log(`loudness: ${what}, target ${settings.loudness} LUFS, master gain ${sign}${gainDb.toFixed(2)} dB`)
+  return gainDb
+}
+
+async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdrCurve = null, overrides = null, speechSetPath = null }) {
   // §284: `overrides` (--fps, --motion-blur) stand in for the project's own
   // settings for this render only, in memory; project.json is never written
   // with them (its colorSpace write-back below re-reads the file).
@@ -700,6 +720,14 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
     renderSlicing = { slices: slicing.sliced ? slicing.slices : 1, sliceBudgetMB: Math.round(slicing.budgetBytes / 1e6) }
   }
 
+  // 2d. The master gain (§697): ONE static gain for the whole program,
+  //     `settings.loudness - I`, I measured on the speech (serve's --speech-set)
+  //     or, with none, on the whole mix, by the function the editor preview's
+  //     level comes from (mix-loudness.js), on the project file this render was
+  //     handed. Both composes below level by it. A failed or silent measurement
+  //     is 0 dB, never a failed render.
+  const masterGainDb = await measureMasterGain(absProjectPath, settings, speechSetPath)
+
   // 3 to 4b. Conform every video item to the project's own colour space: the
   //     HDR pass, exactly what it always was. Skipped under --export sdr on
   //     an HDR project, which composes no HDR master; the SDR pass (7b) prepares
@@ -734,6 +762,7 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
     await renderInSlices({
       projectJson, pristineProject, settings, fps, workers, motionBlur, segmentSpecs, imageItems, videoItems,
       renderWidth, renderHeight, captureScale, projectColorSpace, exportPlan, workspaceDir, segDir, sdrCurve, slicing,
+      masterGainDb,
     })
   } else {
     log(slicingLine(slicing))
@@ -778,6 +807,7 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
         videoHeight: outputDims[1],
         colorSpace:  projectColorSpace,
         sdrCurve,
+        masterGainDb,
       })
     }
 
@@ -812,6 +842,7 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
         videoHeight: sdrHeight,
         colorSpace:  'sdr_bt709',
         sdrCurve,
+        masterGainDb,
       })
     }
   }
@@ -850,6 +881,7 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
 async function renderInSlices({
   projectJson, pristineProject, settings, fps, workers, motionBlur, segmentSpecs, imageItems, videoItems,
   renderWidth, renderHeight, captureScale, projectColorSpace, exportPlan, workspaceDir, segDir, sdrCurve, slicing,
+  masterGainDb = null,
 }) {
   const descriptors = plannedDescriptors(segmentSpecs)
   const passes = []
@@ -861,7 +893,7 @@ async function renderInSlices({
       plan: await planCompose({
         projectJson, puppeteerSegments: descriptors, imageItems, videoItems,
         outputPath: exportPlan.composePath, videoWidth: outputDims[0], videoHeight: outputDims[1],
-        colorSpace: projectColorSpace, sdrCurve,
+        colorSpace: projectColorSpace, sdrCurve, masterGainDb,
       }),
     })
   }
@@ -873,7 +905,7 @@ async function renderInSlices({
       plan: await planCompose({
         projectJson: sdr.project, puppeteerSegments: descriptors, imageItems: sdr.imageItems, videoItems: sdr.videoItems,
         outputPath: exportPlan.derivePath, videoWidth: sdrWidth, videoHeight: sdrHeight,
-        colorSpace: 'sdr_bt709', sdrCurve,
+        colorSpace: 'sdr_bt709', sdrCurve, masterGainDb,
       }),
     })
   }
