@@ -366,7 +366,8 @@ export function useVideoPlayback(
         video.removeEventListener('canplay', onCanPlay)
         // Replay only if this slot still owns playback; a stale retry on a
         // slot that has since gone inactive plays hidden and is never paused.
-        if (video === getActiveVideo() && isPlayingRef.current) video.play().catch(() => {})
+        // Not under a clock (a gap, a held clip): its element is paused on purpose.
+        if (video === getActiveVideo() && isPlayingRef.current && !inGapRef.current) video.play().catch(() => {})
       }
       video.addEventListener('canplay', onCanPlay)
     })
@@ -721,6 +722,9 @@ export function useVideoPlayback(
       .join(',')
     if (identity === clipsSourceRef.current) return
     clipsSourceRef.current = identity
+    // A held clip's clock would go on seeking slot 0, which now holds clips[0]:
+    // stop, as a reload stops a playing clip (its element pauses on a new src).
+    if (heldIdxRef.current !== null) { cancelGap(); setIsPlaying(false) }
     activeIdxRef.current  = 0
     activeSlotRef.current = 0
     loopOffsetRef.current = 0

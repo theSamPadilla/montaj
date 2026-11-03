@@ -11,10 +11,12 @@ import { useVideoPlayback } from '../useVideoPlayback'
 import type { EditorProject, VisualItem } from '../../../schema'
 
 /** A <video> that behaves like Chrome's on rate and play/pause. */
-function strictVideo(): HTMLVideoElement & { plays: number } {
-  const el = document.createElement('video') as HTMLVideoElement & { plays: number }
+type StrictVideo = HTMLVideoElement & { plays: number; playResult: () => Promise<void>; onPauseHook?: () => void }
+function strictVideo(): StrictVideo {
+  const el = document.createElement('video') as StrictVideo
   let t = 0, rate = 1, paused = true
   el.plays = 0
+  el.playResult = () => Promise.resolve()
   Object.defineProperty(el, 'currentTime', { get: () => t, set: (v: number) => { t = v }, configurable: true })
   Object.defineProperty(el, 'paused', { get: () => paused, configurable: true })
   Object.defineProperty(el, 'playbackRate', {
@@ -27,8 +29,8 @@ function strictVideo(): HTMLVideoElement & { plays: number } {
     },
     configurable: true,
   })
-  el.play = () => { paused = false; el.plays++; return Promise.resolve() }
-  el.pause = () => { paused = true }
+  el.play = () => { paused = false; el.plays++; return el.playResult() }
+  el.pause = () => { paused = true; el.onPauseHook?.() }
   ;(el as unknown as { __montajGain: unknown }).__montajGain = { gain: { value: 1 } }
   return el
 }
@@ -42,8 +44,8 @@ const freeze = (extra: Partial<VisualItem> = {}): VisualItem =>
   ({ id: 'held', type: 'video', src: '/w/a.mp4', start: 0, end: 3.11, inPoint: 9.24, outPoint: 9.3955, speed: 0.05, ...extra }) as VisualItem
 const fast = (extra: Partial<VisualItem> = {}): VisualItem =>
   ({ id: 'fast', type: 'video', src: '/w/a.mp4', start: 0, end: 2, inPoint: 0, outPoint: 40, speed: 20, ...extra }) as VisualItem
-const plain = (start: number, end: number): VisualItem =>
-  ({ id: 'plain', type: 'video', src: '/w/b.mp4', start, end, inPoint: 0, outPoint: end - start }) as VisualItem
+const plain = (start: number, end: number, speed = 1, id = 'plain'): VisualItem =>
+  ({ id, type: 'video', src: `/w/${id}.mp4`, start, end, inPoint: 0, outPoint: (end - start) * speed, ...(speed !== 1 ? { speed } : {}) }) as VisualItem
 
 // Hand-cranked clock: rAF callbacks queue up and run on `frame(ms)`.
 let now = 0
@@ -77,10 +79,12 @@ function mount(items: VisualItem[], at = 0) {
   const live = { ...p }
   h.rerender({ p: live, t: at })
   const scrub = (t: number) => h.rerender({ p: live, t })
+  /** An outside edit of the project (an AI save) at the current time. */
+  const edit = (next: VisualItem[], t: number) => h.rerender({ p: project(next), t })
   const active = () => (h.result.current.activeSlotRef.current === 0 ? v0 : v1)
   /** What PreviewPlayer's slot wiring does on a press of play. */
   const play = () => { active().play(); act(() => { h.result.current.setIsPlaying(true) }); act(() => { h.result.current.handleTimeUpdate() }) }
-  return { ...h, v0, v1, active, times, play, scrub, last: () => times[times.length - 1] }
+  return { ...h, v0, v1, active, times, play, scrub, edit, last: () => times[times.length - 1] }
 }
 
 describe('a clip outside the playable rate range (legacy <video> preview)', () => {
@@ -119,13 +123,14 @@ describe('a clip outside the playable rate range (legacy <video> preview)', () =
   })
 
   it('a held clip hands on to a contiguous next clip, which plays at its own rate', () => {
-    const h = mount([freeze(), plain(3.11, 5)])
+    const h = mount([freeze(), plain(3.11, 5, 2)])
     h.play()
     frame(16)
     frame(3200)
     expect(h.result.current.activeSlotRef.current).toBe(1)
     expect(h.v1.plays).toBe(1)
-    expect(h.v1.playbackRate).toBe(1)
+    expect(h.v1.paused).toBe(false)
+    expect(h.v1.playbackRate).toBe(2)
     expect(h.times).toContain(3.11)
     expect(h.result.current.isPlaying).toBe(true)
   })
@@ -194,9 +199,42 @@ describe('a clip outside the playable rate range (legacy <video> preview)', () =
   })
 
   it('an in-range clip still plays its element at its own speed', () => {
-    const h = mount([plain(0, 4)])
+    const h = mount([plain(0, 4, 2)], 1)
     h.play()
     expect(h.v0.paused).toBe(false)
-    expect(h.v0.playbackRate).toBe(1)
+    expect(h.v0.playbackRate).toBe(2)
+  })
+
+  it('an outside edit that reloads the clips while a held clip plays stops the held clock', async () => {
+    // The reload puts clips[0] (an in-range clip) into slot 0; a held clock left
+    // running would seek that element to the held clip's source time.
+    const h = mount([plain(0, 2), freeze({ start: 2, end: 5.11 })], 2.5)
+    await new Promise((r) => setTimeout(r, 150)) // the post-seek guard clears after 100 ms
+    h.play()
+    frame(16)
+    frame(300)
+    expect(h.v0.paused).toBe(true) // held
+    expect(h.last()).toBeCloseTo(2.816, 3)
+    h.edit([{ ...plain(0, 2), outPoint: 1.9 } as VisualItem, freeze({ start: 2, end: 5.11 })], h.last())
+    frame(16)
+    frame(300)
+    expect(h.result.current.isPlaying).toBe(false)
+    expect(h.v0.currentTime).toBe(0)
+  })
+
+  it('a play() refused when a held clip pauses it is not retried once the clock has moved on', async () => {
+    const h = mount([plain(0, 1), freeze({ start: 1, end: 4.11 }), plain(5, 7, 1, 'tail')])
+    let reject: ((e: unknown) => void) | null = null
+    h.v1.playResult = () => new Promise<void>((_, r) => { reject = r })
+    h.v1.onPauseHook = () => { reject?.(new DOMException('The play() request was interrupted by a call to pause().', 'AbortError')); reject = null }
+    h.play()
+    h.v0.currentTime = 1 // the first clip reaches its outPoint
+    frame(16) // contiguous switch: slot 1 plays the held clip
+    frame(16) // the held clock takes it over and pauses it: play() rejects
+    await Promise.resolve(); await Promise.resolve()
+    frame(3200) // past 4.11: into the gap before the tail clip
+    expect(h.result.current.showVideo).toBe(false)
+    h.v1.dispatchEvent(new Event('canplay'))
+    expect(h.v1.paused).toBe(true)
   })
 })
