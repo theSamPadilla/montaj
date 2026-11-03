@@ -2,6 +2,7 @@
 """montaj serve — FastAPI HTTP + SSE server."""
 import asyncio
 import contextlib
+import logging
 import os
 import re
 import threading
@@ -26,6 +27,21 @@ from serve.watcher import GlobalOverlayWatcher, ProjectWatcher
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from cli.deps import ui_runtime_dir
+
+
+
+class _QuietPlaybackPoll(logging.Filter):
+    """§698: a render polls `/api/playback` twice a second for its whole run; those lines would fill the access log (and the
+    200 lines a crash report keeps of serve's output) with nothing."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            return "/api/playback" not in record.getMessage()
+        except Exception:
+            return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_QuietPlaybackPoll())
 
 PORT      = int(os.environ.get("MONTAJ_SERVE_PORT", "3000"))
 VITE_PORT = 5173

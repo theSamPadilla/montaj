@@ -19,7 +19,7 @@ import { childKilledError, isChildKilled, syncResultError, CHILD_KILLED_PHASES }
 import { adaptiveChunkSize } from './chunk-plan.js'
 import { availableMemoryBytes, workerFootprint, planWorkers, planWorkers2d, createMemoryGovernor, gb, isScene3dSegment, SCENE3D_MAX_WORKERS, SCENE3D_MAX_CHUNK_FRAMES } from './memory.js'
 import { defaultWorkerTarget, ffmpegThreads } from './load.js'
-import { createPlaybackThrottle, createPlaybackWatcher } from './playback.js'
+import { createPlaybackThrottle, sharedPlaybackWatcher } from './playback.js'
 import { toFileHref } from './file-url.js'
 import { frameTimes, shutterOf, cameraCutFrames, SHUTTER_3D, motionBlurFilter } from './motion-blur.js'
 import { geometryAt } from '@bycrux/timeline-core'
@@ -348,12 +348,14 @@ export async function renderAllSegments(segments, config = {}) {
   // §698: each chunk's ffmpeg gets its share of the cores, so the encoders together never outnumber them.
   const encoderThreads = ffmpegThreads({ workers: Math.max(workerCount, targetWorkers), env: config.env ?? process.env })
   // §698: while the editor preview plays, most workers rest before their next chunk (playback.js). Fails open.
-  const watcher = config.playback ? null : createPlaybackWatcher({
-    url: process.env.MONTAJ_RENDER_YIELD === '0' ? '' : (process.env.MONTAJ_PLAYBACK_URL ?? ''),
-  })
-  watcher?.start()
+  const watcher = config.playback ? null : sharedPlaybackWatcher(process.env.MONTAJ_RENDER_YIELD === '0' ? '' : (process.env.MONTAJ_PLAYBACK_URL ?? ''))
+  // The first answer is in before any worker takes a chunk (bounded by the watcher's timeout): otherwise every worker starts
+  // from "not playing" and the first wave, most of the render, runs unthrottled.
+  if (watcher) { watcher.start(); await watcher.refresh() }
+  const isPlayingNow = () => (config.playback?.isPlaying ?? (() => watcher.isPlaying()))()
   const throttle = createPlaybackThrottle({
-    workers: workerCount,
+    // The share kept follows the workers a render may come to have (3D then 2D widens it), not just those it started with.
+    workers: Math.max(workerCount, targetWorkers),
     isPlaying: config.playback?.isPlaying ?? (() => watcher.isPlaying()),
     ...(config.playback?.pollMs != null ? { pollMs: config.playback.pollMs } : {}),
     log,
@@ -390,6 +392,8 @@ export async function renderAllSegments(segments, config = {}) {
       for (;;) {
         await throttle.wait(workerIdx, () => queue.length > 0)
         if (!(await gate.acquire(`worker ${workerIdx}`, () => queue.length > 0))) break
+        // A wait at the memory governor can be long: the preview may have started meanwhile. Rest again before the chunk.
+        if (workerIdx >= throttle.keep && isPlayingNow() && queue.length > 0) { gate.release(`worker ${workerIdx}`); continue }
         const job = queue.shift()
         // Another worker can take the last job between the acquire and here.
         if (!job) { gate.release(`worker ${workerIdx}`); break }
@@ -461,7 +465,6 @@ export async function renderAllSegments(segments, config = {}) {
     k = runs.length
     settled.push(...await Promise.allSettled(batch))
   }
-  watcher?.stop()
   if (firstFailure) throw firstFailure
   const failed = settled.find(r => r.status === 'rejected')
   if (failed) throw failed.reason

@@ -257,3 +257,15 @@ def test_the_export_render_is_started_with_the_playback_env():
     src = (Path(__file__).resolve().parent.parent / "serve" / "routes" / "projects.py").read_text()
     assert "env.update(playback_env())" in src
     assert src.count("env.update(playback_env())") == 1
+
+
+def test_the_render_poll_stays_out_of_the_access_log():
+    """§698: `GET /api/playback` twice a second must not fill uvicorn's access log; every other line passes."""
+    import logging
+
+    import serve.server  # noqa: F401  (installs the filter)
+
+    flt = next(f for f in logging.getLogger("uvicorn.access").filters if type(f).__name__ == "_QuietPlaybackPoll")
+    mk = lambda msg: logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, msg, (), None)
+    assert flt.filter(mk('127.0.0.1:5 - "GET /api/playback HTTP/1.1" 200')) is False
+    assert flt.filter(mk('127.0.0.1:5 - "GET /api/projects HTTP/1.1" 200')) is True

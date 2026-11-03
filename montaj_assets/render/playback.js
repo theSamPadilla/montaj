@@ -20,11 +20,22 @@ const sleepFor = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
  * Reads the play state in the background. `isPlaying()` is the last answer read (never waits); any failure makes it false.
  * @returns {{ isPlaying: () => boolean, refresh: () => Promise<void>, start: () => void, stop: () => void }}
  */
+/** Only serve's own loopback is asked: a URL from anywhere else is no URL (the answer only paces workers, but nothing outside should be polled). */
+export function isLoopbackUrl(url) {
+  try {
+    const u = new URL(url)
+    return (u.protocol === 'http:' || u.protocol === 'https:') && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)
+  } catch {
+    return false
+  }
+}
+
 export function createPlaybackWatcher({ url = '', fetchImpl = globalThis.fetch, intervalMs = 500, timeoutMs = 800 } = {}) {
   let playing = false
   let timer = null
-  const refresh = async () => {
-    if (!url || typeof fetchImpl !== 'function') { playing = false; return }
+  let inFlight = null
+  const usable = Boolean(url) && isLoopbackUrl(url)
+  const read = async () => {
     try {
       const res = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) })
       if (!res || !res.ok) { playing = false; return }
@@ -34,11 +45,17 @@ export function createPlaybackWatcher({ url = '', fetchImpl = globalThis.fetch, 
       playing = false
     }
   }
+  // One request at a time: a slow serve never has two answers racing, and a late one never overwrites a newer.
+  const refresh = async () => {
+    if (!usable || typeof fetchImpl !== 'function') { playing = false; return }
+    if (!inFlight) inFlight = read().finally(() => { inFlight = null })
+    await inFlight
+  }
   return {
     isPlaying: () => playing,
     refresh,
     start() {
-      if (!url || timer) return
+      if (!usable || timer) return
       void refresh()
       timer = setInterval(() => { void refresh() }, intervalMs)
       timer.unref?.()
@@ -71,4 +88,11 @@ export function createPlaybackThrottle({ workers, isPlaying, pollMs = 250, sleep
       return waited
     },
   }
+}
+
+// One watcher per process: a sliced render (§434) calls the renderer once per slice and must not start from "not playing" each time.
+let shared = null
+export function sharedPlaybackWatcher(url) {
+  if (!shared || shared.url !== url) shared = { url, watcher: createPlaybackWatcher({ url }) }
+  return shared.watcher
 }

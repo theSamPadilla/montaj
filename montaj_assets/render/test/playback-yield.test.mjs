@@ -2,7 +2,8 @@
 // playing stops. It fails open: an unreadable play state is "not playing", and a render always finishes.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createPlaybackWatcher, createPlaybackThrottle, keptWorkers } from '../playback.js'
+import { createPlaybackWatcher, createPlaybackThrottle, keptWorkers, isLoopbackUrl, sharedPlaybackWatcher } from '../playback.js'
+import http from 'node:http'
 import { renderAllSegments } from '../renderer.js'
 
 const GB = 1e9
@@ -59,7 +60,7 @@ test('the throttle lets a worker go when there is nothing left to take', async (
 })
 
 test('the watcher reads the play state, fails open on every error, and is off without a url', async () => {
-  const ok = createPlaybackWatcher({ url: 'http://x/api/playback', fetchImpl: async () => ({ ok: true, json: async () => ({ playing: true }) }), intervalMs: 5 })
+  const ok = createPlaybackWatcher({ url: 'http://127.0.0.1:1/api/playback', fetchImpl: async () => ({ ok: true, json: async () => ({ playing: true }) }), intervalMs: 5 })
   await ok.refresh()
   assert.equal(ok.isPlaying(), true)
   for (const bad of [
@@ -68,14 +69,14 @@ test('the watcher reads the play state, fails open on every error, and is off wi
     async () => ({ ok: true, json: async () => { throw new Error('not json') } }),
     async () => ({ ok: true, json: async () => ({ playing: 'yes' }) }),
   ]) {
-    const w = createPlaybackWatcher({ url: 'http://x/api/playback', fetchImpl: bad, intervalMs: 5 })
+    const w = createPlaybackWatcher({ url: 'http://127.0.0.1:1/api/playback', fetchImpl: bad, intervalMs: 5 })
     await w.refresh()
     assert.equal(w.isPlaying(), false)
   }
   assert.equal(createPlaybackWatcher({ url: '', fetchImpl: async () => { throw new Error('never') } }).isPlaying(), false)
   // a play state that turns unreadable after playing reads as not playing again
   let fail = false
-  const flip = createPlaybackWatcher({ url: 'http://x', fetchImpl: async () => { if (fail) throw new Error('down'); return { ok: true, json: async () => ({ playing: true }) } }, intervalMs: 5 })
+  const flip = createPlaybackWatcher({ url: 'http://127.0.0.1:1/x', fetchImpl: async () => { if (fail) throw new Error('down'); return { ok: true, json: async () => ({ playing: true }) } }, intervalMs: 5 })
   await flip.refresh(); assert.equal(flip.isPlaying(), true)
   fail = true; await flip.refresh(); assert.equal(flip.isPlaying(), false)
 })
@@ -110,4 +111,38 @@ test('renderAllSegments: nothing playing, nothing changes: all workers render at
     playback: { isPlaying: () => false, pollMs: 2 },
   })
   assert.equal(f.seen.most, 6)
+})
+
+test('only serve\'s own loopback is ever polled', () => {
+  assert.equal(isLoopbackUrl('http://127.0.0.1:4123/api/playback'), true)
+  assert.equal(isLoopbackUrl('http://localhost:3000/api/playback'), true)
+  assert.equal(isLoopbackUrl('http://[::1]:3000/api/playback'), true)
+  for (const bad of ['http://example.com/api/playback', 'https://169.254.169.254/x', 'file:///etc/passwd', 'junk', '']) assert.equal(isLoopbackUrl(bad), false, bad)
+})
+
+test('the watcher never has two requests in flight', async () => {
+  let open = 0, most = 0
+  const slow = async () => { open++; most = Math.max(most, open); await sleep(30); open--; return { ok: true, json: async () => ({ playing: true }) } }
+  const w = createPlaybackWatcher({ url: 'http://127.0.0.1:1/x', fetchImpl: slow, intervalMs: 5 })
+  await Promise.all([w.refresh(), w.refresh(), w.refresh()])
+  assert.equal(most, 1)
+  assert.equal(w.isPlaying(), true)
+})
+
+test('a render that STARTS while the preview plays is throttled from its first chunk (the first answer is awaited): real loopback server', async () => {
+  const server = http.createServer((_req, res) => { res.setHeader('content-type', 'application/json'); res.end('{"playing":true}') })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const url = `http://127.0.0.1:${server.address().port}/api/playback`
+  const prev = process.env.MONTAJ_PLAYBACK_URL
+  process.env.MONTAJ_PLAYBACK_URL = url
+  try {
+    const f = fakes(40)
+    const out = await renderAllSegments(segs(12), { workers: 6, chunkSize: 1000, launchWorker: f.launchWorker, renderJob: f.renderJob, memory })
+    assert.equal(out.length, 12)
+    assert.equal(f.seen.most, 2, 'never the whole pool at once, not even in the first wave')
+  } finally {
+    if (prev === undefined) delete process.env.MONTAJ_PLAYBACK_URL; else process.env.MONTAJ_PLAYBACK_URL = prev
+    sharedPlaybackWatcher('').stop()
+    server.close()
+  }
 })
