@@ -7026,6 +7026,14 @@ async def report_context(
         raise bad_request("invalid_context", str(e))
 
 
+@router.get("/playback")
+async def read_playback():
+    """Whether an editor preview is playing right now (§683), for the host's own
+    heavy work to wait out. Cheap: no project is read. Always 200."""
+    from serve.playback_gate import preview_playing
+    return {"playing": preview_playing()}
+
+
 @router.get("/context")
 async def read_active_context():
     """Whatever editor reported most recently, enriched against its project.

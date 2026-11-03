@@ -97,3 +97,13 @@ def test_every_step_runs_niced(env):
         assert client.post("/api/steps/fake_proj", json={"project": str(pdir)}).status_code == 200
     cmd = ran[0][1]
     assert cmd[0].endswith("nice") and cmd[1:3] == ["-n", str(gate.NICE_LEVEL)] and cmd[3] == sys.executable
+
+
+def test_the_playback_route_answers_the_play_state(env):
+    pid, pdir, ran = env
+    with TestClient(app) as client:
+        assert client.get("/api/playback").json() == {"playing": False}
+        _playing(pid, True)
+        assert client.get("/api/playback").json() == {"playing": True}
+        _playing(pid, False)
+        assert client.get("/api/playback").json() == {"playing": False}
