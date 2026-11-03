@@ -132,6 +132,26 @@ def is_nested_project_json(path: Path, workspace: Path) -> bool:
     return False
 
 
+def topmost_project_jsons(workspace: Path) -> "list[Path]":
+    """Every project's project.json under `workspace`: the topmost ones only,
+    the same set `rglob("project.json")` minus `is_nested_project_json` gives,
+    found without walking INTO a project (§688). A project's own folders (render
+    chunks, proxies, models and their textures, caches) hold most of the files
+    in a workspace, and the old walk visited every one of them on each scan, on
+    serve's loop. Symlinked folders are not followed, as rglob does not."""
+    out: list[Path] = []
+    root = os.fspath(workspace)
+    for dirpath, dirnames, filenames in os.walk(root, onerror=lambda _e: None):
+        if "project.json" in filenames:
+            out.append(Path(dirpath) / "project.json")
+            # A project.json at the workspace root makes nothing below it nested.
+            if dirpath != root:
+                dirnames[:] = []
+                continue
+        dirnames.sort()
+    return out
+
+
 def prime_project_dir_cache(by_id: "dict[str, list[Path]]") -> None:
     """Record a scan's id -> topmost-folders map in the cache: a single folder as
     a plain Path (the fast path), a collision as a `_DuplicateIds` sentinel so a
@@ -195,9 +215,7 @@ def find_project_dir(workspace: Path, project_id: str) -> Path | None:
     # is seen in this one walk rather than missed by an early return at the first
     # match.
     by_id: dict[str, list[Path]] = {}
-    for p in workspace.rglob("project.json"):
-        if is_nested_project_json(p, workspace):
-            continue
+    for p in topmost_project_jsons(workspace):
         try:
             pid = json.loads(p.read_text()).get("id")
         except (OSError, ValueError, AttributeError):

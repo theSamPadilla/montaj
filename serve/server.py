@@ -89,6 +89,9 @@ async def lifespan(app: FastAPI):
     app.state.overlay_watcher = overlay_watcher
     app.state.vite_proc       = vite_proc
     app.state.http_client     = http_client
+    # §688: the loop's stall alarm (serve/stall_alarm.py), always on.
+    from serve import stall_alarm
+    stall_task = asyncio.create_task(stall_alarm.run())
 
     # Announce this serve so a separately-spawned MCP server can find it.
     # Best-effort: a read-only HOME must not stop serve from starting.
@@ -98,6 +101,7 @@ async def lifespan(app: FastAPI):
         pass
 
     yield
+    stall_task.cancel()
     # A running yt-dlp (PL28) is in its own process group, so a kill of serve
     # does not take it along: kill it here. Its project resumes on open.
     from serve.routes.projects import kill_source_downloads
@@ -293,6 +297,9 @@ app = FastAPI(lifespan=lifespan)
 # Added first, so it sits inside the host check (the last added is outermost).
 app.add_middleware(_DiskFullGuard)
 app.add_middleware(_TrustedHostsFromEnv)
+# §688: outermost, so every request is labelled for the stall alarm while it runs.
+from serve.stall_alarm import StallLabels  # noqa: E402
+app.add_middleware(StallLabels)
 
 
 @app.exception_handler(StarletteHTTPException)

@@ -28,7 +28,7 @@ from urllib.parse import quote, urlparse
 
 from serve.common import (
     MONTAJ_ROOT,
-    resolve_workspace, find_project_dir, get_project_dir, prime_project_dir_cache, is_nested_project_json,
+    resolve_workspace, find_project_dir, get_project_dir, prime_project_dir_cache, is_nested_project_json, topmost_project_jsons,
     DuplicateProjectId, DELETING_DIR, kill_project_procs,
     run_subprocess, stop_gently_uncancellable,
     not_found, bad_request, forbidden, server_error,
@@ -1898,7 +1898,8 @@ async def list_projects(status: str | None = None):
     workspace = resolve_workspace()
     # A project.json nested in a project's folder (a Compare versions snapshot)
     # is not a project of its own: listed, it showed the project twice.
-    found = [p for p in workspace.rglob("project.json") if not is_nested_project_json(p, workspace)]
+    # §688: the walk stays out of projects' own folders, and off the loop.
+    found = await asyncio.to_thread(topmost_project_jsons, workspace)
     # §518: an id claimed by 2+ topmost folders is a duplicate (a copied folder
     # that kept the id). Both copies are listed, and each is flagged so the
     # UI/AI can see which ids collide and where, and tell serve already refuses
@@ -3879,9 +3880,7 @@ def _dependents_of(project_id: str, project_dir: Path) -> "list[tuple[str, Path,
     except OSError:
         doomed = project_dir
     out = []
-    for path in workspace.rglob("project.json"):
-        if is_nested_project_json(path, workspace):
-            continue
+    for path in topmost_project_jsons(workspace):
         folder = path.parent
         try:
             if folder.resolve() == doomed:
