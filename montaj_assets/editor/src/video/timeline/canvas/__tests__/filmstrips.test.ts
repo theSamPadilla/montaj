@@ -18,6 +18,7 @@ import {
   flattenTiles,
   nearestTile,
   OVERLAY_SETTLE_MS,
+  OVERLAY_RESETTLE_MS,
   isCaptionOverlay,
   scene3dRequestProps,
   scene3dWatchPath,
@@ -720,12 +721,64 @@ describe('FilmstripStore overlay strips', () => {
   }
   const r = rect({ x: 400, width: 800, height: 48 })
 
-  // A controllable clock: a new key is requested only after OVERLAY_SETTLE_MS.
+  // A controllable clock: a first strip is requested after OVERLAY_SETTLE_MS, a
+  // re-request after OVERLAY_RESETTLE_MS; `settle` steps past both.
   let clock = 1_000_000
   let dateSpy: ReturnType<typeof vi.spyOn>
   beforeEach(() => { clock = 1_000_000; dateSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock) })
   afterEach(() => { dateSpy.mockRestore() })
-  const settle = () => { clock += OVERLAY_SETTLE_MS + 50 }
+  const settle = () => { clock += OVERLAY_RESETTLE_MS + 50 }
+
+  it('a first strip is asked for once its key holds still for OVERLAY_SETTLE_MS', () => {
+    const store = new FilmstripStore()
+    const getFilmstrip = vi.fn().mockResolvedValue(filmstripIndexFixture())
+    store.clipTiles(overlay(), r, queryCtx({ getFilmstrip, viewport: zoomedIn }))
+    clock += OVERLAY_SETTLE_MS - 50
+    store.clipTiles(overlay(), r, queryCtx({ getFilmstrip, viewport: zoomedIn }))
+    expect(getFilmstrip).not.toHaveBeenCalled()
+    clock += 100
+    store.clipTiles(overlay(), r, queryCtx({ getFilmstrip, viewport: zoomedIn }))
+    expect(getFilmstrip).toHaveBeenCalledTimes(1)
+  })
+
+  it('an overlay that already has a strip waits OVERLAY_RESETTLE_MS (>= 10 s) after a change before asking again', async () => {
+    expect(OVERLAY_RESETTLE_MS).toBeGreaterThanOrEqual(10_000)
+    const store = new FilmstripStore()
+    const getFilmstrip = vi.fn().mockResolvedValue(filmstripIndexFixture())
+    let fire = () => {}
+    const watchFile = vi.fn((_p: string, cb: () => void) => { fire = cb; return () => {} })
+    const ctx = () => queryCtx({ getFilmstrip, watchFile, viewport: zoomedIn })
+    store.clipTiles(overlay(), r, ctx())
+    clock += OVERLAY_SETTLE_MS + 50
+    store.clipTiles(overlay(), r, ctx())
+    await flush()
+    store.clipTiles(overlay(), r, ctx()) // the repaint its onReady asks for draws the strip
+    expect(getFilmstrip).toHaveBeenCalledTimes(1)
+    // An AI rewrites the overlay three times in a burst.
+    for (let i = 0; i < 3; i++) { fire(); store.clipTiles(overlay(), r, ctx()); clock += 2_000 }
+    store.clipTiles(overlay(), r, ctx())
+    expect(getFilmstrip).toHaveBeenCalledTimes(1)
+    clock += OVERLAY_RESETTLE_MS
+    store.clipTiles(overlay(), r, ctx())
+    expect(getFilmstrip).toHaveBeenCalledTimes(2)
+    expect(getFilmstrip.mock.calls[1][0].overlay.revision).toBe(3)
+  })
+
+  it('nothing is asked for while the preview plays; a paint after the pause asks', () => {
+    const store = new FilmstripStore()
+    const getFilmstrip = vi.fn().mockResolvedValue(filmstripIndexFixture())
+    let playing = true
+    const ctx = () => queryCtx({ getFilmstrip, viewport: zoomedIn, playing: () => playing })
+    store.clipTiles(overlay(), r, ctx())
+    settle()
+    store.clipTiles(overlay(), r, ctx())
+    store.clipTiles(clip({ proxySrc: 'proxy.mp4', start: 0, end: 5 }), rect({ width: 1000 }), ctx())
+    expect(getFilmstrip).not.toHaveBeenCalled()
+    playing = false
+    store.clipTiles(overlay(), r, ctx())
+    store.clipTiles(clip({ proxySrc: 'proxy.mp4', start: 0, end: 5 }), rect({ width: 1000 }), ctx())
+    expect(getFilmstrip).toHaveBeenCalledTimes(2)
+  })
 
   it('requests once per key and passes the overlay args (src as given, backslashes kept)', async () => {
     const store = new FilmstripStore()

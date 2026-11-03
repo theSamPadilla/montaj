@@ -299,6 +299,10 @@ export interface FilmstripQueryContext {
   /** True while a timeline gesture (trim, move) is running; an overlay strip is
    *  not requested then. Absent → the settle delay alone applies. */
   gestureActive?: () => boolean
+  /** True while the preview plays: nothing is requested then, so the strip
+   *  renders (a headless browser for an overlay) never compete with playback.
+   *  The host repaints on pause, which asks again. Absent → never playing. */
+  playing?: () => boolean
   /** The base track's items (tracks[0]): an overlay's tiles are composed over
    *  the base footage's frame at the same timeline time. Absent → over the
    *  overlay's own fill. */
@@ -316,6 +320,10 @@ export function isCaptionOverlay(item: VisualItem): boolean {
 /** An overlay's strip key must stay unchanged this long before a request is
  *  made, so a trim or prop drag does not render a strip per intermediate size. */
 export const OVERLAY_SETTLE_MS = 400
+/** An overlay that already has a strip waits this long after its last change
+ *  before a fresh strip is asked for: an AI rewriting an overlay renders one
+ *  strip a burst, not one per save. */
+export const OVERLAY_RESETTLE_MS = 10_000
 
 /** The saved 3D file a 3D item draws, project-relative (render/scene3d.js):
  *  `models/scenes/<id>/active.json`, or the project's own `models/active.json`
@@ -523,7 +531,7 @@ export class FilmstripStore {
     // persistently-failing fetch into a request storm.
     const inCooldown = entry?.status === 'error'
       && (original || Date.now() - (entry.erroredAt ?? 0) < FETCH_RETRY_COOLDOWN_MS)
-    if (entry?.status !== 'loading' && !inCooldown) {
+    if (entry?.status !== 'loading' && !inCooldown && !ctx.playing?.()) {
       const fetcher = ctx.getFilmstrip
       if (fetcher) {
         this.indexEntries.set(key, { status: 'loading', data: null, tiles: [] })
@@ -580,7 +588,10 @@ export class FilmstripStore {
       st = { key, since: Date.now(), timer: null }
       this.settling.set(owner, st)
     }
-    const waiting = Date.now() - st.since < OVERLAY_SETTLE_MS
+    // A first strip settles briefly; a re-request after a change waits longer.
+    const settleMs = fallback() ? OVERLAY_RESETTLE_MS : OVERLAY_SETTLE_MS
+    const left = settleMs - (Date.now() - st.since)
+    const waiting = left > 0
     const gesture = !waiting && !!ctx.gestureActive?.()
     if (waiting || gesture) {
       if (!st.timer) {
@@ -589,10 +600,11 @@ export class FilmstripStore {
         st.timer = setTimeout(() => {
           mine.timer = null
           if (mine.key === key) onReady()
-        }, OVERLAY_SETTLE_MS)
+        }, waiting ? left : OVERLAY_SETTLE_MS)
       }
       return fallback()
     }
+    if (ctx.playing?.()) return fallback()
 
     // A failed key is never asked again on its own (a strip that fails once
     // fails the same way); a new key or revision asks again.

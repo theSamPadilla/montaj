@@ -2800,6 +2800,7 @@ function ReviewSurface<P extends Project>({
           getWaveformPeaks={getWaveformPeaks}
           getFilmstrip={getFilmstrip}
           watchFile={adapter.watchFile}
+          playing={previewPlaying}
           regenEnabled={regenEnabled}
           isClipQueued={isClipQueued}
           renderSubcutRegen={renderSubcutRegen}

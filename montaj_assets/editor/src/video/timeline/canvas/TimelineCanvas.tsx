@@ -184,6 +184,9 @@ export interface TimelineCanvasProps {
   /** The adapter's `watchFile`, so an overlay's filmstrip refreshes when its
    *  jsx changes. Absent → overlay strips never refresh. */
   watchFile?: (path: string, onChange: () => void, projectId?: string) => () => void
+  /** True while the preview plays: filmstrips are not requested then (see
+   *  `FilmstripQueryContext.playing`). Absent → false. */
+  playing?: boolean
   /** Which ground the painter draws on, resolved from the host theme by
    *  `VideoEditor` (see `isLightTheme`) and threaded through Timeline. The
    *  canvas cannot read a CSS variable, so this is how a theme flip reaches
@@ -477,6 +480,7 @@ export default function TimelineCanvas({
   getFilmstrip,
   resolveFilePath,
   watchFile,
+  playing = false,
   mode = 'dark',
   onImportFilesToTimeline,
   pendingDrops = NO_PENDING_DROPS,
@@ -496,6 +500,8 @@ export default function TimelineCanvas({
   // T7 — same lifetime rule as the waveform store, for filmstrip indexes and
   // decoded sheet images.
   const filmstripStoreRef = useRef<FilmstripStore | null>(null)
+  const playingRef = useRef(playing)
+  playingRef.current = playing
   if (filmstripStoreRef.current === null) filmstripStoreRef.current = new FilmstripStore()
   useEffect(() => {
     const store = filmstripStoreRef.current
@@ -643,6 +649,7 @@ export default function TimelineCanvas({
                 resolution: scene.project.settings?.resolution,
                 watchFile,
                 gestureActive: () => releaseGestureRef.current !== null,
+                playing: () => playingRef.current,
                 baseItems,
                 viewport,
                 onReady: () => requestRedraw('all'),
@@ -701,6 +708,8 @@ export default function TimelineCanvas({
       paintRef.current()
     })
   }, [])
+  // A pause asks again for the filmstrips held back while the preview played.
+  useEffect(() => { if (!playing) requestRedraw('all') }, [playing, requestRedraw])
 
   // The latch must be reset here too, or a StrictMode remount (cleanup runs
   // on the same instance before the effect re-fires) deadlocks every future
