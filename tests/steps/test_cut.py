@@ -349,7 +349,9 @@ def test_the_apply_cuts_through_the_speech_edit_save(tmp_path, stub_transcribe, 
     assert out == {"project": "cut-fixture", "mode": "applied", "version": "version: before cut",
                    "duration": out["duration"], "undo": 'Restore the version "version: before cut".',
                    "hardCuts": out["hardCuts"], "hardCutAt": out["hardCutAt"], "layers": {}, "seams": out["seams"]}
-    assert out["seams"] and all(re.match(r"^\d+\.\d\d .* \| ", s) for s in out["seams"])
+    # the taken takes come before the kept one, so every join only removed a silence between words said one after the
+    # other: no seam (§692: two seams here were "want." and "drag", 10 ms words the seams left out, read as skipped)
+    assert out["seams"] == []
     marker = json.loads((d / "project.json").read_text())["cleanCut"]
     assert marker["removed"]["lines"] == {}                  # nothing was left in ## Unused: the plan has none
     assert marker["maxPause"] == 0.45 and marker["kept"]["seconds"] == out["duration"] < plan["kept"]["seconds"]

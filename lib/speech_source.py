@@ -228,7 +228,8 @@ class Lift:
 
     def _origin_of(self, item_id, it=None):
         """The stashed entry a piece was cut from: its own id, or the longest one it extends (`<id>-seg-..`); for a
-        piece with neither (an `sp-..` run), the entry of its file whose window holds most of it, else the first."""
+        piece with neither (an `sp-..` run), the entry of its file whose window holds most of it, else the first: then
+        only a template of the group's fields, never of the file (§692: a take no item played, put back from the plan)."""
         if item_id in self.stash:
             return self.stash[item_id]
         best = max((k for k in self.stash if str(item_id).startswith(f"{k}-")), key=len, default=None)
@@ -246,7 +247,11 @@ class Lift:
         orig = self._origin_of(it["id"], it) or {}
         entry = {k: copy.deepcopy(v) for k, v in orig.items()
                  if k not in ("id", "start", "end", "inPoint", "outPoint", "fadeIn", "fadeOut", "_in", "_out")}
-        entry.update({"id": it["id"], "src": orig.get("src", it["src"]), "start": it["start"], "end": it["end"],
+        if orig.get("src") != it["src"]:
+            for k in ("normalizedSrc", "sourceDuration"):      # of the other file
+                entry.pop(k, None)
+        # the file is the piece's own: its in and out points are that file's times, whatever entry lent the rest
+        entry.update({"id": it["id"], "src": it["src"], "start": it["start"], "end": it["end"],
                       "inPoint": it["inPoint"], "outPoint": it["outPoint"]})
         o_in, o_out = orig.get("_in", orig.get("inPoint")), orig.get("_out", orig.get("outPoint"))
         moved_in = o_in is None or abs(float(it["inPoint"]) - float(o_in)) > _EPS

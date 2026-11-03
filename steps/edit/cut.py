@@ -380,19 +380,20 @@ def _kept_whole(row):
 
 
 def _plan(d, title, units, trailing, labels, gone, at, of_source, language, max_pause, project_dir, is_filler,
-          whole=frozenset(), breath=None, threshold=SILENCE_THRESHOLD_DB, noise=frozenset(), left=frozenset()):
+          whole=frozenset(), breath=None, threshold=SILENCE_THRESHOLD_DB, noise=frozenset(), left=frozenset(), over=None):
     """The plan: speech_edit's text format (PL89: it only labels). `## Cut` holds every saying, each row of the base
     (the mechanical pass: silences and fillers already gone) in recording order, tagged [time] or [time label]: the
     labels (`labels`, from _labels) question a take, never remove it. `gone`: {(letter, word index): why} of words the
     silence took with it (no sound, or no voice, under them): left out of their rows and listed under `## Unused`, as
     is every other word of a line the base does not play (an earlier cut's, tagged earlier). Times are of the timeline
     as it is now; line ids are the source's (lib/speech_lines). breath: written in the header, so the apply rebuilds
-    the same base. left: the sources left out of a spine (§590, b-roll), whose words are never offered.
+    the same base. left: the sources left out of a spine (§590, b-roll), whose words are never offered. over: _over of
+    the cut the project carries, written in the header (§692, _waiting).
     Returns (text, kept rows [(id, t, words)], unused rows [(id, t, words, why)], {label: takes})."""
     head = speech_text.render(d, title, "none").split("\n")
     cut_at = head.index("## Cut")
     meta = (f"language {language} · max-pause {max_pause:.2f}" + (f" · breath {breath:.3f}" if breath is not None else "")
-            + f" · silence {threshold:.1f}")
+            + f" · silence {threshold:.1f}" + (f" · over {over}" if over else ""))
     out = [head[0], f"<!-- montaj cut plan v2 · {meta} -->",
            PLAN_HASH_LINE, f"<!-- {PLAN_HELP} -->"] + head[1:cut_at + 1] + [""]
     kept, unused, counts = [], [], {}
@@ -611,7 +612,8 @@ def _plan_meta(text):
     plan without it; a plan made before the threshold was recorded was made at the default)."""
     for raw in text.splitlines()[:4]:
         m = re.match(r"^<!--\s*montaj cut plan v[12] · language (\S+) · max-pause (\d+(?:\.\d+)?)"
-                     r"(?: · breath (\d+(?:\.\d+)?))?(?: · silence (-?\d+(?:\.\d+)?))?\s*-->\s*$", raw.strip())
+                     r"(?: · breath (\d+(?:\.\d+)?))?(?: · silence (-?\d+(?:\.\d+)?))?(?: · over [0-9a-f]+)?\s*-->\s*$",
+                     raw.strip())
         if m:
             return (m.group(1), float(m.group(2)), (float(m.group(3)) if m.group(3) else None),
                     float(m.group(4)) if m.group(4) else SILENCE_THRESHOLD_DB)
@@ -869,6 +871,31 @@ def _stands(project, recut):
     if not isinstance(m, dict) or recut:
         return False
     return m.get("sources") is None or m["sources"] == _sources_key(project)
+
+
+def _over(project):
+    """The cut the project carries, as a hash of its marker (None with no marker): a plan made over it says so in its
+    header. Each cut writes a new marker, so a plan over an earlier cut never matches."""
+    m = project.get(MARKER_KEY)
+    if not isinstance(m, dict):
+        return None
+    return hashlib.sha256(json.dumps(m, sort_keys=True).encode()).hexdigest()[:12]
+
+
+_OVER_RE = re.compile(r" · over ([0-9a-f]+)\s*-->\s*$")
+
+
+def _waiting(project, project_dir):
+    """§692: cut-plan.md was made over the cut the project carries and is not applied yet (a recut's). A plain cut plans
+    it again on that same base, so a plan made stale (a transcript written again) is never stuck behind "Already cut".
+    A plan made before that cut (the first pass's) is not one: planning again would cut the cut's output twice."""
+    over = _over(project)
+    path = os.path.join(project_dir, PLAN_FILE)
+    if over is None or os.path.islink(path) or not os.path.isfile(path):
+        return False
+    with open(path, encoding="utf-8", errors="replace") as f:
+        head = [f.readline() for _ in range(2)]
+    return any((m := _OVER_RE.search(ln.strip())) and m.group(1) == over for ln in head)
 
 
 def _audio_spine(project, project_dir, clips=None):
@@ -1217,18 +1244,19 @@ def _silence_stamp(b, track_id):
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
 
 
-def _silence_plan(b, track_id, title, marker, threshold=SILENCE_THRESHOLD_DB):
+def _silence_plan(b, track_id, title, marker, threshold=SILENCE_THRESHOLD_DB, over=None):
     _, track = _track(b["work"], track_id)
     rows = [f"-- {os.path.basename(it['src'])} {float(it.get('inPoint', 0)):.2f}-{float(it.get('outPoint', 0)):.2f} keep"
             for it in _media(track)]
     return _seal("\n".join([f"<!-- montaj cut plan v1 · silence · track {track_id} · stamp {_silence_stamp(b, track_id)} · "
-                            f"marker {'yes' if marker else 'no'} · silence {threshold:.1f} -->", PLAN_HASH_LINE, f"# {title}", "",
+                            f"marker {'yes' if marker else 'no'} · silence {threshold:.1f}"
+                            + (f" · over {over}" if over else "") + " -->", PLAN_HASH_LINE, f"# {title}", "",
                             "No usable speech: this plan removes silences only. Apply it as it is.", "", "## Cut", "",
                             *rows]) + "\n")
 
 
 _SILENCE_HEADER = re.compile(r"^<!--\s*montaj cut plan v1 · silence · track (\S+) · stamp (\S+) · marker (yes|no)"
-                             r"(?: · silence (-?\d+(?:\.\d+)?))?\s*-->\s*$")
+                             r"(?: · silence (-?\d+(?:\.\d+)?))?(?: · over [0-9a-f]+)?\s*-->\s*$")
 
 
 def _seams(items, words, cap=SEAMS_MAX):
@@ -1243,7 +1271,10 @@ def _seams(items, words, cap=SEAMS_MAX):
         if not ws or "inPoint" not in it or "outPoint" not in it:
             continue
         a, b = float(it["inPoint"]), float(it["outPoint"])
-        idx = [k for k, (_, s, e) in enumerate(ws) if min(e, b) - max(s, a) > SEAM_EDGE_S]
+        # a word plays when it lies in the window, however short, or overlaps it by more than SEAM_EDGE_S (a word
+        # cut into): the overlap alone dropped a word whisper gave no length or less (§692: "That year," for "That
+        # same year,")
+        idx = [k for k, (_, s, e) in enumerate(ws) if a <= s <= e <= b and s < b or min(e, b) - max(s, a) > SEAM_EDGE_S]
         if idx:
             played.append((it, key, idx, a, b))
     flat = [(n, words[key][k][0]) for n, (_, key, idx, _, _) in enumerate(played) for k in idx]
@@ -1311,10 +1342,11 @@ def main():
 
 def _make_plan(args, project_path, project_dir):
     first = _load(project_path)
-    if _stands(first, args.recut):
+    recut = args.recut or _waiting(first, project_dir)      # §692: a waiting recut plan is planned again as one
+    if _stands(first, recut):
         print(json.dumps(_already_cut(first), ensure_ascii=False))
         return
-    changed = isinstance(first.get(MARKER_KEY), dict) and not args.recut
+    changed = isinstance(first.get(MARKER_KEY), dict) and not args.recut and not _stands(first, False)
     # §558: the speech is a video track, an audio lane or the voiceover; an audio one is lifted into a track of its
     # own for the cut (lib/speech_source.py) and lowered back at the write
     spined, spine, _ = _spine(first, project_dir, clips=args.clips)
@@ -1333,7 +1365,7 @@ def _make_plan(args, project_path, project_dir):
     transcribed, failed, warnings = _transcribe_missing(first_l, track_id, project_path, project_dir,
                                                         args.model, args.language or "auto")
     disk = _load(project_path)        # read again after the long part
-    if _stands(disk, args.recut) and not changed:     # another run cut it meanwhile
+    if _stands(disk, args.recut or _waiting(disk, project_dir)) and not changed:     # another run cut it meanwhile
         print(json.dumps(_already_cut(disk), ensure_ascii=False))
         return
     disk_s, spine, left = _spine(disk, project_dir, words=True, clips=args.clips) if spine else (disk, spine, [])
@@ -1364,7 +1396,8 @@ def _make_plan(args, project_path, project_dir):
     if b["d"] is None:
         candidate, rep = _carried(b["origin"], b["work"], b["ti"], b["lineage"], project_dir)
         kept_s, duration = _sums(candidate, track_id)
-        path, prev = _write_plan(project_path, disk.get("id"), _silence_plan(b, track_id, title, marker=not failed, threshold=threshold))
+        path, prev = _write_plan(project_path, disk.get("id"), _silence_plan(b, track_id, title, marker=not failed, threshold=threshold,
+                                                                        over=_over(disk)))
         warnings[:0] = _audio_warnings(rep.get("flagged"))
         answer.update(plan=path, silence=True,
                       kept={"lines": 0, "seconds": kept_s},
@@ -1379,7 +1412,7 @@ def _make_plan(args, project_path, project_dir):
             text, kept, unused, counts = _plan(b["d"], title, b["units"], b["trailing"], b["labels"], b["gone"], at,
                                                of_source, language, max_pause, project_dir, _filler_test(language),
                                                b.get("whole", frozenset()), breath, threshold,
-                                               _noise_keys(b["refiner"], b["d"]), left_srcs)
+                                               _noise_keys(b["refiner"], b["d"]), left_srcs, over=_over(disk))
             res = apply(project_path, _untagged(text)[0], preview=True, max_pause=max_pause, feel=DEFAULT_FEEL,
                         base=b["work"], base_of=disk, want_project=True, carry_from=b["origin"], lineage=b["lineage"],
                         guard_keys=(MARKER_KEY,) + _read_too(lift), refiner=b["refiner"], lower=_lower(lift))
