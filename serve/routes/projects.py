@@ -494,7 +494,8 @@ async def _run_ingest_detached(
         log(f"[ingest] staging {os.path.basename(path)}")
 
         clip = await asyncio.to_thread(
-            ingest_source, project_dir, path, color_space, "eager", proxy=False
+            ingest_source, project_dir, path, color_space, "eager", proxy=False,
+            should_stop=lambda: job.cancelled,
         )
         if job.cancelled:   # §682: the project was deleted while the file was read
             job.status, job.error = "error", "This project was deleted."
@@ -3719,17 +3720,22 @@ def _preserve_audio(proj: dict, project_dir_resolved: Path, uploads_dir: Path,
         _preserve_path(raw, project_dir_resolved, uploads_dir, preserved, moved)
 
 
+def _names_folder(d: Path, folder: str) -> bool:
+    """`folder` (a path, or a folder name) is `d`."""
+    wanted = folder.strip()
+    try:
+        same = Path(wanted).resolve() == d.resolve()
+    except OSError:
+        same = False
+    return same or d.name == wanted
+
+
 def _pick_folder(exc: DuplicateProjectId, folder: "str | None") -> Path:
     """§682: the one of several folders claiming an id that `?folder=` names (its path, or its folder name), else the
     duplicate refusal as it was: a delete never guesses which copy to remove."""
     if folder:
-        wanted = folder.strip()
         for d in exc.dirs:
-            try:
-                same = Path(wanted).resolve() == d.resolve()
-            except OSError:
-                same = False
-            if same or d.name == wanted:
+            if _names_folder(d, folder):
                 return d
     raise exc
 
@@ -3780,6 +3786,11 @@ async def delete_project(
         project_dir = get_project_dir(project_id)
     except DuplicateProjectId as e:
         project_dir = _pick_folder(e, folder)
+    else:
+        # The folder asked for is no longer the one claiming the id (its copy was deleted already, a retry after a lost
+        # answer): nothing to delete, and never the other copy.
+        if folder and not _names_folder(project_dir, folder):
+            raise HTTPException(404, detail={"error": "not_found", "message": f"Project '{project_id}' not found"})
     broadcaster = getattr(getattr(getattr(request, "app", None), "state", None), "broadcaster", None)
     dependents = _dependents_of(project_id, project_dir)
     await _rescue_dependents(project_id, project_dir, broadcaster, dependents=dependents)

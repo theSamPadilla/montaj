@@ -4,6 +4,8 @@ import json
 import os
 import re
 import unicodedata
+
+from lib.proc import kill_tree, detached_kwargs
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -27,9 +29,12 @@ def kill_project_procs(project_id: str) -> int:
     for proc in procs:
         if proc.returncode is None:
             try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
+                kill_tree(proc)   # the step's own children (ffmpeg, node) go with it
+            except Exception:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
     return len(procs)
 
 
@@ -395,6 +400,7 @@ async def run_subprocess(
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
         env=env,
+        **(detached_kwargs() if track else {}),
     )
     if track:
         _project_procs.setdefault(track, set()).add(proc)

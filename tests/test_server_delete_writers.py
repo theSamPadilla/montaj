@@ -31,6 +31,7 @@ class _Proc:
     def __init__(self):
         self.returncode = None
         self.killed = False
+        self.pid = 2 ** 22 + 12345   # no such process: kill_tree falls back to kill()
 
     def kill(self):
         self.killed = True
@@ -49,6 +50,17 @@ def test_two_folders_with_one_id_delete_only_the_one_asked_for(workspace):
     assert not a.exists() and b.exists()
     assert client.delete(f"/api/projects/{pid}", params={"folder": str(b)}).status_code == 204
     assert not b.exists()
+
+
+def test_a_repeated_delete_of_one_copy_never_deletes_the_other(workspace):
+    pid = str(uuid.uuid4())
+    a, b = _project(workspace, "a-copy", pid), _project(workspace, "b-orig", pid)
+    assert client.delete(f"/api/projects/{pid}", params={"folder": "a-copy"}).status_code == 204
+    again = client.delete(f"/api/projects/{pid}", params={"folder": "a-copy"})
+    assert again.status_code == 404, again.text
+    assert b.exists() and (b / "project.json").exists()
+    # With no folder named, a single remaining claimant is deleted as before.
+    assert client.delete(f"/api/projects/{pid}").status_code == 204
 
 
 def test_a_project_already_gone_answers_404(workspace):

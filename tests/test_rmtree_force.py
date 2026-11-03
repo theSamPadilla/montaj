@@ -171,3 +171,18 @@ def test_an_entry_in_a_read_only_folder_is_removed(tmp_path):
         if (d / "locked").exists():
             os.chmod(d / "locked", 0o755)
     assert not d.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory permissions")
+def test_the_parents_other_mode_bits_survive(tmp_path):
+    team = tmp_path / "team"
+    (team / "p" / "locked").mkdir(parents=True)
+    (team / "p" / "locked" / "f").write_text("x")
+    os.chmod(team / "p" / "locked", 0o555)
+    os.chmod(team, 0o775)
+    try:
+        rmtree_force(team / "p")
+    finally:
+        mode = stat.S_IMODE(team.stat().st_mode)
+        os.chmod(team, 0o755)
+    assert mode == 0o775, oct(mode)

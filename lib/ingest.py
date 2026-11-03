@@ -90,6 +90,7 @@ def ingest_source(
     *,
     proxy: bool = True,
     clip_id: str | None = None,
+    should_stop=None,
 ) -> dict:
     """Ingest one source video into an initialized project; return its clip dict.
 
@@ -153,6 +154,9 @@ def ingest_source(
             )
             out = normalized_output_path(staged_src, color_space, tonemapped=tonemapped,
                                          sdr_stretch=sdr_stretch)
+            # §682: the project was deleted meanwhile: normalize would make its output folder again.
+            if should_stop is not None and should_stop():
+                raise RuntimeError("stopped")
             try:
                 normalize(staged_src, out, color_space, info=info)
                 if sdr_stretch:
