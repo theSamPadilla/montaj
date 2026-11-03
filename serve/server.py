@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """montaj serve — FastAPI HTTP + SSE server."""
 import asyncio
+import contextlib
 import os
 import re
 import threading
@@ -102,6 +103,8 @@ async def lifespan(app: FastAPI):
 
     yield
     stall_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await stall_task
     # A running yt-dlp (PL28) is in its own process group, so a kill of serve
     # does not take it along: kill it here. Its project resumes on open.
     from serve.routes.projects import kill_source_downloads

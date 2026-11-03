@@ -69,3 +69,18 @@ def test_symlinked_folders_are_not_followed_as_rglob_does_not(tmp_path):
 
 def test_a_missing_workspace_is_an_empty_list(tmp_path):
     assert topmost_project_jsons(tmp_path / "nope") == []
+
+
+def test_a_broken_link_or_a_folder_named_project_json_neither_counts_nor_stops_the_walk(tmp_path):
+    ws = tmp_path / "Montaj"
+    _tree(ws)
+    (ws / "odd").mkdir()
+    (ws / "odd" / "project.json").symlink_to(tmp_path / "missing.json")
+    (ws / "odd" / "inner").mkdir()
+    (ws / "odd" / "inner" / "project.json").write_text("{}")
+    (ws / "dirlike" / "project.json").mkdir(parents=True)
+    (ws / "dirlike" / "project.json" / "project.json").write_text("{}")
+    new = sorted(topmost_project_jsons(ws))
+    old = [p for p in _old(ws) if p.is_file()]  # the old callers skipped what they could not read
+    assert new == old
+    assert ws / "odd" / "inner" / "project.json" in new

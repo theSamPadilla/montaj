@@ -142,7 +142,9 @@ def topmost_project_jsons(workspace: Path) -> "list[Path]":
     out: list[Path] = []
     root = os.fspath(workspace)
     for dirpath, dirnames, filenames in os.walk(root, onerror=lambda _e: None):
-        if "project.json" in filenames:
+        # A file (or a link to one): the old scan's `is_file()` rule for a parent,
+        # so a broken link or a folder named project.json neither counts nor stops the walk.
+        if "project.json" in filenames and os.path.isfile(os.path.join(dirpath, "project.json")):
             out.append(Path(dirpath) / "project.json")
             # A project.json at the workspace root makes nothing below it nested.
             if dirpath != root:

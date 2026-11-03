@@ -1893,24 +1893,19 @@ async def run_project(request: Request, response: Response, body: dict = Body(..
     return started
 
 
-@router.get("/projects")
-async def list_projects(status: str | None = None):
-    workspace = resolve_workspace()
-    # A project.json nested in a project's folder (a Compare versions snapshot)
-    # is not a project of its own: listed, it showed the project twice.
-    # §688: the walk stays out of projects' own folders, and off the loop.
-    found = await asyncio.to_thread(topmost_project_jsons, workspace)
-    # §518: an id claimed by 2+ topmost folders is a duplicate (a copied folder
-    # that kept the id). Both copies are listed, and each is flagged so the
-    # UI/AI can see which ids collide and where, and tell serve already refuses
-    # every read/write for them (find_project_dir raises). Built across all
-    # found folders, independent of the `status` filter, so the flag is complete
-    # even on a filtered list. Shape is additive: two extra fields on the
-    # colliding entries, the array shape unchanged.
+def _mtime_or_zero(p: Path) -> float:
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0   # deleted since the walk: it sorts last and fails its read below
+
+
+def _scan_projects(workspace: Path) -> "tuple[list[dict], dict[str, list[str]], dict[int, str]]":
+    """Every topmost project, newest first, parsed; the folders claiming each id; each parsed doc's own folder (by id())."""
     folders_by_id: dict[str, list[str]] = {}
     parsed: list[dict] = []
     own_folder: dict[int, str] = {}
-    for p in sorted(found, key=lambda f: f.stat().st_mtime, reverse=True):
+    for p in sorted(topmost_project_jsons(workspace), key=_mtime_or_zero, reverse=True):
         try:
             proj = json.loads(p.read_text())
         except Exception:
@@ -1922,6 +1917,24 @@ async def list_projects(status: str | None = None):
         pid = proj.get("id")
         if pid:
             folders_by_id.setdefault(pid, []).append(str(p.parent))
+    return parsed, folders_by_id, own_folder
+
+
+@router.get("/projects")
+async def list_projects(status: str | None = None):
+    workspace = resolve_workspace()
+    # A project.json nested in a project's folder (a Compare versions snapshot)
+    # is not a project of its own: listed, it showed the project twice.
+    # §688: the walk stays out of projects' own folders, and it, the stat sort
+    # and every parse run off the loop (`_scan_projects`).
+    parsed, folders_by_id, own_folder = await asyncio.to_thread(_scan_projects, workspace)
+    # §518: an id claimed by 2+ topmost folders is a duplicate (a copied folder
+    # that kept the id). Both copies are listed, and each is flagged so the
+    # UI/AI can see which ids collide and where, and tell serve already refuses
+    # every read/write for them (find_project_dir raises). Built across all
+    # found folders, independent of the `status` filter, so the flag is complete
+    # even on a filtered list. Shape is additive: two extra fields on the
+    # colliding entries, the array shape unchanged.
     # Seed the resolver's cache from this same scan, so an id flagged below is
     # refused by every per-project route from now on, with no scan in between.
     prime_project_dir_cache({pid: [Path(d) for d in dirs] for pid, dirs in folders_by_id.items()})
@@ -3796,7 +3809,7 @@ async def delete_project(
         if folder and not _names_folder(project_dir, folder):
             raise HTTPException(404, detail={"error": "not_found", "message": f"Project '{project_id}' not found"})
     broadcaster = getattr(getattr(getattr(request, "app", None), "state", None), "broadcaster", None)
-    dependents = _dependents_of(project_id, project_dir)
+    dependents = await asyncio.to_thread(_dependents_of, project_id, project_dir)  # §688: off the loop
     await _rescue_dependents(project_id, project_dir, broadcaster, dependents=dependents)
     preserved: dict[str, str] = {}
     if preserve_assets:
@@ -3914,7 +3927,7 @@ async def _rescue_dependents(project_id: str, project_dir: Path, broadcaster: "S
     (over the cap, short of disk, an error): the dependent would break. The
     copies already made stay; they are harmless."""
     if dependents is None:
-        dependents = _dependents_of(project_id, project_dir)
+        dependents = await asyncio.to_thread(_dependents_of, project_id, project_dir)  # §688: off the loop
     if not dependents:
         return
     rendering = [d for d in dependents if d[0] in _active_renders]
