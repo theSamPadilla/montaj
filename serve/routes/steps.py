@@ -25,6 +25,7 @@ from serve.common import (
 from serve.jobs import create_job, set_done, set_error, get_job
 from serve.out_guard import check_route_out, check_step_out
 from serve import provenance, save_guard
+from serve.playback_gate import heavy_slot, low_priority
 
 router = APIRouter(prefix="/api")
 
@@ -689,14 +690,17 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
         if named is not None:
             tracked = named[0]
             break
+    # §683: a heavy step waits out the preview's playback (capped), and every
+    # step runs niced, so the preview's decoder always gets the CPU first.
     try:
-        stdout_text, stderr_text, returncode = await run_subprocess(
-            [sys.executable, str(py_path), *cli_args],
-            timeout=timeout,
-            cwd=str(resolve_workspace()),
-            env=env,
-            track=tracked,
-        )
+        async with heavy_slot(name):
+            stdout_text, stderr_text, returncode = await run_subprocess(
+                low_priority([sys.executable, str(py_path), *cli_args]),
+                timeout=timeout,
+                cwd=str(resolve_workspace()),
+                env=env,
+                track=tracked,
+            )
     except HTTPException:
         raise
     except Exception as e:
@@ -947,7 +951,8 @@ async def run_normalize_job(job_id: str, input_path: str, color_space: str, *, o
     GET /api/steps/jobs/{job_id} polling surface as every other async step.
     """
     try:
-        result = await asyncio.to_thread(_normalize_sync, input_path, color_space, out)
+        async with heavy_slot("normalize"):  # §683: a background re-encode waits out playback
+            result = await asyncio.to_thread(_normalize_sync, input_path, color_space, out)
         set_done(job_id, result)
     except HTTPException as e:
         set_error(job_id, e.detail)
