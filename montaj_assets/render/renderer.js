@@ -18,7 +18,7 @@ import { ffmpegErrorTail, describeFfmpegExit } from './ffmpeg-error.js'
 import { childKilledError, isChildKilled, syncResultError, CHILD_KILLED_PHASES } from './child-killed.js'
 import { adaptiveChunkSize } from './chunk-plan.js'
 import { availableMemoryBytes, workerFootprint, planWorkers, planWorkers2d, createMemoryGovernor, gb, isScene3dSegment, SCENE3D_MAX_WORKERS, SCENE3D_MAX_CHUNK_FRAMES } from './memory.js'
-import { defaultWorkerTarget } from './load.js'
+import { defaultWorkerTarget, ffmpegThreads } from './load.js'
 import { createPlaybackThrottle, createPlaybackWatcher } from './playback.js'
 import { toFileHref } from './file-url.js'
 import { frameTimes, shutterOf, cameraCutFrames, SHUTTER_3D, motionBlurFilter } from './motion-blur.js'
@@ -345,6 +345,8 @@ export async function renderAllSegments(segments, config = {}) {
     acquire: (name, more) => (widened ? Promise.resolve(more()) : governor.acquire(name, more)),
     release: (name) => { if (!widened) governor.release(name) },
   }
+  // §698: each chunk's ffmpeg gets its share of the cores, so the encoders together never outnumber them.
+  const encoderThreads = ffmpegThreads({ workers: Math.max(workerCount, targetWorkers), env: config.env ?? process.env })
   // §698: while the editor preview plays, most workers rest before their next chunk (playback.js). Fails open.
   const watcher = config.playback ? null : createPlaybackWatcher({
     url: process.env.MONTAJ_RENDER_YIELD === '0' ? '' : (process.env.MONTAJ_PLAYBACK_URL ?? ''),
@@ -411,7 +413,7 @@ export async function renderAllSegments(segments, config = {}) {
         log(`rendering ${label} (${job.frameEnd - job.frameStart} frames)...`)
         let webmPath
         try {
-          ({ webmPath } = await renderJob(current, job, { onFrame: noteFrame }))
+          ({ webmPath } = await renderJob(current, job, { onFrame: noteFrame, threads: encoderThreads }))
         } finally {
           gate.release(`worker ${workerIdx}`)
           if (is3d) running3d--
@@ -760,22 +762,22 @@ export function screenshotOptionsFor(job) {
  * Any failure (the capture, Chrome, ffmpeg, a props image not served) stops
  * the chunk's ffmpeg and removes its partial MKV before the chunk fails.
  */
-export async function renderChunk(worker, job, { onFrame } = {}) {
+export async function renderChunk(worker, job, { onFrame, threads } = {}) {
   // §377: a 3D page that averaged its chunk's first frame but cannot average a later one has the chunk
   // captured again from the start, every sub-frame: its encode then reads n captures per frame.
   let reported = 0
   try {
-    return await renderChunkOnce(worker, job, { onFrame: () => { reported++; onFrame?.() } })
+    return await renderChunkOnce(worker, job, { threads, onFrame: () => { reported++; onFrame?.() } })
   } catch (err) {
     if (!isThreeBlurUnsupported(err) || !blursInPage(job)) throw err
     noteBlurFallback(job, err.reason)
     // The frames already reported are not reported twice.
     let skip = reported
-    return renderChunkOnce(worker, { ...job, scene3d: false, shutter: shutterOf(job) }, { onFrame: () => { if (skip > 0) skip--; else onFrame?.() } })
+    return renderChunkOnce(worker, { ...job, scene3d: false, shutter: shutterOf(job) }, { threads, onFrame: () => { if (skip > 0) skip--; else onFrame?.() } })
   }
 }
 
-async function renderChunkOnce(worker, job, { onFrame } = {}) {
+async function renderChunkOnce(worker, job, { onFrame, threads } = {}) {
   const { id, chunkIndex, outputPath } = job
   // Unique per slice of one overlay (§434): callers give each slice its own outputPath, and chunkIndex restarts per call.
   const chunkMkv = outputPath.replace(/\.\w+$/, '') + `-chunk-${chunkIndex}.mkv`
@@ -794,7 +796,7 @@ async function renderChunkOnce(worker, job, { onFrame } = {}) {
       return sink
     }
     sinkBlursInPage = inPage
-    sink = frameSink(spawnAsync(FFMPEG, chunkEncodeArgs(job, chunkMkv, { blurInPage: inPage }), what, 'overlay-encode'), what)
+    sink = frameSink(spawnAsync(FFMPEG, chunkEncodeArgs(job, chunkMkv, { blurInPage: inPage, threads }), what, 'overlay-encode'), what)
     return sink
   }
   if (!blursInPage(job)) {
@@ -1002,7 +1004,7 @@ export function frameSink(encode, what) {
  *
  * Exported for tests.
  */
-export function chunkEncodeArgs(job, chunkMkv, { blurInPage = blursInPage(job) } = {}) {
+export function chunkEncodeArgs(job, chunkMkv, { blurInPage = blursInPage(job), threads } = {}) {
   const { fps, subframes = 1 } = job
   const { pixFmt, omitBackground, format } = captureOptionsFor(job)
   // Motion blur off: args are exactly as before (render goldens depend on it).
@@ -1024,11 +1026,14 @@ export function chunkEncodeArgs(job, chunkMkv, { blurInPage = blursInPage(job) }
     // parser splits the stream into frames, decoded one by one as the files
     // were, RGB or RGBA per frame. A JPEG decodes to full-range YCbCr, which
     // the scale to the chunk's pix_fmt brings to video range.
+    // §698: the cores shared among the workers, never every core each (undefined: no cap, the args exactly as before).
+    ...(threads ? ['-threads', String(threads)] : []),
     '-f',                   'image2pipe',
     '-c:v',                 format === 'jpeg' ? 'mjpeg' : 'png',
     '-framerate',           inputRate,
     '-i',                   'pipe:0',
     ...(blurVf ? ['-vf', blurVf, '-r', String(fps)] : []),
+    ...(threads ? ['-threads', String(threads)] : []),
     '-c:v',                 'ffv1',
     '-g',                   '1',           // all-keyframe → MKV places cluster/cue at every frame
     '-pix_fmt',             pixFmt,

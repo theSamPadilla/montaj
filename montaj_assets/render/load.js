@@ -42,3 +42,17 @@ export function lowerPriority({ env = process.env, setPriority = os.setPriority,
     return { applied: false, level }
   }
 }
+
+/**
+ * Threads each chunk ffmpeg (PNG decode and FFV1 encode) may use: the cores over the render's workers, at least one. Without
+ * a cap every encoder sizes its pools to ALL the cores, so 6 workers on 12 cores ran about 72 busy threads (§698; measured
+ * load 42 on 12 cores with 12 encoders). Lossless: threading changes speed, never the frames. `MONTAJ_RENDER_FFMPEG_THREADS`
+ * sets it (a positive integer), `0` removes the cap (undefined).
+ */
+export function ffmpegThreads({ cpus = (typeof availableParallelism === 'function' ? availableParallelism() : os.cpus().length), workers = 1, env = process.env } = {}) {
+  const raw = String(env.MONTAJ_RENDER_FFMPEG_THREADS ?? '').trim()
+  if (raw === '0') return undefined
+  const asked = Number.parseInt(raw, 10)
+  if (Number.isInteger(asked) && asked > 0) return asked
+  return Math.max(1, Math.floor((Number(cpus) || 1) / Math.max(1, Number(workers) || 1)))
+}

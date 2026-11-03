@@ -95,3 +95,41 @@ test('both entry points that render for a person lower their own priority before
   assert.ok(render.indexOf('lowerPriority({ log })') < render.indexOf('rendering ${segmentSpecs.length} segment(s) with Puppeteer'))
   assert.match(editor, /if \(isMain\) \{\s*\/\/ §698[^\n]*\n\s*lowerPriority\(/)
 })
+
+test('each chunk ffmpeg gets its share of the cores, never all of them (12 encoders x every core was load 42)', async () => {
+  const { ffmpegThreads } = await import('../load.js')
+  assert.equal(ffmpegThreads({ cpus: 12, workers: 6, env: {} }), 2)
+  assert.equal(ffmpegThreads({ cpus: 12, workers: 12, env: {} }), 1)
+  assert.equal(ffmpegThreads({ cpus: 12, workers: 1, env: {} }), 12)
+  assert.equal(ffmpegThreads({ cpus: 4, workers: 9, env: {} }), 1, 'never below one')
+  assert.equal(ffmpegThreads({ cpus: 12, workers: 6, env: { MONTAJ_RENDER_FFMPEG_THREADS: '3' } }), 3)
+  assert.equal(ffmpegThreads({ cpus: 12, workers: 6, env: { MONTAJ_RENDER_FFMPEG_THREADS: '0' } }), undefined, '0 removes the cap')
+  assert.equal(ffmpegThreads({ cpus: 12, workers: 6, env: { MONTAJ_RENDER_FFMPEG_THREADS: 'junk' } }), 2)
+})
+
+test('chunkEncodeArgs: -threads caps the PNG decode and the FFV1 encode; without it the args are exactly as before', async () => {
+  const { chunkEncodeArgs } = await import('../renderer.js')
+  const job = { fps: 30, opaque: true, subframes: 1 }
+  const plain = chunkEncodeArgs(job, '/tmp/c.mkv')
+  assert.equal(plain.includes('-threads'), false)
+  const capped = chunkEncodeArgs(job, '/tmp/c.mkv', { threads: 2 })
+  const at = capped.reduce((a, v, i) => (v === '-threads' ? [...a, i] : a), [])
+  assert.equal(at.length, 2)
+  assert.ok(at[0] < capped.indexOf('-i'), 'the first is an input option: it caps the decoder')
+  assert.ok(at[1] > capped.indexOf('-i') && at[1] < capped.indexOf('ffv1'), 'the second precedes the ffv1 encoder')
+  assert.deepEqual(capped.filter((v, i) => !(v === '-threads' || capped[i - 1] === '-threads')), plain, 'nothing else moves')
+})
+
+test('renderAllSegments hands every chunk its thread share', async () => {
+  const { renderAllSegments } = await import('../renderer.js')
+  const seen = []
+  const seg = (i) => ({ id: `t${i}`, frameCount: 10, props: {}, outputPath: `/tmp/thr-${i}.webm`, boundary: { allows: () => true }, startSeconds: 0, endSeconds: 1, fps: 30 })
+  await renderAllSegments([seg(0), seg(1), seg(2)], {
+    workers: 3, chunkSize: 1000, cpus: 12, env: {}, userConfig: {},
+    launchWorker: async () => ({ close: async () => {} }),
+    renderJob: async (_w, job, o) => { seen.push(o.threads); return { webmPath: job.outputPath } },
+    memory: { readAvailable: () => 30 * GB, totalBytes: 36 * GB },
+    playback: { isPlaying: () => false },
+  })
+  assert.deepEqual(seen, [4, 4, 4], '12 cores over 3 workers')
+})
