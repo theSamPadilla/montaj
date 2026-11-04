@@ -201,7 +201,7 @@ def on_screen(project, t):
 def _scene_backdrop(project_dir, item, warn):
     """The style of the backdrop a 3D item's scene draws ("studio", "color", ...; "" when it has none): its
     models/scenes/<id>/active.json (the project's own scene is models/active.json), else a scene.json beside it. None
-    when the scene cannot be read (a warning is given)."""
+    when the scene cannot be read (a warning is given). A scene saved by reference is read from its `byRef`."""
     sid = (item.get("props") or {}).get("scene") if isinstance(item.get("props"), dict) else None
     base = os.path.join(project_dir, "models", "scenes", sid) if isinstance(sid, str) and sid else os.path.join(project_dir, "models")
     for name, nested in (("active.json", True), ("scene.json", False)):
@@ -211,6 +211,10 @@ def _scene_backdrop(project_dir, item, warn):
         except (OSError, ValueError):
             continue
         scene = doc.get("scene") if nested and isinstance(doc, dict) else doc
+        by_ref = doc.get("byRef") if nested and isinstance(doc, dict) else None
+        if isinstance(by_ref, dict) and by_ref.get("v") == 1:
+            # A scene saved by reference: the shot's own scene is under byRef (the top level holds a stand-in card).
+            scene = by_ref.get("scene")
         if isinstance(scene, dict):
             back = scene.get("backdrop")
             return str(back.get("style") or "") if isinstance(back, dict) else ""

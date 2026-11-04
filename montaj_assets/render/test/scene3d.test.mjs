@@ -5,7 +5,7 @@
 // sees an ordinary overlay. Pure, so these tests use a temp project folder and an injected environment.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, cpSync, symlinkSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -278,8 +278,8 @@ function refWorld(names = ['hands']) {
   for (const n of names) {
     mkdirSync(join(w.project, 'models', 'scenes', n), { recursive: true })
     writeFileSync(join(w.project, 'models', 'scenes', n, 'active.json'), JSON.stringify({
-      slug: 'hands', model: { name: 'card' }, moves: { moves: {} }, scene: { duration: 2 },
-      byRef: { v: 1, store: '../../_store', moves: KEY, model: refModel, scene: refScene },
+      byRef: { v: 1, slug: 'hands', store: '../../_store', moves: KEY, model: refModel, scene: refScene },
+      model: { name: 'card' }, moves: { moves: {} }, scene: { duration: 2 },
     }))
   }
   return w
@@ -326,11 +326,28 @@ test('a store folder outside the project\'s models folder is refused', () => {
   }
 })
 
+test('a store folder or piece that is a symlink is refused', () => {
+  for (const what of ['store', 'mesh', 'texture', 'moves']) {
+    const w = refWorld()
+    try {
+      const store = join(w.project, 'models', '_store')
+      const elsewhere = join(w.dir, 'elsewhere')
+      cpSync(store, elsewhere, { recursive: true })
+      if (what === 'store') { rmSync(store, { recursive: true }); symlinkSync(elsewhere, store) }
+      else {
+        const rel = { mesh: `meshes/${MID}.json`, texture: `textures/${TID}.png`, moves: `moves/${KEY}.json` }[what]
+        rmSync(join(store, rel)); symlinkSync(join(elsewhere, rel), join(store, rel))
+      }
+      assert.throws(() => sceneOf('hands', w), (e) => e instanceof Scene3dError && e.code === 'scene3d_invalid' && !e.message.includes(w.dir), what)
+    } finally { rmSync(w.dir, { recursive: true, force: true }) }
+  }
+})
+
 test('an inline scene is unchanged by the by-reference path, and a by-reference one with no model is still "no model"', () => {
   const w = world({ scenes: ['hands'] })
   try {
     assert.equal(sceneOf('hands', w), SCENE_JSON)
-    writeFileSync(join(w.project, 'models', 'scenes', 'hands', 'active.json'), JSON.stringify({ byRef: { v: 1, store: '../../_store', moves: KEY } }))
+    writeFileSync(join(w.project, 'models', 'scenes', 'hands', 'active.json'), JSON.stringify({ byRef: { v: 1, slug: 'hands', store: '../../_store', moves: KEY } }))
     assert.throws(() => sceneOf('hands', w), (e) => e instanceof Scene3dError && e.code === 'scene3d_invalid')
   } finally { rmSync(w.dir, { recursive: true, force: true }) }
 })

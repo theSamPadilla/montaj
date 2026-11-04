@@ -19,7 +19,7 @@
  * `<project>/models/active.json` (what the model-3d template's overlay copy imports today). A missing stage or scene
  * is an error that names it, never a blank frame. A second pass finds nothing left to do.
  */
-import { closeSync, existsSync, openSync, readFileSync, readSync } from 'fs'
+import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync } from 'fs'
 import { dirname, join, relative, resolve, isAbsolute } from 'path'
 import { trackItems } from './project-tracks.js'
 
@@ -163,12 +163,15 @@ function inlineByRef(sceneData, sceneFile, projectDir, fail, { read, readBytes, 
   const store = typeof R.store === 'string' && R.store.length > 0 ? resolve(dirname(sceneFile), R.store) : null
   const inside = store !== null && relative(modelsDir, store) !== '' && !relative(modelsDir, store).startsWith('..') && !isAbsolute(relative(modelsDir, store))
   if (!inside) throw fail('invalid', 'its 3D points outside the project\'s models folder.')
+  // A store folder or piece that is a symlink is refused, like the app's own reader does: it could lead out of the project.
+  const link = (path) => { try { return lstatSync(path).isSymbolicLink() } catch { return false } }
+  if (link(store) || ['meshes', 'textures', 'moves'].some((d) => link(join(store, d)))) throw fail('invalid', 'has a 3D store that is a link, which is not read.')
   const once = (path, load) => {
     if (!files.has(path)) files.set(path, load(path))
     return files.get(path)
   }
   const gone = (kind, id) => fail('invalid', `is missing part of its 3D (${kind} ${id}). Open the project in Montaj and save that 3D again.`)
-  const text = (path) => { try { return read(path) } catch { return null } }
+  const text = (path) => { try { return link(path) ? null : read(path) } catch { return null } }
   const piece = (kind, id) => {
     if (typeof id !== 'string' || !STORE_ID.test(id)) throw gone(kind, id)
     if (kind === 'mesh') {
@@ -177,7 +180,7 @@ function inlineByRef(sceneData, sceneFile, projectDir, fail, { read, readBytes, 
       throw gone(kind, id)
     }
     for (const [ext, mime] of [['png', 'image/png'], ['jpg', 'image/jpeg']]) {
-      const b = once(join(store, 'textures', `${id}.${ext}`), (f) => { try { return readBytes(f) } catch { return null } })
+      const b = once(join(store, 'textures', `${id}.${ext}`), (f) => { try { return link(f) ? null : readBytes(f) } catch { return null } })
       if (b) return `data:${mime};base64,${Buffer.from(b).toString('base64')}`
     }
     throw gone('texture', id)
@@ -186,7 +189,7 @@ function inlineByRef(sceneData, sceneFile, projectDir, fail, { read, readBytes, 
   let moves = null
   try { const t = once(join(store, 'moves', `${R.moves}.json`), text); if (t !== null) moves = JSON.parse(t) } catch { /* the same error */ }
   if (!isObj(moves)) throw gone('move pool', R.moves)
-  return { slug: sceneData.slug, model: fillRefs(R.model, piece), moves, ...(R.scene !== undefined ? { scene: fillRefs(R.scene, piece) } : {}) }
+  return { slug: R.slug, model: fillRefs(R.model, piece), moves, ...(R.scene !== undefined ? { scene: fillRefs(R.scene, piece) } : {}) }
 }
 
 /**
