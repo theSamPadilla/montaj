@@ -20,7 +20,7 @@
  * is an error that names it, never a blank frame. A second pass finds nothing left to do.
  */
 import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync } from 'fs'
-import { dirname, join, relative, resolve, isAbsolute } from 'path'
+import { dirname, join, resolve } from 'path'
 import { trackItems } from './project-tracks.js'
 
 export const SCENE3D_SRC = 'engine:scene3d'
@@ -161,8 +161,8 @@ function inlineByRef(sceneData, sceneFile, projectDir, fail, { read, readBytes, 
   const R = sceneData.byRef
   const modelsDir = resolve(projectDir, 'models')
   const store = typeof R.store === 'string' && R.store.length > 0 ? resolve(dirname(sceneFile), R.store) : null
-  const inside = store !== null && relative(modelsDir, store) !== '' && !relative(modelsDir, store).startsWith('..') && !isAbsolute(relative(modelsDir, store))
-  if (!inside) throw fail('invalid', 'its 3D points outside the project\'s models folder.')
+  // The store is the project's models/_store, the one folder the app writes pieces to and the stage reads them from.
+  if (store === null || store !== join(modelsDir, '_store')) throw fail('invalid', 'keeps its 3D pieces outside the project\'s models/_store folder.')
   // A store folder or piece that is a symlink is refused, like the app's own reader does: it could lead out of the project.
   const link = (path) => { try { return lstatSync(path).isSymbolicLink() } catch { return false } }
   if (link(store) || ['meshes', 'textures', 'moves'].some((d) => link(join(store, d)))) throw fail('invalid', 'has a 3D store that is a link, which is not read.')

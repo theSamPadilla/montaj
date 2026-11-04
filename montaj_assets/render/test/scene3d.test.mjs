@@ -315,13 +315,13 @@ test('a missing mesh, texture or move pool fails in words, with no path', () => 
   }
 })
 
-test('a store folder outside the project\'s models folder is refused', () => {
-  for (const store of ['../../../..', '../../..', '/etc', '../..', '']) {
+test('a store folder other than the project\'s models/_store is refused', () => {
+  for (const store of ['../../../..', '../../..', '/etc', '../..', '', '../../scenes', '..', '../../_store/meshes']) {
     const w = refWorld()
     try {
       const f = join(w.project, 'models', 'scenes', 'hands', 'active.json')
       const j = JSON.parse(readFileSync(f, 'utf8')); j.byRef.store = store; writeFileSync(f, JSON.stringify(j))
-      assert.throws(() => sceneOf('hands', w), (e) => e instanceof Scene3dError && e.code === 'scene3d_invalid', `store ${JSON.stringify(store)}`)
+      assert.throws(() => sceneOf('hands', w), (e) => e instanceof Scene3dError && e.code === 'scene3d_invalid' && /outside the project's models\/_store folder/.test(e.message), `store ${JSON.stringify(store)}`)
     } finally { rmSync(w.dir, { recursive: true, force: true }) }
   }
 })
