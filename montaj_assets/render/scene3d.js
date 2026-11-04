@@ -20,7 +20,7 @@
  * is an error that names it, never a blank frame. A second pass finds nothing left to do.
  */
 import { closeSync, existsSync, openSync, readFileSync, readSync } from 'fs'
-import { join, resolve } from 'path'
+import { dirname, join, relative, resolve, isAbsolute } from 'path'
 import { trackItems } from './project-tracks.js'
 
 export const SCENE3D_SRC = 'engine:scene3d'
@@ -128,6 +128,67 @@ function validTimeMap(map) {
   return true
 }
 
+
+// 3D5: a scene saved by reference. The format is the Montaj app's library/model3d/store.js (this file cannot import it):
+// the shot is under `byRef`, with each `meshes` id map of its model and scene as `meshRefs: [id]` and each `textures` map as
+// `textureRefs: [id]`; the pieces are files in the project's models/_store folder, which never change once written.
+const STORE_ID = /^[0-9a-f]{16}$/
+const MOVES_KEY = /^[A-Za-z0-9_-]{1,128}$/
+const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
+
+/** Fills each `meshRefs` and `textureRefs` list of `v` back into its id map, in the same place among the object's keys. */
+function fillRefs(v, piece) {
+  if (Array.isArray(v)) return v.map((x) => fillRefs(x, piece))
+  if (!isObj(v)) return v
+  const o = {}
+  for (const [k, x] of Object.entries(v)) {
+    if (k === 'meshRefs' && Array.isArray(x)) {
+      o.meshes = {}
+      for (const id of x) o.meshes[id] = piece('mesh', id)
+    } else if (k === 'textureRefs' && Array.isArray(x)) {
+      o.textures = {}
+      for (const id of x) o.textures[id] = piece('texture', id)
+    } else o[k] = fillRefs(x, piece)
+  }
+  return o
+}
+
+/**
+ * A by-reference scene as the inline `{slug, model, moves, scene?}` its text would have been. Each store file is read once
+ * per call (`files`, by path). A missing or unreadable piece says so in words, with no path in it.
+ */
+function inlineByRef(sceneData, sceneFile, projectDir, fail, { read, readBytes, files }) {
+  const R = sceneData.byRef
+  const modelsDir = resolve(projectDir, 'models')
+  const store = typeof R.store === 'string' && R.store.length > 0 ? resolve(dirname(sceneFile), R.store) : null
+  const inside = store !== null && relative(modelsDir, store) !== '' && !relative(modelsDir, store).startsWith('..') && !isAbsolute(relative(modelsDir, store))
+  if (!inside) throw fail('invalid', 'its 3D points outside the project\'s models folder.')
+  const once = (path, load) => {
+    if (!files.has(path)) files.set(path, load(path))
+    return files.get(path)
+  }
+  const gone = (kind, id) => fail('invalid', `is missing part of its 3D (${kind} ${id}). Open the project in Montaj and save that 3D again.`)
+  const text = (path) => { try { return read(path) } catch { return null } }
+  const piece = (kind, id) => {
+    if (typeof id !== 'string' || !STORE_ID.test(id)) throw gone(kind, id)
+    if (kind === 'mesh') {
+      const t = once(join(store, 'meshes', `${id}.json`), text)
+      try { if (t !== null) return JSON.parse(t) } catch { /* unreadable: the same error */ }
+      throw gone(kind, id)
+    }
+    for (const [ext, mime] of [['png', 'image/png'], ['jpg', 'image/jpeg']]) {
+      const b = once(join(store, 'textures', `${id}.${ext}`), (f) => { try { return readBytes(f) } catch { return null } })
+      if (b) return `data:${mime};base64,${Buffer.from(b).toString('base64')}`
+    }
+    throw gone('texture', id)
+  }
+  if (typeof R.moves !== 'string' || !MOVES_KEY.test(R.moves)) throw gone('move pool', R.moves)
+  let moves = null
+  try { const t = once(join(store, 'moves', `${R.moves}.json`), text); if (t !== null) moves = JSON.parse(t) } catch { /* the same error */ }
+  if (!isObj(moves)) throw gone('move pool', R.moves)
+  return { slug: sceneData.slug, model: fillRefs(R.model, piece), moves, ...(R.scene !== undefined ? { scene: fillRefs(R.scene, piece) } : {}) }
+}
+
 /**
  * Rewrites every scene item of `project` into a plain overlay item. `projectDir` is the folder holding project.json.
  * Throws Scene3dError (`scene3d_stage_unavailable`, `scene3d_scene_missing`, `scene3d_invalid`) naming the item.
@@ -143,8 +204,9 @@ function validTimeMap(map) {
  * `closeUp` (§673, a sample's look_at: {follow, distance, lens}) replaces each rewritten scene's camera with
  * closeUpCamera, in the text handed to the stage only; the scene's file is not touched.
  */
-export function materializeScene3d(project, projectDir, { env = process.env, exists = existsSync, read = (f) => readFileSync(f, 'utf8'), log = logToStderr, only = null, closeUp = null } = {}) {
+export function materializeScene3d(project, projectDir, { env = process.env, exists = existsSync, read = (f) => readFileSync(f, 'utf8'), readBytes = (f) => readFileSync(f), log = logToStderr, only = null, closeUp = null } = {}) {
   let n = 0
+  const files = new Map()
   for (const track of trackItems(project)) {
     for (const item of track ?? []) {
       if (!isScene3dItem(item)) continue
@@ -179,6 +241,11 @@ export function materializeScene3d(project, projectDir, { env = process.env, exi
         // A read error's code, not its message: the message carries the file's path, which names the scenes folder.
         const why = e && typeof e.code === 'string' ? e.code : (e && e.message ? e.message : e)
         throw new Scene3dError('scene3d_invalid', `${label}: ${which} cannot be read (${why}).`)
+      }
+      if (isObj(sceneData) && isObj(sceneData.byRef) && sceneData.byRef.v === 1) {
+        const fail = (_, why) => new Scene3dError('scene3d_invalid', `${label}: ${which} ${why}`)
+        sceneData = inlineByRef(sceneData, sceneFile, projectDir, fail, { read, readBytes, files })
+        sceneJson = JSON.stringify(sceneData)
       }
       if (!sceneData || typeof sceneData !== 'object' || Array.isArray(sceneData) || !sceneData.model || typeof sceneData.model !== 'object') {
         throw new Scene3dError('scene3d_invalid', `${label}: ${which} has no model in it.`)
