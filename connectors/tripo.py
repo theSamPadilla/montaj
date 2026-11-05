@@ -321,7 +321,7 @@ def _error(status: int, body: dict, text: str, what: str, *, repeatable: bool = 
             f"international site, not the China site, then save it in Montaj under Connectors.",
             reason=INVALID_API_KEY)
     if code == 2010:
-        return ConnectorError("Tripo: not enough credits. Add credit at platform.tripo3d.ai.",
+        return ConnectorError("Tripo: not enough credits. Add credit at https://developers.tripo3d.ai/en/billing",
                               reason=INSUFFICIENT_CREDIT)
     if code == 2008:
         return ConnectorError(
