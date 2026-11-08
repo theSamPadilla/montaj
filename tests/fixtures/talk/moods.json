@@ -1,0 +1,26 @@
+{
+"en": [
+{
+"from": 0.1,
+"to": 5.2,
+"mood": "amused"
+},
+{
+"at": 1.4,
+"beat": "wince@0.8",
+"hold": 0.5
+}
+],
+"pt": [
+{
+"from": 0.1,
+"to": 3.3,
+"mood": "wry"
+},
+{
+"at": 1.0,
+"beat": "smirk.R",
+"hold": 0.4
+}
+]
+}

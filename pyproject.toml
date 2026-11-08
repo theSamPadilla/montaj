@@ -99,6 +99,10 @@ include = [
 # a source checkout while `montaj install` shipped a package with no tone-map
 # data. ci.yml's wheel job greps for montaj-vivid-v1.cube so this can't repeat.
 "montaj_assets" = ["overlay-runtime/**/*", "editor/**/*", "timeline-core/**/*", "luts/**/*"]
+# lib/talk ships the CMU pronouncing dictionary (gzip) and its licence beside the code: `.gz` and the
+# licence file match neither the `"*"` glob above nor any other entry, so without this they would be
+# in the sdist (MANIFEST.in) and missing from the wheel.
+"lib.talk" = ["cmudict.dict.gz", "CMUDICT-LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

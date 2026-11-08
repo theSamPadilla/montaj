@@ -33,6 +33,10 @@ include docs/schemas/project.md
 include docs/schemas/step.md
 include docs/schemas/workflow.md
 
+# lib/talk: the CMU pronouncing dictionary (gzip) and its licence. recipes.json rides on the package-data glob.
+include lib/talk/cmudict.dict.gz
+include lib/talk/CMUDICT-LICENSE
+
 # Bundled assets — Node render engine, Vite UI, MCP server.
 # Built artifacts (node_modules/, ui/dist/) are NOT shipped — `montaj install ui`
 # builds them into ~/.cache/montaj/ on first run.

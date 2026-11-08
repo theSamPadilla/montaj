@@ -1,0 +1,331 @@
+{
+ "_about": "3D16's named expressions for 3D26. Weights are at full strength on the reference head (C2, ICT); a head whose key reaches less gets more weight, by its own reach (reach.py), capped at 1. Starting values by eye, to be tuned on the stage. No donor data.",
+ "reference_reach_mm": {
+  "browInnerUp": 5.8,
+  "browOuterUpLeft": 8.2,
+  "browOuterUpRight": 8.2,
+  "browDownLeft": 6.3,
+  "browDownRight": 6.3,
+  "eyeSquintLeft": 3.5,
+  "eyeSquintRight": 3.5,
+  "cheekSquintLeft": 5.1,
+  "cheekSquintRight": 5.1,
+  "eyeWideLeft": 3.5,
+  "eyeWideRight": 3.5,
+  "mouthSmileLeft": 14.2,
+  "mouthSmileRight": 14.2,
+  "mouthDimpleLeft": 7.9,
+  "mouthDimpleRight": 7.9,
+  "mouthFrownLeft": 5.5,
+  "mouthFrownRight": 5.5,
+  "mouthPressLeft": 4.0,
+  "mouthPressRight": 4.0,
+  "mouthUpperUpLeft": 8.0,
+  "mouthUpperUpRight": 8.0,
+  "mouthLowerDownLeft": 4.5,
+  "mouthLowerDownRight": 4.5,
+  "noseSneerLeft": 9.6,
+  "noseSneerRight": 9.6,
+  "mouthPucker": 12.3,
+  "mouthFunnel": 12.0,
+  "jawOpen": 40.6,
+  "eyeLookUpLeft": 3.6,
+  "eyeLookUpRight": 3.6
+ },
+ "floor": {
+  "prefixes": [
+   "brow",
+   "eye",
+   "cheek"
+  ],
+  "min": 0.3,
+  "_about": "the brow, lid and cheek group scales by .3 + .7 s, not s: a half smile still squints"
+ },
+ "recipes": {
+  "smile": {
+   "w": {
+    "mouthSmileLeft": 0.7,
+    "mouthSmileRight": 0.7,
+    "cheekSquintLeft": 0.5,
+    "cheekSquintRight": 0.5,
+    "eyeSquintLeft": 0.3,
+    "eyeSquintRight": 0.3,
+    "mouthUpperUpLeft": 0.15,
+    "mouthUpperUpRight": 0.15,
+    "mouthDimpleLeft": 0.15,
+    "mouthDimpleRight": 0.15
+   },
+   "in": 0.25,
+   "out": 0.4,
+   "speech": "keep"
+  },
+  "grin": {
+   "w": {
+    "mouthSmileLeft": 1.0,
+    "mouthSmileRight": 1.0,
+    "cheekSquintLeft": 0.7,
+    "cheekSquintRight": 0.7,
+    "eyeSquintLeft": 0.45,
+    "eyeSquintRight": 0.45,
+    "mouthStretchLeft": 0.3,
+    "mouthStretchRight": 0.3,
+    "mouthUpperUpLeft": 0.35,
+    "mouthUpperUpRight": 0.35,
+    "mouthLowerDownLeft": 0.3,
+    "mouthLowerDownRight": 0.3,
+    "jawOpen": 0.08
+   },
+   "in": 0.2,
+   "out": 0.45,
+   "speech": "keep"
+  },
+  "smirk": {
+   "w": {
+    "mouthSmileLeft": 0.85,
+    "cheekSquintLeft": 0.5,
+    "eyeSquintLeft": 0.3,
+    "mouthDimpleLeft": 0.35,
+    "mouthStretchLeft": 0.15,
+    "mouthPressRight": 0.2,
+    "mouthLeft": 0.15
+   },
+   "side": "L",
+   "in": 0.25,
+   "out": 0.4,
+   "speech": "keep"
+  },
+  "laugh": {
+   "w": {
+    "mouthSmileLeft": 1.0,
+    "mouthSmileRight": 1.0,
+    "cheekSquintLeft": 0.8,
+    "cheekSquintRight": 0.8,
+    "eyeSquintLeft": 0.6,
+    "eyeSquintRight": 0.6,
+    "jawOpen": 0.35,
+    "mouthUpperUpLeft": 0.4,
+    "mouthUpperUpRight": 0.4,
+    "mouthLowerDownLeft": 0.4,
+    "mouthLowerDownRight": 0.4,
+    "browInnerUp": 0.15,
+    "eyeBlinkLeft": 0.2,
+    "eyeBlinkRight": 0.2
+   },
+   "in": 0.15,
+   "out": 0.5,
+   "speech": "drop"
+  },
+  "surprise": {
+   "w": {
+    "browInnerUp": 0.8,
+    "browOuterUpLeft": 0.8,
+    "browOuterUpRight": 0.8,
+    "eyeWideLeft": 0.6,
+    "eyeWideRight": 0.6,
+    "jawOpen": 0.25,
+    "mouthFunnel": 0.1
+   },
+   "in": 0.12,
+   "out": 0.5,
+   "speech": "drop"
+  },
+  "fear": {
+   "w": {
+    "browInnerUp": 0.9,
+    "browOuterUpLeft": 0.3,
+    "browOuterUpRight": 0.3,
+    "eyeWideLeft": 0.7,
+    "eyeWideRight": 0.7,
+    "mouthStretchLeft": 0.45,
+    "mouthStretchRight": 0.45,
+    "jawOpen": 0.1
+   },
+   "in": 0.15,
+   "out": 0.5,
+   "speech": "drop"
+  },
+  "anger": {
+   "w": {
+    "browDownLeft": 1.0,
+    "browDownRight": 1.0,
+    "eyeSquintLeft": 0.5,
+    "eyeSquintRight": 0.5,
+    "cheekSquintLeft": 0.2,
+    "cheekSquintRight": 0.2,
+    "noseSneerLeft": 0.5,
+    "noseSneerRight": 0.5,
+    "mouthPressLeft": 0.5,
+    "mouthPressRight": 0.5,
+    "mouthFrownLeft": 0.25,
+    "mouthFrownRight": 0.25,
+    "jawForward": 0.15
+   },
+   "in": 0.25,
+   "out": 0.5,
+   "speech": "keep"
+  },
+  "disgust": {
+   "w": {
+    "noseSneerLeft": 0.7,
+    "noseSneerRight": 0.7,
+    "mouthUpperUpLeft": 0.35,
+    "mouthUpperUpRight": 0.35,
+    "browDownLeft": 0.4,
+    "browDownRight": 0.4,
+    "eyeSquintLeft": 0.35,
+    "eyeSquintRight": 0.35,
+    "mouthFrownLeft": 0.2,
+    "mouthFrownRight": 0.2,
+    "cheekSquintLeft": 0.3,
+    "cheekSquintRight": 0.3
+   },
+   "in": 0.2,
+   "out": 0.5,
+   "speech": "keep"
+  },
+  "sad": {
+   "w": {
+    "browInnerUp": 0.7,
+    "mouthFrownLeft": 0.55,
+    "mouthFrownRight": 0.55,
+    "mouthShrugLower": 0.3,
+    "eyeLookDownLeft": 0.1,
+    "eyeLookDownRight": 0.1,
+    "mouthPressLeft": 0.1,
+    "mouthPressRight": 0.1,
+    "eyeSquintLeft": 0.1,
+    "eyeSquintRight": 0.1
+   },
+   "in": 0.4,
+   "out": 0.6,
+   "speech": "keep"
+  },
+  "worry": {
+   "w": {
+    "browInnerUp": 0.6,
+    "mouthStretchLeft": 0.2,
+    "mouthStretchRight": 0.2,
+    "mouthPressLeft": 0.2,
+    "mouthPressRight": 0.2,
+    "eyeSquintLeft": 0.1,
+    "eyeSquintRight": 0.1
+   },
+   "in": 0.3,
+   "out": 0.5,
+   "speech": "keep"
+  },
+  "squint": {
+   "w": {
+    "eyeSquintLeft": 0.8,
+    "eyeSquintRight": 0.8,
+    "cheekSquintLeft": 0.4,
+    "cheekSquintRight": 0.4,
+    "browDownLeft": 0.3,
+    "browDownRight": 0.3
+   },
+   "in": 0.2,
+   "out": 0.4,
+   "speech": "keep"
+  },
+  "wince": {
+   "w": {
+    "eyeSquintLeft": 0.9,
+    "eyeSquintRight": 0.9,
+    "eyeBlinkLeft": 0.4,
+    "eyeBlinkRight": 0.4,
+    "cheekSquintLeft": 0.6,
+    "cheekSquintRight": 0.6,
+    "noseSneerLeft": 0.5,
+    "noseSneerRight": 0.5,
+    "mouthStretchLeft": 0.5,
+    "mouthStretchRight": 0.5,
+    "browDownLeft": 0.6,
+    "browDownRight": 0.6,
+    "mouthUpperUpLeft": 0.3,
+    "mouthUpperUpRight": 0.3
+   },
+   "in": 0.08,
+   "out": 0.45,
+   "speech": "drop"
+  },
+  "think": {
+   "w": {
+    "browDownLeft": 0.4,
+    "browOuterUpRight": 0.35,
+    "eyeLookUpLeft": 0.35,
+    "eyeLookUpRight": 0.35,
+    "mouthPressLeft": 0.4,
+    "mouthPressRight": 0.4,
+    "mouthRollLower": 0.25,
+    "mouthLeft": 0.3
+   },
+   "side": "L",
+   "in": 0.35,
+   "out": 0.5,
+   "speech": "keep"
+  },
+  "doubt": {
+   "w": {
+    "browOuterUpRight": 0.8,
+    "browDownLeft": 0.4,
+    "eyeSquintLeft": 0.3,
+    "mouthPressLeft": 0.3,
+    "mouthLeft": 0.2,
+    "mouthFrownLeft": 0.15
+   },
+   "side": "L",
+   "in": 0.3,
+   "out": 0.5,
+   "speech": "keep"
+  },
+  "wink": {
+   "w": {
+    "eyeBlinkLeft": 1.0,
+    "cheekSquintLeft": 0.5,
+    "mouthSmileLeft": 0.35,
+    "browDownLeft": 0.2
+   },
+   "side": "L",
+   "in": 0.08,
+   "out": 0.25,
+   "speech": "keep"
+  }
+ },
+ "moods": {
+  "neutral": {
+   "recipe": null,
+   "strength": 0,
+   "motion": 1.0
+  },
+  "warm": {
+   "recipe": "smile",
+   "strength": 0.35,
+   "motion": 1.05
+  },
+  "amused": {
+   "recipe": "smile",
+   "strength": 0.6,
+   "motion": 1.25
+  },
+  "wry": {
+   "recipe": "smirk",
+   "strength": 0.5,
+   "motion": 1.0
+  },
+  "serious": {
+   "recipe": "squint",
+   "strength": 0.3,
+   "motion": 0.72
+  },
+  "concerned": {
+   "recipe": "worry",
+   "strength": 0.5,
+   "motion": 0.8
+  },
+  "surprised": {
+   "recipe": "surprise",
+   "strength": 0.4,
+   "motion": 1.2
+  }
+ }
+}
