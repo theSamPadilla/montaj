@@ -137,6 +137,18 @@ class Face(unittest.TestCase):
         self.assertAlmostEqual(y.max(), x.max() / 2, delta=.03 * x.max())
         self.assertAlmostEqual(y.sum(), x.sum() / 2, delta=.05 * x.sum())
 
+    def test_head_model_json_matches_glb(self):
+        # The app's own model.json, imported from that GLB: the same weights within the int16 quantisation of its shape keys.
+        fx = os.path.join(os.path.dirname(__file__), 'fixtures', 'talk')
+        glb, mj = os.path.join(fx, 'tiny-head.glb'), os.path.join(fx, 'tiny-head', 'model.json')
+        a, ra = run(moods=NEUTRAL, head=glb); b, rb = run(moods=NEUTRAL, head=mj)
+        self.assertEqual(rb['head'], mj)
+        self.assertEqual(ra['missingKeys'], rb['missingKeys'])
+        g = np.arange(0, a['duration'], .01)
+        x, y = val(a, 'browInnerUp', g), val(b, 'browInnerUp', g)
+        self.assertGreater(x.max(), .05)
+        self.assertLess(np.abs(x - y).max(), 1e-3)
+
     def test_beat_envelope(self):
         R = recipes.load(); m = recipes.meta('disgust', R); w = recipes.weights('disgust', R)['noseSneerLeft']
         at, hold = 3.0, .5

@@ -1,0 +1,1 @@
+{"kind":"object","name":"head","materials":{"default":{"color":"#ffffff","roughness":1}},"skeleton":[["root",null,[0,0,0]]],"parts":[{"name":"head_part1","bone":"root","shape":"mesh","mesh":"07432a0814759419","material":"default"},{"name":"head_part2","bone":"root","shape":"mesh","mesh":"013eebb4e0abc848","material":"default"}]}

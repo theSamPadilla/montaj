@@ -15,7 +15,7 @@ moods is a list of lines and beats, in any order:
 The AI picks the moods and beats; everything else is computed from the audio. Above the mouth reads no words (prosody.py), so it holds
 in any language; only the visemes need a language's rules.
 
-head: the head's GLB. Gestures ask for millimetres and the head's own reach per key (reach.py) gives the weight, so ICT and GNM move
+head: the head's GLB, or the app's model.json. Gestures ask for millimetres and the head's own reach per key (reach.py) gives the weight, so ICT and GNM move
   the same distance; moods and beats scale the same way (recipes.weights). Without it, recipes.json's reference_reach_mm (C2, ICT).
 expressive: one knob over the gesture layer: brow flashes, brows down, held lifts, squint and wide pulses, speech's lift of a smile,
   nods, phrase-end drops and tilts, look-aways with the head following, the breath's parted lips. 0 turns that layer off; moods, beats,
@@ -162,7 +162,7 @@ GESTURE_KEYS = ('browInnerUp', 'browOuterUpLeft', 'browOuterUpRight', 'browDownL
 
 
 def build(wav, whisper, lang, moods, gain=1.0, cmudict=None, sigma=70, phrased=True, head=None, expressive=1.0, recipe_data=None):
-    """moods: moods.json's list. head: a GLB path for its reach, or None for the reference.
+    """moods: moods.json's list. head: a GLB or app model.json path for its reach, or None for the reference.
     expressive: the gesture layer's size, 0 for none. recipe_data: recipes.json's content, loaded when None. Returns (clip, report)."""
     head_glb = head  # `head` becomes the head bone's curves below, as it always was
     RD = recipe_data if recipe_data is not None else recipes.load()
