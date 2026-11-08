@@ -85,6 +85,7 @@ class RoundTrip(Tmp):
         self.assertEqual(j['asset']['version'], '2.0')
         self.assertEqual(j['animations'][0]['name'], 'face')
         self.assertEqual(info['dropped'], [])
+        self.assertEqual(info['firstValues'], {b: [round(float(x), 4) for x in k[0][1]] for b, k in face.items()})
         rows = (skeleton or G.REFERENCE)['rows']
         by = {r[0]: r for r in rows}
         # The skeleton: each node, placed as add_clips places the file, at its engine head (the bind pose).
@@ -224,7 +225,15 @@ class Split(Tmp):
     def test_short_clip_is_one_file(self):
         g = golden()
         out = G.write_clips(self.p('face'), g['duration'], g['morphs'], None, name='face')
-        self.assertEqual([(o['path'], o['name'], o['start'], o['duration']) for o in out], [(self.p('face.glb'), 'face', 0, g['duration'])])
+        self.assertEqual([(o['call'], o['path'], o['name'], o['start'], o['duration']) for o in out], [(1, self.p('face.glb'), 'face', 0, g['duration'])])
+
+    def test_first_values_are_what_additive_play_takes_off(self):
+        g = golden()
+        body = {k: v for k, v in g['bones'].items() if k not in ('head', 'neck')}
+        info = G.write_glb(self.p('body.glb'), g['duration'], None, body, name='body')
+        self.assertEqual(sorted(info['firstValues']), sorted(body))
+        self.assertEqual(info['firstValues']['chest'], [-1.44, 0, 0])
+        self.assertEqual(info['firstValues']['mixamorig_LeftShoulder'], [0, -2.15, 0])
 
     def test_long_clip_cuts_at_pauses_and_fits(self):
         secs, morphs, bones, pauses = self.long_clip()
@@ -233,6 +242,7 @@ class Split(Tmp):
         self.assertGreater(len(out), 2)
         mids = {round((a + b) / 2, 3) for a, b in pauses}
         for i, o in enumerate(out):
+            self.assertEqual(o['call'], i + 1)
             self.assertEqual(o['name'], f'face_{i + 1}')
             self.assertTrue(o['path'].endswith(f'long-{i + 1}.glb'))
             self.assertLessEqual(o['moveBytes'], G.FILL * G.MOVES_CAP_BYTES)

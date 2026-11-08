@@ -26,5 +26,8 @@ TensorFlow Authors, Apache License 2.0).
 lib/talk/cmudict.dict.gz is the CMU Pronouncing Dictionary (Copyright (C) 1993-2015 Carnegie Mellon
 University; BSD-style licence, in lib/talk/CMUDICT-LICENSE), compressed with gzip and otherwise unchanged.
 
+lib/talk/glb.py REFERENCE_ROWS are eight bone heads (hips to head and both shoulders) of the MakeHuman base body's rig
+(MakeHuman / MPFB adult skeleton, CC0 1.0), as the Montaj app's importer stores it, rounded to 1e-6 m.
+
 The full licence text is in LICENSE-APACHE-2.0.
 Apache License, Version 2.0: https://www.apache.org/licenses/LICENSE-2.0

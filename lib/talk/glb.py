@@ -34,8 +34,8 @@ STUB_DELTA = 1e-4  # m: each morph target moves the stub's first vertex this far
 ROOT_NODE = 'talk_root'
 MESH_NODE = 'talk_face'
 
-# The bones face.build keys and the chain above them, from the app's MakeHuman base-body rig
-# (montaj-app library/test/fixtures/model3d/mh-adult-skeleton.json), for a clip written without a target model.
+# The bones face.build keys and the chain above them, from the app's MakeHuman base-body rig (CC0; NOTICE), as its importer
+# stores it (montaj-app library/test/fixtures/model3d/mh-adult-skeleton.json), for a clip written without a target model.
 REFERENCE_ROWS = [
     ['hips', None, [0.004756, -0.023766, 0.856877]],
     ['spine', 'hips', [0, -0.019587, 0.976728]],
@@ -253,7 +253,8 @@ def _pad(b, fill=b'\0'):
 
 def write_glb(path, duration, morphs=None, bones=None, skeleton=None, name='talk'):
     """Writes the clip (see the module doc). skeleton: skeleton_of(model.json), or None for REFERENCE. -> {'bytes', 'morphs',
-    'bones' (the keyed bones written), 'dropped' (keyed bones the skeleton lacks), 'nodes', 'place'}."""
+    'bones' (the keyed bones written), 'dropped' (keyed bones the skeleton lacks), 'nodes', 'place', 'firstValues' ({bone: its
+    value at 0}: what an additive layer takes off every key, motion.js Layers: it plays the change since the move's time 0)}."""
     duration = float(duration)
     if not duration > 0:
         raise ValueError('duration must be > 0')
@@ -349,8 +350,9 @@ def write_glb(path, duration, morphs=None, bones=None, skeleton=None, name='talk
         f.write(b'glTF' + struct.pack('<II', 2, total))
         f.write(struct.pack('<I', len(jb)) + b'JSON' + jb)
         f.write(struct.pack('<I', len(bin_)) + b'BIN\0' + bytes(bin_))
+    first = {b: [round(float(x), 4) for x in _interp(np.array([0.]), *_keys(bones[b]))[0]] for b in keyed if b in index}
     return {'bytes': total, 'morphs': names, 'bones': [b for b in keyed if b in index], 'dropped': dropped, 'nodes': len(nodes),
-            'place': sk.get('place')}
+            'place': sk.get('place'), 'firstValues': first}
 
 
 # ---- size, and cutting a long clip ----
@@ -409,8 +411,9 @@ def pieces(duration, morphs=None, bones=None, pauses=(), cap=MOVES_CAP_BYTES, fi
 
 def write_clips(stem, duration, morphs=None, bones=None, skeleton=None, name='talk', pauses=(), cap=MOVES_CAP_BYTES):
     """The clip as one GLB (<stem>.glb, animation `name`), or, when its move would pass fill x cap, as several (<stem>-1.glb,
-    <stem>-2.glb ..., animations name_1, name_2 ...) cut at pauses (see pieces), each to be added by its own add_clips call (the
-    cap is on what one call adds) and played from its start. -> [{'path', 'name', 'start', 'duration', 'moveBytes', **write_glb's}]."""
+    <stem>-2.glb ..., animations name_1, name_2 ...) cut at pauses (see pieces). ONE add_clips CALL PER FILE: the cap is on what one
+    call adds, so two pieces in one call would pass it. Each file's move plays from its `start` (timeline seconds from the clip's
+    start). -> [{'call' (1, 2 ...: its own add_clips call), 'path', 'name', 'start', 'duration', 'moveBytes', **write_glb's}]."""
     ps = pieces(duration, morphs, bones, pauses, cap, name=name)
     out = []
     for i, (a, b) in enumerate(ps):
@@ -418,5 +421,5 @@ def write_clips(stem, duration, morphs=None, bones=None, skeleton=None, name='ta
         m, bn = (morphs, bones) if one else (_cut(morphs or {}, a, b), _cut(bones or {}, a, b))
         path, nm = (f'{stem}.glb', name) if one else (f'{stem}-{i + 1}.glb', f'{name}_{i + 1}')
         info = write_glb(path, b - a, m, bn, skeleton, nm)
-        out.append({'path': path, 'name': nm, 'start': round(a, 3), 'duration': round(b - a, 3), 'moveBytes': move_bytes(m, bn, nm), **info})
+        out.append({'call': i + 1, 'path': path, 'name': nm, 'start': round(a, 3), 'duration': round(b - a, 3), 'moveBytes': move_bytes(m, bn, nm), **info})
     return out
