@@ -147,6 +147,23 @@ class RoundTrip(Tmp):
         place = {'scale': 0.37, 'centre': [0.1, -0.2, 0.05], 'yaw': 0.21}
         self.check({'rows': rows, 'place': place}, place)
 
+    def test_rows_need_not_list_a_parent_first(self):
+        rows = [list(r) for r in G.REFERENCE_ROWS]
+        rows = [rows[6], rows[5], rows[3]] + rows[:3] + rows[4:5] + rows[7:]  # head, neck, chest ahead of their parents
+        rows[2] = rows[2] + [{'rot': [3, 0, 0]}]
+        path = self.p('o.glb')
+        G.write_glb(path, 1, None, {'head': [[0, [1, 2, 3]], [1, [0, 0, 0]]]}, {'rows': rows, 'place': None})
+        j, world, ix, ch = read(path)
+        by = {r[0]: r for r in rows}
+        for b in ('hips', 'spine', 'mixamorig_Spine1', 'chest', 'neck', 'head'):
+            np.testing.assert_allclose((placement(None) @ world[ix[b]])[:3, 3], by[b][2], atol=2e-6)
+        self.assertEqual(j['nodes'][ix['chest']]['children'], [ix['neck']])
+        self.assertEqual(j['nodes'][ix['neck']]['children'], [ix['head']])
+        self.assertEqual({j['nodes'][c[0]]['name'] for c in ch}, {'head', 'chest'})
+        loop = [['a', 'b', [0, 0, 0]], ['b', 'a', [0, 0, 1]]]
+        with self.assertRaises(ValueError):
+            G.write_glb(self.p('l.glb'), 1, None, {'a': [[0, [1, 0, 0]]]}, {'rows': loop, 'place': None})
+
     def test_euler_quaternion_pair(self):
         rng = np.random.default_rng(1)
         for v in rng.uniform(-80, 80, (50, 3)):

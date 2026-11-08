@@ -229,14 +229,31 @@ def _interp(tq, t, v):
 
 
 def _chain(rows, keyed):
-    """The rows the file carries, in skeleton order: the keyed bones and every bone above them ('root' left out)."""
+    """The rows the file carries: the keyed bones and every bone above them ('root' left out), each after its parent (a model's
+    rows need not list a parent first), otherwise in skeleton order."""
     by = {r[0]: r for r in rows}
     want = set()
     for b in keyed:
         while b is not None and b in by and b != 'root' and b not in want:
             want.add(b)
             b = by[b][1]
-    return [r for r in rows if r[0] in want]
+    out, done = [], set()
+
+    def put(b, seen):
+        if b in done:
+            return
+        if b in seen:
+            raise ValueError(f'the skeleton loops through "{b}"')
+        p = by[b][1]
+        if p in want:
+            put(p, seen | {b})
+        done.add(b)
+        out.append(by[b])
+
+    for r in rows:
+        if r[0] in want:
+            put(r[0], set())
+    return out
 
 
 def _rest_quat(row):
