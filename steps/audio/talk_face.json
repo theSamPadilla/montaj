@@ -1,0 +1,21 @@
+{
+  "name": "talk_face",
+  "description": "Turn a voice into a talking face for a 3D character: lip sync, blinks, brows, gaze and head motion from the audio. Writes the face move (shape keys, head, neck; several files for a long voice) and a body move (breath, shoulders) as .glb files for direct_scene's play, and prints the play actions. moods sets expressions: {from, to, mood} per line, {at, beat, strength, hold} for a one-shot. Free, local, standalone.",
+  "output": {
+    "type": "json",
+    "description": "{face: [{call, path, name, start, duration}], body: {path, name, firstValues}, duration, language, keys, missingKeys, gestures, beats, phrases, known: {moods, beats}, play: {face, body}, notes}. play holds ready direct_scene play actions for each face file and the body."
+  },
+  "input": {
+    "type": "audio",
+    "description": "The voice: audio or video, any format ffmpeg reads"
+  },
+  "params": [
+    {"name": "words", "type": "path", "required": false, "description": "transcribe's words JSON for this voice. Left out, the step transcribes it."},
+    {"name": "language", "type": "string", "required": false, "description": "Language code. Default: the transcript's. en uses a pronouncing dictionary, pt Portuguese rules, any other letter rules."},
+    {"name": "model", "type": "path", "required": false, "description": "The character's model.json (or its folder): its own reach and skeleton. Left out, the reference head and skeleton."},
+    {"name": "moods", "type": "string", "required": false, "description": "Expressions, as a list of {from, to, mood} (a mood per line) and {at, beat, strength?, hold?} (a one-shot). The known names come back in the result."},
+    {"name": "expressive", "type": "float", "required": false, "default": 1, "description": "0..2: the gesture layer's size (brows, nods, look-aways). 0 turns it off."},
+    {"name": "name", "type": "string", "required": false, "description": "Move name. Default: the voice file's name."},
+    {"name": "out", "type": "path", "required": true, "ext": ".json", "description": "Output path: its name starts every file written (<name>-face.glb, <name>-body.glb, <name>.json). Optional with _project: saved in the project's assets folder."}
+  ]
+}
