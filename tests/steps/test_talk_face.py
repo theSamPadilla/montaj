@@ -78,7 +78,7 @@ def test_output_shape_and_files_equal_the_clip(tmp_path):
     assert set(res) == {"face", "body", "duration", "language", "keys", "missingKeys", "gestures", "beats", "phrases", "known",
                         "play", "notes"}
     assert res["duration"] == clip["duration"] and res["language"] == "en"
-    assert set(res["face"][0]) == {"call", "path", "name", "start", "duration"}
+    assert set(res["face"][0]) == {"path", "name", "start", "duration"}
     assert res["face"][0]["name"] == "arctic_a0023_face" and res["body"]["name"] == "arctic_a0023_body"
     assert res["gestures"] == rep["gestures"] and res["phrases"] == rep["phrases"]
     assert [b["beat"] for b in res["beats"]] == ["wince@0.8"] and all("keys" not in b for b in res["beats"])

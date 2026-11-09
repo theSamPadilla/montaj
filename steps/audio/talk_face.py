@@ -160,13 +160,11 @@ def main():
         binfo = glb.write_glb(body_path, dur, None, body_bones, skeleton, name=base + "_body")
     except ValueError as e:
         fail("talk_failed", str(e))
-    if glb.move_bytes(None, body_bones, base + "_body") > glb.MOVES_CAP_BYTES:
-        notes.append("the body move is over the 512 KB cap for one add_clips call; use a shorter voice")
     dropped = sorted(set(binfo["dropped"]) | {b for pc in pieces for b in pc["dropped"]})
     if dropped:
         notes.append("bones this skeleton lacks, not played: " + ", ".join(dropped))
     if len(pieces) > 1:
-        notes.append(f"the face move is {len(pieces)} files: one add_clips call each if added; play.face has an action for each")
+        notes.append(f"the face move is {len(pieces)} files: send every action in play in one direct_scene call")
 
     reach_mm = reach.reach(model_json) if model_json else dict(RD["reference_reach_mm"])
     wanted = set(RD["reference_reach_mm"]) | set(clip["morphs"])  # the keys the voice drives, and the ones a gesture would
@@ -175,7 +173,7 @@ def main():
         notes.append("this model lacks, or has no reach on, keys the voice would drive: " + ", ".join(missing))
 
     binfo_path = body_path
-    face_out = [{k: pc[k] for k in ("call", "path", "name", "start", "duration")} for pc in pieces]
+    face_out = [{k: pc[k] for k in ("path", "name", "start", "duration")} for pc in pieces]
     play = {
         "face": [{"play": {"clip": os.path.abspath(pc["path"]), "start": pc["start"], "over": "face"}} for pc in pieces],
         "body": {"play": {"clip": os.path.abspath(binfo_path), "start": 0, "over": "add"}},

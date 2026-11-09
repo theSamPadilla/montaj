@@ -3,7 +3,7 @@
   "description": "Turn a voice into a talking face for a 3D character: lip sync, blinks, brows, gaze and head motion from the audio. Writes the face move (shape keys, head, neck; several files for a long voice) and a body move (breath, shoulders) as .glb files for direct_scene's play, and prints the play actions. moods sets expressions: {from, to, mood} per line, {at, beat, strength, hold} for a one-shot. Free, local, standalone.",
   "output": {
     "type": "json",
-    "description": "{face: [{call, path, name, start, duration}], body: {path, name, firstValues}, duration, language, keys, missingKeys, gestures, beats, phrases, known: {moods, beats}, play: {face, body}, notes}. play holds ready direct_scene play actions for each face file and the body."
+    "description": "{face: [{path, name, start, duration}], body: {path, name, firstValues}, duration, language, keys, missingKeys, gestures, beats, phrases, known: {moods, beats}, play: {face, body}, notes}. play holds ready direct_scene play actions for each face file and the body."
   },
   "input": {
     "type": "audio",
