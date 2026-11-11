@@ -221,7 +221,18 @@ def main():
         track = written["track"]
         warnings = ink_pass(project_path)
 
-        answer = dict(track)
+        # What the caller reads first: it finished, and what it wrote. project["captions"] is the one
+        # captions track; translations ride in its segments (lang + translationOf), so only source lines count.
+        n = sum(1 for g in track.get("segments") or []
+                if isinstance(g, dict) and not (isinstance(g.get("lang"), str) and isinstance(g.get("translationOf"), list)))
+        answer = {
+            "done": True,
+            "track": "captions",
+            "lines": n,
+            "language": track.get("lang"),
+            "message": f"Captions finished: {n} {'line' if n == 1 else 'lines'} on the captions track.",
+            **track,
+        }
         if corrected is not None:
             answer["corrected"] = corrected
         if written.get("kept"):
