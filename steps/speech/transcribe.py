@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from common import fail, require_file, check_output, run, run_whisper, find_whisper_bin, require_whisper_model, ffmpeg_bin, get_duration, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES, ff_input
+from common import fail, require_file, check_output, run, run_whisper, find_whisper_bin, require_whisper_model, whisper_language, ffmpeg_bin, get_duration, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES, ff_input
 from trim_spec import is_trim_spec, load as load_spec, extract_audio_at_keeps, remap_timestamp
 
 def speech_stats(data):
@@ -86,10 +86,10 @@ def transcribe(input_path, out=None, model=DEFAULT_WHISPER_MODEL, language="en",
     try:
         if not whole_file and trim_spec_data is None:
             from lib import speech_runs
-            by_runs_done = not speech_runs.transcribe_runs(audio_input, output_prefix, model_path, language).get("fell_back")
+            by_runs_done = not speech_runs.transcribe_runs(audio_input, output_prefix, model_path, whisper_language(language)).get("fell_back")
         if not by_runs_done:
             # Single pass: word-level JSON + SRT in one decode
-            whisper_cmd = [whisper_bin, "-m", model_path, "-f", audio_input, "-l", language,
+            whisper_cmd = [whisper_bin, "-m", model_path, "-f", audio_input, "-l", whisper_language(language),
                            "--split-on-word", "--max-len", "1", "--output-srt", "--output-json",
                            "--output-file", output_prefix]
             if max_context is not None:

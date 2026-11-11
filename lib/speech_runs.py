@@ -36,7 +36,7 @@ import tempfile
 import wave
 from pathlib import Path
 
-from lib.common import fail, ff_path, ffmpeg_bin, find_whisper_bin, run, run_whisper
+from lib.common import fail, ff_path, ffmpeg_bin, find_whisper_bin, run, run_whisper, whisper_language
 from lib import speech_energy, voice
 
 VERSION = "speech-runs v1"
@@ -129,7 +129,7 @@ def _write_clips(wav_path, spans, folder):
 
 def _whisper(base, clips, spans_of, language):
     """One whisper-cli call over `clips` (the guard told their summed length). Each clip's `<clip>.json`, parsed."""
-    cmd = list(base) + ["-l", language] + [x for c in clips for x in ("-f", c)]
+    cmd = list(base) + ["-l", whisper_language(language)] + [x for c in clips for x in ("-f", c)]
     total = sum(spans_of[c][1] - spans_of[c][0] for c in clips)
     run_whisper(cmd, clips[0], check=True, duration_s=total)
     out = {}

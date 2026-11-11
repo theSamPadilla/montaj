@@ -603,3 +603,23 @@ def test_a_redo_with_no_voiced_run_says_it_kept_the_older_transcript(tmp_path):
         project_for(src), "t", str(d / "project.json"), str(d), "m", "auto", transcribe, redo_full_file=True)
     assert done == [] and json.loads(side.read_text()) == OLD
     assert any("kept the older transcript of clip.mp4" in w for w in warnings), warnings
+
+
+# ── a region code reaches whisper as its base language ───────────────────────
+
+def test_runs_give_whisper_the_base_language(tmp_path, fake):
+    f = fake({0: [("Oi", 0.6, 1.0)]})
+    media = make_wav(tmp_path / "a.wav", [(0.5, 1.5)], 3.0)
+    sr.transcribe_runs(media, str(tmp_path / "out"), "model.bin", "pt-BR")
+    assert [c["cmd"][c["cmd"].index("-l") + 1] for c in f.calls] == ["pt"]
+
+
+def test_step_gives_whisper_the_base_language_on_both_paths(step, tmp_path, fake, monkeypatch):
+    f = fake({0: [("Oi", 0.6, 1.0)]})
+    media = make_wav(tmp_path / "a.wav", [(0.5, 1.5)], 3.0)
+    step.transcribe(media, str(tmp_path / "out"), "base.en", "pt-BR")
+    assert f.calls[0]["cmd"][f.calls[0]["cmd"].index("-l") + 1] == "pt"
+    calls = []
+    full_file_whisper(monkeypatch, step, calls)
+    step.transcribe(media, str(tmp_path / "out2"), "base.en", "pt-BR", whole_file=True)
+    assert calls[0][calls[0].index("-l") + 1] == "pt"

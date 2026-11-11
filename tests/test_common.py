@@ -687,3 +687,41 @@ def test_run_stopping_kills_a_child_that_ignores_sigterm():
     with pytest.raises(subprocess.TimeoutExpired):
         run_stopping([sys.executable, "-c", stubborn], timeout=1, grace=1)
     assert time.monotonic() - t0 < 10
+
+
+# ── whisper_language(): a region code reaches whisper as its base language ───
+
+@pytest.mark.parametrize("code,want", [
+    ("pt-BR", "pt"), ("zh_TW", "zh"), ("EN-us", "en"), ("es", "es"), ("FR", "fr"),
+    ("auto", "auto"), ("yue", "yue"), (None, None),
+])
+def test_whisper_language_maps_a_region_code_to_the_base_code(code, want):
+    assert common.whisper_language(code) == want
+
+
+def test_resolve_treats_a_regional_english_as_english(fake_models):
+    fake_models("base.en", "base")
+    assert common.resolve_whisper_model("base.en", "en-US") == "base.en"
+    assert common.resolve_whisper_model("base.en", "EN_gb") == "base.en"
+    assert common.resolve_whisper_model("base.en", "pt-BR") == "base"
+
+
+def test_transcribe_words_gives_whisper_the_base_language(fake_models, tmp_path, monkeypatch):
+    fake_models("base")
+    monkeypatch.setattr(common, "find_whisper_bin", lambda: "/fake/whisper-cpp")
+    seen = []
+
+    def fake_whisper(cmd, audio, **kw):
+        import subprocess as _sp
+        seen.append(list(cmd))
+        Path(cmd[cmd.index("--output-file") + 1] + ".json").write_text(json.dumps({"transcription": [
+            {"text": " oi", "offsets": {"from": 0, "to": 400}}]}))
+        return _sp.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(common, "run_whisper", fake_whisper)
+    wav = tmp_path / "a.wav"
+    wav.write_bytes(b"RIFF....WAVE")
+    work = tmp_path / "work"
+    work.mkdir()
+    words = common.transcribe_words(str(wav), "base", work_dir=str(work), language="pt-BR")
+    assert words and seen[0][seen[0].index("-l") + 1] == "pt"
