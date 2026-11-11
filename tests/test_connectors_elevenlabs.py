@@ -832,3 +832,28 @@ class TestAudioPostTimeoutAndLostAnswer:
         with pytest.raises(ConnectorError) as ei:
             mod.generate_sfx("a door", str(tmp_path / "o.mp3"))
         assert ei.value.reason == UNREACHABLE and posts == []
+
+    def test_an_ssl_error_while_waiting_for_the_answer_may_have_been_sent(self, monkeypatch, tmp_path):
+        import ssl
+        import connectors.elevenlabs as mod
+        import requests
+        from urllib3.exceptions import MaxRetryError, SSLError as U3SSLError
+        exc = requests.exceptions.SSLError(MaxRetryError(None, "/", U3SSLError(ssl.SSLEOFError(8, "EOF"))))
+        posts = self._stub(monkeypatch, exc)
+        with pytest.raises(ConnectorError) as ei:
+            mod.generate_sfx("a door", str(tmp_path / "o.mp3"))
+        assert ei.value.reason is None and "may still have been made" in str(ei.value)
+        assert len(posts) == 1
+
+    def test_a_certificate_failure_was_never_sent(self, monkeypatch, tmp_path):
+        import ssl
+        import connectors.elevenlabs as mod
+        import requests
+        from connectors import UNREACHABLE
+        from urllib3.exceptions import MaxRetryError, SSLError as U3SSLError
+        exc = requests.exceptions.SSLError(MaxRetryError(None, "/", U3SSLError(
+            ssl.SSLCertVerificationError(1, "certificate verify failed"))))
+        self._stub(monkeypatch, exc)
+        with pytest.raises(ConnectorError) as ei:
+            mod.generate_sfx("a door", str(tmp_path / "o.mp3"))
+        assert ei.value.reason == UNREACHABLE and "may still have been made" not in str(ei.value)

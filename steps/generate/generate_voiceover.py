@@ -101,10 +101,9 @@ def main():
         "text_length_chars": len(text),
     }
 
-    if args.json:
-        print(json.dumps(result))
-    else:
-        print(path)
+    # Always the JSON answer: serve never passes --json (it is not a declared param), and the vendor the step
+    # chose itself is read from this answer (serve/provenance.entry_for). --json is still accepted.
+    print(json.dumps({**result, "type": "audio"}))
 
 
 if __name__ == "__main__":

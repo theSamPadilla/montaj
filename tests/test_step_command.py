@@ -126,7 +126,7 @@ PARITY = [
      ["--prompt", "lofi", "--vendor", "gemini", "--json", "--out", "/m.wav"], True, False),
     ("generate-voiceover+json", "generate-voiceover",
      ["--text", "hi", "--voice", "Kore", "--out", "/v.mp3", "--json"],
-     ["--text", "hi", "--voice", "Kore", "--vendor", "kling", "--speed", "1.0", "--json", "--out", "/v.mp3"], True, False),
+     ["--text", "hi", "--voice", "Kore", "--speed", "1.0", "--json", "--out", "/v.mp3"], True, False),
 
     # ── --json pass-through proofs (as_json=True, child NOT forwarded) ────────
     ("probe+json", "probe",  # no params

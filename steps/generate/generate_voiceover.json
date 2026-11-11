@@ -1,10 +1,10 @@
 {
   "name": "generate_voiceover",
   "provenance": {"providerParam": "vendor"},
-  "description": "Synthesise a voiceover audio file from text via ElevenLabs, Gemini or Kling TTS. Produces a file on disk.",
+  "description": "Synthesise a voiceover from text (ElevenLabs, Gemini or Kling TTS). Produces a file on disk.",
   "output": {
     "type": "audio",
-    "description": "Path to the generated voiceover audio file (plus duration metadata when --json)"
+    "description": "Path to the generated voiceover audio file (plus duration, vendor and voice)"
   },
   "params": [
     {"name": "text", "type": "string", "required": false,

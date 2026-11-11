@@ -202,6 +202,23 @@ def _get_or_restricted(path: str, *, error_prefix: str, timeout: int = 15):
 AUDIO_TIMEOUT = (15, 600)
 
 
+def _cert_verify_failure(cause) -> bool:
+    """True when the innermost error of `cause` is an ssl.SSLCertVerificationError."""
+    import ssl
+    seen, cur = set(), cause
+    innermost = cur
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        innermost = cur
+        nxt = getattr(cur, "reason", None)          # urllib3 MaxRetryError
+        if nxt is None and isinstance(cur, BaseException) and cur.args and isinstance(cur.args[0], BaseException):
+            nxt = cur.args[0]
+        if nxt is None:
+            nxt = cur.__cause__ or cur.__context__
+        cur = nxt if isinstance(nxt, BaseException) else None
+    return isinstance(innermost, ssl.SSLCertVerificationError)
+
+
 def _request_was_sent(cause) -> bool:
     """Whether a failed POST may have reached ElevenLabs. False only when the
     failure is known to come before anything was sent (no connection, name
@@ -214,8 +231,12 @@ def _request_was_sent(cause) -> bool:
         return False
     if not isinstance(cause, rx.RequestException):
         return False
-    if isinstance(cause, (rx.ConnectTimeout, rx.SSLError, rx.ProxyError)):
+    if isinstance(cause, (rx.ConnectTimeout, rx.ProxyError)):
         return False
+    if isinstance(cause, rx.SSLError):
+        # urllib3 wraps an ssl.SSLError raised while WAITING for the answer (SSLEOFError when an antivirus
+        # drops a long connection) in the same SSLError: only a certificate check fails before a send.
+        return not _cert_verify_failure(cause)
     if isinstance(cause, rx.ConnectionError):
         try:
             from urllib3.exceptions import MaxRetryError, NewConnectionError, ConnectTimeoutError

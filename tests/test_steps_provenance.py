@@ -354,12 +354,39 @@ def test_every_kind_declaration_is_one_the_funnel_reads():
 
 
 
-def test_a_provider_the_step_chose_itself_is_read_from_its_answer():
-    """generate_voiceover has no default vendor: it picks the first connected and says which."""
+def _voiceover_through_the_chain(monkeypatch, tmp_path, capsys, body, connected="elevenlabs"):
+    """build_cli_args -> the step's real main and stdout (connector stubbed) -> wrap_output -> entry_for."""
+    import importlib.util
+    import sys
+    import connectors.elevenlabs as eleven
     schema = json.loads((Path(STEPS_DIR) / "generate" / "generate_voiceover.json").read_text())
-    body = {"text": "hola", "voice": "George", "out": "v"}
-    entry = provenance.entry_for("generate_voiceover", schema, body, {"path": "v.mp3", "vendor": "elevenlabs"})
-    assert entry["provider"] == "elevenlabs"
-    assert provenance.entry_for("generate_voiceover", schema, {**body, "vendor": "kling"},
-                                {"vendor": "elevenlabs"})["provider"] == "kling"
-    assert provenance.entry_for("generate_voiceover", schema, body, "v.mp3") is None
+    spec = importlib.util.spec_from_file_location("gv_chain", Path(STEPS_DIR) / "generate" / "generate_voiceover.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    out = str(tmp_path / "v.mp3")
+    monkeypatch.setattr(mod, "get_duration", lambda path: 2.0)
+    monkeypatch.setattr(mod, "default_vendor", lambda: connected)
+    monkeypatch.setattr(eleven, "generate_speech", lambda **kw: kw["out_path"])
+    body = {**body, "out": out}
+    args = steps_mod.build_cli_args(schema, body)
+    assert "--json" not in args                     # serve never passes it: it is not a declared param
+    monkeypatch.setattr(sys, "argv", ["generate_voiceover.py", *args])
+    mod.main()
+    result = steps_mod.wrap_output(capsys.readouterr().out, schema)
+    return provenance.entry_for("generate_voiceover", schema, body, result), result, out
+
+
+def test_a_provider_the_step_chose_itself_is_recorded_through_the_real_chain(monkeypatch, tmp_path, capsys):
+    """generate_voiceover has no default vendor: it picks the first connected and says which, in its stdout, which
+    serve reads without --json."""
+    entry, result, out = _voiceover_through_the_chain(monkeypatch, tmp_path, capsys, {"text": "hola", "voice": "George"})
+    assert result["vendor"] == "elevenlabs" and result["path"] == out and result["type"] == "audio"
+    assert entry["provider"] == "elevenlabs" and entry["step"] == "generate_voiceover"
+
+
+def test_a_vendor_the_caller_named_wins_over_the_answer(monkeypatch, tmp_path, capsys):
+    import connectors.kling as kling
+    monkeypatch.setattr(kling, "generate_speech", lambda **kw: kw["out_path"])
+    entry, result, _ = _voiceover_through_the_chain(
+        monkeypatch, tmp_path, capsys, {"text": "hola", "voice": "George", "vendor": "kling"})
+    assert entry["provider"] == "kling" and result["vendor"] == "kling"
