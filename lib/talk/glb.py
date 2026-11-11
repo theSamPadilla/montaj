@@ -200,6 +200,12 @@ def skeleton_of(model_path):
     with open(model_path) as f:
         model = json.load(f)
     rows = model.get('skeleton') if isinstance(model, dict) else None
+    if not (isinstance(rows, list) and len(rows) > 1) and isinstance(model, dict):  # a variant wears its base's skeleton
+        from .reach import variant_base
+        base = variant_base(model, os.path.dirname(os.path.abspath(model_path)))
+        if base:
+            with open(os.path.join(base, 'model.json')) as f:
+                rows = (json.load(f) or {}).get('skeleton')
     if not (isinstance(rows, list) and len(rows) > 1):
         raise ValueError(f'{model_path}: no skeleton (clips need a rigged model)')
     return {'rows': rows, 'place': read_place(os.path.dirname(os.path.abspath(model_path)), rows)}
@@ -271,7 +277,8 @@ def _pad(b, fill=b'\0'):
 def write_glb(path, duration, morphs=None, bones=None, skeleton=None, name='talk'):
     """Writes the clip (see the module doc). skeleton: skeleton_of(model.json), or None for REFERENCE. -> {'bytes', 'morphs',
     'bones' (the keyed bones written), 'dropped' (keyed bones the skeleton lacks), 'nodes', 'place', 'firstValues' ({bone: its
-    value at 0}: what an additive layer takes off every key, motion.js Layers: it plays the change since the move's time 0)}."""
+    value at 0}: what an additive layer takes off every key, motion.js Layers: it plays the change since the move's time 0; the talk_face
+    step keys its body move at 0 as no turn, so it takes nothing off and the posture plays)}."""
     duration = float(duration)
     if not duration > 0:
         raise ValueError('duration must be > 0')

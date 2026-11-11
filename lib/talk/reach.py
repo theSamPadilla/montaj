@@ -65,15 +65,28 @@ def _is_glb(path):
         return f.read(4) == b"glTF"
 
 
+def variant_base(model, dirname):
+    """The folder of the model a variant is made from: <models>/<variantOf>/, a sibling of this model's folder, or None."""
+    v = model.get("variantOf") if isinstance(model, dict) else None
+    if not isinstance(v, str) or not v or v != os.path.basename(v) or v in (".", ".."):
+        return None
+    d = os.path.join(os.path.dirname(dirname), v)
+    return d if os.path.isfile(os.path.join(d, "model.json")) else None
+
+
 def _mesh_data(model, dirname, mid):
     inline = model.get("meshes")
     if isinstance(inline, dict) and mid in inline:
         return inline[mid]
-    f = os.path.join(dirname, "meshes", mid + ".json")
-    if not os.path.isfile(f):
-        raise ValueError(f"mesh {mid}: not in model['meshes'] and no {f}")
-    with open(f) as fh:
-        return json.load(fh)
+    base = variant_base(model, dirname)
+    tried = []
+    for d in [dirname] + ([base] if base else []):
+        f = os.path.join(d, "meshes", mid + ".json")
+        tried.append(f)
+        if os.path.isfile(f):
+            with open(f) as fh:
+                return json.load(fh)
+    raise ValueError(f"mesh {mid}: not in model['meshes'] and no {' or '.join(tried)}")
 
 
 def _siblings(a, b):
@@ -90,6 +103,12 @@ def _reach_model(path, keys):
     with open(path) as f:
         model = json.load(f)
     dirname = os.path.dirname(os.path.abspath(path))
+    if not model.get("parts"):  # a variant that lists no parts of its own wears its base's
+        base = variant_base(model, dirname)
+        if base:
+            with open(os.path.join(base, "model.json")) as f:
+                bm = json.load(f)
+            model = dict(bm, meshes=model.get("meshes") or bm.get("meshes"), variantOf=model.get("variantOf"))
     rig = os.path.join(dirname, "rig.json")
     placed = 1.0
     if os.path.isfile(rig):

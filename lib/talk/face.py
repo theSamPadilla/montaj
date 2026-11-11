@@ -161,15 +161,17 @@ GESTURE_KEYS = ('browInnerUp', 'browOuterUpLeft', 'browOuterUpRight', 'browDownL
                 'cheekSquintLeft', 'cheekSquintRight', 'eyeWideLeft', 'eyeWideRight', 'mouthLowerDownLeft', 'mouthLowerDownRight')
 
 
-def build(wav, whisper, lang, moods, gain=1.0, cmudict=None, sigma=70, phrased=True, head=None, expressive=1.0, recipe_data=None):
+def build(wav, whisper, lang, moods, gain=1.0, cmudict=None, sigma=70, phrased=True, head=None, expressive=1.0, recipe_data=None, reach_mm=None):
     """moods: moods.json's list. head: a GLB or app model.json path for its reach, or None for the reference.
-    expressive: the gesture layer's size, 0 for none. recipe_data: recipes.json's content, loaded when None. Returns (clip, report)."""
+    expressive: the gesture layer's size, 0 for none. recipe_data: recipes.json's content, loaded when None. reach_mm: the head's reach
+    (reach.reach), when the caller has it already; else it is read from `head`. Returns (clip, report)."""
     head_glb = head  # `head` becomes the head bone's curves below, as it always was
     RD = recipe_data if recipe_data is not None else recipes.load()
     lines = [m for m in moods if 'beat' not in m]; beats = [m for m in moods if 'beat' in m]
     moods_of = [recipes.mood(m['mood'], RD) for m in lines]  # an unknown name raises here, listing the known ones, before any work
     for b in beats: recipes.meta(b['beat'], RD)
-    reach_mm = reach.reach(head_glb) if head_glb else dict(RD['reference_reach_mm'])
+    if reach_mm is None:
+        reach_mm = reach.reach(head_glb) if head_glb else dict(RD['reference_reach_mm'])
     EX = max(0., float(expressive))
     wf = lambda key, mm: reach.weight_for(reach_mm, key, mm, cap=1)  # mm asked of this head to its weight
     x = read_wav(wav); F = features(x); N = len(F['e']); dur = len(x) / SR

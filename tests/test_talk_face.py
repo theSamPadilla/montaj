@@ -51,10 +51,23 @@ class Golden(unittest.TestCase):
             self.assertEqual(out['duration'], g['duration'], key)
             self.assertEqual(sorted(out['morphs']), sorted(g['morphs']), key)
             self.assertEqual(sorted(out['bones']), sorted(g['bones']), key)
-            for k in g['morphs']: self.assertEqual(out['morphs'][k], g['morphs'][k], (key, k))
-            for k in g['bones']: self.assertEqual(out['bones'][k], g['bones'][k], (key, k))
-            self.assertEqual(json.dumps(out), json.dumps(g), key)
-            self.assertEqual(json.loads(json.dumps(rep)), self.REPS[key], key)
+            # Values are rounded to 3 decimals: another numpy may land one grain away, so allow 1e-3 on values, exact on names and counts.
+            for k in g['morphs']: self.close(out['morphs'][k], g['morphs'][k], (key, k))
+            for k in g['bones']: self.close(out['bones'][k], g['bones'][k], (key, k))
+            self.close(json.loads(json.dumps(rep)), self.REPS[key], key, tol=1.0001e-2)  # the report rounds some times to 2 decimals
+
+    def close(self, a, b, where, tol=1.0001e-3):
+        """Same shape (names, lengths, strings, ints) and every float within one rounding grain."""
+        if isinstance(b, dict):
+            self.assertEqual(sorted(a), sorted(b), where)
+            for k in b: self.close(a[k], b[k], (where, k), tol)
+        elif isinstance(b, (list, tuple)):
+            self.assertEqual(len(a), len(b), where)
+            for i, (x, y) in enumerate(zip(a, b)): self.close(x, y, (where, i), tol)
+        elif isinstance(b, float) or isinstance(a, float):
+            self.assertLessEqual(abs(a - b), tol, where)
+        else:
+            self.assertEqual(a, b, where)
 
     def test_mouth_blinks_and_tongue_do_not_move_with_expressive(self):
         # the mouth, tongue and blink keys come from the audio, not the gesture layer
