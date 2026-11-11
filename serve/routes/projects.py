@@ -6527,7 +6527,7 @@ async def _run_caption_pipeline(
     # (lib/caption_words), as the generate_captions step takes them; the mix is transcribed (by voiced runs, never
     # --fit-pauses, which squeezed run 5's words early) only when one has none.
     from lib.caption_words import timeline_words, write_transcript
-    from_sources = timeline_words(heard, str(project_dir), keep_all=no_voice)
+    from_sources = timeline_words(heard, str(project_dir), keep_all=no_voice, language=language, model=model)
     if from_sources is not None:
         write_transcript(from_sources, str(words_json_path))
     steps = ([] if from_sources is not None else [

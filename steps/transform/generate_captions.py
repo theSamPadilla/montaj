@@ -143,7 +143,8 @@ def main():
     try:
         # Run 5: the words are each audible clip's and voiceover's own transcript, mapped through the timeline
         # (lib/caption_words): the ones the cut was made on. The mix is transcribed only when one has none.
-        from_sources = timeline_words(heard, d, keep_all=no_voice or args.audio.strip() != "voice")
+        from_sources = timeline_words(heard, d, keep_all=no_voice or args.audio.strip() != "voice",
+                                   language=args.language, model=args.model)
         if from_sources is not None:
             write_transcript(from_sources, words_json_path)
         else:
