@@ -13,6 +13,12 @@ class DefaultLanguage(str):
     an `--language en` the caller typed: only the default also hears the language (see transcribe)."""
 
 
+def _p2(p):
+    """A probability to two places, floored: 0.9993 reads 0.99, never 1.00."""
+    import math
+    return f"{math.floor(float(p) * 100) / 100:.2f}"
+
+
 def speech_stats(data):
     """word_count, speech_s and wpm from a words JSON, by the rule profiles/analyze.py uses.
 
@@ -96,6 +102,7 @@ def transcribe(input_path, out=None, model=DEFAULT_WHISPER_MODEL, language=None,
         output_prefix = out or os.path.splitext(input_path)[0]
 
     pauses = heard_s = None
+    box, th = {}, None
     by_runs_done = False
     try:
         if not whole_file and trim_spec_data is None:
@@ -104,8 +111,20 @@ def transcribe(input_path, out=None, model=DEFAULT_WHISPER_MODEL, language=None,
             by_runs_done = not got.get("fell_back")
             detected = got.get("detected")
         if detect and not by_runs_done and (whole_file or trim_spec_data is not None):
+            # Beside the transcription, as on the runs path, and never able to change its outcome: no failure line,
+            # no wait past speech_runs.DETECT_JOIN_S.
+            import threading
             from lib import speech_runs
-            detected = speech_runs.detect_languages_p([audio_input], model_path)[audio_input]
+            from lib.common import quiet_failures
+
+            def _hear():
+                with quiet_failures():
+                    try:
+                        box["got"] = speech_runs.detect_languages_p([audio_input], model_path)[audio_input]
+                    except (Exception, SystemExit):
+                        pass
+            th = threading.Thread(target=_hear, daemon=True)
+            th.start()
         if not by_runs_done:
             # Single pass: word-level JSON + SRT in one decode
             whisper_cmd = [whisper_bin, "-m", model_path, "-f", audio_input, "-l", whisper_language(language),
@@ -121,6 +140,10 @@ def transcribe(input_path, out=None, model=DEFAULT_WHISPER_MODEL, language=None,
             heard_s = get_duration(audio_input)
             pauses = caption_pauses(silences(audio_input), heard_s)
     finally:
+        if th and sys.exc_info()[0] is None:      # a failed transcription does not wait for the detect
+            th.join(speech_runs.DETECT_JOIN_S)
+            if not th.is_alive():
+                detected = box.get("got")
         if tmp_audio and os.path.exists(tmp_audio):
             os.unlink(tmp_audio)
 
@@ -168,7 +191,7 @@ def transcribe(input_path, out=None, model=DEFAULT_WHISPER_MODEL, language=None,
     from lib import speech_runs
     if speech_runs.sure(detected) and whisper_language(detected[0]) != whisper_language(language):
         result["languageHeard"] = {"code": detected[0], "p": round(detected[1], 4),
-                                   "message": f"This sounds like {detected[0]} (p {detected[1]:.2f}), not English. If the "
+                                   "message": f"This sounds like {detected[0]} (p {_p2(detected[1])}), not English. If the "
                                               f"speaker isn't speaking English, run transcribe again with "
                                               f"--language {detected[0]}."}
     try:

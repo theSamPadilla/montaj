@@ -98,7 +98,8 @@ def test_spec_input_records_time_bases(tmp_path, env, source):
         assert abs(parse_ts(w["timestamps"]["to"]) - w["offsets"]["to"]) <= 1
 
     assert data["montaj"] == {"input": "spec", "spec": str(spec), "keeps": KEEPS,
-                              "offsets": "source", "timestamps": "source", "srt": "spec"}
+                              "offsets": "source", "timestamps": "source", "srt": "spec",
+                              "language": {"asked": "en", "given": False, "heard": "en"}}
 
     cues = [l for l in Path(result["srt"]).read_text().splitlines() if "-->" in l]
     srt_end = parse_ts(cues[-1].split(" --> ")[1])
@@ -111,4 +112,5 @@ def test_plain_input_records_source(tmp_path, env, source):
     result = run(env, "--input", str(source), "--out", str(tmp_path / "plain"))
     data = json.loads(Path(result["words"]).read_text())
     assert data["montaj"] == {"input": "file", "offsets": "source",
-                              "timestamps": "source", "srt": "source"}
+                              "timestamps": "source", "srt": "source",
+                              "language": {"asked": "en", "given": False, "heard": "en"}}

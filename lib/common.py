@@ -21,8 +21,27 @@ path separators. Used by serve/server.py reserve-path validation and
 project/init.py --project-path segment validation."""
 
 
+import threading as _threading
+_quiet = _threading.local()
+
+
+@contextlib.contextmanager
+def quiet_failures():
+    """Inside this block (and only on the calling thread) `fail` exits without printing its error line. For work whose
+    failure must change nothing about a step's outcome, such as a language detect run beside a transcription: the
+    step's stderr then holds only the step's own errors."""
+    before = getattr(_quiet, "on", False)
+    _quiet.on = True
+    try:
+        yield
+    finally:
+        _quiet.on = before
+
+
 def fail(code: str, message: str):
     """Print structured error to stderr and exit."""
+    if getattr(_quiet, "on", False):
+        sys.exit(1)
     print(json.dumps({"error": code, "message": message}), file=sys.stderr)
     sys.exit(1)
 
@@ -544,7 +563,7 @@ def whisper_language(code):
         return None
     text = str(code).strip()
     if text.lower() == "auto":
-        return text
+        return "auto"
     return re.split(r"[-_]", text, maxsplit=1)[0].lower()
 
 

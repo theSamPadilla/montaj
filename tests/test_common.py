@@ -693,7 +693,7 @@ def test_run_stopping_kills_a_child_that_ignores_sigterm():
 
 @pytest.mark.parametrize("code,want", [
     ("pt-BR", "pt"), ("zh_TW", "zh"), ("EN-us", "en"), ("es", "es"), ("FR", "fr"),
-    ("auto", "auto"), ("yue", "yue"), (None, None),
+    ("auto", "auto"), ("AUTO", "auto"), (" Auto ", "auto"), ("yue", "yue"), (None, None),
 ])
 def test_whisper_language_maps_a_region_code_to_the_base_code(code, want):
     assert common.whisper_language(code) == want
@@ -725,3 +725,32 @@ def test_transcribe_words_gives_whisper_the_base_language(fake_models, tmp_path,
     work.mkdir()
     words = common.transcribe_words(str(wav), "base", work_dir=str(work), language="pt-BR")
     assert words and seen[0][seen[0].index("-l") + 1] == "pt"
+
+
+def test_fail_prints_its_line_but_not_inside_quiet_failures(capsys):
+    with pytest.raises(SystemExit):
+        common.fail("x", "loud")
+    assert '"loud"' in capsys.readouterr().err
+    with common.quiet_failures():
+        with pytest.raises(SystemExit):
+            common.fail("x", "quiet")
+    assert capsys.readouterr().err == ""
+    with pytest.raises(SystemExit):
+        common.fail("x", "loud again")
+    assert '"loud again"' in capsys.readouterr().err
+
+
+def test_quiet_failures_is_per_thread(capsys):
+    import threading
+    out = {}
+
+    def other():
+        try:
+            common.fail("x", "other thread")
+        except SystemExit:
+            out["exited"] = True
+    with common.quiet_failures():
+        t = threading.Thread(target=other)
+        t.start()
+        t.join()
+    assert out["exited"] and "other thread" in capsys.readouterr().err

@@ -32,12 +32,14 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import threading
 import wave
 from pathlib import Path
 
-from lib.common import fail, ff_path, ffmpeg_bin, find_whisper_bin, run, run_whisper, whisper_language
+from lib.common import (_absolute_whisper_paths, fail, ff_path, ffmpeg_bin, find_whisper_bin, quiet_failures, run,
+                        run_whisper, whisper_language)
 from lib import speech_energy, voice
 
 VERSION = "speech-runs v1"
@@ -211,40 +213,127 @@ def _hallucination(words, run, share=None, edge=False):
 
 
 DETECT_MIN_VOICE_S = 5.0         # a detect decides something only when its clip held this much voice ...
-DETECT_MIN_P = 0.9               # ... and was this sure: short clips of a non-native English voice misdetect at p 0.95+
-DETECT_S = 30.0                  # a language detect hears at most this much of the longest voiced run
-_PROCESSING = re.compile(r"main: processing '")
+DETECT_MIN_P = 0.95              # ... and was this sure: short clips of a non-native English voice misdetect at p 0.95+
+DETECT_S = 30.0                  # a language detect hears at most this long a clip (voice and padding)
+DETECT_TIMEOUT_S = 180           # a detect that has not answered by now is given up on: it never holds a step up
+DETECT_JOIN_S = DETECT_TIMEOUT_S + 20     # ... and the step waits for a detect thread this long at most
+_PROCESSING = re.compile(r": processing '")
 _DETECTED = re.compile(r"auto-detected language: (\S+) \(p = ([0-9.]+)\)")
 
 
+def _detect_timeout(n_clips):
+    """Seconds one detect call may take: DETECT_TIMEOUT_S, and a little more for each further clip of a batch."""
+    return DETECT_TIMEOUT_S + 10 * max(0, n_clips - 1)
+
+
+def _run_detect(cmd, timeout):
+    """The finished CompletedProcess of a whisper-cli detect, or None when it could not run, did not finish in
+    `timeout` seconds or died. Unlike run_whisper it never calls fail: a detect prints no failure line and changes
+    nothing about the step that asked for it."""
+    exe = os.path.abspath(shutil.which(cmd[0]) or cmd[0])
+    cmd = [exe] + _absolute_whisper_paths(cmd[1:])
+    try:
+        return run(cmd, timeout=timeout, check=False, cwd=os.path.dirname(exe))
+    except (subprocess.TimeoutExpired, Exception, SystemExit):
+        return None
+
+
 def _detect_clips(clips, model):
-    """[(code, p) or None] for each wav of `clips`, in order, from ONE `whisper-cli -l auto -dl` call (-dl exits after
-    detecting each file). The detect prints, per file, `main: processing '<file>' ...` then `auto-detected language:
-    <code> (p = <p>)`; they are read in order, so a file that printed no detect is None. A detect that fails to run
-    is None for every clip: the caller then has nothing to go on and trusts what it has."""
+    """[(code, p) or None] for each wav of `clips`, in order, from `whisper-cli -l auto -dl` (-dl exits after
+    detecting each file; BATCH clips to a call). The detect prints, per file, `...: processing '<file>' ...` then
+    `auto-detected language: <code> (p = <p>)`; they are read in order, so a file that printed no detect is None. A
+    detect that fails to run, or times out, is None for every clip of its call: the caller then has nothing to go on
+    and trusts what it has. Never fails and never prints."""
     out = []
     for i in range(0, len(clips), BATCH):
         batch = clips[i:i + BATCH]
-        cmd = [find_whisper_bin(), "-m", model, "-l", "auto", "-dl"] + [x for c in batch for x in ("-f", c)]
         try:
-            r = run_whisper(cmd, batch[0], check=False, duration_s=DETECT_S * len(batch))
+            cmd = [find_whisper_bin(), "-m", model, "-l", "auto", "-dl"] + [x for c in batch for x in ("-f", c)]
         except (Exception, SystemExit):
+            out += [None] * len(batch)
+            continue
+        r = _run_detect(cmd, _detect_timeout(len(batch)))
+        if r is None:
             out += [None] * len(batch)
             continue
         text = (getattr(r, "stdout", "") or "") + "\n" + (getattr(r, "stderr", "") or "")
         blocks = _PROCESSING.split(text)[1:]
         found = []
-        for b in blocks:
-            m = _DETECTED.search(b)
+        for blk in blocks:
+            m = _DETECTED.search(blk)
             found.append((m.group(1).lower(), float(m.group(2))) if m else None)
         out += found if len(found) == len(batch) else [None] * len(batch)
     return out
 
 
-def _detect_span(run, total):
-    """The part of the longest voiced run a detect hears: its first DETECT_S seconds, PAD_S before it."""
-    a, b = run
-    return (max(0.0, a - PAD_S), min(total, b + PAD_S, a + DETECT_S))
+def _detect_spans(runs, total=None):
+    """([(start, end)] of the clip a language detect hears, the seconds of voice in it) for the voiced `runs` of a
+    source (`total`: its length, None when not known). The runs of at least SHORT_RUN_S, longest first, until the clip
+    holds DETECT_S including PAD_S around each, in time order (a run too long for what is left is cut short); with
+    none that long, the longest run. Spans that touch are one. The voice is the runs' own seconds, never padding."""
+    if not runs:
+        return [], 0.0
+    cands = [r for r in runs if r[1] - r[0] >= SHORT_RUN_S] or [max(runs, key=lambda r: r[1] - r[0])]
+    chosen, used, voice = [], 0.0, 0.0
+    for a, b in sorted(cands, key=lambda r: r[0] - r[1]):
+        room = DETECT_S - used - 2 * PAD_S
+        if room <= 0:
+            break
+        take = min(b - a, room)
+        if chosen and take < SHORT_RUN_S:
+            continue
+        chosen.append((a, a + take))
+        used += take + 2 * PAD_S
+        voice += take
+    spans = []
+    for a, b in sorted(chosen):
+        a, b = max(0.0, a - PAD_S), b + PAD_S
+        if total is not None:
+            b = min(total, b)
+        if spans and a <= spans[-1][1]:
+            spans[-1] = (spans[-1][0], max(spans[-1][1], b))
+        else:
+            spans.append((a, b))
+    return spans, voice
+
+
+def _write_joined(wav_path, spans, path):
+    """The `spans` of the 16 kHz mono wav at `wav_path`, one after another, as the wav `path`."""
+    with wave.open(wav_path, "rb") as src:
+        rate, width, total = src.getframerate(), src.getsampwidth(), src.getnframes()
+        data = b""
+        for a, b in spans:
+            lo = min(total, int(round(a * rate)))
+            hi = min(total, max(lo + 1, int(round(b * rate))))
+            src.setpos(lo)
+            data += src.readframes(hi - lo)
+    _write_wav(path, data, rate, width)
+
+
+def _write_wav(path, data, rate=RATE, width=2):
+    with wave.open(path, "wb") as dst:
+        dst.setnchannels(1)
+        dst.setsampwidth(width)
+        dst.setframerate(rate)
+        dst.writeframes(data)
+
+
+def _cut_media(media, spans, path, tmp):
+    """The `spans` (seconds) of `media`'s first audio stream, joined as the 16 kHz mono wav `path`: ffmpeg decodes
+    only those seconds (`-ss`/`-t`), never the whole file. False when ffmpeg could not."""
+    data, rate, width = b"", RATE, 2
+    for i, (a, b) in enumerate(spans):
+        part = os.path.join(tmp, f"part-{i}.wav")
+        r = run([ffmpeg_bin(), "-v", "error", "-y", "-ss", f"{a:.3f}", "-t", f"{max(b - a, 0.05):.3f}", "-i",
+                 ff_path(media), "-map", "0:a:0", "-vn", "-ar", str(RATE), "-ac", "1", "-c:a", "pcm_s16le", part],
+                timeout=DECODE_TIMEOUT_S, check=False)
+        if r.returncode != 0 or not os.path.isfile(part):
+            return False
+        with wave.open(part, "rb") as w:
+            rate, width = w.getframerate(), w.getsampwidth()
+            data += w.readframes(w.getnframes())
+    _write_wav(path, data, rate, width)
+    return True
 
 
 def sure(detected, min_voice_s=DETECT_MIN_VOICE_S, min_p=DETECT_MIN_P):
@@ -252,29 +341,76 @@ def sure(detected, min_voice_s=DETECT_MIN_VOICE_S, min_p=DETECT_MIN_P):
     return bool(detected) and detected[1] >= min_p and detected[2] >= min_voice_s
 
 
-def detect_languages_p(medias, model_path):
-    """{media: (code, p, voice_s) or None}: the language whisper hears in each of `medias`, from a clip of its longest voiced
-    run (at most DETECT_S), all in ONE whisper-cli call. A media with no voiced run has no words to be wrong about:
-    None, and so has one whose detect did not run. voice_s: the seconds of voice the clip held."""
-    result, clips, owners = {}, [], []
+def _wav_seconds(path):
+    with wave.open(path, "rb") as w:
+        return w.getnframes() / float(w.getframerate())
+
+
+def _detect_clip(media, known_runs, tmp, tag):
+    """(the detect clip's wav, the seconds of voice in it) for `media`, or None when it has no voice or could not be
+    read. `known_runs` (its voiced runs, from its transcript): only those seconds are decoded; None: the file is
+    decoded and its voiced runs found."""
+    path = os.path.join(tmp, f"detect-{tag}.wav")
+    if known_runs is not None:
+        spans, voice_s = _detect_spans(known_runs)
+        return (path, voice_s) if spans and _cut_media(media, spans, path, tmp) else None
+    runs = voiced_runs(media)
+    if not runs:
+        return None
+    wav = os.path.join(tmp, f"source-{tag}.wav")
+    _decode(media, wav)
+    spans, voice_s = _detect_spans(runs, _wav_seconds(wav))
+    _write_joined(wav, spans, path)
+    return path, voice_s
+
+
+def detect_languages_p(medias, model_path, runs_for=None, pool=False):
+    """{media: (code, p, voice_s) or None}: the language whisper hears in each of `medias`, from a clip of its voiced
+    runs (`_detect_spans`: at most DETECT_S), all in ONE whisper-cli call. voice_s: the seconds of voice the clip
+    held. A media with no voiced run has no words to be wrong about: None, and so has one whose detect did not run.
+    `runs_for` {media: [(start, end)]}: the voiced runs already known (a transcript's), so only those seconds are
+    read. `pool`: the medias whose own voice is under DETECT_MIN_VOICE_S (and there are two or more) are joined into
+    ONE clip, one detect, and each of those that went into it gets its answer: voice_s is the pool's. Never fails,
+    never prints, never changes what its caller does next."""
+    result, items = {}, []
     tmp = tempfile.mkdtemp(prefix="montaj-detect-")
     try:
-        for n, media in enumerate(medias):
-            result[media] = None
-            runs = voiced_runs(media)
-            if not runs:
-                continue
-            wav = os.path.join(tmp, f"source-{n}.wav")
-            _decode(media, wav)
-            with wave.open(wav, "rb") as w:
-                total = w.getnframes() / float(w.getframerate())
-            span = _detect_span(max(runs, key=lambda r: r[1] - r[0]), total)
-            folder = os.path.join(tmp, f"d{n}")
-            os.mkdir(folder)
-            clips += _write_clips(wav, [span], folder)
-            owners.append((media, min(DETECT_S, span[1] - span[0])))
-        for (media, voice_s), got in zip(owners, _detect_clips(clips, model_path) if clips else []):
-            result[media] = (got[0], got[1], voice_s) if got else None
+        with quiet_failures():
+            for n, media in enumerate(medias):
+                result[media] = None
+                try:
+                    got = _detect_clip(media, (runs_for or {}).get(media), tmp, n)
+                except (Exception, SystemExit):
+                    got = None
+                if got:
+                    items.append((media, got[0], got[1]))
+            short = [it for it in items if it[2] < DETECT_MIN_VOICE_S] if pool else []
+            if len(short) < 2:
+                short = []
+            owners = [it for it in items if it not in short]
+            clips = [it[1] for it in owners]
+            pooled = []
+            if short:
+                data, voice, used = b"", 0.0, 0.0
+                for media, clip, v in sorted(short, key=lambda it: -it[2]):
+                    seconds = _wav_seconds(clip)
+                    if pooled and used + seconds > DETECT_S:
+                        continue
+                    with wave.open(clip, "rb") as w:
+                        data += w.readframes(w.getnframes())
+                    pooled.append(media)
+                    voice += v
+                    used += seconds
+                pool_path = os.path.join(tmp, "pool.wav")
+                _write_wav(pool_path, data)
+                clips.append(pool_path)
+            answers = _detect_clips(clips, model_path) if clips else []
+            for (media, _, voice_s), got in zip(owners, answers):
+                result[media] = (got[0], got[1], voice_s) if got else None
+            if pooled:
+                got = answers[len(owners)]
+                for media in pooled:
+                    result[media] = (got[0], got[1], voice) if got else None
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return result
@@ -309,16 +445,27 @@ def transcribe_runs(media, out_prefix, model, language, detect=False):
             probe = [whisper_bin, "-m", model, "--output-json", "-mc", "0", "-np"]
             doc = _whisper(probe, [clips[longest]], spans_of, "auto")[clips[longest]]
             language = ((doc.get("result") or {}).get("language") or "").strip() or "auto"
-        # The detect runs beside the transcription (its model load is most of its cost), never in front of it.
+        # The detect runs beside the transcription (its model load is most of its cost), never in front of it, and
+        # it never changes what the step does: no failure line, no wait past DETECT_TIMEOUT_S.
         box = {}
         th = None
+        dclip = None
         if detect:
-            li = max(range(len(runs)), key=lambda i: runs[i][1] - runs[i][0])
-            dspan = _detect_span(runs[li], total)
-            os.mkdir(os.path.join(tmp, "detect"))
-            dclip = _write_clips(wav, [dspan], os.path.join(tmp, "detect"))
-            th = threading.Thread(target=lambda: box.update(
-                got=_detect_clips(dclip, model)[0], voice_s=min(DETECT_S, dspan[1] - dspan[0])), daemon=True)
+            try:
+                dspans, voice_s = _detect_spans(runs, total)
+                dclip = os.path.join(tmp, "detect.wav")
+                _write_joined(wav, dspans, dclip)
+            except (Exception, SystemExit):
+                dclip = None
+
+        if dclip:
+            def _hear():
+                with quiet_failures():
+                    try:
+                        box["got"] = _detect_clips([dclip], model)[0]
+                    except (Exception, SystemExit):
+                        pass
+            th = threading.Thread(target=_hear, daemon=True)
             th.start()
         docs = {}
         try:
@@ -326,8 +473,8 @@ def transcribe_runs(media, out_prefix, model, language, detect=False):
                 docs.update(_whisper(base, clips[i:i + BATCH], spans_of, language))
         finally:
             if th:
-                th.join()
-        detected = (box["got"][0], box["got"][1], box["voice_s"]) if box.get("got") else None
+                th.join(DETECT_JOIN_S)
+        detected = (box["got"][0], box["got"][1], voice_s) if th and not th.is_alive() and box.get("got") else None
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
