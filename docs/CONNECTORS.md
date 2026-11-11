@@ -84,7 +84,7 @@ lyria-3.5 returns a ~68 s track. For longer music beds, callers tile `AudioTrack
 
 Gemini prebuilt voices for TTS include `Kore` (neutral default), `Puck` (bright), `Charon` (deep). See https://ai.google.dev/gemini-api/docs/speech-generation for the full list.
 
-> **Note on `generate_voiceover`.** The step dispatches between Kling TTS (primary), Gemini TTS (fallback/alternative) and ElevenLabs TTS via a `--vendor` flag (PV29). All three connectors listed in the table above contribute to it. This mirrors the existing dual-vendor pattern for `generate_image` (Gemini + Kinovi). See [`steps/generate/generate_voiceover.json`](../steps/generate/generate_voiceover.json) for the full flag surface.
+> **Note on `generate_voiceover`.** The step dispatches between ElevenLabs, Gemini and Kling TTS via a `--vendor` flag (PV29); without it, the first connected of those three is used. All three connectors listed in the table above contribute to it. This mirrors the existing dual-vendor pattern for `generate_image` (Gemini + Kinovi). See [`steps/generate/generate_voiceover.json`](../steps/generate/generate_voiceover.json) for the full flag surface.
 >
 > **`generate_music`** dispatches the same way between Gemini (Lyria, default) and ElevenLabs (`--vendor elevenlabs --duration <seconds>`, minimum 3s; needs a paid ElevenLabs plan). **`generate_sfx`** (PV29) is ElevenLabs-only, with no `--vendor` flag, since no second vendor exists yet for sound effects.
 

@@ -352,3 +352,14 @@ def test_every_kind_declaration_is_one_the_funnel_reads():
                 assert prov["via"] in provenance.WEB_VIA, path.name
     assert set(declared) == {"fetch_image", "synth_audio", "fetch", "capture_site"}
 
+
+
+def test_a_provider_the_step_chose_itself_is_read_from_its_answer():
+    """generate_voiceover has no default vendor: it picks the first connected and says which."""
+    schema = json.loads((Path(STEPS_DIR) / "generate" / "generate_voiceover.json").read_text())
+    body = {"text": "hola", "voice": "George", "out": "v"}
+    entry = provenance.entry_for("generate_voiceover", schema, body, {"path": "v.mp3", "vendor": "elevenlabs"})
+    assert entry["provider"] == "elevenlabs"
+    assert provenance.entry_for("generate_voiceover", schema, {**body, "vendor": "kling"},
+                                {"vendor": "elevenlabs"})["provider"] == "kling"
+    assert provenance.entry_for("generate_voiceover", schema, body, "v.mp3") is None
