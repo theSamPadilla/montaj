@@ -738,3 +738,97 @@ class TestModuleImportsCleanly:
         assert hasattr(connectors.elevenlabs, "generate_music")
         assert hasattr(connectors.elevenlabs, "check_key")
         assert hasattr(connectors.elevenlabs, "DEFAULT_TTS_MODEL")
+
+
+# ---------------------------------------------------------------------------
+# A paid audio POST that may have been made is never "unreachable" and never retried
+# ---------------------------------------------------------------------------
+
+class TestAudioPostTimeoutAndLostAnswer:
+    """`requests.request` itself is stubbed, so the real retry helper runs."""
+
+    def _stub(self, monkeypatch, post_exc):
+        import requests
+        import connectors._http as http_mod
+        posts = []
+
+        def fake_request(method, url, **kwargs):
+            if method == "GET":
+                return _FakeResponse(200, _VOICES_BODY)
+            posts.append(kwargs)
+            raise post_exc
+        monkeypatch.setattr(requests, "request", fake_request)
+        monkeypatch.setattr(http_mod.time, "sleep", lambda s: None)
+        return posts
+
+    def test_the_audio_post_timeout_is_15_connect_600_read(self, monkeypatch, tmp_path):
+        import connectors.elevenlabs as mod
+        import requests
+        posts = self._stub(monkeypatch, requests.ReadTimeout("read timed out"))
+        with pytest.raises(ConnectorError):
+            mod.generate_speech("hi", "George", str(tmp_path / "o.mp3"))
+        assert posts[0]["timeout"] == (15, 600)
+
+    @pytest.mark.parametrize("call,what", [
+        ("speech", "voiceover"), ("sfx", "sound effect"), ("music", "music"),
+    ])
+    def test_a_read_timeout_is_an_api_error_with_the_check_history_message(self, monkeypatch, tmp_path, call, what):
+        import connectors.elevenlabs as mod
+        import requests
+        from steps.generate._fail_reasons import _FAIL_CODES
+        code_for = lambda e: _FAIL_CODES.get(e.reason, "api_error")
+        posts = self._stub(monkeypatch, requests.ReadTimeout("read timed out"))
+        out = str(tmp_path / "o.mp3")
+        with pytest.raises(ConnectorError) as ei:
+            if call == "speech":
+                mod.generate_speech("hi", "George", out)
+            elif call == "sfx":
+                mod.generate_sfx("a door", out)
+            else:
+                mod.generate_music("calm", out, 5000)
+        e = ei.value
+        assert e.reason is None and code_for(e) == "api_error"
+        assert str(e) == (
+            "ElevenLabs didn't answer in time. "
+            f"The {what} may still have been made and charged to your ElevenLabs account. "
+            "Check your ElevenLabs History before running it again. Montaj did not try again.")
+        assert len(posts) == 1                      # never retried
+
+    def test_a_connection_lost_after_the_send_is_the_same_kind_of_error(self, monkeypatch, tmp_path):
+        import connectors.elevenlabs as mod
+        import requests
+        posts = self._stub(monkeypatch, requests.ConnectionError("Connection aborted, RemoteDisconnected"))
+        with pytest.raises(ConnectorError) as ei:
+            mod.generate_sfx("a door", str(tmp_path / "o.mp3"))
+        assert ei.value.reason is None and "may still have been made" in str(ei.value)
+        assert len(posts) == 1
+
+    def test_a_connect_timeout_keeps_the_old_reason(self, monkeypatch, tmp_path):
+        import connectors.elevenlabs as mod
+        import requests
+        from connectors import UNREACHABLE
+        posts = self._stub(monkeypatch, requests.ConnectTimeout("connect timed out"))
+        with pytest.raises(ConnectorError) as ei:
+            mod.generate_speech("hi", "George", str(tmp_path / "o.mp3"))
+        assert ei.value.reason == UNREACHABLE and "may still have been made" not in str(ei.value)
+        assert len(posts) == 1
+
+    def test_no_connection_at_all_keeps_the_old_reason(self, monkeypatch, tmp_path):
+        import connectors.elevenlabs as mod
+        import requests
+        from connectors import UNREACHABLE
+        from urllib3.exceptions import MaxRetryError, NewConnectionError
+        refused = requests.ConnectionError(MaxRetryError(None, "/", NewConnectionError(None, "refused")))
+        self._stub(monkeypatch, refused)
+        with pytest.raises(ConnectorError) as ei:
+            mod.generate_sfx("a door", str(tmp_path / "o.mp3"))
+        assert ei.value.reason == UNREACHABLE
+
+    def test_a_missing_key_keeps_the_old_reason(self, monkeypatch, tmp_path):
+        import connectors.elevenlabs as mod
+        from connectors import UNREACHABLE
+        posts = self._stub(monkeypatch, RuntimeError("never reached"))
+        monkeypatch.setattr(mod, "_headers", lambda: (_ for _ in ()).throw(ConnectorError("No ElevenLabs key.")))
+        with pytest.raises(ConnectorError) as ei:
+            mod.generate_sfx("a door", str(tmp_path / "o.mp3"))
+        assert ei.value.reason == UNREACHABLE and posts == []

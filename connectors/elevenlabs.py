@@ -197,7 +197,49 @@ def _get_or_restricted(path: str, *, error_prefix: str, timeout: int = 15):
     return r
 
 
-def _post_audio(path: str, body: dict, out_path: str, error_prefix: str) -> str:
+# Connect 15 s, then up to 600 s for the audio: under serve's 900 s step timeout, so
+# a slow generation ends here with a message and not as a killed step.
+AUDIO_TIMEOUT = (15, 600)
+
+
+def _request_was_sent(cause) -> bool:
+    """Whether a failed POST may have reached ElevenLabs. False only when the
+    failure is known to come before anything was sent (no connection, name
+    lookup, TLS or proxy setup); a read timeout or a dropped connection after
+    the send is True, as is anything unrecognised."""
+    try:
+        import requests
+        from requests import exceptions as rx
+    except ImportError:
+        return False
+    if not isinstance(cause, rx.RequestException):
+        return False
+    if isinstance(cause, (rx.ConnectTimeout, rx.SSLError, rx.ProxyError)):
+        return False
+    if isinstance(cause, rx.ConnectionError):
+        try:
+            from urllib3.exceptions import MaxRetryError, NewConnectionError, ConnectTimeoutError
+            inner = cause.args[0] if cause.args else None
+            if isinstance(inner, MaxRetryError) and isinstance(
+                    inner.reason, (NewConnectionError, ConnectTimeoutError)):
+                return False
+        except ImportError:
+            pass
+    return True
+
+
+def _may_exist_error(cause, what: str) -> ConnectorError:
+    """The error for a POST that may have been made and billed. No reason: it is
+    an api_error, never provider_unreachable, whose remedy is to run it again."""
+    import requests
+    lead = ("ElevenLabs didn't answer in time." if isinstance(cause, requests.exceptions.Timeout)
+            else "The connection to ElevenLabs was lost.")
+    return ConnectorError(
+        f"{lead} The {what} may still have been made and charged to your ElevenLabs account. "
+        f"Check your ElevenLabs History before running it again. Montaj did not try again.")
+
+
+def _post_audio(path: str, body: dict, out_path: str, error_prefix: str, what: str) -> str:
     """POST {BASE}{path} and write the audio/mpeg response body to out_path.
 
     Generation here is synchronous — the audio comes back in this same
@@ -216,10 +258,12 @@ def _post_audio(path: str, body: dict, out_path: str, error_prefix: str) -> str:
     try:
         r = _request(
             "POST", f"{BASE}{path}", json=body,
-            headers={**_headers(), "Accept": "audio/mpeg"}, timeout=120,
+            headers={**_headers(), "Accept": "audio/mpeg"}, timeout=AUDIO_TIMEOUT,
             retry_exceptions=False,
         )
     except ConnectorError as e:
+        if _request_was_sent(e.__cause__):
+            raise _may_exist_error(e.__cause__, what) from e
         raise ConnectorError(str(e), reason=UNREACHABLE) from e
     if r.status_code >= 400:
         raise _error_from_response(r, error_prefix)
@@ -280,7 +324,7 @@ def generate_speech(
     body = {"text": text, "model_id": model}
     return _post_audio(
         f"/v1/text-to-speech/{voice_id}", body, out_path,
-        error_prefix="ElevenLabs speech generation failed",
+        error_prefix="ElevenLabs speech generation failed", what="voiceover",
     )
 
 
@@ -312,7 +356,7 @@ def generate_sfx(
         body["duration_seconds"] = duration_seconds
     return _post_audio(
         "/v1/sound-generation", body, out_path,
-        error_prefix="ElevenLabs sound effect generation failed",
+        error_prefix="ElevenLabs sound effect generation failed", what="sound effect",
     )
 
 
@@ -347,7 +391,7 @@ def generate_music(
         body["model_id"] = model
     return _post_audio(
         "/v1/music", body, out_path,
-        error_prefix="ElevenLabs music generation failed",
+        error_prefix="ElevenLabs music generation failed", what="music",
     )
 
 
