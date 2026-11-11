@@ -144,7 +144,8 @@ def main():
     skeleton = None
     if model_json:
         try:
-            skeleton = glb.skeleton_of(model_json)
+            # Direct play (retarget in the app) is not given the model's rig.json, so it applies no placement: write for none.
+            skeleton = dict(glb.skeleton_of(model_json), place=None)
         except (ValueError, OSError) as e:
             notes.append(f"{e}; the reference skeleton was used")
     if lang not in ("en", "pt"):

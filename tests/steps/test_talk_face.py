@@ -151,3 +151,25 @@ def test_no_words_the_step_transcribes(tmp_path):
     res = step(tmp_path, words=None, out="heard")
     assert res["language"] == "en" and res["duration"] > 4 and res["phrases"]
     assert os.path.isfile(res["face"][0]["path"])
+
+
+def test_model_with_a_rig_placement_is_written_for_identity_placement(tmp_path):
+    """Direct play gets no rig.json, so a model whose rig.json turns it (yaw pi) must not turn the written nodes."""
+    import shutil
+    d = tmp_path / "m"
+    shutil.copytree(FIX / "tiny-head", d)
+    m = json.loads((d / "model.json").read_text())
+    m["skeleton"] = G.REFERENCE["rows"]
+    (d / "model.json").write_text(json.dumps(m))
+    (d / "rig.json").write_text(json.dumps({"format": 1, "skeleton": G.skeleton_key(G.REFERENCE["rows"]),
+                                            "frames": {"hips": [0, 0, 0, 1]},
+                                            "place": {"scale": 2.0, "centre": [0, 1, 0], "yaw": np.pi}}))
+    assert G.skeleton_of(str(d / "model.json"))["place"]["yaw"] == np.pi  # the file is read as add_clips would
+    res = step(tmp_path, "--model", str(d / "model.json"))
+    t, q, s = G.root_trs(None)
+    for path in [res["face"][0]["path"], res["body"]["path"]]:
+        root = read(path)[0]["nodes"][0]
+        assert root["name"] == "talk_root"
+        np.testing.assert_allclose(root["translation"], t, atol=1e-6)
+        np.testing.assert_allclose(root["rotation"], q, atol=1e-6)
+        assert root["scale"] == [s] * 3 == [1.0] * 3

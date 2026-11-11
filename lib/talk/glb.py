@@ -22,9 +22,9 @@ The file:
   gives back value = eulerZYX(local x qRest^-1) (import.js keysFromTargets): the clip's own values, at the importer's samples.
 - one animation, `name`.
 
-The placement is the model's rig.json `place` when add_clips would read that file (model-routes.cjs readRig: format 1, its
-skeleton fingerprint the model's, frames present), else none (retarget then turns by the facing and scales by bone length, which
-are 0 and 1 for the model's own skeleton).
+The placement. skeleton_of reports the model's rig.json `place` as add_clips would read it (model-routes.cjs readRig: format 1, its
+skeleton fingerprint the model's, frames present). The talk_face step writes for direct play, which retargets without rig.json and so
+applies the identity placement: it passes the skeleton with place=None, and talk_root is then the axis change alone.
 """
 import hashlib, json, math, os, struct
 
