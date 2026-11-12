@@ -46,6 +46,9 @@ jobs:
   render:
     name: Render engine tests (node)
     runs-on: ubuntu-latest
+    # No GPU here: 3D renders in software, which the app refuses up front (gpu-3d.js). The tests still render 3D.
+    env:
+      MONTAJ_RENDER_SOFTWARE_3D: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -26,6 +26,7 @@ import { geometryAt } from '@bycrux/timeline-core'
 import { overlayPageLaunchOptions, installPageGuard } from './page-guard.js'
 import { fontLoadFailure, fontFailureWarning } from './google-fonts.js'
 import { captureWithThree, isThreeBlurUnsupported } from './three-frame.js'
+import { check3dGraphics, no3dGraphicsError, softwareAllowed } from './gpu-3d.js'
 
 // A stream copy of chunks already on disk cannot stall for long, and spawnSync
 // cannot watch progress, so this is a generous wall clock (the callers are sync).
@@ -302,6 +303,19 @@ export async function renderAllSegments(segments, config = {}) {
   const workers = await launchPool(workerCount, () => launchWorker({ needsGoogleFonts, gpuCompositing: compositesOnGpu(jobs[0]) }))
 
   log(`browsers ready`)
+
+  // A render with 3D first asks whether this machine can draw it (gpu-3d.js). One with no usable GPU stops here, before
+  // any frame, never an export that runs for hours or ends blank. A test that stands in the browsers stands in the
+  // check too (config.check3dGraphics), or skips it; MONTAJ_RENDER_SOFTWARE_3D=1 skips it (CI with no GPU).
+  if (jobs.some(isScene3dSegment) && !softwareAllowed()) {
+    const check = config.check3dGraphics ?? (config.launchWorker ? null : check3dGraphics)
+    const got = check ? await check(workers[0].browser) : { ok: true }
+    if (!got.ok) {
+      log(`3d: this machine cannot draw it (${got.reason})`)
+      await Promise.allSettled(workers.map((w) => w.close()))
+      throw no3dGraphicsError(got.reason)
+    }
+  }
 
   // chunkResults[segId][chunkIndex] = webmPath
   const chunkResults = new Map()
