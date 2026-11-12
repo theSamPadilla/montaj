@@ -5,8 +5,19 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from common import fail, require_file, check_output, run, run_whisper, find_whisper_bin, require_whisper_model, ffmpeg_bin, get_duration, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES, ff_input
+from common import fail, require_file, check_output, run, run_whisper, find_whisper_bin, require_whisper_model, whisper_language, ffmpeg_bin, get_duration, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES, ff_input
 from trim_spec import is_trim_spec, load as load_spec, extract_audio_at_keeps, remap_timestamp
+
+class DefaultLanguage(str):
+    """The argparse default, "en" to everything that compares it (the schema conformance test too), but told apart from
+    an `--language en` the caller typed: only the default also hears the language (see transcribe)."""
+
+
+def _p2(p):
+    """A probability to two places, floored: 0.9993 reads 0.99, never 1.00."""
+    import math
+    return f"{math.floor(float(p) * 100) / 100:.2f}"
+
 
 def speech_stats(data):
     """word_count, speech_s and wpm from a words JSON, by the rule profiles/analyze.py uses.
@@ -38,20 +49,29 @@ def _write_srt(entries, path):
         for n, e in enumerate(cues, 1)))
 
 
-def transcribe(input_path, out=None, model=DEFAULT_WHISPER_MODEL, language="en", max_context=None, fit_pauses=False,
+def transcribe(input_path, out=None, model=DEFAULT_WHISPER_MODEL, language=None, max_context=None, fit_pauses=False,
                whole_file=False):
     """Transcribe one file (or trim spec) and write `<out>.srt` and `<out>.json` (default: beside the
     input). Returns {srt, words} plus the speech stats. cut calls this for an untranscribed clip.
 
     By default (PL89 A1) a plain file is transcribed run by run of voice, all of a take's clips in one whisper call
     (lib/speech_runs), because over a whole take whisper loses words and times. A trim spec, whole_file True, and a
-    file with no voiced run keep the full-file run. max_context is ignored by runs (always 0)."""
+    file with no voiced run keep the full-file run. max_context is ignored by runs (always 0).
+
+    `language` None (not given) is "en", as ever; a run on that default also hears the language of the longest voiced
+    run (one whisper detect) and says so in `languageHeard` when it is another one (whisper given `-l en` on
+    Portuguese translates it, silently). Every transcript records what was asked, given and heard in
+    `montaj.language`."""
 
     require_file(input_path)
+    given = language is not None and not isinstance(language, DefaultLanguage)
+    language = str(language) if given else "en"
 
     # Managed dir first, then the legacy whisper.cpp dir for older installs —
     # same chain as lib/common.transcribe_words(). No weight: whisper_model_missing.
-    _, model_path = require_whisper_model(model, language)
+    model, model_path = require_whisper_model(model, language)
+    detect = not given and not model.endswith(".en")      # an English-only model cannot hear another language
+    detected = None
 
     whisper_bin = find_whisper_bin()
 
@@ -82,14 +102,32 @@ def transcribe(input_path, out=None, model=DEFAULT_WHISPER_MODEL, language="en",
         output_prefix = out or os.path.splitext(input_path)[0]
 
     pauses = heard_s = None
+    box, th = {}, None
     by_runs_done = False
     try:
         if not whole_file and trim_spec_data is None:
             from lib import speech_runs
-            by_runs_done = not speech_runs.transcribe_runs(audio_input, output_prefix, model_path, language).get("fell_back")
+            got = speech_runs.transcribe_runs(audio_input, output_prefix, model_path, whisper_language(language), detect=detect)
+            by_runs_done = not got.get("fell_back")
+            detected = got.get("detected")
+        if detect and not by_runs_done and (whole_file or trim_spec_data is not None):
+            # Beside the transcription, as on the runs path, and never able to change its outcome: no failure line,
+            # no wait past speech_runs.DETECT_JOIN_S.
+            import threading
+            from lib import speech_runs
+            from lib.common import quiet_failures
+
+            def _hear():
+                with quiet_failures():
+                    try:
+                        box["got"] = speech_runs.detect_languages_p([audio_input], model_path)[audio_input]
+                    except (Exception, SystemExit):
+                        pass
+            th = threading.Thread(target=_hear, daemon=True)
+            th.start()
         if not by_runs_done:
             # Single pass: word-level JSON + SRT in one decode
-            whisper_cmd = [whisper_bin, "-m", model_path, "-f", audio_input, "-l", language,
+            whisper_cmd = [whisper_bin, "-m", model_path, "-f", audio_input, "-l", whisper_language(language),
                            "--split-on-word", "--max-len", "1", "--output-srt", "--output-json",
                            "--output-file", output_prefix]
             if max_context is not None:
@@ -102,6 +140,10 @@ def transcribe(input_path, out=None, model=DEFAULT_WHISPER_MODEL, language="en",
             heard_s = get_duration(audio_input)
             pauses = caption_pauses(silences(audio_input), heard_s)
     finally:
+        if th and sys.exc_info()[0] is None:      # a failed transcription does not wait for the detect
+            th.join(speech_runs.DETECT_JOIN_S)
+            if not th.is_alive():
+                detected = box.get("got")
         if tmp_audio and os.path.exists(tmp_audio):
             os.unlink(tmp_audio)
 
@@ -127,6 +169,12 @@ def transcribe(input_path, out=None, model=DEFAULT_WHISPER_MODEL, language="en",
         elif not by_runs_done:
             data["montaj"] = {"input": "file", "offsets": "source",
                               "timestamps": "source", "srt": "source"}
+        heard = ((data.get("result") or {}).get("language") or "").strip() or (
+            None if str(language).lower() == "auto" else whisper_language(language))
+        marker = {"asked": language, "given": given, "heard": heard}
+        if detected:
+            marker["detected"], marker["p"], marker["voice_s"] = detected[0], round(detected[1], 4), round(detected[2], 2)
+        data.setdefault("montaj", {})["language"] = marker
         if pauses is not None:
             data["montaj"]["fit_pauses"] = True
             if trim_spec_data is None:
@@ -140,6 +188,12 @@ def transcribe(input_path, out=None, model=DEFAULT_WHISPER_MODEL, language="en",
     words_path = f"{output_prefix}.json"
     check_output(srt_path)
     result = {"srt": srt_path, "words": words_path}
+    from lib import speech_runs
+    if speech_runs.sure(detected) and whisper_language(detected[0]) != whisper_language(language):
+        result["languageHeard"] = {"code": detected[0], "p": round(detected[1], 4),
+                                   "message": f"This sounds like {detected[0]} (p {_p2(detected[1])}), not English. If the "
+                                              f"speaker isn't speaking English, run transcribe again with "
+                                              f"--language {detected[0]}."}
     try:
         result.update(speech_stats(json.loads(Path(words_path).read_text())))
     except Exception:
@@ -156,7 +210,7 @@ def main():
                         help="Whisper model. Larger = slower + more accurate. "
                              "English-only (*.en) models are auto-upgraded to a multilingual "
                              "sibling when --language is non-English.")
-    parser.add_argument("--language", default="en", help="Language code (e.g. en, fr, de), or 'auto' for whisper-cli language auto-detection")
+    parser.add_argument("--language", default=DefaultLanguage("en"), help="Language code (e.g. en, fr, de), or 'auto' for whisper-cli language auto-detection")
     parser.add_argument("--max-context", type=int, default=None,
                         help="Cap on prior-text tokens carried between windows (whisper.cpp -mc). "
                              "Set to 0 to disable cross-window context — the reliable fix for the "

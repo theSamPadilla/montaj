@@ -141,8 +141,8 @@ def main():
                         help="Sample the frame without the captions overlay, so the picture under a caption can be read. "
                              "With --raw or --scene it changes nothing.")
     parser.add_argument("--look-at", default=None,
-                        help="A close-up of the 3D on screen, JSON {cast: i, bone: name} or {cast: i, part: name}: "
-                             "every 3D in the frame is drawn from a camera on that bone or part instead of its own.")
+                        help="A close-up of the 3D on screen, JSON {cast: i, bone: name} or {cast: i, part: name}, cast its "
+                             "number or id: every 3D in the frame is drawn from a camera on that bone or part instead of its own.")
     parser.add_argument("--distance", type=float, default=None,
                         help="With --look-at: metres from the bone to the camera (default 0.5)")
     parser.add_argument("--lens", type=float, default=None,
@@ -184,8 +184,9 @@ def main():
         if not isinstance(look_at, dict) or set(look_at) not in ({"cast", "bone"}, {"cast", "part"}):
             fail("invalid_look_at", f"{bad} (got {args.look_at!r}).")
         key = "bone" if "bone" in look_at else "part"
-        if type(look_at["cast"]) is not int or look_at["cast"] < 0:
-            fail("invalid_look_at", f"{bad}: cast is the cast entry's number, 0 or more (got {look_at['cast']!r}).")
+        cast = look_at["cast"]
+        if not ((type(cast) is int and cast >= 0) or (isinstance(cast, str) and cast and not re.fullmatch(r"[0-9]+", cast))):
+            fail("invalid_look_at", f"{bad}: cast is the cast entry's number, 0 or more, or its id (a name, not a number in quotes; got {cast!r}).")
         if not isinstance(look_at[key], str) or not look_at[key]:
             fail("invalid_look_at", f"{bad}: {key} is a name (got {look_at[key]!r}).")
         for flag, v in (("distance", args.distance), ("lens", args.lens)):

@@ -430,7 +430,10 @@ def entry_for(name: str, schema: dict, body: dict, result) -> dict | None:
     provider = prov.get("provider")
     if not provider and isinstance(prov.get("providerParam"), str):
         param = prov["providerParam"]
-        provider = body.get(param) or _param_default(schema, param)
+        # A step with no default for it (generate_voiceover picks the first connected
+        # vendor) says which one it used in its answer.
+        said = result.get(param) if isinstance(result, dict) else None
+        provider = body.get(param) or (said if isinstance(said, str) else None) or _param_default(schema, param)
     if not isinstance(provider, str) or not provider:
         return None
     model = result.get("model") if isinstance(result, dict) else None

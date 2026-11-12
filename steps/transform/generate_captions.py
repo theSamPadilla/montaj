@@ -144,7 +144,8 @@ def main():
     try:
         # Run 5: the words are each audible clip's and voiceover's own transcript, mapped through the timeline
         # (lib/caption_words): the ones the cut was made on. The mix is transcribed only when one has none.
-        from_sources = timeline_words(heard, d, keep_all=no_voice or args.audio.strip() != "voice")
+        from_sources = timeline_words(heard, d, keep_all=no_voice or args.audio.strip() != "voice",
+                                   language=args.language, model=args.model)
         if from_sources is not None:
             write_transcript(from_sources, words_json_path)
         else:
@@ -222,7 +223,18 @@ def main():
         track = written["track"]
         warnings = ink_pass(project_path)
 
-        answer = dict(track)
+        # What the caller reads first: it finished, and what it wrote. project["captions"] is the one
+        # captions track; translations ride in its segments (lang + translationOf), so only source lines count.
+        n = sum(1 for g in track.get("segments") or []
+                if isinstance(g, dict) and not (isinstance(g.get("lang"), str) and isinstance(g.get("translationOf"), list)))
+        answer = {
+            "done": True,
+            "track": "captions",
+            "lines": n,
+            "language": track.get("lang"),
+            "message": f"Captions finished: {n} {'line' if n == 1 else 'lines'} on the captions track.",
+            **track,
+        }
         if corrected is not None:
             answer["corrected"] = corrected
         if written.get("kept"):

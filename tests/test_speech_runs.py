@@ -338,7 +338,8 @@ def test_step_whole_file_keeps_the_full_file_path(step, tmp_path, fake, monkeypa
     media = make_wav(tmp_path / "a.wav", [(0.5, 1.5)], 3.0)
     step.transcribe(media, str(tmp_path / "out"), "base.en", "en", whole_file=True)
     assert f.calls == [] and len(calls) == 1 and "--output-file" in calls[0] and "-f" in calls[0]
-    assert load(tmp_path / "out")["montaj"] == {"input": "file", "offsets": "source", "timestamps": "source", "srt": "source"}
+    assert load(tmp_path / "out")["montaj"] == {"input": "file", "offsets": "source", "timestamps": "source", "srt": "source",
+                                                "language": {"asked": "en", "given": True, "heard": "en"}}
 
 
 def test_step_trim_spec_keeps_the_full_file_path(step, tmp_path, fake, monkeypatch):
@@ -360,7 +361,7 @@ def test_step_cli_flag_whole_file(step, tmp_path, fake, monkeypatch):
     media = make_wav(tmp_path / "a.wav", [(0.5, 1.5)], 3.0)
     monkeypatch.setattr(sys, "argv", ["transcribe.py", "--input", media, "--out", str(tmp_path / "out"), "--whole-file"])
     step.main()
-    assert f.calls == [] and len(calls) == 1
+    assert [c for c in f.calls if "-dl" not in c["cmd"]] == [] and len(calls) == 1      # the default also detects
 
 
 def test_step_max_context_is_ignored_by_runs(step, tmp_path, fake):
@@ -603,3 +604,23 @@ def test_a_redo_with_no_voiced_run_says_it_kept_the_older_transcript(tmp_path):
         project_for(src), "t", str(d / "project.json"), str(d), "m", "auto", transcribe, redo_full_file=True)
     assert done == [] and json.loads(side.read_text()) == OLD
     assert any("kept the older transcript of clip.mp4" in w for w in warnings), warnings
+
+
+# ── a region code reaches whisper as its base language ───────────────────────
+
+def test_runs_give_whisper_the_base_language(tmp_path, fake):
+    f = fake({0: [("Oi", 0.6, 1.0)]})
+    media = make_wav(tmp_path / "a.wav", [(0.5, 1.5)], 3.0)
+    sr.transcribe_runs(media, str(tmp_path / "out"), "model.bin", "pt-BR")
+    assert [c["cmd"][c["cmd"].index("-l") + 1] for c in f.calls] == ["pt"]
+
+
+def test_step_gives_whisper_the_base_language_on_both_paths(step, tmp_path, fake, monkeypatch):
+    f = fake({0: [("Oi", 0.6, 1.0)]})
+    media = make_wav(tmp_path / "a.wav", [(0.5, 1.5)], 3.0)
+    step.transcribe(media, str(tmp_path / "out"), "base.en", "pt-BR")
+    assert f.calls[0]["cmd"][f.calls[0]["cmd"].index("-l") + 1] == "pt"
+    calls = []
+    full_file_whisper(monkeypatch, step, calls)
+    step.transcribe(media, str(tmp_path / "out2"), "base.en", "pt-BR", whole_file=True)
+    assert calls[0][calls[0].index("-l") + 1] == "pt"

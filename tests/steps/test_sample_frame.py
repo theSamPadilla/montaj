@@ -446,13 +446,20 @@ def test_look_at_part_is_accepted_and_the_rest_default(fake_node_env, tmp_path):
     assert "--distance" not in argv and "--lens" not in argv
 
 
+def test_look_at_cast_may_be_a_name(fake_node_env, tmp_path):
+    # 2.0.1: a shot's set person is named by its id (the render finds its number in the 3D's cast).
+    proc = _look(tmp_path, "--look-at", '{"cast": "guard", "bone": "hand_r"}', env=fake_node_env)
+    argv = json.loads(proc.stdout)
+    assert json.loads(argv[argv.index("--look-at") + 1]) == {"cast": "guard", "bone": "hand_r"}
+
+
 def test_no_look_at_sends_none_of_the_three(fake_node_env, tmp_path):
     argv = json.loads(_look(tmp_path, env=fake_node_env).stdout)
     assert not {"--look-at", "--distance", "--lens"} & set(argv)
 
 
 @pytest.mark.parametrize("value", [
-    "not json", "[]", '{"cast": 0}', '{"bone": "hand_r"}', '{"cast": "0", "bone": "hand_r"}', '{"cast": -1, "bone": "hand_r"}',
+    "not json", "[]", '{"cast": 0}', '{"bone": "hand_r"}', '{"cast": "0", "bone": "hand_r"}', '{"cast": "", "bone": "hand_r"}', '{"cast": -1, "bone": "hand_r"}',
     '{"cast": true, "bone": "hand_r"}', '{"cast": 0, "bone": 5}', '{"cast": 0, "bone": ""}',
     '{"cast": 0, "bone": "a", "part": "b"}', '{"cast": 0, "bone": "a", "x": 1}', '{"prop": 0, "part": "a"}',
 ])

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Generate a voiceover audio file from text via Kling or Gemini TTS.
+"""Generate a voiceover audio file from text via ElevenLabs, Gemini or Kling TTS.
+
+Without --vendor, the first connected of elevenlabs, gemini, kling is used.
 
 Generation step — produces a file on disk and prints JSON metadata. No ffmpeg.
 Composition into the project timeline happens elsewhere: a skill/workflow
@@ -16,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import fail, get_duration
 from connectors import ConnectorError
 from connectors.gemini import invalid_api_key_message
+from lib.credentials import is_configured, provider_name
 from _fail_reasons import fail_for
 
 
@@ -78,14 +81,26 @@ def read_text(args) -> str:
     fail("invalid_args", "One of --text or --text-file is required")
 
 
+VENDOR_ORDER = ("elevenlabs", "gemini", "kling")
+
+
+def default_vendor() -> str:
+    """The first connected vendor in VENDOR_ORDER; fails when none is."""
+    for v in VENDOR_ORDER:
+        if is_configured(v):
+            return v
+    tiles = ", ".join(provider_name(v) for v in VENDOR_ORDER)
+    fail("api_error", f"No voice key. Add one in Montaj under Connectors: {tiles}.")
+
+
 def main():
     p = argparse.ArgumentParser(description="Generate voiceover audio from text")
     p.add_argument("--text",      help="Script text (inline)")
     p.add_argument("--text-file", dest="text_file", help="Path to a file containing the script")
     p.add_argument("--voice",     required=True, help="Voice identifier (vendor-specific)")
     p.add_argument("--out",       required=True, help="Output audio file path")
-    p.add_argument("--vendor",    default="kling", choices=["kling", "gemini", "elevenlabs"],
-                   help="TTS vendor (default: kling)")
+    p.add_argument("--vendor",    choices=["elevenlabs", "gemini", "kling"],
+                   help="TTS vendor (default: the first connected of elevenlabs, gemini, kling)")
     p.add_argument("--model",     help="Override vendor default model")
     p.add_argument("--speed",     type=float, default=1.0,
                    help="Playback speed (Kling only; ignored for Gemini and ElevenLabs)")
@@ -97,6 +112,8 @@ def main():
     args = p.parse_args()
 
     text = read_text(args)
+    if not args.vendor:
+        args.vendor = default_vendor()
 
     try:
         if args.vendor == "kling":
@@ -138,8 +155,9 @@ def main():
         "voice": args.voice,
         "text_length_chars": len(text),
     }
-    # Always JSON: the AI reads characters spoken against seconds heard, and a short clip for a long script shows.
-    print(json.dumps(result))
+    # Always the JSON answer: serve never passes --json (it is not a declared param), and the vendor the step
+    # chose itself is read from this answer (serve/provenance.entry_for). --json is still accepted.
+    print(json.dumps({**result, "type": "audio"}))
 
 
 if __name__ == "__main__":

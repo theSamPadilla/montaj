@@ -21,8 +21,27 @@ path separators. Used by serve/server.py reserve-path validation and
 project/init.py --project-path segment validation."""
 
 
+import threading as _threading
+_quiet = _threading.local()
+
+
+@contextlib.contextmanager
+def quiet_failures():
+    """Inside this block (and only on the calling thread) `fail` exits without printing its error line. For work whose
+    failure must change nothing about a step's outcome, such as a language detect run beside a transcription: the
+    step's stderr then holds only the step's own errors."""
+    before = getattr(_quiet, "on", False)
+    _quiet.on = True
+    try:
+        yield
+    finally:
+        _quiet.on = before
+
+
 def fail(code: str, message: str):
     """Print structured error to stderr and exit."""
+    if getattr(_quiet, "on", False):
+        sys.exit(1)
     print(json.dumps({"error": code, "message": message}), file=sys.stderr)
     sys.exit(1)
 
@@ -535,6 +554,19 @@ def whisper_weight_path(name: str):
     return None
 
 
+def whisper_language(code):
+    """The code whisper-cli takes for *code*: its base language, lowercased.
+    ``pt-BR`` -> ``pt``, ``zh_TW`` -> ``zh``, ``EN-us`` -> ``en``. ``auto``,
+    ``yue`` and None pass through unchanged. Keep the caller's own code wherever
+    it is recorded; only whisper gets this one."""
+    if code is None:
+        return None
+    text = str(code).strip()
+    if text.lower() == "auto":
+        return "auto"
+    return re.split(r"[-_]", text, maxsplit=1)[0].lower()
+
+
 def resolve_whisper_model(model: str, language: str) -> str:
     """Pick the right whisper model for *language*.
 
@@ -555,7 +587,7 @@ def resolve_whisper_model(model: str, language: str) -> str:
     of returning a model whose file is missing, which would surface later as a
     cryptic file-not-found). Already-multilingual models pass through untouched.
     """
-    lang = (language or "en").strip().lower()
+    lang = whisper_language((language or "en").strip())
     english = lang in ("en", "english")
     if whisper_weight_path(model) is None:
         fallbacks = [DEFAULT_WHISPER_MODEL, *(["base.en"] if english else []), "base"]
@@ -658,7 +690,7 @@ def transcribe_words(input_path: str, model: str = DEFAULT_WHISPER_MODEL, work_d
         whisper_bin = find_whisper_bin()
 
         prefix = os.path.join(work_dir, "out")
-        r = run_whisper([whisper_bin, "-m", model_file, "-f", audio, "-l", language,
+        r = run_whisper([whisper_bin, "-m", model_file, "-f", audio, "-l", whisper_language(language),
                          "--split-on-word", "--max-len", "1", "--output-json", "--output-file", prefix],
                         audio)
 

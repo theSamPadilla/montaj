@@ -12,6 +12,7 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, check_output, run, ffmpeg_bin, ffprobe_bin, get_duration, ff_input
 import models
+import onnx_runtime
 import rvm_model
 
 # ---------------------------------------------------------------------------
@@ -23,7 +24,7 @@ try:
 except ImportError:
     _missing.append("numpy")
 try:
-    import onnxruntime
+    onnxruntime = onnx_runtime.load()
 except ImportError:
     _missing.append("onnxruntime")
 try:

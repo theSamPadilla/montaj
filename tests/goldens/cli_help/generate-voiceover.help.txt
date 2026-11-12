@@ -1,6 +1,6 @@
 usage: montaj generate-voiceover [-h] [--text TEXT] [--text-file TEXT_FILE]
                                  --voice VOICE
-                                 [--vendor {kling,gemini,elevenlabs}]
+                                 [--vendor {elevenlabs,gemini,kling}]
                                  [--model MODEL] [--speed SPEED]
                                  [--language LANGUAGE] [--json] [--out PATH]
                                  [--quiet]
@@ -12,12 +12,12 @@ options:
   --text-file TEXT_FILE
                         Path to a file containing the script. Mutually
                         exclusive with --text.
-  --voice VOICE         Voice identifier (vendor-specific). For Kling:
-                        voice_id or alias from TTS_VOICES. For Gemini:
-                        prebuilt voice name (e.g. 'Kore', 'Puck'). For
-                        ElevenLabs: a voice_id or a premade voice name.
-  --vendor {kling,gemini,elevenlabs}
-                        TTS vendor to use
+  --voice VOICE         Voice (vendor-specific). ElevenLabs: voice_id or
+                        premade name. Gemini: prebuilt name (e.g. 'Kore').
+                        Kling: voice_id or TTS_VOICES alias.
+  --vendor {elevenlabs,gemini,kling}
+                        TTS vendor. Defaults to the first connected:
+                        ElevenLabs, Gemini, Kling.
   --model MODEL         Override the connector's default model for the chosen
                         vendor
   --speed SPEED         Playback speed multiplier. Kling only; ignored for

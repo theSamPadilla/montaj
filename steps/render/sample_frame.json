@@ -65,7 +65,7 @@
       "name": "look-at",
       "type": "json",
       "required": false,
-      "description": "A close-up of the 3D on screen, e.g. a 40 px hand: {\"cast\": 0, \"bone\": \"hand_r\"} or {\"cast\": 0, \"part\": \"name\"}. Every 3D in the frame is drawn from a camera on that bone or part (a three-quarter view from the front) instead of its own; the scene is not edited. A frame with no 3D on screen answers look_at_no_3d. Not with raw."
+      "description": "A close-up of the 3D on screen: {\"cast\": 0, \"bone\": \"hand_r\"} or {\"cast\": 0, \"part\": \"name\"}, cast its number or id. Every 3D in the frame is drawn from a camera on that bone or part instead of its own; the scene is not edited. A frame with no 3D on screen answers look_at_no_3d. Not with raw."
     },
     {
       "name": "distance",

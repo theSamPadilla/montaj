@@ -500,6 +500,37 @@ def test_a_3d_scene_with_a_backdrop_is_a_card_without_opaque(tmp_path, backdrop)
     assert changes[("id", "a")]["inkAuto"]["card"] == "scene-a" and warnings == []
 
 
+def _by_ref_scene(project_dir, sid, backdrop):
+    """A scene saved by reference: the card's scene at the top level, the shot's own under byRef."""
+    base = Path(project_dir) / "models" / "scenes" / sid
+    base.mkdir(parents=True, exist_ok=True)
+    json = __import__("json")
+    (base / "active.json").write_text(json.dumps({
+        "byRef": {"v": 1, "slug": "m", "store": "../../_store", "moves": "k", "model": {}, "scene": {"backdrop": backdrop}},
+        "model": {}, "moves": {"moves": {}}, "scene": {"duration": 1},
+    }))
+
+
+def test_a_3d_scene_saved_by_reference_is_read_from_byref_not_the_card(tmp_path):
+    _by_ref_scene(tmp_path, "specs", {"style": "studio"})
+    p = _project([_scene3d()], [_seg("a", 1, 2)])
+    changes, _, warnings = _plan2(p, tmp_path, None, project_dir=tmp_path)
+    assert changes[("id", "a")]["inkAuto"]["card"] == "scene-a" and warnings == []
+    _by_ref_scene(tmp_path, "specs", {"style": "transparent"})
+    assert _plan2(p, tmp_path, None, project_dir=tmp_path)[0] == {}
+
+
+def test_a_3d_scene_by_reference_with_no_scene_of_its_own_is_unreadable_like_an_inline_one(tmp_path):
+    _by_ref_scene(tmp_path, "specs", {"style": "studio"})
+    f = tmp_path / "models" / "scenes" / "specs" / "active.json"
+    doc = __import__("json").loads(f.read_text())
+    del doc["byRef"]["scene"]
+    f.write_text(__import__("json").dumps(doc))
+    p = _project([_scene3d()], [_seg("a", 1, 2)])
+    changes, _, warnings = _plan2(p, tmp_path, None, project_dir=tmp_path)
+    assert changes == {} and len(warnings) == 1 and "scene-a" in warnings[0]
+
+
 def test_a_3d_scene_with_a_transparent_backdrop_is_no_card(tmp_path):
     _scene(tmp_path, "specs", {"style": "transparent"})
     p = _project([_scene3d()], [_seg("a", 1, 2)])

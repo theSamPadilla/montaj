@@ -175,3 +175,28 @@ def test_the_sse_pipeline_keeps_a_translation_written_while_it_ran(tmp_path, mon
     ))
     _assert_kept(json.loads((d / "project.json").read_text())["captions"])
 
+
+
+def test_the_caption_pipeline_reads_the_sources_off_the_event_loop(tmp_path, monkeypatch):
+    """timeline_words runs ffmpeg, a loudness pass and a whisper detect: on serve's loop it would stall every request."""
+    import threading
+    import lib.caption_words as cw
+    _patch_caption_subprocess(monkeypatch)
+    d = tmp_path / "proj"
+    d.mkdir()
+    (d / "_caption_track.json").write_text(json.dumps({"style": "subtitle", "segments": [seg(WORDS_A), seg(WORDS_B)]}))
+    seen = {}
+
+    async def go():
+        seen["loop"] = threading.get_ident()
+        return await _run_caption_pipeline(
+            PID, d, _audible_project(), model="base.en", language="auto", style="subtitle",
+            broadcaster=_FakeBroadcaster())
+
+    def fake(*a, **k):
+        seen["call"] = threading.get_ident()
+        return None
+
+    monkeypatch.setattr(cw, "timeline_words", fake)
+    asyncio.run(go())
+    assert seen["call"] != seen["loop"]

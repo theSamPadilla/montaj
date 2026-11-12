@@ -716,3 +716,44 @@ def test_route_ink_timeout_kills_the_tree_waits_and_is_only_a_log_event(tmp_path
     track, b, _, _, _, _ = _route_ink_run(tmp_path, monkeypatch, True, proc)
     assert proc.killed and proc.waited and track["segments"][0]["text"] == "hi"
     assert any("timed out" in f for f in b.frames)
+
+
+# ── the answer opens with a plain summary ────────────────────────────────────
+
+def _answer_of(tmp_path, monkeypatch, capsys, segments, requested="pt-BR"):
+    mod = _load_step_module()
+    proj_dir = tmp_path / "proj"
+    proj_dir.mkdir()
+    (proj_dir / "project.json").write_text(json.dumps({
+        "id": "p1", "tracks": [{"id": "trk-0", "items": [{"id": "c", "type": "video", "src": "a.mp4",
+                                                          "start": 0, "end": 2, "inPoint": 0, "outPoint": 2}]}]}))
+    monkeypatch.setattr(mod, "get_project_dir", lambda pid: proj_dir)
+    monkeypatch.setattr(mod, "require_whisper_model", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "build_audio_mix_spec", lambda p: {"segments": []})
+    monkeypatch.setattr(mod, "whisper_runaway_timeout_for", lambda p: 1)
+
+    def fake_run(cmd, **kw):
+        if "caption.py" in " ".join(cmd):
+            (proj_dir / "_caption_track.json").write_text(json.dumps({"style": "pop", "segments": segments}))
+        if "transcribe.py" in " ".join(cmd):
+            (proj_dir / "_caption_words.json").write_text("{}")
+    monkeypatch.setattr(mod, "run", fake_run)
+    monkeypatch.setattr(mod.sys, "argv", ["generate_captions.py", "--project-id", "p1", "--language", requested])
+    mod.main()
+    return json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+
+def test_answer_starts_with_done_track_lines_language_message(tmp_path, monkeypatch, capsys):
+    segs = [{"text": f"linha {i}", "start": i, "end": i + 0.9, "words": []} for i in range(3)]
+    ans = _answer_of(tmp_path, monkeypatch, capsys, segs)
+    assert list(ans)[:5] == ["done", "track", "lines", "language", "message"]
+    assert ans["done"] is True and ans["track"] == "captions" and ans["lines"] == 3
+    assert ans["language"] == "pt-BR"      # the caller's own code, not whisper's base code
+    assert ans["message"] == "Captions finished: 3 lines on the captions track."
+    assert ans["style"] == "pop" and len(ans["segments"]) == 3     # every existing key kept
+
+
+def test_answer_counts_one_line_in_the_singular_and_no_language_as_null(tmp_path, monkeypatch, capsys):
+    ans = _answer_of(tmp_path, monkeypatch, capsys, [{"text": "oi", "start": 0, "end": 1, "words": []}], requested="auto")
+    assert ans["lines"] == 1 and ans["language"] is None
+    assert ans["message"] == "Captions finished: 1 line on the captions track."

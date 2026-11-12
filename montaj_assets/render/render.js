@@ -36,6 +36,7 @@ import { isMain as isMainModule }        from './is-main.js'
 import { renderAllSegments, planChunks, currentRenderPlan, stopSignal, bakeTotal, createBakeProgress }  from './renderer.js'
 import { isChildKilled }              from './child-killed.js'
 import { isThreeFrameBlank }          from './three-frame.js'
+import { isNo3dGraphics }             from './gpu-3d.js'
 import {
   estimateRenderDisk, checkDiskSpace, diskFailure, isDiskFull, dirBytes,
   FFV1_CAPTION_BYTES_PER_PIXEL, FFV1_DENSE_BYTES_PER_PIXEL,
@@ -348,6 +349,11 @@ if (isMain) {
     // child that died of it keeps the render_error line (PL83 review).
     if (isChildKilled(err) && !stopSignal()) {
       fail('child_killed', err.message, { child: err.child, signal: err.signal, phase: err.phase })
+    }
+    // A machine with no usable GPU, asked before the first frame (gpu-3d.js):
+    // its sentence is written for the user.
+    if (isNo3dGraphics(err)) {
+      fail('no_3d_graphics', err.message, { reason: err.reason })
     }
     // A 3D overlay frame that did not draw, retried (three-frame.js): named,
     // never exported blank.

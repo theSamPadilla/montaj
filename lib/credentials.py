@@ -194,6 +194,19 @@ def get_credential(provider: str, key: str) -> str:
     raise MissingCredentialError(missing_key_message(provider), provider, key)
 
 
+def is_configured(provider: str) -> bool:
+    """True when `provider` has a usable key set, by the same lookup get_credential
+    does (env overlay, then credentials_path()). Never raises, makes no network
+    call; a corrupt credentials file reads as not configured."""
+    def is_set(prov, key):
+        try:
+            get_credential(prov, key)
+            return True
+        except CredentialError:
+            return False
+    return provider in KNOWN_PROVIDERS and provider_is_configured(provider, is_set)
+
+
 def set_credential(provider: str, key: str, value: str) -> None:
     """Write credential to ~/.montaj/credentials.json with 0600 perms."""
     os.makedirs(os.path.dirname(credentials_path()), exist_ok=True)

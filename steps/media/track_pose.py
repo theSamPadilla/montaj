@@ -257,7 +257,8 @@ def main(argv=None):
     require_file(args.input)
     try:
         import numpy  # noqa: F401
-        import onnxruntime
+        from lib import onnx_runtime
+        onnxruntime = onnx_runtime.load()
     except ImportError as e:
         fail("missing_dependency",
              f"track_pose needs onnxruntime and numpy ({e.name} is missing), which the rvm extra provides. "

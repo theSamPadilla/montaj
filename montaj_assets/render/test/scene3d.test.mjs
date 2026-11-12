@@ -5,7 +5,7 @@
 // sees an ordinary overlay. Pure, so these tests use a temp project folder and an injected environment.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, cpSync, symlinkSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -250,5 +250,104 @@ test('a well-formed timeMap passes through to the stage untouched', () => {
     const p = projectOf(scene({ scene: 'hands', inPoint: 0, timeMap }))
     materializeScene3d(p, w.project, { env: w.env })
     assert.deepEqual(p.tracks[0][0].props.timeMap, timeMap)
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+// 3D5: a scene by reference (the Montaj app's library/model3d/store.js format) inlines to what an inline scene gives.
+const MID = '0123456789abcdef', MID2 = 'fedcba9876543210', TID = 'aaaaaaaaaaaaaaaa', TID2 = 'bbbbbbbbbbbbbbbb', KEY = 'k1_pool'
+const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]), JPG = Buffer.from([0xff, 0xd8, 0xff, 9, 8])
+const MESH = { v: 1, count: 3, position: 'AAAA' }, MESH2 = { v: 1, count: 6, position: 'BBBB' }
+const POOL = { moves: { wave: { duration: 1 } } }
+const refModel = { name: 'm', meshRefs: [MID], textureRefs: [TID, TID2], parts: [{ mesh: MID }] }
+const refScene = { duration: 2, props: [{ model: { meshRefs: [MID2], textureRefs: [TID] } }] }
+const inlineOf = () => ({
+  slug: 'hands',
+  model: { name: 'm', meshes: { [MID]: MESH }, textures: { [TID]: `data:image/png;base64,${PNG.toString('base64')}`, [TID2]: `data:image/jpeg;base64,${JPG.toString('base64')}` }, parts: [{ mesh: MID }] },
+  moves: POOL,
+  scene: { duration: 2, props: [{ model: { meshes: { [MID2]: MESH2 }, textures: { [TID]: `data:image/png;base64,${PNG.toString('base64')}` } } }] },
+})
+function refWorld(names = ['hands']) {
+  const w = world({ main: false })
+  const store = join(w.project, 'models', '_store')
+  for (const d of ['meshes', 'textures', 'moves']) mkdirSync(join(store, d), { recursive: true })
+  writeFileSync(join(store, 'meshes', `${MID}.json`), JSON.stringify(MESH))
+  writeFileSync(join(store, 'meshes', `${MID2}.json`), JSON.stringify(MESH2))
+  writeFileSync(join(store, 'textures', `${TID}.png`), PNG)
+  writeFileSync(join(store, 'textures', `${TID2}.jpg`), JPG)
+  writeFileSync(join(store, 'moves', `${KEY}.json`), JSON.stringify(POOL))
+  for (const n of names) {
+    mkdirSync(join(w.project, 'models', 'scenes', n), { recursive: true })
+    writeFileSync(join(w.project, 'models', 'scenes', n, 'active.json'), JSON.stringify({
+      byRef: { v: 1, slug: 'hands', store: '../../_store', moves: KEY, model: refModel, scene: refScene },
+      model: { name: 'card' }, moves: { moves: {} }, scene: { duration: 2 },
+    }))
+  }
+  return w
+}
+const sceneOf = (name, w, opts = {}) => { const p = projectOf(scene({ scene: name })); materializeScene3d(p, w.project, { env: w.env, ...opts }); return p.tracks[0][0].props.sceneJson }
+
+test('a scene by reference inlines to the text an inline scene of the same content gives, textures as data URIs of the right type', () => {
+  const w = refWorld()
+  try {
+    assert.equal(sceneOf('hands', w), JSON.stringify(inlineOf()))
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('a texture two scene items share is read once', () => {
+  const w = refWorld(['hands', 'feet'])
+  try {
+    const reads = []
+    const p = projectOf(scene({ scene: 'hands' }), scene({ scene: 'feet' }, { id: 's2' }))
+    materializeScene3d(p, w.project, { env: w.env, readBytes: (f) => { reads.push(f); return readFileSync(f) } })
+    assert.equal(reads.filter((f) => f.endsWith(`${TID}.png`)).length, 1)
+    assert.equal(p.tracks[0][1].props.sceneJson, JSON.stringify(inlineOf()))
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('a missing mesh, texture or move pool fails in words, with no path', () => {
+  for (const [file, what] of [[`meshes/${MID}.json`, `mesh ${MID}`], [`textures/${TID2}.jpg`, `texture ${TID2}`], [`moves/${KEY}.json`, `move pool ${KEY}`]]) {
+    const w = refWorld()
+    try {
+      rmSync(join(w.project, 'models', '_store', file))
+      assert.throws(() => sceneOf('hands', w), (e) => e instanceof Scene3dError && e.code === 'scene3d_invalid' &&
+        e.message === `3D item "s1": its 3D "hands" is missing part of its 3D (${what}). Open the project in Montaj and save that 3D again.` && !e.message.includes(w.dir))
+    } finally { rmSync(w.dir, { recursive: true, force: true }) }
+  }
+})
+
+test('a store folder other than the project\'s models/_store is refused', () => {
+  for (const store of ['../../../..', '../../..', '/etc', '../..', '', '../../scenes', '..', '../../_store/meshes']) {
+    const w = refWorld()
+    try {
+      const f = join(w.project, 'models', 'scenes', 'hands', 'active.json')
+      const j = JSON.parse(readFileSync(f, 'utf8')); j.byRef.store = store; writeFileSync(f, JSON.stringify(j))
+      assert.throws(() => sceneOf('hands', w), (e) => e instanceof Scene3dError && e.code === 'scene3d_invalid' && /outside the project's models\/_store folder/.test(e.message), `store ${JSON.stringify(store)}`)
+    } finally { rmSync(w.dir, { recursive: true, force: true }) }
+  }
+})
+
+test('a store folder or piece that is a symlink is refused', () => {
+  for (const what of ['store', 'mesh', 'texture', 'moves']) {
+    const w = refWorld()
+    try {
+      const store = join(w.project, 'models', '_store')
+      const elsewhere = join(w.dir, 'elsewhere')
+      cpSync(store, elsewhere, { recursive: true })
+      if (what === 'store') { rmSync(store, { recursive: true }); symlinkSync(elsewhere, store) }
+      else {
+        const rel = { mesh: `meshes/${MID}.json`, texture: `textures/${TID}.png`, moves: `moves/${KEY}.json` }[what]
+        rmSync(join(store, rel)); symlinkSync(join(elsewhere, rel), join(store, rel))
+      }
+      assert.throws(() => sceneOf('hands', w), (e) => e instanceof Scene3dError && e.code === 'scene3d_invalid' && !e.message.includes(w.dir), what)
+    } finally { rmSync(w.dir, { recursive: true, force: true }) }
+  }
+})
+
+test('an inline scene is unchanged by the by-reference path, and a by-reference one with no model is still "no model"', () => {
+  const w = world({ scenes: ['hands'] })
+  try {
+    assert.equal(sceneOf('hands', w), SCENE_JSON)
+    writeFileSync(join(w.project, 'models', 'scenes', 'hands', 'active.json'), JSON.stringify({ byRef: { v: 1, slug: 'hands', store: '../../_store', moves: KEY } }))
+    assert.throws(() => sceneOf('hands', w), (e) => e instanceof Scene3dError && e.code === 'scene3d_invalid')
   } finally { rmSync(w.dir, { recursive: true, force: true }) }
 })

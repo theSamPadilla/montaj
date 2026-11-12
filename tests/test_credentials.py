@@ -222,3 +222,27 @@ def test_openai_is_no_longer_a_provider():
     with pytest.raises(CredentialError):
         build_env_overlay({"openai": {"api_key": "x"}})
     assert "openai" not in list_providers()
+
+
+# ── is_configured ────────────────────────────────────────────────────────────
+
+def test_is_configured_reads_env_then_file_and_never_raises(monkeypatch, tmp_path):
+    from lib.credentials import is_configured
+    for p, keys in KNOWN_PROVIDERS.items():
+        for k in keys:
+            monkeypatch.delenv(_env_var_name(p, k), raising=False)
+    assert not is_configured("elevenlabs") and not is_configured("nope")
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "x")
+    assert is_configured("elevenlabs")
+    set_credential("kling", "access_key", "a")
+    assert not is_configured("kling")                 # half of the legacy pair
+    set_credential("kling", "secret_key", "b")
+    assert is_configured("kling")
+
+
+def test_is_configured_reads_a_corrupt_file_as_not_configured(monkeypatch, _redirect_credentials):
+    from lib.credentials import is_configured
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    os.makedirs(os.path.dirname(_redirect_credentials), exist_ok=True)
+    open(_redirect_credentials, "w").write("{not json")
+    assert not is_configured("gemini")

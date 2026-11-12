@@ -87,19 +87,85 @@ class TestElevenLabsVendorDispatch:
         assert "language" not in seen
 
 
-class TestDefaultVendorUnchanged:
-    def test_default_vendor_is_still_kling(self, step_module, monkeypatch, tmp_path):
-        seen = {}
+_PROVIDERS = ("kling", "gemini", "elevenlabs", "serpapi", "fal", "kinovi", "tripo")
 
-        def capture(**kw):
-            seen.update(kw)
-            return kw["out_path"]
-        monkeypatch.setattr(kling_mod, "generate_speech", capture)
+
+@pytest.fixture
+def creds(monkeypatch, tmp_path):
+    """No key anywhere: the credentials file is a temp path, every provider env var is cleared, and the
+    default ~/.montaj/credentials.json is never opened."""
+    import builtins
+    import lib.credentials as credentials
+    for prov, keys in credentials.KNOWN_PROVIDERS.items():
+        for key in keys:
+            monkeypatch.delenv(credentials._env_var_name(prov, key), raising=False)
+    path = tmp_path / "credentials.json"
+    monkeypatch.setenv("MONTAJ_CREDENTIALS_PATH", str(path))
+    real_open = builtins.open
+    home_file = credentials._DEFAULT_CREDENTIALS_PATH
+
+    def guarded(file, *a, **kw):
+        assert str(file) != home_file, "the real credentials file was opened"
+        return real_open(file, *a, **kw)
+    monkeypatch.setattr(builtins, "open", guarded)
+
+    def connect(provider, key="api_key"):
+        data = json.loads(path.read_text()) if path.exists() else {}
+        data.setdefault(provider, {})[key] = "test-not-a-real-key"
+        path.write_text(json.dumps(data))
+    return connect
+
+
+class TestDefaultVendorIsTheFirstConnected:
+    def _run(self, step_module, monkeypatch, tmp_path, *extra):
+        calls = []
+        for mod, name in ((kling_mod, "kling"), (gemini_mod, "gemini"), (elevenlabs_mod, "elevenlabs")):
+            monkeypatch.setattr(mod, "generate_speech",
+                                lambda _n=name, **kw: (calls.append(_n), kw["out_path"])[1])
         monkeypatch.setattr(sys, "argv", [
-            "generate_voiceover.py", "--text", "hi", "--voice", "sunny", "--out", str(tmp_path / "o.mp3"),
+            "generate_voiceover.py", "--text", "hi", "--voice", "V", "--out", str(tmp_path / "o.mp3"),
+            "--json", *extra,
         ])
         step_module.main()
-        assert seen["text"] == "hi"
+        return calls
+
+    def test_only_elevenlabs_connected(self, step_module, monkeypatch, tmp_path, creds, capsys):
+        creds("elevenlabs")
+        assert self._run(step_module, monkeypatch, tmp_path) == ["elevenlabs"]
+        assert json.loads(capsys.readouterr().out)["vendor"] == "elevenlabs"
+
+    def test_only_gemini_connected(self, step_module, monkeypatch, tmp_path, creds, capsys):
+        creds("gemini")
+        assert self._run(step_module, monkeypatch, tmp_path) == ["gemini"]
+        assert json.loads(capsys.readouterr().out)["vendor"] == "gemini"
+
+    def test_only_kling_connected_by_the_legacy_pair(self, step_module, monkeypatch, tmp_path, creds):
+        creds("kling", "access_key")
+        creds("kling", "secret_key")
+        assert self._run(step_module, monkeypatch, tmp_path) == ["kling"]
+
+    def test_order_is_elevenlabs_then_gemini_then_kling(self, step_module, monkeypatch, tmp_path, creds):
+        creds("kling")
+        creds("gemini")
+        assert self._run(step_module, monkeypatch, tmp_path) == ["gemini"]
+        creds("elevenlabs")
+        assert self._run(step_module, monkeypatch, tmp_path) == ["elevenlabs"]
+
+    def test_none_connected_names_all_three_tiles(self, step_module, monkeypatch, tmp_path, creds, capsys):
+        with pytest.raises(SystemExit):
+            self._run(step_module, monkeypatch, tmp_path)
+        err = _last_stderr_json(capsys)
+        assert err["error"] == "api_error"
+        assert all(n in err["message"] for n in ("ElevenLabs", "Gemini", "Kling"))
+        assert "Connectors" in err["message"]
+
+    def test_explicit_vendor_is_taken_as_given(self, step_module, monkeypatch, tmp_path, creds):
+        creds("elevenlabs")
+        assert self._run(step_module, monkeypatch, tmp_path, "--vendor", "kling") == ["kling"]
+
+    def test_explicit_vendor_with_nothing_connected_still_calls_the_connector(
+            self, step_module, monkeypatch, tmp_path, creds):
+        assert self._run(step_module, monkeypatch, tmp_path, "--vendor", "gemini") == ["gemini"]
 
 
 class TestConnectorErrorMapping:

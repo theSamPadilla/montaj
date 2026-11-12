@@ -1,10 +1,10 @@
 {
   "name": "generate_voiceover",
   "provenance": {"providerParam": "vendor"},
-  "description": "Synthesise a voiceover audio file from text via Kling or Gemini TTS. Generation step — produces a file on disk; composition happens at render time.",
+  "description": "Synthesise a voiceover from text (ElevenLabs, Gemini or Kling TTS). Produces a file on disk.",
   "output": {
     "type": "audio",
-    "description": "Path to the generated voiceover audio file (plus duration metadata when --json)"
+    "description": "Path to the generated voiceover audio file (plus duration, vendor and voice)"
   },
   "params": [
     {"name": "text", "type": "string", "required": false,
@@ -12,12 +12,12 @@
     {"name": "text-file", "type": "string", "required": false,
      "description": "Path to a file containing the script. Mutually exclusive with --text."},
     {"name": "voice", "type": "string", "required": true,
-     "description": "Voice identifier (vendor-specific). For Kling: voice_id or alias from TTS_VOICES. For Gemini: prebuilt voice name (e.g. 'Kore', 'Puck'). For ElevenLabs: a voice_id or a premade voice name."},
+     "description": "Voice (vendor-specific). ElevenLabs: voice_id or premade name. Gemini: prebuilt name (e.g. 'Kore'). Kling: voice_id or TTS_VOICES alias."},
     {"name": "out", "type": "string", "required": true,
      "description": "Output audio file path (.mp3 or .wav). Optional with _project: saved in the project's assets folder."},
-    {"name": "vendor", "type": "enum", "required": false, "default": "kling",
-     "options": ["kling", "gemini", "elevenlabs"],
-     "description": "TTS vendor to use"},
+    {"name": "vendor", "type": "enum", "required": false,
+     "options": ["elevenlabs", "gemini", "kling"],
+     "description": "TTS vendor. Defaults to the first connected: ElevenLabs, Gemini, Kling."},
     {"name": "model", "type": "string", "required": false,
      "description": "Override the connector's default model for the chosen vendor"},
     {"name": "speed", "type": "float", "required": false, "default": 1.0,
