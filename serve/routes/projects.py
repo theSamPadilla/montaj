@@ -36,7 +36,7 @@ from serve.common import (
 )
 from serve import context as context_store
 from serve.playback_gate import heavy_slot, playback_env, preview_playing
-from serve.caption_job import build_audio_mix_spec, narration_audio, caption_input_change, caption_input_fingerprint
+from serve.caption_job import build_audio_mix_spec, fill_audio_ends, narration_audio, caption_input_change, caption_input_fingerprint
 from serve.caption_theme import sanitize_theme, seed_prev
 from serve import provenance
 from serve import save_guard
@@ -6517,6 +6517,7 @@ async def _run_caption_pipeline(
     #    each at its own timeline position. Output time is timeline time, so
     #    word timings map 1:1 without any remapping downstream.
     # Narration only (§652), as the generate_captions step: clips' own audio and voice tracks; every track when none is voice.
+    project = fill_audio_ends(project, str(project_dir))
     heard, no_voice = narration_audio(project)
     mix_spec = build_audio_mix_spec(heard)
 

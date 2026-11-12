@@ -186,6 +186,40 @@ def _audio_track_segments(project: dict) -> list[dict]:
     return segments
 
 
+def fill_audio_ends(project: dict, project_dir: str) -> dict:
+    """`project` with each audio track that has no usable `end` given one: it plays to the end of its source,
+    as render does (mix-audio.js), so its end is `start` plus the file's length less `inPoint`. A source that
+    cannot be measured is left as it is. Nothing is written back."""
+    tracks = ((project or {}).get("audio") or {}).get("tracks")
+    if not isinstance(tracks, list):
+        return project
+    from lib.common import get_duration
+    filled = []
+    for t in tracks:
+        if isinstance(t, dict) and isinstance(t.get("src"), str) and t["src"] \
+                and _num(t.get("end"), 0.0) <= _num(t.get("start"), 0.0):
+            src = t["src"] if os.path.isabs(t["src"]) else os.path.join(str(project_dir), t["src"])
+            try:
+                length = get_duration(src) - max(0.0, _num(t.get("inPoint"), 0.0))
+            except Exception:
+                length = 0.0
+            if length > 0:
+                t = {**t, "end": round(_num(t.get("start"), 0.0) + length, 4)}
+        filled.append(t)
+    return {**project, "audio": {**project["audio"], "tracks": filled}}
+
+
+def audio_hint(project: dict) -> str:
+    """What to do when no audio was heard: names the audio tracks that still have no length."""
+    tracks = ((project or {}).get("audio") or {}).get("tracks")
+    bad = [str(t.get("id") or t.get("src")) for t in tracks or []
+           if isinstance(t, dict) and t.get("muted") is not True and _num(t.get("end"), 0.0) <= _num(t.get("start"), 0.0)]
+    if not bad:
+        return ""
+    return (f" Audio track {', '.join(bad)} has no end and its file could not be measured: check its src names a "
+            "file in the project (import it first), or give the track an end.")
+
+
 # Audio-track `type`s that are narration (the type convention of lib/speech_source: "voiceover", "music", "sfx", else "audio").
 VOICE_TYPES = ("voiceover", "voice", "narration", "speech", "dialogue")
 

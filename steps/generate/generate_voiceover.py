@@ -6,7 +6,7 @@ Composition into the project timeline happens elsewhere: a skill/workflow
 appends an AudioTrack entry to project.audio.tracks[]; render/mix-audio.js
 mixes at render time.
 """
-import argparse, json, os, sys
+import argparse, json, os, re, sys, tempfile
 
 # File lives at steps/<category>/<name>.py — reach lib/ and project root
 # by going up two levels.
@@ -19,10 +19,55 @@ from connectors.gemini import invalid_api_key_message
 from _fail_reasons import fail_for
 
 
+# ElevenLabs refuses a request over its model's character limit. Unlisted models get the lowest.
+ELEVENLABS_CHAR_LIMITS = {"eleven_multilingual_v2": 10000, "eleven_flash_v2_5": 40000, "eleven_turbo_v2_5": 40000}
+ELEVENLABS_DEFAULT_LIMIT = 5000
+
+
+def _looks_like_file_name(text: str) -> bool:
+    """A single word that ends .txt/.md or names a file on disk: the AI passed a file's name as the script."""
+    t = text.strip()
+    if not t or (re.search(r"\s", t) and not os.path.isfile(t)):
+        return False
+    return t.lower().endswith((".txt", ".md")) or os.path.isfile(t)
+
+
+def split_text(text: str, limit: int) -> list:
+    """Pieces of at most `limit` characters, cut at a paragraph, else a sentence end, else a space."""
+    pieces, rest = [], text.strip()
+    while len(rest) > limit:
+        window = rest[:limit]
+        ends = [m.end() for m in re.finditer(r"[.!?\u2026\u3002]['\")\]]*\s", window)]
+        # The first kind of break that leaves a sizeable piece: paragraph, sentence, line, word.
+        found = (window.rfind("\n\n"), max(ends, default=-1), window.rfind("\n"), window.rfind(" "))
+        cut = next((c for c in found if c > limit // 4), limit)
+        pieces.append(rest[:cut].strip())
+        rest = rest[cut:].strip()
+    return pieces + ([rest] if rest else [])
+
+
+def join_mp3(paths: list, out_path: str) -> str:
+    """The mp3 pieces joined in order, copied without re-encoding."""
+    from common import ffmpeg_bin, ff_path, run
+    with tempfile.TemporaryDirectory() as d:
+        listing = os.path.join(d, "list.txt")
+        with open(listing, "w", encoding="utf-8") as f:
+            for p in paths:
+                f.write("file '" + os.path.abspath(p).replace("'", "'\\''") + "'\n")
+        r = run([ffmpeg_bin(), "-y", "-f", "concat", "-safe", "0", "-i", ff_path(listing), "-c", "copy",
+                 ff_path(out_path)], timeout=600, check=False)
+    if r.returncode != 0:
+        fail("ffmpeg_error", "Could not join the voiceover pieces: " + r.stderr[-300:])
+    return out_path
+
+
 def read_text(args) -> str:
     if args.text and args.text_file:
         fail("invalid_args", "Pass either --text or --text-file, not both")
     if args.text:
+        if _looks_like_file_name(args.text):
+            fail("invalid_args", f"'text' is the file name {args.text.strip()!r}, not the script, so nothing was "
+                                 "generated. Pass the script itself as text, or the file as text-file.")
         return args.text
     if args.text_file:
         try:
@@ -68,7 +113,16 @@ def main():
             from connectors import elevenlabs
             kwargs = {"text": text, "voice": args.voice, "out_path": args.out}
             if args.model: kwargs["model"] = args.model
-            path = elevenlabs.generate_speech(**kwargs)
+            limit = ELEVENLABS_CHAR_LIMITS.get(args.model or elevenlabs.DEFAULT_TTS_MODEL, ELEVENLABS_DEFAULT_LIMIT)
+            pieces = split_text(text, limit)
+            if len(pieces) == 1:
+                path = elevenlabs.generate_speech(**kwargs)
+            else:
+                with tempfile.TemporaryDirectory() as d:
+                    parts = [elevenlabs.generate_speech(**{**kwargs, "text": piece,
+                                                           "out_path": os.path.join(d, f"part{i}.mp3")})
+                             for i, piece in enumerate(pieces)]
+                    path = join_mp3(parts, elevenlabs.retarget_extension(args.out, ".mp3"))
     except ConnectorError as e:
         if args.vendor == "gemini" and e.reason == "invalid_api_key":
             fail("invalid_api_key", invalid_api_key_message(e))
@@ -78,16 +132,14 @@ def main():
 
     result = {
         "path": path,
+        "type": "audio",
         "duration_seconds": duration,
         "vendor": args.vendor,
         "voice": args.voice,
         "text_length_chars": len(text),
     }
-
-    if args.json:
-        print(json.dumps(result))
-    else:
-        print(path)
+    # Always JSON: the AI reads characters spoken against seconds heard, and a short clip for a long script shows.
+    print(json.dumps(result))
 
 
 if __name__ == "__main__":

@@ -34,7 +34,7 @@ from caption_translation import finish_regenerated_track, merge_caption_theme as
 
 sys.path.insert(0, MONTAJ_ROOT)
 from serve.common import get_project_dir  # noqa: E402
-from serve.caption_job import build_audio_mix_spec, narration_audio, caption_input_change, caption_input_fingerprint  # noqa: E402
+from serve.caption_job import build_audio_mix_spec, fill_audio_ends, audio_hint, narration_audio, caption_input_change, caption_input_fingerprint  # noqa: E402
 from lib.project_revisions import engine_guard_enabled  # noqa: E402
 from lib import caption_ink  # noqa: E402
 from lib.caption_script import script_of, spell_from_script  # noqa: E402
@@ -119,11 +119,12 @@ def main():
     # surfacing later inside transcribe's unexpected_error.
     require_whisper_model(args.model, args.language)
 
+    project = fill_audio_ends(project, str(project_dir))
     heard, no_voice = narration_audio(project, args.audio)
     try:
         mix_spec = build_audio_mix_spec(heard)
     except ValueError as e:
-        fail("no_audible_timeline", str(e))
+        fail("no_audible_timeline", str(e) + audio_hint(project))
 
     # The profile's caption look (font, emphasis colour, case) for a new track, as the editor seeds it.
     style, look = resolve_style_and_look(args.style, project)

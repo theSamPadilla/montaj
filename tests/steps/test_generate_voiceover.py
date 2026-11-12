@@ -176,3 +176,59 @@ class TestConnectorErrorMapping:
             step_module.main()
         err = _last_stderr_json(capsys)
         assert err["error"] == "insufficient_credit"
+
+
+class TestScriptGuards:
+    def _run(self, step_module, monkeypatch, tmp_path, *extra, vendor="elevenlabs"):
+        calls = []
+
+        def capture(**kw):
+            calls.append(kw)
+            return kw["out_path"]
+        monkeypatch.setattr(elevenlabs_mod, "generate_speech", capture)
+        monkeypatch.setattr(sys, "argv", ["generate_voiceover.py", "--voice", "V", "--out", str(tmp_path / "o.mp3"),
+                                          "--vendor", vendor, *extra])
+        step_module.main()
+        return calls
+
+    @pytest.mark.parametrize("name", ["NARRACAO_LIMPA_APROVADA.txt", "script.md"])
+    def test_a_file_name_as_text_is_refused_not_spoken(self, step_module, monkeypatch, tmp_path, capsys, name):
+        with pytest.raises(SystemExit):
+            self._run(step_module, monkeypatch, tmp_path, "--text", name)
+        err = _last_stderr_json(capsys)
+        assert err["error"] == "invalid_args" and "text-file" in err["message"]
+
+    def test_an_existing_file_named_as_text_is_refused(self, step_module, monkeypatch, tmp_path, capsys):
+        f = tmp_path / "narration"
+        f.write_text("hello")
+        with pytest.raises(SystemExit):
+            self._run(step_module, monkeypatch, tmp_path, "--text", str(f))
+        assert _last_stderr_json(capsys)["error"] == "invalid_args"
+
+    def test_a_sentence_that_mentions_txt_is_spoken(self, step_module, monkeypatch, tmp_path):
+        calls = self._run(step_module, monkeypatch, tmp_path, "--text", "Open notes.txt and read it")
+        assert calls[0]["text"] == "Open notes.txt and read it"
+
+    def test_answer_says_characters_and_seconds(self, step_module, monkeypatch, tmp_path, capsys):
+        self._run(step_module, monkeypatch, tmp_path, "--text", "hello there")
+        out = json.loads(capsys.readouterr().out)
+        assert out["text_length_chars"] == 11 and out["duration_seconds"] == 2.0 and out["type"] == "audio"
+
+    def test_an_8k_file_goes_in_one_request_on_multilingual_v2(self, step_module, monkeypatch, tmp_path):
+        f = tmp_path / "s.txt"
+        f.write_text(("Uma frase de narração. " * 372).strip(), encoding="utf-8")
+        assert len(f.read_text(encoding="utf-8")) > 8500
+        calls = self._run(step_module, monkeypatch, tmp_path, "--text-file", str(f), "--model", "eleven_multilingual_v2")
+        assert len(calls) == 1 and len(calls[0]["text"]) > 8500
+
+    def test_a_long_script_is_cut_at_sentences_and_joined(self, step_module, monkeypatch, tmp_path):
+        joined = {}
+        monkeypatch.setattr(step_module, "join_mp3", lambda parts, out: joined.update(parts=parts, out=out) or out)
+        f = tmp_path / "s.txt"
+        text = ("Uma frase de narração. " * 600).strip()
+        f.write_text(text, encoding="utf-8")
+        calls = self._run(step_module, monkeypatch, tmp_path, "--text-file", str(f), "--model", "eleven_multilingual_v2")
+        assert len(calls) == 2 and all(len(c["text"]) <= 10000 for c in calls)
+        assert all(c["text"].endswith("narração.") for c in calls)
+        assert " ".join(c["text"] for c in calls) == text
+        assert len(joined["parts"]) == 2 and joined["out"].endswith("o.mp3")

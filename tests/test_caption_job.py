@@ -275,3 +275,37 @@ def test_nothing_audible_raises_no_audio():
 def test_empty_project_raises_no_audio():
     with pytest.raises(ValueError, match="no_audio"):
         build_audio_mix_spec({})
+
+
+# An audio track with no `end` plays to the end of its file (render's rule); captions hear it the same way.
+def test_audio_track_without_end_is_heard_to_the_end_of_its_file(monkeypatch):
+    import serve.caption_job as cj
+    import lib.common as common
+    monkeypatch.setattr(common, "get_duration", lambda path: 12.5)
+    project = {"audio": {"tracks": [{"id": "v7", "src": "vo.mp3", "start": 1.0, "inPoint": 0.5}]}}
+    filled = cj.fill_audio_ends(project, "/proj")
+    assert filled["audio"]["tracks"][0]["end"] == 13.0
+    assert "end" not in project["audio"]["tracks"][0]
+    spec = cj.build_audio_mix_spec(filled)
+    assert spec["segments"][0]["start"] == 1.0 and spec["duration"] == 13.0
+
+
+def test_audio_track_with_an_end_is_left_alone(monkeypatch):
+    import serve.caption_job as cj
+    import lib.common as common
+    monkeypatch.setattr(common, "get_duration", lambda path: 99.0)
+    project = {"audio": {"tracks": [{"id": "v7", "src": "vo.mp3", "start": 0, "end": 4}]}}
+    assert cj.fill_audio_ends(project, "/proj")["audio"]["tracks"][0]["end"] == 4
+
+
+def test_unmeasurable_end_less_track_is_named_in_the_hint(monkeypatch):
+    import serve.caption_job as cj
+    import lib.common as common
+
+    def boom(path):
+        raise RuntimeError("no file")
+    monkeypatch.setattr(common, "get_duration", boom)
+    project = {"audio": {"tracks": [{"id": "v7", "src": "gone.mp3", "start": 0}]}}
+    filled = cj.fill_audio_ends(project, "/proj")
+    assert "v7" in cj.audio_hint(filled) and "no end" in cj.audio_hint(filled)
+    assert cj.audio_hint({"audio": {"tracks": [{"id": "a", "src": "x", "start": 0, "end": 3}]}}) == ""
