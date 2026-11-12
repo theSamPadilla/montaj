@@ -215,7 +215,8 @@ class HandTracker:
 def onnx_models(palm_path, hand_path, threads=0):
     """The two models on onnxruntime's CPU provider, as the callables
     HandTracker takes. threads 0 is onnxruntime's default (every core)."""
-    import onnxruntime as ort
+    from lib import onnx_runtime
+    ort = onnx_runtime.load()
     opts = ort.SessionOptions()
     opts.log_severity_level = 3
     opts.intra_op_num_threads = opts.inter_op_num_threads = threads
