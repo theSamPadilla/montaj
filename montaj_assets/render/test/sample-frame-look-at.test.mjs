@@ -5,8 +5,11 @@ import assert from 'node:assert/strict'
 import { materializeScene3d, Scene3dError, SCENE3D_SRC, SCENE3D_STAGE_ENV } from '../scene3d.js'
 import { buildFrameCacheKey, sampleFrame, frameErrorCode, SAMPLE_CACHE_VERSION } from '../sample-frame.js'
 
-const scene = { model: { name: 'm' }, cast: [{ model: 'a' }, { model: 'b' }], camera: { lens: 35, location: [[0, [1, 2, 3]]], target: [[0, [0, 0, 0]]] } }
+// An active.json as the app writes it (a by-reference one is inlined to this first): {slug, model, moves, scene}, the cast
+// and the camera the stage plays under `scene`. 2.0.1: the fixture had them at the top, so look_at read no cast at all.
+const scene = { slug: 'm', model: { name: 'm' }, moves: { moves: {} }, scene: { cast: [{ model: { name: 'a' } }, { model: { name: 'b' } }], camera: { lens: 35, location: [[0, [1, 2, 3]]], target: [[0, [0, 0, 0]]] } } }
 const text = JSON.stringify(scene)
+const withCast = (cast) => JSON.stringify({ ...scene, scene: { ...scene.scene, cast } })
 const opts = (extra = {}) => ({ env: { [SCENE3D_STAGE_ENV]: '/stage.jsx' }, exists: () => true, read: () => text, log: () => {}, ...extra })
 const project = () => ({ tracks: [[{ type: 'overlay', src: SCENE3D_SRC, start: 0, end: 2, props: { scene: 'hands' } }]] })
 
@@ -14,7 +17,10 @@ test('look_at rewrites the camera to one POV shot on the bone, at the distance, 
   const p = project()
   const follow = { cast: 1, bone: 'hand_r' }
   materializeScene3d(p, '/p', opts({ closeUp: { follow, distance: 0.4, lens: 85 } }))
-  const cam = JSON.parse(p.tracks[0][0].props.sceneJson).camera
+  const out = JSON.parse(p.tracks[0][0].props.sceneJson)
+  assert.equal(out.camera, undefined, 'the camera the stage plays is the scene\'s')
+  assert.deepEqual(out.scene.cast, scene.scene.cast)
+  const cam = out.scene.camera
   assert.equal(cam.lens, 85)
   assert.equal(cam.location, undefined)
   assert.equal(cam.shots.length, 1)
@@ -31,10 +37,10 @@ test('look_at rewrites the camera to one POV shot on the bone, at the distance, 
 
 test("the offset turns with the cast's base rot, so a turned cast is still shot from its front", () => {
   const offsetFor = (rot) => {
-    const turned = JSON.stringify({ ...scene, cast: [{ model: 'a', rot }, { model: 'b' }] })
+    const turned = withCast([{ model: { name: 'a' }, rot }, { model: { name: 'b' } }])
     const p = project()
     materializeScene3d(p, '/p', opts({ read: () => turned, closeUp: { follow: { cast: 0, bone: 'hand_r' }, distance: 0.5, lens: 50 } }))
-    return JSON.parse(p.tracks[0][0].props.sceneJson).camera.shots[0].pov.offset
+    return JSON.parse(p.tracks[0][0].props.sceneJson).scene.camera.shots[0].pov.offset
   }
   const [x0, y0, z0] = offsetFor(0)
   const near = (a, b) => Math.abs(a - b) < 1e-9
@@ -49,7 +55,29 @@ test("the offset turns with the cast's base rot, so a turned cast is still shot 
 test('a part ref is followed as given', () => {
   const p = project()
   materializeScene3d(p, '/p', opts({ closeUp: { follow: { cast: 0, part: 'palm' }, distance: 1, lens: 50 } }))
-  assert.deepEqual(JSON.parse(p.tracks[0][0].props.sceneJson).camera.shots[0].pov.follow, { cast: 0, part: 'palm' })
+  assert.deepEqual(JSON.parse(p.tracks[0][0].props.sceneJson).scene.camera.shots[0].pov.follow, { cast: 0, part: 'palm' })
+})
+
+// 2.0.1 (73's microwave rebuild): in a shot every person is its set's entry, and the 3D's cast holds the set's entries first
+// (the merged cast the app's warnings number). look_at takes that number, or the entry's id, and follows it by its number.
+test('a shot\'s set person by its merged number or by its id: followed by its number, turned with its rot', () => {
+  const shot = withCast([{ id: 'guard', model: { name: 'Person' }, rot: 180 }, { id: 'oven', model: { name: 'Microwave' } }])
+  const look = (cast) => {
+    const p = project()
+    materializeScene3d(p, '/p', opts({ read: () => shot, closeUp: { follow: { cast, bone: 'hand_r' }, distance: 0.5, lens: 50 } }))
+    return JSON.parse(p.tracks[0][0].props.sceneJson).scene.camera.shots[0].pov
+  }
+  const [byName, byIndex] = [look('guard'), look(0)]
+  assert.deepEqual(byName.follow, { cast: 0, bone: 'hand_r' })
+  assert.deepEqual(byName, byIndex)
+  assert.ok(byName.offset[1] > 0, 'turned around (rot 180): shot from its front, the other side')
+})
+
+test('a name no entry has, or two share, is a clear error listing the names', () => {
+  const run = (cast, entries) => () => materializeScene3d(project(), '/p', opts({ read: () => withCast(entries), closeUp: { follow: { cast, bone: 'hand_r' }, distance: 0.4, lens: 50 } }))
+  assert.throws(run('cook', [{ id: 'guard' }, { id: 'oven' }]), (e) => e instanceof Scene3dError && e.code === 'scene3d_invalid' && /"cook"/.test(e.message) && /guard, oven/.test(e.message))
+  assert.throws(run('twin', [{ id: 'twin' }, { id: 'twin' }]), (e) => e instanceof Scene3dError && /2 entries share/.test(e.message))
+  assert.throws(run('a', [{ model: {} }]), (e) => e instanceof Scene3dError && /use the number/.test(e.message))
 })
 
 test('without look_at the scene text is handed to the stage untouched', () => {

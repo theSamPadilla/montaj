@@ -116,6 +116,23 @@ export function closeUpCamera({ follow, distance, lens }, yawDeg = 0) {
   }
 }
 
+/**
+ * look_at's cast in `cast` (the scene's, as the stage numbers it): a number, or a name (an entry's id). -> its index;
+ * else a Scene3dError naming the 3D (`lead` leads it, `which` names the 3D).
+ */
+function castOf(want, cast, lead, which) {
+  const n = cast.length, has = `${which} has ${n} cast ${n === 1 ? 'entry' : 'entries'}${n ? ` (0..${n - 1})` : ''}`
+  if (typeof want === 'number') {
+    if (Number.isInteger(want) && want >= 0 && want < n) return want
+    throw new Scene3dError('scene3d_invalid', `${lead} names cast ${want}, and ${has}.`)
+  }
+  const hits = cast.flatMap((e, k) => (isObj(e) && e.id === want ? [k] : []))
+  if (hits.length === 1) return hits[0]
+  const ids = cast.flatMap((e) => (isObj(e) && typeof e.id === 'string' ? [e.id] : []))
+  const names = ids.length ? `its names: ${[...new Set(ids)].join(', ')}` : 'none of its entries has a name (an id): use the number'
+  throw new Scene3dError('scene3d_invalid', `${lead} names cast ${JSON.stringify(want)}, ${hits.length ? `which ${hits.length} entries share` : `which ${which} has no entry named`}; ${names}.`)
+}
+
 /** A cut's clock for a scene item (§657): [[item time, scene second, length]], sorted, first at 0, lengths over 0. */
 function validTimeMap(map) {
   if (!Array.isArray(map) || map.length === 0) return false
@@ -254,12 +271,14 @@ export function materializeScene3d(project, projectDir, { env = process.env, exi
         throw new Scene3dError('scene3d_invalid', `${label}: ${which} has no model in it.`)
       }
       if (closeUp) {
-        const cast = Array.isArray(sceneData.cast) ? sceneData.cast : []
-        if (!(closeUp.follow.cast < cast.length)) {
-          throw new Scene3dError('scene3d_invalid', `${label}: look_at names cast ${closeUp.follow.cast}, and ${which} has ${cast.length} cast ${cast.length === 1 ? 'entry' : 'entries'}${cast.length ? ` (0..${cast.length - 1})` : ''}.`)
-        }
-        const rot = cast[closeUp.follow.cast]?.rot
-        sceneJson = JSON.stringify({ ...sceneData, camera: closeUpCamera(closeUp, typeof rot === 'number' && Number.isFinite(rot) ? rot : 0) })
+        // The scene the stage plays is the file's `scene` ({slug, model, moves, scene}, a by-reference one inlined above): its
+        // cast is the one the stage numbers, a shot's set entries first. Its camera is the one replaced.
+        const scene = isObj(sceneData.scene) ? sceneData.scene : {}
+        const cast = Array.isArray(scene.cast) ? scene.cast : []
+        const i = castOf(closeUp.follow.cast, cast, `${label}: look_at`, which)
+        const rot = cast[i]?.rot
+        const follow = { ...closeUp.follow, cast: i }
+        sceneJson = JSON.stringify({ ...sceneData, scene: { ...scene, camera: closeUpCamera({ ...closeUp, follow }, typeof rot === 'number' && Number.isFinite(rot) ? rot : 0) } })
       }
       item.src = stage
       item.props = { ...props, sceneFile, sceneJson, inPoint }
