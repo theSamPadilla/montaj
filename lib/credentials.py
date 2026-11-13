@@ -37,6 +37,7 @@ KNOWN_PROVIDERS: dict[str, list[str]] = {
     # which combinations count as configured.
     "kling":      ["api_key", "access_key", "secret_key"],
     "gemini":     ["api_key"],
+    "openai":     ["api_key"],
     "serpapi":    ["api_key"],
     "fal":        ["api_key"],
     "elevenlabs": ["api_key"],
@@ -103,6 +104,7 @@ class MissingCredentialError(CredentialError):
 PROVIDER_NAMES: dict[str, str] = {
     "kling":      "Kling",
     "gemini":     "Gemini",
+    "openai":     "OpenAI",
     "serpapi":    "SerpApi",
     "fal":        "Seedance",
     "elevenlabs": "ElevenLabs",

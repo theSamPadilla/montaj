@@ -11,6 +11,7 @@ from connectors import (  # noqa: E402
 
 PROVIDERS = {
     "gemini": "connectors.gemini",
+    "openai": "connectors.openai",
     "kling": "connectors.kling",
     "fal": "connectors.fal",
     "elevenlabs": "connectors.elevenlabs",
