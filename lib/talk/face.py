@@ -47,6 +47,8 @@ DOM = {'PP': (9., .04), 'FF': (7., .04), 'TH': (4., .035), 'DD': (3., .03), 'kk'
 LEAD = .03  # the lips reach a shape a little before its sound
 TONGUE_HOLD = .7
 TONGUE_TIP = {'DD', 'nn', 'TH'}
+TONGUE_LIFT = {'DD': .4, 'nn': .45, 'TH': .45}  # tongueOut's peak per tip class: about 5 to 6 mm up on C2 and C3, nothing through the teeth
+TONGUE_RISE, TONGUE_FALL, TONGUE_GAP = .06, .07, .1  # s
 
 LOOKS = ('eyeLookOutLeft', 'eyeLookInRight', 'eyeLookInLeft', 'eyeLookOutRight', 'eyeLookUpLeft', 'eyeLookUpRight', 'eyeLookDownLeft', 'eyeLookDownRight')
 
@@ -98,6 +100,24 @@ def smooth(y, tau, dt):
     """Forward and back, so nothing lags."""
     a = smooth_env(y, tau, tau, dt)
     return smooth_env(a[::-1], tau, tau, dt)[::-1]
+
+
+def tongue_lift(segs, t):
+    """tongueOut's curve on the times t (step DT) for the phones segs [{p, s, e}]: the tongue's own lift on T, D, N, L and TH.
+    Each viseme key carries the jaw's opening with its bend, and on the built heads the two cancel: a full viseme_DD lifts the tip
+    1.7 mm on C2 (ICT) and 4 mm on C3 (GNM) while the speech's jawOpen drops it 3 to 16 mm, so on those sounds it went down, never
+    up, and read as static (Sam, 11-13). tongueOut is the one key that moves the tongue alone (12 to 13 mm up at full on both heads;
+    on ICT forward too). Up over TONGUE_RISE before the contact, held through it, back over TONGUE_FALL after the release, so the tip
+    reaches the ridge before the sound lets go; a dip under TONGUE_GAP s between two holds is filled (a closing), so it never flaps."""
+    lift = np.zeros(len(t))
+    for g in segs:
+        v = VIS.get(g['p'], 'sil')
+        if v in TONGUE_LIFT:
+            a0, a1 = g['s'] - LEAD, max(g['e'] - LEAD, g['s'] - LEAD + .02)
+            lift = np.maximum(lift, TONGUE_LIFT[v] * np.clip((t - (a0 - TONGUE_RISE)) / TONGUE_RISE, 0, 1) * np.clip(((a1 + TONGUE_FALL) - t) / TONGUE_FALL, 0, 1))
+    n = int(round(TONGUE_GAP / 2 / DT)); win = np.lib.stride_tricks.sliding_window_view
+    lift = win(np.pad(win(np.pad(lift, n, mode='edge'), 2 * n + 1).max(1), n, mode='edge'), 2 * n + 1).min(1)
+    return smooth(lift, .012, DT)
 
 
 def thin(t, y, tol):
@@ -442,6 +462,8 @@ def build(wav, whisper, lang, moods, gain=1.0, cmudict=None, sigma=70, phrased=T
         k = TARGET[v][0]; morphs[k] = np.maximum(morphs.get(k, np.zeros(T)), TONGUE_HOLD * smooth(w, .006, DT) * (1 - cl))
     for k in ('viseme_aa', 'viseme_E', 'viseme_I', 'viseme_O', 'viseme_U'):
         if k in morphs: morphs[k] = morphs[k] * (1 - .35 * smooth(tall, .006, DT))
+    # ---- the tongue's own lift (tongue_lift): gives way on m, b and p like the visemes.
+    morphs['tongueOut'] = np.maximum(morphs.get('tongueOut', np.zeros(T)), tongue_lift(segs, t) * (1 - cl))
 
     # ---- a breath in through parted lips in each pause of .3 s or more before a phrase: mouthLowerDown up to .08 on the reference
     # head (asked as its mm, so every head parts the same), from up to .45 s before the phrase, closing as it starts. The jaw stays

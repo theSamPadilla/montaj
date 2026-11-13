@@ -78,6 +78,59 @@ class Golden(unittest.TestCase):
         self.assertEqual(self.REPS['en-x0']['blinks'], self.REPS['en-x2']['blinks'])
 
 
+class TongueLift(unittest.TestCase):
+    """tongueOut, the one key that moves the tongue alone, lifts it on T, D, N, L and TH (Sam, 11-13: the tongue read as static,
+    since each viseme key's jaw cancels its own bend). Read from the golden clips, so no build."""
+    CASES = ('en-x1', 'pt-x1')
+
+    def tips(self, key, clear=False):
+        """The tip consonants; with clear, only those no m, b or p comes within .08 s of (there the lift gives way, as the visemes do)."""
+        from lib.talk.align import VIS
+        segs = Golden.REPS[key]['segs']; lab = [g for g in segs if g['p'] in ('m', 'b', 'p')]
+        near = lambda g: any(b['s'] < g['e'] + .08 and b['e'] > g['s'] - .08 for b in lab)
+        return [g for g in segs if VIS.get(g['p'], 'sil') in face.TONGUE_LIFT and not (clear and near(g))], VIS
+
+    def test_up_on_tip_consonants_before_the_release(self):
+        for key in self.CASES:
+            clip = Golden.GOLD[key]; tips, VIS = self.tips(key, clear=True)
+            self.assertGreater(len(tips), 3, key)
+            for g in tips:
+                peak = face.TONGUE_LIFT[VIS[g['p']]]
+                # held from the contact to the release: up already at the segment's start, still up at its end
+                for tq in (g['s'] - face.LEAD + .015, g['e'] - face.LEAD - .005):
+                    self.assertGreater(float(val(clip, 'tongueOut', tq)), .7 * peak, (key, g))
+
+    def test_never_past_its_peak_and_down_away_from_tip_consonants(self):
+        for key in self.CASES:
+            clip = Golden.GOLD[key]; tips, _ = self.tips(key)
+            tq = np.arange(0, clip['duration'], .005); w = val(clip, 'tongueOut', tq)
+            self.assertLessEqual(float(w.max()), max(face.TONGUE_LIFT.values()) + 1e-3, key)
+            far = np.ones_like(tq, dtype=bool)
+            for g in tips: far &= (tq < g['s'] - .25) | (tq > g['e'] + .25)
+            self.assertTrue(far.any(), key)
+            self.assertLess(float(w[far].max()), .02, key)
+
+    def test_close_neighbours_hold_as_one(self):
+        # "it" then "d" across a short vowel: holds under TONGUE_GAP apart stay up between them; a longer vowel lets it down, and
+        # each pulse rises before its contact and is down again TONGUE_FALL after its release
+        t = np.arange(0, 2, face.DT)
+        near = [{'p': 't', 's': .5, 'e': .56}, {'p': 'ih', 's': .56, 'e': .62}, {'p': 'd', 's': .62, 'e': .68}]
+        far = [{'p': 't', 's': .5, 'e': .56}, {'p': 'aa', 's': .56, 'e': .86}, {'p': 'd', 's': .86, 'e': .92}]
+        a = face.tongue_lift(near, t); b = face.tongue_lift(far, t); at = lambda y, tq: float(np.interp(tq, t, y))
+        peak = face.TONGUE_LIFT['DD']
+        self.assertGreater(min(at(a, tq) for tq in np.arange(.53, .65, .01)), .9 * peak)
+        self.assertLess(at(b, .71 - face.LEAD), .2 * peak)
+        for y, s_, e_ in ((a, .5, .68), (b, .86, .92)):
+            self.assertGreater(at(y, s_ - face.LEAD), .8 * peak)  # up by the contact
+            self.assertLess(at(y, e_ - face.LEAD + face.TONGUE_FALL + .04), .1 * peak)  # down after the release
+        self.assertLess(float(face.tongue_lift([{'p': 'aa', 's': .5, 'e': .7}, {'p': 'm', 's': .7, 'e': .8}], t).max()), 1e-6)
+
+    def test_lips_jaw_and_bones_do_not_carry_it(self):
+        # the lift is the tongue's alone: the face keys are the ones the visemes, moods and gestures make, unchanged by it
+        self.assertNotIn('tongueOut', face.GESTURE_KEYS)
+        self.assertTrue(all(k in Golden.GOLD[key]['morphs'] for key in self.CASES for k in ('tongueOut', 'jawOpen', 'viseme_DD')))
+
+
 @pytest.mark.slow  # about 30 s: a dozen builds
 class Face(unittest.TestCase):
     @classmethod
