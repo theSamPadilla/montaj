@@ -53,6 +53,7 @@ from lib.fs_remove import rmtree_force
 from lib import project_lock as _project_lock_mod
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, project_lock, project_lock_async, write_json_atomic
 from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwargs
+from lib.parallelism import total_memory_bytes
 from lib.overlay_validation import overlay_item_errors
 from lib.audio_validation import audio_track_check
 from lib import shots as _shots
@@ -168,6 +169,44 @@ _render_jobs: dict[str, _RenderJob] = {}
 # run to thousands of ffmpeg/Puppeteer lines; the cause is essentially always at
 # the end, and this travels through the Hub proxy to an agent's context window.
 _RENDER_LOG_TAIL = 40
+
+# render.js's V8 heap: a quarter of the machine's memory, from Node's own 4 GB up to 16 GB. Node 24 stops at 4 GB whatever
+# the machine, and a 3D export's scene text alone was 1.4 GB of it (GPS, 2026-11-13: 34 by-reference scenes, out of heap
+# while preparing on a 36 GB Mac with 10 GB free).
+_RENDER_HEAP_MIN_MB = 4096
+_RENDER_HEAP_MAX_MB = 16384
+
+# A V8 native stack frame on stderr (`12: 0x1045bbb48 v8::internal::Builtin_JsonParse(...)`). A fatal error prints ~50
+# of them after its one useful line (`FATAL ERROR: Reached heap limit ... JavaScript heap out of memory`), which pushed
+# that line out of every tail.
+_NATIVE_FRAME_RE = re.compile(r"^\s*\d{1,4}: 0x[0-9a-fA-F]+\b")
+_FOLDED_FRAMES_RE = re.compile(r"^\[(\d+) native stack frames?\]$")
+
+
+def _render_heap_args(total_bytes: int | None) -> list[str]:
+    """`--max-old-space-size` for render.js from the machine's memory; none (Node's default) when it is unknown."""
+    if not total_bytes or total_bytes <= 0:
+        return []
+    mb = min(_RENDER_HEAP_MAX_MB, max(_RENDER_HEAP_MIN_MB, total_bytes // 4 // (1 << 20)))
+    return [f"--max-old-space-size={mb}"]
+
+
+def _fold_native_frames(lines: list[str]) -> list[str]:
+    """`lines` with each run of V8 native stack frames as one `[N native stack frames]` line (the app's own tails fold
+    them the same way, desktop/src/render-failure.cjs foldNativeFrames)."""
+    out: list[str] = []
+    for line in lines:
+        if isinstance(line, str) and _NATIVE_FRAME_RE.match(line):
+            m = _FOLDED_FRAMES_RE.match(out[-1]) if out and isinstance(out[-1], str) else None
+            n = int(m.group(1)) + 1 if m else 1
+            folded = f"[{n} native stack frame{'' if n == 1 else 's'}]"
+            if m:
+                out[-1] = folded
+            else:
+                out.append(folded)
+        else:
+            out.append(line)
+    return out
 
 # Strong refs to in-flight detached render tasks. asyncio only weakly tracks
 # fire-and-forget tasks, so without this a render task could be GC'd mid-run.
@@ -6244,7 +6283,8 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
             raise
         if "--speech-set" in script_args:
             speech_set_file = Path(script_args[script_args.index("--speech-set") + 1])
-    cmd = [node_bin, str(render_script), *script_args]
+    heap = [] if project_type == "carousel" else _render_heap_args(total_memory_bytes())
+    cmd = [node_bin, *heap, str(render_script), *script_args]
     job = _RenderJob()
     _render_jobs[project_id] = job
     task = asyncio.create_task(
@@ -6340,7 +6380,7 @@ async def render_status(project_id: str, project_dir: Path = Depends(get_project
         # happened: four rediagnoses of a project whose only fault was a
         # status the renderer refused.
         if job.lines:
-            out["log"] = job.lines[-_RENDER_LOG_TAIL:]
+            out["log"] = _fold_native_frames(job.lines)[-_RENDER_LOG_TAIL:]
     return out
 
 

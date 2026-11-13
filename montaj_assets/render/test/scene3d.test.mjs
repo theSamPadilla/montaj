@@ -10,7 +10,7 @@ import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { SCENE3D_SRC, SCENE3D_STAGE_ENV, Scene3dError, isScene3dItem, materializeScene3d, isThreeStageOverlay, STAGE_BUNDLE_HEAD } from '../scene3d.js'
+import { SCENE3D_SRC, SCENE3D_STAGE_ENV, Scene3dError, isScene3dItem, materializeScene3d, isThreeStageOverlay, STAGE_BUNDLE_HEAD, cloneSharingSceneText } from '../scene3d.js'
 import { collectPuppeteerSegments } from '../render.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -301,6 +301,38 @@ test('a texture two scene items share is read once', () => {
     materializeScene3d(p, w.project, { env: w.env, readBytes: (f) => { reads.push(f); return readFileSync(f) } })
     assert.equal(reads.filter((f) => f.endsWith(`${TID}.png`)).length, 1)
     assert.equal(p.tracks[0][1].props.sceneJson, JSON.stringify(inlineOf()))
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('a scene materialized again unchanged is not inlined again (render.js loads its project twice); a changed one is', () => {
+  const w = refWorld()
+  try {
+    const reads = []
+    const readBytes = (f) => { reads.push(f); return readFileSync(f) }
+    const first = sceneOf('hands', w, { readBytes })
+    const once = reads.length
+    assert.ok(once > 0)
+    assert.equal(sceneOf('hands', w, { readBytes }), first)
+    assert.equal(reads.length, once, 'the store is not read again')
+    const f = join(w.project, 'models', 'scenes', 'hands', 'active.json')
+    const j = JSON.parse(readFileSync(f, 'utf8')); j.byRef.slug = 'hands-2'; writeFileSync(f, JSON.stringify(j))
+    assert.equal(JSON.parse(sceneOf('hands', w, { readBytes })).slug, 'hands-2')
+    assert.ok(reads.length > once, 'a changed scene is read again')
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('cloneSharingSceneText copies the project, its scene text included, and leaves the original whole', () => {
+  const w = refWorld(['hands', 'feet'])
+  try {
+    const p = { tracks: [{ id: 'trk-0', items: [scene({ scene: 'hands' })] }, [scene({ scene: 'feet' }, { id: 's2' }), { id: 'o', type: 'overlay', src: '/x.jsx', props: { a: [1] } }]] }
+    materializeScene3d(p, w.project, { env: w.env })
+    const before = JSON.stringify(p)
+    const copy = cloneSharingSceneText(p)
+    assert.equal(JSON.stringify(p), before)
+    assert.equal(JSON.stringify(copy), before)
+    copy.tracks[1][1].props.a.push(2)
+    copy.tracks[0].items[0].props.sceneJson = 'x'
+    assert.equal(JSON.stringify(p), before, 'the copy is its own')
   } finally { rmSync(w.dir, { recursive: true, force: true }) }
 })
 

@@ -80,3 +80,8 @@ def test_waveform_trim_batch_uses_the_cap(monkeypatch, capsys, argv_extra, avail
     mod.main()
     assert seen["max_workers"] == expected
     assert '"/clips/19.mov"' in capsys.readouterr().out
+
+
+def test_total_memory_is_the_machine_s():
+    total = parallelism.total_memory_bytes()
+    assert total is None or total >= GB

@@ -65,7 +65,7 @@ import { resolveMotionBlur, MOTION_BLUR_MAX } from './motion-blur.js'
 import { loudnessFilter }                 from './mix-audio.js'
 import { effectiveItemAudio, enabledTrackItems, enabledTracks, trackItems } from './project-tracks.js'
 import { captionOverlayFields }           from './caption-spec.js'
-import { materializeScene3d, Scene3dError, isThreeStageOverlay } from './scene3d.js'
+import { materializeScene3d, Scene3dError, isThreeStageOverlay, cloneSharingSceneText } from './scene3d.js'
 import { resolveProjectSrc, resolveDerivedSrc, resolveFilePath } from './project-paths.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
@@ -535,7 +535,7 @@ function loadRenderProject(projectPath, { out = null, overrides = null } = {}) {
   // rewrites all act on projectJson, never on this copy.
   // PL89d: before the pristine copy too, so the per-layer SDR pass seeks the same frames (anchorFullSourceCaches).
   anchorFullSourceCaches(projectJson)
-  const pristineProject = structuredClone(projectJson)
+  const pristineProject = cloneSharingSceneText(projectJson)
   // Before collectAllItems swaps in any cache: an SDR master an older montaj
   // built from an untagged source is sent back to its source, so the normalize
   // pass (3) rebuilds it. See repointStaleUntaggedMasters.
@@ -1697,7 +1697,7 @@ async function prepareSdrPass(pristineProject, { projectColorSpace, workspaceDir
  * prepared into.
  */
 function planSdrPass(pristineProject, { projectColorSpace, prepare = null }) {
-  const project = structuredClone(pristineProject)
+  const project = cloneSharingSceneText(pristineProject)
   project.settings = { ...(project.settings ?? {}), colorSpace: 'sdr_bt709' }
   applySdrLayers(project)
   repointStaleUntaggedMasters(project)

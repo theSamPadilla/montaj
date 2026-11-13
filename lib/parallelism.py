@@ -15,6 +15,22 @@ MAX_BATCH_WORKERS = 4
 GB = 1 << 30
 
 
+def _win_memory_status():
+    """GlobalMemoryStatusEx's answer, or None. Windows only."""
+    import ctypes
+
+    class _MemoryStatusEx(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+    status = _MemoryStatusEx()
+    status.dwLength = ctypes.sizeof(status)
+    return status if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)) else None
+
+
 def available_memory_bytes() -> int | None:
     """Memory the OS can give a new process now without swapping, or None when it
     cannot be read (then only cores and MAX_BATCH_WORKERS cap the batch)."""
@@ -30,22 +46,24 @@ def available_memory_bytes() -> int | None:
                         return int(line.split()[1]) * 1024
             return None
         if sys.platform == "win32":
-            import ctypes
-
-            class _MemoryStatusEx(ctypes.Structure):
-                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
-                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
-                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
-                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
-
-            status = _MemoryStatusEx()
-            status.dwLength = ctypes.sizeof(status)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            status = _win_memory_status()
+            if status is not None:
                 return int(status.ullAvailPhys)
     except Exception:
         return None
     return None
+
+
+def total_memory_bytes() -> int | None:
+    """The machine's physical memory, or None when it cannot be read."""
+    try:
+        if sys.platform == "win32":
+            status = _win_memory_status()
+            return (int(status.ullTotalPhys) or None) if status is not None else None
+        total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        return total if total > 0 else None
+    except Exception:
+        return None
 
 
 def _darwin_available(vm_stat_output: str) -> int | None:

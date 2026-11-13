@@ -19,7 +19,7 @@
  * `<project>/models/active.json` (what the model-3d template's overlay copy imports today). A missing stage or scene
  * is an error that names it, never a blank frame. A second pass finds nothing left to do.
  */
-import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync } from 'fs'
+import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, statSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { trackItems } from './project-tracks.js'
 
@@ -209,6 +209,26 @@ function inlineByRef(sceneData, sceneFile, projectDir, fail, { read, readBytes, 
   return { slug: R.slug, model: fillRefs(R.model, piece), moves, ...(R.scene !== undefined ? { scene: fillRefs(R.scene, piece) } : {}) }
 }
 
+const readText = (f) => readFileSync(f, 'utf8')
+
+/**
+ * Each scene file's text as handed to the stage, by its path: `{ stamp, sceneJson }`, the stamp being the file's inode, size
+ * and mtime. A by-reference scene inlines to tens of MB (GPS, 2026-11-13: 34 items, 8.8 to 113 MB each, 1.4 GB in all), and
+ * render.js materializes its project twice (the render, then loudness's own load), so without this the second pass parsed
+ * every mesh again and held a second copy of every text, and the render ran out of V8 heap. A hit hands back the very
+ * same string. Only for the default reader on a real file, and never for a close-up (its text is its own).
+ */
+const sceneTexts = new Map()
+
+function sceneStamp(sceneFile) {
+  try {
+    const st = statSync(sceneFile)
+    return `${st.ino}:${st.size}:${st.mtimeMs}`
+  } catch {
+    return null
+  }
+}
+
 /**
  * Rewrites every scene item of `project` into a plain overlay item. `projectDir` is the folder holding project.json.
  * Throws Scene3dError (`scene3d_stage_unavailable`, `scene3d_scene_missing`, `scene3d_invalid`) naming the item.
@@ -224,7 +244,7 @@ function inlineByRef(sceneData, sceneFile, projectDir, fail, { read, readBytes, 
  * `closeUp` (§673, a sample's look_at: {follow, distance, lens}) replaces each rewritten scene's camera with
  * closeUpCamera, in the text handed to the stage only; the scene's file is not touched.
  */
-export function materializeScene3d(project, projectDir, { env = process.env, exists = existsSync, read = (f) => readFileSync(f, 'utf8'), readBytes = (f) => readFileSync(f), log = logToStderr, only = null, closeUp = null } = {}) {
+export function materializeScene3d(project, projectDir, { env = process.env, exists = existsSync, read = readText, readBytes = (f) => readFileSync(f), log = logToStderr, only = null, closeUp = null } = {}) {
   let n = 0
   const files = new Map()
   for (const track of trackItems(project)) {
@@ -253,6 +273,14 @@ export function materializeScene3d(project, projectDir, { env = process.env, exi
       if (!exists(sceneFile)) {
         throw new Scene3dError('scene3d_scene_missing', `${label}: ${which} is not saved yet.`)
       }
+      const stamp = read === readText && !closeUp ? sceneStamp(sceneFile) : null
+      const known = stamp !== null ? sceneTexts.get(sceneFile) : undefined
+      if (known && known.stamp === stamp) {
+        item.src = stage
+        item.props = { ...props, sceneFile, sceneJson: known.sceneJson, inPoint }
+        n += 1
+        continue
+      }
       let sceneJson, sceneData
       try {
         sceneJson = read(sceneFile)
@@ -280,10 +308,37 @@ export function materializeScene3d(project, projectDir, { env = process.env, exi
         const follow = { ...closeUp.follow, cast: i }
         sceneJson = JSON.stringify({ ...sceneData, scene: { ...scene, camera: closeUpCamera({ ...closeUp, follow }, typeof rot === 'number' && Number.isFinite(rot) ? rot : 0) } })
       }
+      if (stamp !== null) sceneTexts.set(sceneFile, { stamp, sceneJson })
       item.src = stage
       item.props = { ...props, sceneFile, sceneJson, inPoint }
       n += 1
     }
   }
   return n
+}
+
+/**
+ * structuredClone(project), each scene item's `sceneJson` in the copy being the original's own string. structuredClone
+ * copies every string, and a materialized project's scene text is most of its size (sceneTexts above), so render.js's
+ * pristine copy doubled it.
+ */
+export function cloneSharingSceneText(project) {
+  const texts = []
+  for (const [t, track] of trackItems(project).entries()) {
+    for (const [i, item] of (track ?? []).entries()) {
+      if (isObj(item) && isObj(item.props) && typeof item.props.sceneJson === 'string') {
+        texts.push([t, i, item.props, item.props.sceneJson])
+        item.props.sceneJson = ''
+      }
+    }
+  }
+  let copy
+  try {
+    copy = structuredClone(project)
+  } finally {
+    for (const [, , props, text] of texts) props.sceneJson = text
+  }
+  const tracks = trackItems(copy)
+  for (const [t, i, , text] of texts) tracks[t][i].props.sceneJson = text
+  return copy
 }
