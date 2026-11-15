@@ -355,7 +355,8 @@ export function sniffImageType(bytes) {
 // ---------------------------------------------------------------------------
 
 /** The filesystem path a file: URL loads, or null when it names none. */
-function filePathOf(url) {
+// Exported for read-set.js, which records the file each allowed request names the same way.
+export function filePathOf(url) {
   // Chromium loads a file URL's PATH: the query and fragment are not part of
   // the file name, and a non-local host names no file here.
   if (url.host && url.host !== 'localhost') return null

@@ -27,6 +27,7 @@ import { overlayPageLaunchOptions, installPageGuard } from './page-guard.js'
 import { fontLoadFailure, fontFailureWarning } from './google-fonts.js'
 import { captureWithThree, isThreeBlurUnsupported } from './three-frame.js'
 import { check3dGraphics, no3dGraphicsError, softwareAllowed } from './gpu-3d.js'
+import { createReadRecorder } from './read-set.js'
 
 // A stream copy of chunks already on disk cannot stall for long, and spawnSync
 // cannot watch progress, so this is a generous wall clock (the callers are sync).
@@ -128,6 +129,43 @@ export function bakeTotal(segments, config = {}) {
  * @returns {{ jobs: object[], workerCount: number, chunkSize: number, subframes: number, memory: object, targetWorkers: number }}
  */
 export function planChunks(segments, config = {}) {
+  const { jobs, chunkSize, subframes, targetWorkers } = chunkJobs(segments, config)
+
+  const footprint = workerFootprint(segments)
+  const totalBytes = config.memory?.totalBytes ?? os.totalmem()
+  // A render with 3D is sized by the memory available now; a 2D-only one by the
+  // total memory and, since §698, by what is free now above the reserve (planWorkers2d).
+  const memory = {
+    ...(footprint.has3d
+      ? planWorkers({
+        target:         targetWorkers,
+        jobs:           jobs.length,
+        availableBytes: jobs.length > 0 ? (config.memory?.readAvailable ?? availableMemoryBytes)() : 0,
+        totalBytes,
+        perWorkerBytes: footprint.bytes,
+        has3d:          true,
+      })
+      : planWorkers2d({
+        target: targetWorkers,
+        jobs: jobs.length,
+        totalBytes,
+        // No platform reading (not vm_stat or /proc/meminfo) is no reading: os.freemem() counts free pages only and would
+        // always read as starved on a Mac.
+        availableBytes: jobs.length > 0 ? (config.memory?.readAvailable ?? (() => availableMemoryBytes({ freemem: () => null })))() : null,
+      })),
+    footprint,
+  }
+  return { jobs, workerCount: memory.workers, chunkSize, subframes, memory, targetWorkers }
+}
+
+/**
+ * planChunks' jobs without its memory plan (no memory reading): every segment
+ * cut into its chunks. render.js keys the 3D ones for the segment cache
+ * (segment-cache.js begin) before renderAllSegments plans the same chunks.
+ *
+ * @returns {{ jobs: object[], chunkSize: number, subframes: number, targetWorkers: number }}
+ */
+export function chunkJobs(segments, config = {}) {
   const userConfig    = config.userConfig ?? readMontajConfig()
   const longest       = segments.reduce((m, s) => Math.max(m, windowOf(s).length), 0)
   // §698: half the cores unless something asks (load.js): a render leaves the machine room.
@@ -161,32 +199,12 @@ export function planChunks(segments, config = {}) {
       jobs.push({ ...seg, opaque, subframes, frameStart: from, frameEnd: to, chunkIndex: 0, totalChunks: 1 })
     }
   }
+  return { jobs, chunkSize, subframes, targetWorkers }
+}
 
-  const footprint = workerFootprint(segments)
-  const totalBytes = config.memory?.totalBytes ?? os.totalmem()
-  // A render with 3D is sized by the memory available now; a 2D-only one by the
-  // total memory and, since §698, by what is free now above the reserve (planWorkers2d).
-  const memory = {
-    ...(footprint.has3d
-      ? planWorkers({
-        target:         targetWorkers,
-        jobs:           jobs.length,
-        availableBytes: jobs.length > 0 ? (config.memory?.readAvailable ?? availableMemoryBytes)() : 0,
-        totalBytes,
-        perWorkerBytes: footprint.bytes,
-        has3d:          true,
-      })
-      : planWorkers2d({
-        target: targetWorkers,
-        jobs: jobs.length,
-        totalBytes,
-        // No platform reading (not vm_stat or /proc/meminfo) is no reading: os.freemem() counts free pages only and would
-        // always read as starved on a Mac.
-        availableBytes: jobs.length > 0 ? (config.memory?.readAvailable ?? (() => availableMemoryBytes({ freemem: () => null })))() : null,
-      })),
-    footprint,
-  }
-  return { jobs, workerCount: memory.workers, chunkSize, subframes, memory, targetWorkers }
+/** How the log names a job: its segment, and which chunk when the segment has several. */
+export function chunkLabel(job) {
+  return job.totalChunks > 1 ? `${job.id} chunk ${job.chunkIndex + 1}/${job.totalChunks}` : job.id
 }
 
 /** The lines that say why the render runs fewer workers than it asked for, and what a 3D worker is estimated to hold. */
@@ -297,17 +315,47 @@ export async function renderAllSegments(segments, config = {}) {
   // still lets them through only for a page that links them.
   const needsGoogleFonts = segments.some(s => s.needsGoogleFonts)
 
-  log(`launching ${workerCount} browser worker(s) for ${jobs.length} job(s)...`)
+  // chunkResults[segId][chunkIndex] = webmPath
+  const chunkResults = new Map()
+  const keepChunk = (job, webmPath) => {
+    if (!chunkResults.has(job.id)) chunkResults.set(job.id, [])
+    chunkResults.get(job.id)[job.chunkIndex] = webmPath
+  }
+  let jobsDone = 0
+
+  // §737: a 3D chunk the export's segment cache (segment-cache.js, render.js opens
+  // it) holds, valid and with unchanged inputs, is not rendered: its file is used
+  // in place, its frames go to the bake counter at once, and it counts toward the
+  // jobs done. Looked up before any browser launches, so such a job takes no
+  // browser and passes no memory gate, and a render with every 3D chunk cached
+  // launches only the browsers its other jobs need (none, when it has none). 2D
+  // jobs never touch the cache.
+  const cache = config.segmentCache ?? null
+  const reusedPaths = new Set()
+  const queue = []
+  for (const job of jobs) {
+    const hit = cache && isScene3dSegment(job) ? cache.lookup(job) : null
+    if (!hit) { queue.push(job); continue }
+    for (let f = job.frameStart; f < job.frameEnd; f++) noteFrame()
+    jobsDone++
+    reusedPaths.add(hit)
+    keepChunk(job, hit)
+    log(`reused ${chunkLabel(job)} (${jobsDone}/${jobs.length} done)`)
+  }
+  if (queue.length === 0) return assemble()
+  const launched = Math.min(workerCount, queue.length)
+
+  log(`launching ${launched} browser worker(s) for ${queue.length} job(s)...`)
 
   // Launch browser pool, composited for the first job (compositesOnGpu)
-  const workers = await launchPool(workerCount, () => launchWorker({ needsGoogleFonts, gpuCompositing: compositesOnGpu(jobs[0]) }))
+  const workers = await launchPool(launched, () => launchWorker({ needsGoogleFonts, gpuCompositing: compositesOnGpu(queue[0]) }))
 
   log(`browsers ready`)
 
   // A render with 3D first asks whether this machine can draw it (gpu-3d.js). One with no usable GPU stops here, before
   // any frame, never an export that runs for hours or ends blank. A test that stands in the browsers stands in the
   // check too (config.check3dGraphics), or skips it; MONTAJ_RENDER_SOFTWARE_3D=1 skips it (CI with no GPU).
-  if (jobs.some(isScene3dSegment) && !softwareAllowed()) {
+  if (queue.some(isScene3dSegment) && !softwareAllowed()) {
     const check = config.check3dGraphics ?? (config.launchWorker ? null : check3dGraphics)
     const got = check ? await check(workers[0].browser) : { ok: true }
     if (!got.ok) {
@@ -316,11 +364,6 @@ export async function renderAllSegments(segments, config = {}) {
       throw no3dGraphicsError(got.reason)
     }
   }
-
-  // chunkResults[segId][chunkIndex] = webmPath
-  const chunkResults = new Map()
-  const queue = [...jobs]
-  let jobsDone = 0
 
   const RECYCLE_AFTER = 5  // restart browser every N jobs to prevent memory bloat
   // and after every 3D chunk: a fresh browser per 3D chunk bounds a leaking
@@ -380,11 +423,11 @@ export async function renderAllSegments(segments, config = {}) {
     widened = true
     const target = planWorkers2d({ target: targetWorkers, jobs: queue.length, totalBytes: memory.totalBytes }).workers
     // Every worker the render started is still in its loop while jobs are left.
-    const extra = target - workerCount
+    const extra = target - launched
     if (extra <= 0) return
     log(`3d done: ${extra} more worker(s) for the ${queue.length} 2d job(s) left (${target} in all)`)
     for (let i = 0; i < extra; i++) {
-      const idx = workerCount + i
+      const idx = launched + i
       runs.push((async () => {
         let browser
         try {
@@ -425,13 +468,12 @@ export async function renderAllSegments(segments, config = {}) {
           jobsOnThisBrowser = 0
           log(`worker ${workerIdx}: browser relaunched to composite ${gpu ? 'on the GPU' : 'in software'}`)
         }
-        const label = job.totalChunks > 1
-          ? `${job.id} chunk ${job.chunkIndex + 1}/${job.totalChunks}`
-          : job.id
+        const label = chunkLabel(job)
         log(`rendering ${label} (${job.frameEnd - job.frameStart} frames)...`)
-        let webmPath
+        // `reads` (§737): what a 3D chunk's page read (read-set.js); a renderJob that gives none read nothing.
+        let webmPath, reads
         try {
-          ({ webmPath } = await renderJob(current, job, { onFrame: noteFrame, threads: encoderThreads }))
+          ({ webmPath, reads } = await renderJob(current, job, { onFrame: noteFrame, threads: encoderThreads }))
         } finally {
           gate.release(`worker ${workerIdx}`)
           if (is3d) running3d--
@@ -439,8 +481,9 @@ export async function renderAllSegments(segments, config = {}) {
         jobsDone++
         jobsOnThisBrowser++
         log(`encoded ${label} (${jobsDone}/${jobs.length} done)`)
-        if (!chunkResults.has(job.id)) chunkResults.set(job.id, [])
-        chunkResults.get(job.id)[job.chunkIndex] = webmPath
+        // §737: kept for the next export. Never fails the render (segment-cache.js store).
+        if (cache && is3d) cache.store(job, webmPath, reads)
+        keepChunk(job, webmPath)
 
         // Recycle browser to flush memory after RECYCLE_AFTER jobs, or after any 3D job
         const after3d = is3d
@@ -471,6 +514,9 @@ export async function renderAllSegments(segments, config = {}) {
         await current.close().catch(() => {})
       }
   }
+  // §737: with every 3D chunk reused, the 2D jobs left start at the 2D worker count, as they would once the last 3D
+  // chunk rendered (§392).
+  if (reusedPaths.size > 0) await widen()
   runs.push(...workers.map((worker, workerIdx) => runWorker(worker, workerIdx)))
   // A worker widen() adds joins `runs` while the first ones run: settle every one.
   const settled = []
@@ -483,26 +529,29 @@ export async function renderAllSegments(segments, config = {}) {
   const failed = settled.find(r => r.status === 'rejected')
   if (failed) throw failed.reason
 
-  // Reassemble multi-chunk segments
-  const results = []
-  for (const seg of segments) {
-    const chunks = chunkResults.get(seg.id) || []
-    let webmPath
-    if (chunks.length === 1) {
-      webmPath = chunks[0]
-    } else {
-      mkdirSync(dirname(seg.outputPath), { recursive: true })
-      webmPath = concatChunks(chunks, seg.outputPath)
-    }
-    // A windowed segment's file covers only its window: its times are the window's.
-    const windowed = seg.frameFrom != null || seg.frameTo != null
-    const { from, to } = windowOf(seg)
-    const startSeconds = windowed ? seg.startSeconds + from / seg.fps : seg.startSeconds
-    const endSeconds   = windowed ? seg.startSeconds + to / seg.fps : seg.endSeconds
-    results.push({ id: seg.id, webmPath, startSeconds, endSeconds, opaque: seg.opaque ?? false })
-  }
+  return assemble()
 
-  return results
+  // Reassemble multi-chunk segments. A reused chunk is the cache's own file: the concat leaves it in place.
+  function assemble() {
+    const results = []
+    for (const seg of segments) {
+      const chunks = chunkResults.get(seg.id) || []
+      let webmPath
+      if (chunks.length === 1) {
+        webmPath = chunks[0]
+      } else {
+        mkdirSync(dirname(seg.outputPath), { recursive: true })
+        webmPath = concatChunks(chunks, seg.outputPath, { keep: reusedPaths })
+      }
+      // A windowed segment's file covers only its window: its times are the window's.
+      const windowed = seg.frameFrom != null || seg.frameTo != null
+      const { from, to } = windowOf(seg)
+      const startSeconds = windowed ? seg.startSeconds + from / seg.fps : seg.startSeconds
+      const endSeconds   = windowed ? seg.startSeconds + to / seg.fps : seg.endSeconds
+      results.push({ id: seg.id, webmPath, startSeconds, endSeconds, opaque: seg.opaque ?? false })
+    }
+    return results
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -778,23 +827,28 @@ export function screenshotOptionsFor(job) {
  *
  * Any failure (the capture, Chrome, ffmpeg, a props image not served) stops
  * the chunk's ffmpeg and removes its partial MKV before the chunk fails.
+ *
+ * Resolves `{ webmPath }`, and for a 3D chunk `reads` too (§737): what its
+ * page read (read-set.js), which the segment cache stores and checks.
  */
 export async function renderChunk(worker, job, { onFrame, threads } = {}) {
+  // §737: decided on the job as planned: the retry below renders it with scene3d off, and its reads still count.
+  const recorder = () => (isScene3dSegment(job) ? createReadRecorder({ skipDir: job.htmlPath ? dirname(job.htmlPath) : null }) : null)
   // §377: a 3D page that averaged its chunk's first frame but cannot average a later one has the chunk
   // captured again from the start, every sub-frame: its encode then reads n captures per frame.
   let reported = 0
   try {
-    return await renderChunkOnce(worker, job, { threads, onFrame: () => { reported++; onFrame?.() } })
+    return await renderChunkOnce(worker, job, { threads, onFrame: () => { reported++; onFrame?.() }, recorder: recorder() })
   } catch (err) {
     if (!isThreeBlurUnsupported(err) || !blursInPage(job)) throw err
     noteBlurFallback(job, err.reason)
     // The frames already reported are not reported twice.
     let skip = reported
-    return renderChunkOnce(worker, { ...job, scene3d: false, shutter: shutterOf(job) }, { threads, onFrame: () => { if (skip > 0) skip--; else onFrame?.() } })
+    return renderChunkOnce(worker, { ...job, scene3d: false, shutter: shutterOf(job) }, { threads, onFrame: () => { if (skip > 0) skip--; else onFrame?.() }, recorder: recorder() })
   }
 }
 
-async function renderChunkOnce(worker, job, { onFrame, threads } = {}) {
+async function renderChunkOnce(worker, job, { onFrame, threads, recorder = null } = {}) {
   const { id, chunkIndex, outputPath } = job
   // Unique per slice of one overlay (§434): callers give each slice its own outputPath, and chunkIndex restarts per call.
   const chunkMkv = outputPath.replace(/\.\w+$/, '') + `-chunk-${chunkIndex}.mkv`
@@ -824,18 +878,18 @@ async function renderChunkOnce(worker, job, { onFrame, threads } = {}) {
     // PL83: a Chrome the system kills mid-capture, or a page whose renderer
     // dies, fails the chunk at once as child_killed, naming the phase.
     const at = { phase: 'overlay-load' }
-    const guard = await unlessChromeDies(worker, captureChunkFrames(worker, job, sinkFor, at, onFrame),
+    const guard = await unlessChromeDies(worker, captureChunkFrames(worker, job, sinkFor, at, onFrame, recorder),
       () => at.phase, `segment ${id} chunk ${chunkIndex}`)
     // A props image the page asked for and could not get fails the render,
     // naming it, rather than exporting without it (page-guard.js).
     guard.assertPropsServed()
     await sinkFor(sinkBlursInPage ?? blursInPage(job)).end()
+    return { webmPath: chunkMkv, ...(recorder ? { reads: recorder.reads(guard.blocked) } : {}) }
   } catch (err) {
     await sink?.abort()
     rmSync(chunkMkv, { force: true })
     throw err
   }
-  return { webmPath: chunkMkv }
 }
 
 /**
@@ -1064,8 +1118,10 @@ export function chunkEncodeArgs(job, chunkMkv, { blurInPage = blursInPage(job), 
 /**
  * Loads the chunk's page and streams its frames into the chunk's ffmpeg
  * (`sinkFor(blurInPage)`, frameSink: renderChunk); returns its page guard.
+ * `recorder` (§737, a 3D chunk's: read-set.js) sees every request the guard
+ * lets through and every props URL it serves.
  */
-async function captureChunkFrames(worker, job, sinkFor, at, onFrame) {
+async function captureChunkFrames(worker, job, sinkFor, at, onFrame, recorder = null) {
   const { id, htmlPath, width, height, frameStart, frameEnd, captureScale, subframes = 1 } = job
 
   const page = worker.watchPage(await worker.browser.newPage())
@@ -1118,6 +1174,13 @@ async function captureChunkFrames(worker, job, sinkFor, at, onFrame) {
       boundary:         job.boundary,
       propsCache:       job.propsCache,
       needsGoogleFonts: job.needsGoogleFonts,
+      ...(recorder ? {
+        onAllowed: (request) => {
+          recorder.allowed(request.url())
+          request.continue().catch(() => {})
+        },
+        onCached: (request) => recorder.cached(request.url()),
+      } : {}),
     })
     isBlockNoise = guard.isBlockNoise
 
@@ -1388,7 +1451,8 @@ function readMontajConfig() {
   }
 }
 
-function concatChunks(chunkPaths, outputPath) {
+/** `keep`: chunks to leave in place once joined (§737: a reused chunk is the segment cache's own file). */
+function concatChunks(chunkPaths, outputPath, { keep = new Set() } = {}) {
   const mkvOutput = outputPath.replace(/\.\w+$/, '.mkv')
   const listFile  = mkvOutput + '.chunks.txt'
   writeFileSync(listFile, chunkPaths.map(p => `file '${p}'`).join('\n'))
@@ -1406,7 +1470,7 @@ function concatChunks(chunkPaths, outputPath) {
     throw syncResultError(result, { child: 'ffmpeg', phase: 'chunk-concat', message }) ?? new Error(message)
   }
 
-  for (const p of chunkPaths) rmSync(p, { force: true })
+  for (const p of chunkPaths) if (!keep.has(p)) rmSync(p, { force: true })
   rmSync(listFile, { force: true })
 
   return mkvOutput

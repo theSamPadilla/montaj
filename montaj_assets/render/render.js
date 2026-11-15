@@ -33,7 +33,8 @@ import { spawnSync, spawn } from 'child_process'
 import { bundleComponent, cleanupBundle } from './bundle.js'
 import { lowerPriority } from './load.js'
 import { isMain as isMainModule }        from './is-main.js'
-import { renderAllSegments, planChunks, currentRenderPlan, stopSignal, bakeTotal, createBakeProgress }  from './renderer.js'
+import { renderAllSegments, planChunks, chunkJobs, currentRenderPlan, stopSignal, bakeTotal, createBakeProgress }  from './renderer.js'
+import { openSegmentCache, SEGMENT_CACHE_DIR } from './segment-cache.js'
 import { isChildKilled }              from './child-killed.js'
 import { isThreeFrameBlank }          from './three-frame.js'
 import { isNo3dGraphics }             from './gpu-3d.js'
@@ -44,7 +45,7 @@ import {
 import { planSlices, fitBudget, parseSliceBudget, SLICE_BUDGET_BYTES } from './slice-plan.js'
 import {
   runSlices, overlayDescriptor, plannedDescriptors, previewGroups, commonEdges,
-  sliceDiskTerms, slicingLine,
+  sliceDiskTerms, slicingLine, sliceSpecs,
 } from './slice-run.js'
 import { tmpdir }                         from 'os'
 import { prefetchPropsUrls }              from './page-guard.js'
@@ -75,6 +76,9 @@ let diskRun = null
 // §434: the slices this render runs and the budget they were cut to, set
 // before capture and read by a failure line (failLine).
 let renderSlicing = null
+// §737: this export's segment cache (segment-cache.js), set before capture; a
+// failed render ends it too (the catch below), so its unused entries go.
+let segmentCacheRun = null
 
 const isMain = isMainModule(import.meta.url, process.argv[1])
 // MONTAJ_ROOT is two levels above montaj_assets/render/ (i.e. the Python project root).
@@ -331,6 +335,10 @@ if (isMain) {
     // render is expected to need (disk-space.js), never as a generic failure.
     // A failed render leaves no bundle behind (§128): a retry finds the same room.
     for (const dir of diskRun?.workDirs ?? []) { try { cleanupBundle(dir) } catch {} }
+    // §737: the 3D chunks it kept stay for the next export (that is the resume);
+    // only the entries it neither reused nor wrote go. Never with render/segments
+    // below: a full disk does not cost the chunks already done.
+    try { segmentCacheRun?.end() } catch {}
     if (isDiskFull(err)) {
       // §213: its overlay chunks and video segments are useless now (the next
       // render deletes them before writing its own), and they are what filled
@@ -761,6 +769,12 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
     workDirs.push(await bundleSegmentSpec(spec, { fps, width: renderWidth, height: renderHeight, projectDir }))
   }
 
+  // §737: the project's 3D chunks from earlier exports, keyed on their inputs
+  // (segment-cache.js): a chunk whose inputs are unchanged is not rendered
+  // again, and every 3D chunk this export encodes is kept for the next one.
+  const segmentCache = openSegmentCache({ dir: join(renderDir, SEGMENT_CACHE_DIR), context: { colorSpace: projectColorSpace }, log })
+  segmentCacheRun = segmentCache
+
   // §434: a render whose captures would not fit the slice budget captures and
   // encodes in time slices (renderInSlices). Every other render takes the
   // path below, unchanged.
@@ -768,16 +782,18 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
     await renderInSlices({
       projectJson, pristineProject, settings, fps, workers, motionBlur, segmentSpecs, imageItems, videoItems,
       renderWidth, renderHeight, captureScale, projectColorSpace, exportPlan, workspaceDir, segDir, sdrCurve, slicing,
-      masterGainDb,
+      masterGainDb, segmentCache,
     })
   } else {
     log(slicingLine(slicing))
+    // §737: every 3D chunk's key, before any chunk runs (segment-cache.js begin).
+    segmentCache.begin(chunkJobs(segmentSpecs, { workers, motionBlur }).jobs)
     // A capture is the same for every colour space: the page draws the overlay
     // as authored, and an HDR compose maps the whole capture into the project's
     // space (encode-segment.js, hdr-graphics.js). So one capture serves the HDR
     // master and the SDR rendition alike. A saved `settings.imageTone` (the
     // removed per-image tone) is ignored.
-    const renderedSegments = await renderAllSegments(segmentSpecs, { workers, motionBlur })
+    const renderedSegments = await renderAllSegments(segmentSpecs, { workers, motionBlur, segmentCache })
 
     // Attach positioning offsets back onto rendered segments so compose.js can apply
     // x/y coordinates. Overlay size is derived from the output canvas at compose
@@ -853,6 +869,9 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
     }
   }
 
+  // §737: the export is done; the cache keeps what it reused and wrote.
+  segmentCache.end()
+
   // 8. Cleanup temp bundles (always); intermediate segments only if --clean
   for (const dir of workDirs) cleanupBundle(dir)
 
@@ -887,7 +906,7 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
 async function renderInSlices({
   projectJson, pristineProject, settings, fps, workers, motionBlur, segmentSpecs, imageItems, videoItems,
   renderWidth, renderHeight, captureScale, projectColorSpace, exportPlan, workspaceDir, segDir, sdrCurve, slicing,
-  masterGainDb = null,
+  masterGainDb = null, segmentCache = null,
 }) {
   const descriptors = plannedDescriptors(segmentSpecs)
   const passes = []
@@ -928,6 +947,9 @@ async function renderInSlices({
   renderSlicing = { slices: slicePlan.slices.length, sliceBudgetMB: Math.round(slicePlan.budgetBytes / 1e6) }
   log(slicingLine({ ...slicing, sliced: true, slices: slicePlan.slices.length, peakBytes: slicePlan.peakBytes }))
 
+  // §737: every slice's 3D chunks are keyed before the first slice captures, so the
+  // cache keeps exactly this export's chunks, and a slice's window is in its keys.
+  segmentCache?.begin(slicePlan.slices.flatMap((slice) => chunkJobs(sliceSpecs(segmentSpecs, slice, fps, segDir), { workers, motionBlur }).jobs))
   for (const plan of plans) startCompose(plan)
   await runSlices({
     plans, slices: slicePlan.slices, specs: segmentSpecs, segDir, fps,
@@ -942,7 +964,7 @@ async function renderInSlices({
     },
     keep: !!process.env.MONTAJ_KEEP_SEGMENTS,
     log,
-    captureConfig: { workers, motionBlur },
+    captureConfig: { workers, motionBlur, ...(segmentCache ? { segmentCache } : {}) },
     bakeTotal,
     createBakeProgress: ({ total }) => createBakeProgress({ total, log }),
   })

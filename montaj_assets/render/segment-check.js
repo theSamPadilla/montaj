@@ -37,9 +37,10 @@ export function probeSegmentStreams(file) {
  * stream with at least one frame.
  * @param {string} file
  * @param {{start: number, end: number}} span  the segment's place on the timeline, seconds
+ * @param {{ probe?: (file: string) => object[] }} [opts]  probeSegmentStreams, or a test's stand-in (segment-cache.js)
  */
-export function assertSegmentHasVideo(file, { start, end }) {
-  const streams = probeSegmentStreams(file)
+export function assertSegmentHasVideo(file, { start, end }, { probe = probeSegmentStreams } = {}) {
+  const streams = probe(file)
   const video = streams.find(s => s.codec_type === 'video')
   if (!video || !(Number(video.nb_read_packets) > 0)) {
     const has = streams.map(s => `${s.codec_type} ${s.codec_name}`).join(', ') || 'nothing'
