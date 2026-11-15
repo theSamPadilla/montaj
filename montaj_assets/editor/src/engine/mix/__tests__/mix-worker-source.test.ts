@@ -457,6 +457,22 @@ describe('the Worker feeds the worklet', () => {
     expect(hz).toBeLessThan(460)
   })
 
+  it('mutes a segment whose speed is outside [1/16, 16] instead of playing it at the clamp (§684)', async () => {
+    const tone = pcmS16(SR * 6, SR, (t) => 0.5 * Math.sin(2 * Math.PI * 440 * t))
+    const f = fakeFetch({ [URL_A]: tone })
+    const rig = workerRig(f.fetch)
+    const seg = (id: string, speed: number) => ({ id, url: URL_A, tlStart: 0, tlEnd: 1, speed, gain: 0.8 })
+    rig.send({ t: 'plan', planGen: 1, segments: [seg('slow', 0.05), seg('edge', 1 / 16), seg('fast', 20), seg('fastedge', 16), seg('ok', 1)] })
+    await rig.settle()
+    const last = rig.fromWorker.filter((m) => m.t === 'segments').pop() as Msg & { segs: Array<{ id: string; gain: number }> }
+    const gainOf = (id: string) => last.segs.find((x) => x.id === id)?.gain
+    expect(gainOf('slow')).toBe(0)
+    expect(gainOf('fast')).toBe(0)
+    expect(gainOf('edge')).toBe(0.8)
+    expect(gainOf('fastedge')).toBe(0.8)
+    expect(gainOf('ok')).toBe(0.8)
+  })
+
   it('resamples to the context rate', async () => {
     const tone = pcmS16(SR * 3, SR, (t) => 0.5 * Math.sin(2 * Math.PI * 1000 * t))
     const f = fakeFetch({ [URL_A]: tone })

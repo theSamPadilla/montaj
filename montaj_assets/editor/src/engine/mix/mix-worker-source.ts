@@ -562,6 +562,8 @@ function normSeg(s) {
   var curve = curveName(s.curve) || 'exp';
   var speed = fin(s.speed, 1);
   if (!(speed > 0)) speed = 1;
+  // Out of range the sound would play at the clamp, drifting from the picture: it is muted instead (§684).
+  var outOfRange = speed < 1 / 16 || speed > 16;
   if (speed < 1 / 16) speed = 1 / 16;
   if (speed > 16) speed = 16;
   var ch = Math.floor(fin(s.channels, 2));
@@ -578,7 +580,7 @@ function normSeg(s) {
     tlEnd: typeof s.tlEnd === 'number' && s.tlEnd === s.tlEnd ? s.tlEnd : Infinity,
     srcIn: fin(s.srcIn, 0),
     speed: speed,
-    gain: fin(s.gain, 1),
+    gain: outOfRange ? 0 : fin(s.gain, 1),
     fadeIn: Math.max(0, fin(s.fadeIn, 0)),
     fadeOut: Math.max(0, fin(s.fadeOut, 0)),
     curveIn: curveName(s.curveIn) || curve,
