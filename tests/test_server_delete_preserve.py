@@ -315,3 +315,30 @@ def test_an_audio_name_collision_in_uploads_never_overwrites(workspace):
 
     assert preserved == {music: str(workspace / "_uploads" / "song_1.mp3")}
     assert _uploads(workspace) == {"song.mp3": b"older upload", "song_1.mp3": b"new song"}
+
+
+# ---------------------------------------------------------------------------
+# The render's segment cache (montaj_assets/render/segment-cache.js): kept 3D
+# chunks live inside the project folder, so deleting the project deletes them,
+# and preserving its assets never moves them out.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("preserve", [False, True])
+def test_deleting_a_project_removes_its_segment_cache(workspace, tmp_path, preserve):
+    pid, project_dir = _new_dir(workspace)
+    clip_a = _file(project_dir / "clip-a.mov", b"footage A")
+    key = "ab" * 32
+    cache = project_dir / "render" / "segment-cache"
+    _file(cache / f"{key}.mkv", b"ffv1 chunk")
+    _file(cache / f"{key}.json", b'{"version": 1}')
+    _write(project_dir, pid, clips=[_clip(0, clip_a)])
+
+    if preserve:
+        assert _delete_preserving(pid) == {clip_a: str(workspace / "_uploads" / "clip-a.mov")}
+    else:
+        assert client.delete(f"/api/projects/{pid}").status_code == 204
+
+    assert not project_dir.exists()
+    assert list(tmp_path.rglob("segment-cache")) == []
+    assert list(tmp_path.rglob(f"{key}.*")) == []
+    assert _uploads(workspace) == ({"clip-a.mov": b"footage A"} if preserve else {})
