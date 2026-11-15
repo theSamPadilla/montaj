@@ -1,4 +1,4 @@
-<!-- montaj speech text v1 · track trk-0 · stamp 9fe2d2d54482 -->
+<!-- montaj speech text v1 · track trk-0 · stamp 2c85601f8139 -->
 # speech-text-fixture
 
 A = speech.mp4

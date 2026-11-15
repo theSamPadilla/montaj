@@ -111,8 +111,40 @@ def test_stamp_changes_on_inpoint_and_sidecar(tmp_path):
     assert stamp(project, 0, [side]) != s0
     item(project, "clip-1")["inPoint"] = 0.0
     assert stamp(project, 0, [side]) == s0
-    with open(side, "a") as f:
-        f.write(" ")
+    with open(side) as f:
+        doc = json.load(f)
+    doc["transcription"][1]["offsets"]["to"] += 10
+    with open(side, "w") as f:
+        json.dump(doc, f)
+    assert stamp(project, 0, [side]) != s0
+
+
+def test_stamp_ignores_a_sidecar_rewritten_with_the_same_words(tmp_path):
+    """§695: a transcribe that writes the same words and times with other metadata leaves a waiting plan fresh."""
+    project, pdir = load_project(tmp_path)
+    side = os.path.join(pdir, "speech.json")
+    s0 = stamp(project, 0, [side])
+    with open(side) as f:
+        doc = json.load(f)
+    doc["montaj"] = {"model": "turbo", "params": {"language": "en"}}
+    doc["result"] = {"language": "en"}
+    for e in doc["transcription"]:
+        e["tokens"] = [{"text": e.get("text"), "p": 0.9}]
+        e["timestamps"] = {"from": "00:00:00,000", "to": "00:00:01,000"}
+    with open(side, "w") as f:
+        json.dump(doc, f, indent=2)
+    assert stamp(project, 0, [side]) == s0
+
+
+def test_stamp_changes_when_a_word_changes(tmp_path):
+    project, pdir = load_project(tmp_path)
+    side = os.path.join(pdir, "speech.json")
+    s0 = stamp(project, 0, [side])
+    with open(side) as f:
+        doc = json.load(f)
+    doc["transcription"][1]["text"] = " different"
+    with open(side, "w") as f:
+        json.dump(doc, f)
     assert stamp(project, 0, [side]) != s0
 
 
@@ -316,6 +348,6 @@ def test_parse_emptied_speech_row_is_a_deleted_line():
     assert rows[0].lineno == 3
 
 
-def test_the_stamp_version_moved_when_load_words_began_dropping_music_notes():
+def test_the_stamp_version_moved_when_the_stamp_began_hashing_words_not_bytes():
     from lib import speech_text
-    assert speech_text.STAMP_VERSION == "speech-text v2"
+    assert speech_text.STAMP_VERSION == "speech-text v3"

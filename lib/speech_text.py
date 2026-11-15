@@ -17,7 +17,7 @@ from lib.speech_lines import (SHOW_PAUSE_S, Line, Word, load_words, refine, side
                               uncertain_gaps)
 from lib.speech_pauses import silences
 
-STAMP_VERSION = "speech-text v2"
+STAMP_VERSION = "speech-text v3"
 _STAMP_CONSTANTS = (
     "MIN_SILENCE_S", "FLOOR_MARGIN_DB", "SHOW_PAUSE_S", "LINE_BREAK_PAUSE_S", "LINE_MAX_WORDS",
     "PAUSE_SPLIT_S", "EDGE_TOUCH_S",
@@ -110,17 +110,27 @@ def speech_track_index(project: dict, override: str | None, project_dir: str | N
     return best
 
 
+def _words_hash(path: str) -> str:
+    """sha256 of what the plan reads of a sidecar: its words and their times. A transcribe that writes the same
+    words again with other metadata (the `montaj` block, params, tokens) leaves it unchanged (§695). A sidecar
+    that is not a transcript falls back to its bytes."""
+    try:
+        words = [[w.text, w.start, w.end] for w in speech_lines.load_words(path)]
+        blob = json.dumps(words, ensure_ascii=False, separators=(",", ":"))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
 def stamp(project: dict, track_index: int, sidecars: list, extra: str | None = None) -> str:
-    """sha256 hex[:12] over the track's items, each sidecar's content hash and the format constants (and `extra`,
+    """sha256 hex[:12] over the track's items, each sidecar's words hash and the format constants (and `extra`,
     what a refiner says of its own constants, when one placed the words)."""
     tracks = normalize_tracks(project).get("tracks", [])
     items = sorted(tracks[track_index]["items"], key=lambda it: it.get("start", 0))
     rows = [[os.path.basename(it.get("src") or ""), it.get("inPoint"), it.get("outPoint"), it.get("start"), it.get("end"),
              it.get("speed", 1)] for it in items]
-    sums = []
-    for p in sidecars:
-        with open(p, "rb") as f:
-            sums.append(hashlib.sha256(f.read()).hexdigest())
+    sums = [_words_hash(p) for p in sidecars]
     # only what changes the text: constants of speech_lines / speech_pauses (apply-only ones are left out)
     consts = {n: getattr(speech_lines, n, getattr(speech_pauses, n, None)) for n in _STAMP_CONSTANTS}
     parts = [rows, sums, STAMP_VERSION, consts] + ([extra] if extra is not None else [])

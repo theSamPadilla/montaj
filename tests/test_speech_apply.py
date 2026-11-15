@@ -145,8 +145,12 @@ def test_stale_after_trim(env, capsys):
 
 
 def test_stale_after_sidecar_change(env, capsys):
-    with open(os.path.join(env.dir, "speech.json"), "a") as f:
-        f.write(" ")
+    path = os.path.join(env.dir, "speech.json")
+    with open(path) as f:
+        doc = json.load(f)
+    doc["transcription"][1]["offsets"]["to"] += 10
+    with open(path, "w") as f:
+        json.dump(doc, f)
     refused(env, env.text, "stale", capsys)
 
 
