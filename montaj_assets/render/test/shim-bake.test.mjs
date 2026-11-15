@@ -75,6 +75,15 @@ describe('shim bake: an un-keyframed overlay', () => {
   })
 })
 
+describe('shim: the props text appears once (§717)', () => {
+  test('a large props object is serialized once, not twice', () => {
+    const big = { sceneJson: 'x'.repeat(100000) + 'SENTINEL', title: 'hi' }
+    const src = generateShim(COMPONENT, big, FPS, FRAMES)
+    assert.equal(src.split('SENTINEL').length - 1, 1, 'one copy of the text')
+    assert.match(src, /window\.props\s*=\s*__props/)
+  })
+})
+
 describe('shim bake: a keyframed overlay', () => {
   const baked = generateShim(COMPONENT, PROPS, FPS, FRAMES, {
     offsetX: 5, offsetY: -10, scale: 0.5, rotation: 12, opacity: 0.8, keyframes: TRACKS,

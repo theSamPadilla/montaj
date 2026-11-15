@@ -302,10 +302,10 @@ for (const [__k, __v] of Object.entries(__overlayGlobals)) {
 window.React       = React
 window.fps         = ${fps}
 window.duration    = ${durationFrames}
-window.props       = ${JSON.stringify(rewrittenProps)}
+const __props = ${JSON.stringify(rewrittenProps)}
+window.props       = __props
 window.frame       = 0
 
-const __props = ${JSON.stringify(rewrittenProps)}
 ${bakeDecls}let __setFrame
 let __setEpoch
 

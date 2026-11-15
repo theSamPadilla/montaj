@@ -22,10 +22,10 @@ for (const [__k, __v] of Object.entries(__overlayGlobals)) {
 window.React       = React
 window.fps         = 30
 window.duration    = 90
-window.props       = {"title":"hi","img":"file:///abs/pic.png"}
+const __props = {"title":"hi","img":"file:///abs/pic.png"}
+window.props       = __props
 window.frame       = 0
 
-const __props = {"title":"hi","img":"file:///abs/pic.png"}
 let __setFrame
 let __setEpoch
 
