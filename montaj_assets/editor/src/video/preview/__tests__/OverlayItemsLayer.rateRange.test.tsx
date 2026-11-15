@@ -22,7 +22,7 @@ const clip = (over: Partial<VisualItem> = {}): VisualItem => ({
   id: 'b-arm1-paused', type: 'video', src: 'clip.mp4', start: 33.18, end: 36.29, inPoint: 9.24, outPoint: 9.3955, speed: 0.05, ...over,
 } as VisualItem)
 
-function Harness({ item, t, playing }: { item: VisualItem; t: number; playing: boolean }) {
+function Harness({ item, t, playing, rate }: { item: VisualItem; t: number; playing: boolean; rate?: number }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const drag = useDragOverlay(containerRef, undefined)
   return (
@@ -45,6 +45,7 @@ function Harness({ item, t, playing }: { item: VisualItem; t: number; playing: b
         snapRotation={drag.snapRotation}
         compileOverlay={vi.fn(async (): Promise<OverlayFactory> => () => null)}
         fileUrl={(pth: string) => pth}
+        transportRate={rate}
       />
     </div>
   )
@@ -124,5 +125,43 @@ describe('OverlayItemsLayer: a video too slow or too fast for a <video> element'
     const v = videoOf(container)
     expect(v.paused).toBe(false)
     expect(v.playbackRate).toBe(2)
+  })
+})
+
+// §733: under the J/K/L shuttle project time runs R x, so an overlay video
+// plays at speed·R; at speed alone it fell behind and re-seeked in jumps.
+describe('OverlayItemsLayer: a video under the shuttle rate', () => {
+  const item = clip({ id: 'two', speed: 2, outPoint: 15.46 })
+
+  it('plays at speed x rate, and follows a rate change', () => {
+    const { container, rerender } = render(<Harness item={item} t={34} playing rate={2} />)
+    const v = videoOf(container)
+    expect(v.paused).toBe(false)
+    expect(v.playbackRate).toBe(4)
+    rerender(<Harness item={item} t={34.1} playing rate={1.5} />)
+    expect(v.playbackRate).toBe(3)
+    rerender(<Harness item={item} t={34.2} playing rate={1} />)
+    expect(v.playbackRate).toBe(2)
+    expect(v.paused).toBe(false)
+  })
+
+  it('the source time it seeks to is by speed alone', () => {
+    const { container, rerender } = render(<Harness item={item} t={34} playing={false} rate={4} />)
+    const v = videoOf(container)
+    rerender(<Harness item={item} t={35} playing={false} rate={4} />)
+    expect(v.currentTime).toBeCloseTo(9.24 + 2 * (35 - 33.18), 6)
+  })
+
+  it('an 8x clip under a 4x shuttle (32x) is held: paused, seeking to inPoint + 8 x elapsed', () => {
+    const eight = clip({ id: 'eight', start: 0, end: 4, inPoint: 0, outPoint: 32, speed: 8 })
+    const { container, rerender } = render(<Harness item={eight} t={0.5} playing rate={2} />)
+    const v = videoOf(container)
+    expect(v.paused).toBe(false)
+    expect(v.playbackRate).toBe(16)
+    rerender(<Harness item={eight} t={1} playing rate={4} />)
+    expect(v.paused).toBe(true)
+    rerender(<Harness item={eight} t={1.5} playing rate={4} />)
+    expect(v.paused).toBe(true)
+    expect(v.currentTime).toBeCloseTo(12, 6)
   })
 })

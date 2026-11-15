@@ -35,6 +35,19 @@ export function setPlaybackRate(el: HTMLMediaElement, rate: number): void {
 }
 
 /**
+ * Keeps an element's pitch when its rate moves off 1 (the J/K/L shuttle's
+ * fast-forward is pitch-corrected, as the engine's time-stretch is). It is the
+ * browsers' default, so at 1x this changes nothing; the vendor-prefixed
+ * variants are set best-effort for engines that only understand those.
+ */
+export function preservePitch(el: HTMLMediaElement): void {
+  el.preservesPitch = true
+  const vendor = el as unknown as { mozPreservesPitch?: boolean; webkitPreservesPitch?: boolean }
+  if ('mozPreservesPitch' in vendor) vendor.mozPreservesPitch = true
+  if ('webkitPreservesPitch' in vendor) vendor.webkitPreservesPitch = true
+}
+
+/**
  * Source seconds between a held element's frame and its target before a
  * re-seek: about one frame at 60 fps, so a near-freeze seeks only when the
  * picture would actually change, and a fast clip seeks every animation frame.

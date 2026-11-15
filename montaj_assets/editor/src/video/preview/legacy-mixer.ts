@@ -4,8 +4,10 @@
  * Here the `<video>` stays the master clock and the MixClock FOLLOWS it: play,
  * pause and seek are forwarded, and while playing the mixer is re-seeked
  * whenever it drifts more than `MIX_DRIFT_S` from the video's project time.
- * Clip speed is not forwarded: it is already in the plan, so the mixer's own
- * rate stays 1, as the project's does in this path.
+ * Clip speed is not forwarded: it is already in the plan. The mixer's own rate
+ * is the transport rate R (the J/K/L shuttle's fast-forward, `setRate`), the
+ * rate the video's project time advances at; at anything else it would drift
+ * from the video every frame and be re-seeked over and over.
  *
  * Same rules as the engine's `createMixerControl` (engine/index.ts, which this
  * mirrors; keep the two in step): the mixer is built from the same conform
@@ -54,6 +56,8 @@ export interface LegacyMixer {
   seek(projectS: number): void
   /** While playing: re-sync the mixer if it drifted from the video's time. */
   follow(projectS: number): void
+  /** The transport rate R: project time advances R x, so the mixer plays R x too (pitch-corrected). */
+  setRate(rate: number): void
   setVolume(volume: number): void
   projectChanged(project: Project): void
   dispose(): void
@@ -72,6 +76,7 @@ export function createLegacyMixer(deps: LegacyMixerDeps, host: LegacyMixerHost):
   let built: ProjectMixPlan | null = null
   let inMixer = false
   let volume = 1
+  let rate = 1
   let postedPlan: string | null = null
   let postedIds = new Set<string>()
   /** Segments muted on their way out; the worklet keeps an override across plans, so a return clears it. */
@@ -230,6 +235,8 @@ export function createLegacyMixer(deps: LegacyMixerDeps, host: LegacyMixerHost):
           return
         }
         clock = mix
+        // A rate set before the clock existed. Never called at 1x: the clock starts there.
+        if (rate !== 1) mix.setRate(rate)
         if (deps.conform) {
           conform = deps.conform
         } else {
@@ -304,6 +311,11 @@ export function createLegacyMixer(deps: LegacyMixerDeps, host: LegacyMixerHost):
           clock.pause()
         } else clock.seek(projectS)
       }
+    },
+    setRate(next) {
+      if (next === rate) return
+      rate = next
+      clock?.setRate(next)
     },
     setVolume(next) {
       volume = next

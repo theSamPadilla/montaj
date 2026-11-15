@@ -14,15 +14,17 @@ const PROJECT = { id: 'p', tracks: [] } as unknown as EditorProject
 
 function fakeClock() {
   const calls: string[] = []
+  const rates: number[] = []
   const clock = {
     playing: false,
     mixNow: 0,
     calls,
+    rates,
     now: () => clock.mixNow,
     play: () => { clock.playing = true; calls.push('play') },
     pause: () => { clock.playing = false; calls.push('pause') },
     seek: (t: number) => { clock.mixNow = t; calls.push(`seek:${t}`) },
-    setRate: () => { calls.push('rate') },
+    setRate: (r: number) => { calls.push('rate'); rates.push(r) },
     setVolume: (v: number) => { calls.push(`volume:${v}`) },
     setPlan: (p: { segments: unknown[] }) => { calls.push(`plan:${p.segments.length}`) },
     setParams: () => { calls.push('params') },
@@ -234,6 +236,36 @@ describe('legacy mixer (the <video> path)', () => {
     mixer.projectChanged(PROJECT)
     expect(states).toHaveLength(0)
     expect(conform.request).not.toHaveBeenCalled()
+  })
+
+  it('§733: the transport rate reaches the mixer once per change, and never at 1x', async () => {
+    await start()
+    await settled()
+    mixer.setRate(1)
+    expect(clock.rates).toEqual([])
+    mixer.setRate(2)
+    mixer.setRate(2)
+    mixer.setRate(4)
+    mixer.setRate(1)
+    expect(clock.rates).toEqual([2, 4, 1])
+  })
+
+  it('§733: a rate set before the mix clock exists is applied when it arrives', async () => {
+    let resolve: (c: MixClock) => void = () => {}
+    mixer = createLegacyMixer(
+      {
+        createMixClock: () => new Promise<MixClock>((r) => { resolve = r }),
+        buildMixPlan: () => plan,
+        audioSourcePaths: () => ['/a.mov'],
+        conform: conform as unknown as ConformClient,
+      },
+      { playing: () => playing, time: () => videoT, project: () => PROJECT, onChange: (s) => states.push(s) },
+    )
+    mixer.setRate(1.5)
+    await settled()
+    resolve(clock as unknown as MixClock)
+    await vi.waitFor(() => expect(conform.request).toHaveBeenCalled())
+    expect(clock.rates).toEqual([1.5])
   })
 
   it('the volume reaches the mixer', async () => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { HELD_SEEK_EPS, rateFits, setPlaybackRate } from './playbackRate'
+import { HELD_SEEK_EPS, preservePitch, rateFits, setPlaybackRate } from './playbackRate'
 import {
   sourceWindow,
   playbackSrcFor as resolvePlaybackSrc,
@@ -133,6 +133,17 @@ export function clipGain(
   return muted ? 0 : volume
 }
 
+/**
+ * Slave one audio lane element to the transport rate R, pitch-corrected: the
+ * playhead advances R x, so a lane at `playbackRate = R` keeps its
+ * `currentTime` in step with the picture. Lanes have no speed of their own.
+ * Same as useEnginePlayback's `applyLaneRate`.
+ */
+function applyLaneRate(el: HTMLAudioElement, rate: number): void {
+  setPlaybackRate(el, rate)
+  preservePitch(el)
+}
+
 /** How long a press of play at the end waits for its seek to 0 to land. */
 const PLAY_FROM_START_MS = 500
 
@@ -224,6 +235,12 @@ export function useVideoPlayback(
   // through it with the element paused and the picture kept by seeking to
   // `inPoint + S·(t − start)`. Its index into `clips` while the clock does so.
   const heldIdxRef    = useRef<number | null>(null)
+  // The J/K/L shuttle's live transport rate R (`setRate`, default 1): project
+  // time advances R x. A main-track slot plays at S·R (its clip's speed times
+  // R), so its `currentTime` still maps to project time by S alone; the gap,
+  // held and canvas clocks count R x their wall time; the lanes and the mixer
+  // play at R. A clip whose S·R does not fit an element is HELD, as above.
+  const transportRateRef = useRef(1)
 
   // Keep fileUrl in a ref so callbacks that captured it early don't go stale
   const fileUrlRef = useRef(fileUrl)
@@ -256,6 +273,22 @@ export function useVideoPlayback(
   }, [onTimeUpdate])
 
   function getActiveVideo() { return activeSlotRef.current === 0 ? video0Ref.current : video1Ref.current }
+
+  /** The rate a main-track slot plays `clip` at: its speed times the transport rate. */
+  function slotRate(clip: { speed?: number }): number {
+    return clipSpeed(clip) * transportRateRef.current
+  }
+
+  /** Whether `clip` is HELD (driven by seeking a paused element) at the current transport rate. */
+  function isHeldClip(clip: { speed?: number }): boolean {
+    return !rateFits(slotRate(clip))
+  }
+
+  /** Set a main-track slot's rate for `clip`, pitch-corrected (a no-op on pitch at 1x). */
+  function applySlotRate(el: HTMLMediaElement, clip: { speed?: number }) {
+    setPlaybackRate(el, slotRate(clip))
+    preservePitch(el)
+  }
   function getInactiveVideo() { return activeSlotRef.current === 0 ? video1Ref.current : video0Ref.current }
 
   // ── Video timeline ─────────────────────────────────────────────────────────
@@ -314,6 +347,9 @@ export function useVideoPlayback(
     ensureVideoGain(activeSlotRef.current)
     const cur = clips[activeIdxRef.current]
     if (cur) applyClipVolume(cur)
+    // A rate set while paused (the shuttle sets it right after asking for play)
+    // reaches the element here, before play().
+    if (cur) applySlotRate(video, cur)
     const w = window as Window & MontajWindow
     const ctx = w.__montajSharedCtx
     const intent = ++playIntentRef.current
@@ -481,7 +517,8 @@ export function useVideoPlayback(
     function tick(ms: number) {
       const maxEnd = canvasMaxEndRef.current
       if (rafLastMs.current !== null) {
-        const dt   = (ms - rafLastMs.current) / 1000
+        // R x the wall time (the shuttle): incremental, so a rate change needs no re-anchor.
+        const dt   = (ms - rafLastMs.current) / 1000 * transportRateRef.current
         const next = Math.min(lastTimeRef.current + dt, maxEnd)
         lastTimeRef.current = next
         emitTime(next)
@@ -651,10 +688,17 @@ export function useVideoPlayback(
       if (!el) continue
 
       const win = audioWindow(track, playhead)
-      if (!win.active || laneSourceExhausted(el, win.trackTime, 0.3)) {
+      // A transport rate no element can play (outside [1/16, 16]) holds the
+      // lane silent rather than playing it at the clamped, wrong rate (§684).
+      const rate = transportRateRef.current
+      if (!win.active || laneSourceExhausted(el, win.trackTime, 0.3) || !rateFits(rate)) {
         if (!el.paused) el.pause()
         continue
       }
+
+      // The lane and the playhead both advance R x, so `win.trackTime` and the
+      // element stay in step and the drift re-seek below keeps working as is.
+      applyLaneRate(el, rate)
 
       if (Math.abs(el.currentTime - win.trackTime) > 0.3) {
         el.currentTime = Math.max(0, win.trackTime)
@@ -777,7 +821,8 @@ export function useVideoPlayback(
 
   const tickGap = useCallback(function tickGap() {
     if (!inGapRef.current) return
-    const elapsed = (performance.now() - gapWallRef.current) / 1000
+    // R x the wall time since the anchor; `setRate` re-anchors on a change.
+    const elapsed = (performance.now() - gapWallRef.current) / 1000 * transportRateRef.current
     const t = Math.min(gapFromRef.current + elapsed, gapTargetRef.current)
     lastTimeRef.current = t
     const held = heldIdxRef.current !== null ? clips[heldIdxRef.current] : undefined
@@ -830,7 +875,7 @@ export function useVideoPlayback(
     if (nv) {
       const src = fileUrlRef.current(playbackSrcFor(nc))
       if (preloadSrcRef.current !== src) { nv.src = src; nv.currentTime = effectiveInPoint(nc) }
-      setPlaybackRate(nv, clipSpeed(nc))
+      applySlotRate(nv, nc)
       const gain = ensureVideoGain(ns)
       if (gain) gain.gain.value = videoGain(nc)
       playSoon(nv)
@@ -862,6 +907,28 @@ export function useVideoPlayback(
     if (gapRAFRef.current !== null) cancelAnimationFrame(gapRAFRef.current)
     gapRAFRef.current = requestAnimationFrame(tickGap)
     setIsPlaying(true)
+  }
+
+  /**
+   * Seek a playing (not held) slot to project time `t` in `clip`: source time
+   * `inPoint + S·(t − start)`, loop-aware. By S alone: the transport rate only
+   * changes how fast the element plays, never which frame is where.
+   */
+  function seekSlot(video: HTMLVideoElement, clip: VisualItem, t: number) {
+    const inPoint = effectiveInPoint(clip)
+    const clipOutPoint = effectiveOutPoint(clip)
+    const speed = clipSpeed(clip)
+    if (clip.loop && clipOutPoint != null) {
+      // loopDur is in SOURCE seconds; loopOffsetRef holds PROJECT seconds.
+      const loopDur = clipOutPoint - inPoint
+      const srcElapsed = speed * (t - clip.start)
+      const loops   = Math.floor(srcElapsed / loopDur)
+      loopOffsetRef.current = loops * loopDur / speed
+      video.currentTime = inPoint + (srcElapsed % loopDur)
+    } else {
+      loopOffsetRef.current = 0
+      video.currentTime = Math.max(inPoint, inPoint + speed * (t - clip.start))
+    }
   }
 
   // Scrub: seek active slot when currentTime jumps externally
@@ -925,22 +992,9 @@ export function useVideoPlayback(
         if (inactive) { inactive.pause(); inactive.removeAttribute('src') }
       }
       applyClipVolume(clip)
-      const inPoint = effectiveInPoint(clip)
-      const clipOutPoint = effectiveOutPoint(clip)
-      const speed = clipSpeed(clip)
-      setPlaybackRate(video, speed)
-      if (clip.loop && clipOutPoint != null) {
-        // loopDur is in SOURCE seconds; loopOffsetRef holds PROJECT seconds.
-        const loopDur = clipOutPoint - inPoint
-        const srcElapsed = speed * (currentTime - clip.start)
-        const loops   = Math.floor(srcElapsed / loopDur)
-        loopOffsetRef.current = loops * loopDur / speed
-        video.currentTime = inPoint + (srcElapsed % loopDur)
-      } else {
-        loopOffsetRef.current = 0
-        video.currentTime = Math.max(inPoint, inPoint + speed * (currentTime - clip.start))
-      }
-      if (isPlayingRef.current && !rateFits(speed)) startHeld(clipIdx, currentTime)
+      applySlotRate(video, clip)
+      seekSlot(video, clip, currentTime)
+      if (isPlayingRef.current && isHeldClip(clip)) startHeld(clipIdx, currentTime)
       else if (wasHeld && isPlayingRef.current && video.paused) playSoon(video)
     } finally {
       // Delay clearing seekingRef so the pause/play events the browser fires
@@ -998,7 +1052,7 @@ export function useVideoPlayback(
         preloadSrcRef.current = nextSrc
         inactiveVideo.src = nextSrc
         inactiveVideo.currentTime = effectiveInPoint(clips[nextIdx])
-        setPlaybackRate(inactiveVideo, clipSpeed(clips[nextIdx]))
+        applySlotRate(inactiveVideo, clips[nextIdx])
         const inactiveSlot = (1 - slot) as 0 | 1
         const nextGain = ensureVideoGain(inactiveSlot)
         if (nextGain) nextGain.gain.value = videoGain(clips[nextIdx])
@@ -1009,7 +1063,7 @@ export function useVideoPlayback(
     // hand it to the held clock from where the playhead is. Paused, it reports
     // nothing: its element sits only within a frame of the playhead (see
     // `seekHeld`), which at 0.05x is a third of a second of project time.
-    if (!rateFits(clipSpeed(clip))) {
+    if (isHeldClip(clip)) {
       if (!video.paused) startHeld(activeIdxRef.current, Math.min(Math.max(lastTimeRef.current, clip.start), clip.end))
       return
     }
@@ -1068,7 +1122,7 @@ export function useVideoPlayback(
               nextVideo.src = nextSrc
               nextVideo.currentTime = effectiveInPoint(next)
             }
-            setPlaybackRate(nextVideo, clipSpeed(next))
+            applySlotRate(nextVideo, next)
             const nextGain = ensureVideoGain(nextSlot)
             if (nextGain) nextGain.gain.value = videoGain(next)
             playSoon(nextVideo)
@@ -1251,6 +1305,64 @@ export function useVideoPlayback(
   }
   togglePlayRef.current = togglePlay
 
+  /**
+   * The J/K/L shuttle's rate knob, the `<video>` path's twin of
+   * useEnginePlayback's `setRate`: project time advances R x and every layer
+   * follows. Applied at once to whatever is running (the active slot, a
+   * running gap or held clock, the lanes, the mixer); while paused it is only
+   * stored, and the next play picks it up (`playFromGesture`, every clip
+   * switch, `syncAudioTracks`). Setting 1 restores exactly today's behaviour.
+   */
+  function applyTransportRate(rate: number) {
+    const prev = transportRateRef.current
+    if (rate === prev) return
+    // A running clock (a gap, a held clip) carries on from the time it has
+    // reached at the OLD rate: re-anchor there, so time does not jump.
+    if (inGapRef.current) {
+      const now = performance.now()
+      gapFromRef.current = Math.min(gapFromRef.current + (now - gapWallRef.current) / 1000 * prev, gapTargetRef.current)
+      gapWallRef.current = now
+    }
+    transportRateRef.current = rate
+    mixerRef.current?.setRate(rate)
+    for (const el of audioRefsMap.current.values()) {
+      applyLaneRate(el, rate)
+      // Held silent at a rate no element plays (see `syncAudioTracks`), which resumes it once R fits again.
+      if (!rateFits(rate) && !el.paused) el.pause()
+    }
+    if (isCanvasProject) return
+
+    const heldIdx = heldIdxRef.current
+    if (heldIdx !== null) {
+      // A held clip that fits again plays its element from where the held clock is.
+      const clip = clips[heldIdx]
+      const video = getActiveVideo()
+      if (!clip || !video || isHeldClip(clip)) return
+      const t = gapFromRef.current
+      cancelGap()
+      lastTimeRef.current = t
+      applySlotRate(video, clip)
+      seekSlot(video, clip, t)
+      playSoon(video)
+      return
+    }
+    // A gap: the next clip takes the rate when it starts.
+    if (inGapRef.current) return
+    const clip = clips[activeIdxRef.current]
+    const video = getActiveVideo()
+    if (!clip || !video) return
+    applySlotRate(video, clip)
+    // Playing, and no element can play S·R: hand it to the held clock (paused,
+    // its play() is still pending: `handleTimeUpdate` does once it plays).
+    if (isHeldClip(clip) && !video.paused) {
+      startHeld(activeIdxRef.current, Math.min(Math.max(lastTimeRef.current, clip.start), clip.end))
+    }
+  }
+  const applyTransportRateRef = useRef(applyTransportRate)
+  applyTransportRateRef.current = applyTransportRate
+  // Stable, through a ref, so the transport handle does not churn every render.
+  const setRate = useCallback((rate: number) => applyTransportRateRef.current(rate), [])
+
   // §190: whether the preview mixer plays this overlay-track video's sound
   // (OverlayItemsLayer mutes it when it does). Same rule as useEnginePlayback.
   const audioInMix = useCallback(
@@ -1276,5 +1388,6 @@ export function useVideoPlayback(
     tracks0NonVideo,
     overlayTracks,
     audioInMix,
+    setRate,
   }
 }

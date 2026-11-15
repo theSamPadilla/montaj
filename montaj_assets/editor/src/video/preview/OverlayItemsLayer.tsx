@@ -42,8 +42,13 @@ const SCENE3D_PRELOAD_S = 1.5
 const SCENE3D_LINGER_S = 0.5
 
 // Synced video overlay — seeks to the correct position within the item's inPoint/outPoint range
-function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlaying, muted, volume = 1, visible, cropStyle, fit = 'contain', onSrcError }: {
+function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, rate = 1, isPlaying, muted, volume = 1, visible, cropStyle, fit = 'contain', onSrcError }: {
   src: string; currentTime: number; itemStart: number; inPoint: number; speed?: number
+  /**
+   * The transport rate R (the J/K/L shuttle): project time advances R x, so the
+   * element plays at speed·R. Source time is still mapped by `speed` alone.
+   */
+  rate?: number
   /** The clip's EFFECTIVE mute and volume (`effectiveItemAudio`): its track's settings folded in. */
   isPlaying: boolean; muted?: boolean; volume?: number; visible: boolean
   /** The item's `sourceCrop` as CSS (`sourceCropVideoStyle`), or null to fit the whole source by `fit`. */
@@ -60,8 +65,10 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlayi
   useEffect(() => { visibleRef.current   = visible   }, [visible])
   // HELD: a speed no <video> can play (outside [0.0625, 16], `rateFits`), e.g.
   // an AI-made 0.05x near-freeze. The element stays paused and follows project
-  // time by seeking instead of playing.
-  const held = !rateFits(speed)
+  // time by seeking instead of playing. It is the element's rate that must fit,
+  // so the transport rate counts: an 8x clip under the shuttle's 4x is held.
+  const elementRate = speed * rate
+  const held = !rateFits(elementRate)
   const heldRef = useRef(held)
   heldRef.current = held
 
@@ -119,17 +126,19 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlayi
     if (!v) return
     // Play at S× so one project-second consumes S source-seconds — keeps the
     // element in step with project time instead of drifting until a re-seek
-    // fires. `preservesPitch` matters only for an audible overlay; harmless
-    // otherwise. Set before play(); a fresh src load resets rate to 1, so the
-    // dependency list re-runs this whenever speed changes under us.
-    setPlaybackRate(v, speed)
+    // fires. Under the shuttle project time itself runs R× (§733), so S·R: at
+    // S alone a 2x/4x shuttle left the element behind until the >1.5 s drift
+    // re-seek jumped it. `preservesPitch` matters only for an audible overlay;
+    // harmless otherwise. Set before play(); a fresh src load resets rate to
+    // 1, so the dependency list re-runs this whenever speed or R changes under us.
+    setPlaybackRate(v, elementRate)
     v.preservesPitch = true
     if (isPlaying && visible && !held) {
       v.play().catch(() => {})
     } else {
       v.pause()
     }
-  }, [isPlaying, visible, speed, held])
+  }, [isPlaying, visible, elementRate, held])
 
   return (
     <video
@@ -531,6 +540,8 @@ interface OverlayItemsLayerProps {
    * `src`), so its `<video>` plays muted. Absent on the `<video>` path.
    */
   audioInMix?: (src: string) => boolean
+  /** The transport rate R (the J/K/L shuttle's fast-forward); video items play at speed·R. Default 1. */
+  transportRate?: number
 }
 
 export default function OverlayItemsLayer({
@@ -559,6 +570,7 @@ export default function OverlayItemsLayer({
   fileUrl,
   muted = false,
   audioInMix,
+  transportRate = 1,
 }: OverlayItemsLayerProps) {
   // Footage the host says is absent: such a video or image item draws nothing
   // and sets no src, so nothing 404s.
@@ -1048,6 +1060,7 @@ export default function OverlayItemsLayer({
                     itemStart={item.start}
                     inPoint={item.inPoint ?? 0}
                     speed={item.speed ?? 1}
+                    rate={transportRate}
                     isPlaying={isPlaying}
                     // In mixer mode the mixer plays this item's audio, from
                     // the conform of its ORIGINAL `src` (whatever file the

@@ -41,9 +41,9 @@ import SocialSafeZoneOverlay, { socialStageSize, type SocialPreviewPlatform } fr
 export interface TransportHandle {
   togglePlay: () => void
   isPlaying: () => boolean
-  /** The J/K/L shuttle's live transport rate. Engine mode drives the engine's
-   *  own rate (audible fast-forward); the legacy path has no rate knob, so it is
-   *  a no-op there. */
+  /** The J/K/L shuttle's live transport rate R. Both paths have the knob: the
+   *  engine's own rate (audible fast-forward) or the `<video>` path's (its slots,
+   *  clocks and lanes); overlay videos follow it in either. */
   setRate: (rate: number) => void
 }
 
@@ -106,9 +106,6 @@ function useGlyphClickPlays(containerRef: RefObject<HTMLDivElement | null>, isPl
   }, [containerRef, isPlaying, check])
   return plays
 }
-
-/** Stable no-op for the legacy playback path, which has no transport-rate knob. */
-const NO_RATE = (_rate: number) => {}
 
 interface PreviewPlayerProps {
   project: Project
@@ -582,8 +579,15 @@ function PreviewSurface({
   // `isPlaying` is exposed as a getter (not the boolean itself) so a poller
   // (the J/K/L shuttle) always reads the current value, not a stale closure
   // from the render that last wrote the ref.
-  // Engine mode carries the real rate knob; the legacy path has none (no-op).
-  const setRate = playback.mode === 'engine' ? playback.setRate : NO_RATE
+  // Both paths carry the rate knob (§733: the `<video>` path used to have none,
+  // so the shuttle's 1.5x/2x/4x showed in the badge and played at 1x). The rate
+  // is also held here, for the overlay layer's videos, which both paths share.
+  const [transportRate, setTransportRate] = useState(1)
+  const playbackSetRate = playback.setRate
+  const setRate = useCallback((rate: number) => {
+    setTransportRate(rate)
+    playbackSetRate(rate)
+  }, [playbackSetRate])
 
   // Absent footage: starting play with a missing clip at or ahead of the
   // playhead is refused, through the host's onError, naming the clips. Pausing
@@ -1080,6 +1084,7 @@ function PreviewSurface({
         watchFile={watchFile}
         fileUrl={fileUrl}
         audioInMix={playback.audioInMix}
+        transportRate={transportRate}
       />
 
       {/* Audio elements are managed programmatically in the playback hook */}
