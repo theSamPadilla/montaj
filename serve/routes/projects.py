@@ -4673,6 +4673,16 @@ def _match_item_srcs(merged: dict, existing: dict, project_dir: Path) -> list:
             if not isinstance(src, str) or not src.strip() or (item.get("id"), src) in before or "://" in src or src.startswith("/api/"):
                 continue
             hits = spaced_twins(src if os.path.isabs(src) else os.path.join(str(project_dir), src))
+            if not hits and item.get("type") == "video" and not os.path.isabs(src):
+                # §696: the preview asks for a src as written, so a relative one stalls it. The project folder's file
+                # is saved absolute; with none there the item stays and the answer says so (the editor shows it missing).
+                here = os.path.join(str(project_dir), src)
+                if os.path.exists(here):
+                    item["src"] = here
+                else:
+                    warnings.append(f"{item.get('id')}: no file at {src} in the project folder; saved as written. "
+                                    "Import the file first, or give its full path.")
+                continue
             if len(hits) == 1:
                 item["src"] = hits[0]  # absolute: a step reads a src as a path, and a relative one from its own folder
                 warnings.append(f"{item.get('id')}: no file at {src}; saved the file it names, {item['src']}")

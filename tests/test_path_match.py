@@ -117,6 +117,29 @@ def test_a_saved_src_that_matches_several_files_is_kept_and_named(client, tmp_pa
     assert w.startswith("v1: no file at") and "clip\u202fA.mov" in w and "clip\u00a0A.mov" in w
 
 
+def test_a_saved_relative_src_that_exists_is_saved_as_the_project_folders_file(client, tmp_path):
+    """§696: the preview asks for the src as written, and a relative one 404s, so it is saved absolute."""
+    c, holder = client
+    holder["dir"] = d = _serve_setup(tmp_path)
+    (d / "chase.mp4").write_bytes(b"x")
+    item = {"id": "v1", "type": "video", "src": "chase.mp4", "start": 0, "end": 1, "inPoint": 0, "outPoint": 1}
+    r = c.put(f"/api/projects/{PID}", json={"id": PID, "tracks": [{"id": "trk-0", "items": [item]}]})
+    assert r.status_code == 200, r.text
+    assert json.loads((d / "project.json").read_text())["tracks"][0]["items"][0]["src"] == str(d / "chase.mp4")
+    assert not r.json().get("warnings")
+
+
+def test_a_saved_relative_src_with_no_file_is_kept_and_named(client, tmp_path):
+    c, holder = client
+    holder["dir"] = d = _serve_setup(tmp_path)
+    item = {"id": "v1", "type": "video", "src": "nowhere.mp4", "start": 0, "end": 1, "inPoint": 0, "outPoint": 1}
+    r = c.put(f"/api/projects/{PID}", json={"id": PID, "tracks": [{"id": "trk-0", "items": [item]}]})
+    assert r.status_code == 200, r.text
+    assert json.loads((d / "project.json").read_text())["tracks"][0]["items"][0]["src"] == "nowhere.mp4"
+    (w,) = r.json()["warnings"]
+    assert w.startswith("v1:") and "nowhere.mp4" in w and "import" in w.lower()
+
+
 # ── /api/files (read_file) ──────────────────────────────────────────────────
 
 def test_api_files_reads_a_typed_space_and_names_several(client, tmp_path, monkeypatch):
