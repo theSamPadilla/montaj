@@ -102,7 +102,7 @@ DEFAULT_MUSIC_MODEL = "lyria-3.5"
 #   2026-10-24). See _video_body.
 VIDEO_ON = True
 VIDEO_OFF_MESSAGE = "Gemini video is off in this version of Montaj. Use Kling, Seedance or Kinovi."
-DEFAULT_VIDEO_MODEL = "gemini-omni-1.1-flash"
+DEFAULT_VIDEO_MODEL = "gemini-omni-1.2-flash"
 # What each model takes. "reference_images" is whether it accepts up to
 # VIDEO_MAX_REFERENCE_IMAGES subject images.
 VIDEO_MODELS = {
