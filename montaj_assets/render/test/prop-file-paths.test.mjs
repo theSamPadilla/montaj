@@ -24,8 +24,8 @@ const TABLE = JSON.parse(readFileSync(new URL('./fixtures/overlay-prop-files.jso
 
 /** The props the render page is given, read out of the generated shim. */
 function pageProps(props) {
-  const m = generateShim('/W/overlays/x.jsx', props, 30, 30).match(/^window\.props\s*=\s*(.*)$/m)
-  assert.ok(m, 'the shim sets window.props')
+  const m = generateShim('/W/overlays/x.jsx', props, 30, 30).match(/^const __props\s*=\s*(.*)$/m)
+  assert.ok(m, 'the shim holds the props (window.props is the same object)')
   return JSON.parse(m[1])
 }
 
