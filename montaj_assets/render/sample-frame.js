@@ -68,6 +68,7 @@ import { resolveAt, sourceWindow, opaqueReplacesPicture, isFullCanvasPlacement, 
 import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
 import { captionOverlayFields } from './caption-spec.js'
 import { materializeScene3d, Scene3dError, SCENE3D_SRC } from './scene3d.js'
+import { SCENE3D_MAX_WORKERS } from './memory.js'
 import { resolveProjectSrc, resolveDerivedSrc } from './project-paths.js'
 
 /**
@@ -238,6 +239,20 @@ export const SESSION_CLOSE_CAP_MS = 10_000
 export const SHEET_LANES = 4
 /** The lanes for `count` frames: one per three frames, at least 1, at most SHEET_LANES. */
 export const lanesFor = (count) => Math.min(SHEET_LANES, Math.max(1, Math.floor(count / 3)))
+/**
+ * §734: a sheet's lanes when it may draw 3D: at most SCENE3D_MAX_WORKERS, the cap an export of 3D runs under (memory.js). A 3D
+ * shot's page holds its whole scene (85 to 100 MB of text on a real project, more once built), so four at once swamped a Mac.
+ */
+export const sheetLanes = (count, has3d) => (has3d ? Math.min(lanesFor(count), SCENE3D_MAX_WORKERS) : lanesFor(count))
+/** §734: whether a project has a 3D item on any track (engine:scene3d). Unreadable: false, and the sheet keeps its lanes. */
+export function projectHas3d(projectPath) {
+  try {
+    const project = JSON.parse(readFileSync(projectPath, 'utf8'))
+    return trackItems(project).some((track) => (track ?? []).some((item) => item && item.src === SCENE3D_SRC))
+  } catch {
+    return false
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Input manifests
@@ -522,7 +537,7 @@ if (isMain) {
         const outPaths = atArgs.map((_, k) => join(dir, `f_${String(k).padStart(4, '0')}.png`))
         const got = sceneArg !== null
           ? await sampleScenes({ projectJson: resolve(projectArg), scene: sceneArg, times: atArgs, outPaths, sdrCurve: sdrCurveArg, lookAt })
-          : await sampleInSessions({ count: atArgs.length, label: (k) => atArgs[k], lanes: lanesFor(atArgs.length), keepGoing: true, sampleWith: (k, session) => sampleAt(atArgs[k], outPaths[k], session) })
+          : await sampleInSessions({ count: atArgs.length, label: (k) => atArgs[k], lanes: sheetLanes(atArgs.length, projectHas3d(resolve(projectArg))), keepGoing: true, sampleWith: (k, session) => sampleAt(atArgs[k], outPaths[k], session) })
         const failed = got.filter((r) => r.error)
         if (failed.length === got.length) throw failed[0].error
         return {
@@ -2296,7 +2311,7 @@ export async function sampleScenes({ projectJson, scene, times, outPaths, sdrCur
     sampleWith: (k, session) => sampleFrame({ projectJson: alone, projectDir: dirname(projectPath), atSeconds: frames[k] / fps, outPath: outPaths[k], sdrCurve, lookAt, session }),
     ...(newSession ? { newSession } : {}),
     ...(frameTimeoutMs ? { frameTimeoutMs } : {}),
-    lanes: lanesFor(times.length),
+    lanes: sheetLanes(times.length, true),
   })
 }
 

@@ -102,7 +102,10 @@ export async function bundleComponent({ componentPath, props, fps, durationFrame
     ? { offsetX, offsetY, scale, scaleX, scaleY, rotation, opacity, keyframes }
     : null
 
-  writeFileSync(shimPath, generateShim(componentPath, props, fps, durationFrames, bakeGeometry))
+  // §734: big props (a 3D shot's scene) go into the page, not the bundle.
+  const propsJson = shimPropsJson(props)
+  const propsInPage = Buffer.byteLength(propsJson) >= PROPS_IN_PAGE_MIN_BYTES
+  writeFileSync(shimPath, generateShim(componentPath, props, fps, durationFrames, bakeGeometry, { propsJson, propsInPage }))
 
   // Same resolution as every other overlay bundle (overlay-build.js): the
   // carousel renderer and the editor preview (preview-bundle.js) share these
@@ -136,7 +139,7 @@ export async function bundleComponent({ componentPath, props, fps, durationFrame
   const inputs = overlayInputsFromMetafile(result.metafile, options.absWorkingDir, { exclude: [workDir] })
 
   const html = generateHtml(width, height, opaque, googleFonts, fontsBaseDir, [...boundary.urls, ...boundary.onDemandUrls])
-  writeFileSync(htmlPath, html)
+  writeFileSync(htmlPath, propsInPage ? withPropsDataBlock(html, propsJson) : html)
 
   return { htmlPath, workDir, inputs, boundary, needsGoogleFonts: pageNeedsGoogleFonts(html) }
 }
@@ -184,6 +187,39 @@ function rewritePathsToFileUrls(value) {
     return out
   }
   return value
+}
+
+/**
+ * §734: the text of an overlay's props as the shim declares them (absolute paths as file:// URLs, rewritePathsToFileUrls).
+ * One function for the shim and the page's data block, so both carry the same props.
+ */
+export function shimPropsJson(props) {
+  return JSON.stringify(rewritePathsToFileUrls(props))
+}
+
+/**
+ * §734: props whose text is at least this many bytes ride in the page's HTML as a JSON data block (propsDataBlock), not in
+ * the bundle. A 3D shot's props carry its whole scene (render/scene3d.js inlines a by-reference shot: 85 to 100 MB on a real
+ * project), and as a string literal in the shim esbuild parsed every byte of it, once per shot (an 11-shot sample sheet fed
+ * it about 1 GB). The page parses the same text either way. Smaller props stay in the shim exactly as before.
+ */
+export const PROPS_IN_PAGE_MIN_BYTES = 256 * 1024
+export const PROPS_DATA_BLOCK_ID = '__montaj_props'
+
+/**
+ * The page's data block for props text `json` (shimPropsJson's): a <script type="application/json">, which the page never
+ * runs and the CSP never blocks. Every `<` is written as its JSON escape (it can only appear inside a string), so no text in
+ * the props can close the element or start a comment; JSON.parse reads the escape back as `<`.
+ */
+export function propsDataBlock(json) {
+  return `<script type="application/json" id="${PROPS_DATA_BLOCK_ID}">${json.replace(/</g, '\\u003c')}</script>`
+}
+
+/** `html` (generateHtml's) with the props' data block just before the bundle's script, so it is in the page when the shim runs. */
+export function withPropsDataBlock(html, json) {
+  const tag = '<script type="module" src="bundle.js"></script>'
+  if (!html.includes(tag)) throw new Error('the overlay page has no bundle script to put the props before')
+  return html.replace(tag, () => `${propsDataBlock(json)}\n${tag}`)
 }
 
 /**
@@ -238,7 +274,7 @@ function rewritePathsToFileUrls(value) {
 // Exported for test/shim-bake.test.mjs only — nothing else calls it directly.
 // The byte-identity of the un-baked shim is a hard contract, and the only way to
 // pin a contract about generated SOURCE is to read the source.
-export function generateShim(componentPath, props, fps, durationFrames, bakeGeometry = null) {
+export function generateShim(componentPath, props, fps, durationFrames, bakeGeometry = null, { propsJson = null, propsInPage = false } = {}) {
   // `fps` and `durationFrames` are the only values interpolated RAW into the
   // generated JS (everything else goes through JSON.stringify, which quotes and
   // escapes). They originate in project.json — `settings.fps || 30` in
@@ -254,7 +290,9 @@ export function generateShim(componentPath, props, fps, durationFrames, bakeGeom
   durationFrames = durationNum
   // JSON.stringify handles path quoting and props serialisation safely.
   // Rewrite absolute paths → file:// so <img src> resolves in Puppeteer's file:// context
-  const rewrittenProps = rewritePathsToFileUrls(props)
+  // §734: the props' text, made once by the caller (shimPropsJson) or here. Past PROPS_IN_PAGE_MIN_BYTES it rides in the
+  // page's HTML instead (propsDataBlock) and the shim reads it at mount, so esbuild never parses it.
+  const propsText = propsInPage ? null : (typeof propsJson === 'string' ? propsJson : shimPropsJson(props))
   const bakeImport = bakeGeometry
     ? `import { geometryAt } from '@bycrux/timeline-core'\n`
     : ''
@@ -302,7 +340,11 @@ for (const [__k, __v] of Object.entries(__overlayGlobals)) {
 window.React       = React
 window.fps         = ${fps}
 window.duration    = ${durationFrames}
-const __props = ${JSON.stringify(rewrittenProps)}
+${propsInPage
+    ? `const __propsBlock = document.getElementById(${JSON.stringify(PROPS_DATA_BLOCK_ID)})
+const __props = JSON.parse(__propsBlock.textContent)
+__propsBlock.remove()`
+    : `const __props = ${propsText}`}
 window.props       = __props
 window.frame       = 0
 
