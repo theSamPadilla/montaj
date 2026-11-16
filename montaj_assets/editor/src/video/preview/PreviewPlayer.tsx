@@ -627,11 +627,11 @@ function PreviewSurface({
   }, [transportRef, guardedTogglePlay, isPlaying, setRate])
 
   // View in 3D: pointer over the frame, and the topmost 3D item on screen. Overlays paint in track order
-  // (`zIndex = trackIdx + 12`, later in a track on top), so the last match is the topmost.
+  // (`zIndex = trackIdx + 12`, later in a track on top), so the last match is the topmost; track 0's non-video items draw lowest.
   const [frameHovered, setFrameHovered] = useState(false)
   let sceneItem: VisualItem | null = null
   if (onViewScene3d && frameHovered) {
-    for (const trackItems of isCanvasProject ? enabledTrackItems(project) : overlayTracks) {
+    for (const trackItems of isCanvasProject ? enabledTrackItems(project) : [tracks0NonVideo, ...overlayTracks]) {
       for (const it of trackItems) {
         if (isScene3dItem(it) && containsTime(it.start, it.end, currentTime)) sceneItem = it
       }

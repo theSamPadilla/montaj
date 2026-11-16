@@ -33,6 +33,18 @@ beforeEach(() => {
 })
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
+function makeFootageProject(tracks: unknown[][]): Project {
+  return { id: 'p', status: 'draft', settings: { resolution: [1080, 1920], fps: 30 }, tracks } as unknown as Project
+}
+const clip = (id: string, start: number, end: number) => ({ id, type: 'video', src: `${id}.mp4`, start, end, inPoint: 0, outPoint: end - start })
+
+function mountProject(project: Project, t: number, extra: Record<string, unknown> = {}) {
+  const view = render(
+    <PreviewPlayer project={project} clock={createPlaybackClock(t)} compileOverlay={async () => (() => null) as never} fileUrl={(p) => p} {...extra} />,
+  )
+  return { ...view, frame: view.container.querySelector('[data-montaj-preview-frame]') as HTMLElement }
+}
+
 function mount(items: unknown[], t: number, extra: Record<string, unknown> = {}) {
   const view = render(
     <PreviewPlayer
@@ -93,5 +105,23 @@ describe('PreviewPlayer View in 3D', () => {
     expect(onOverlayChange).not.toHaveBeenCalled()
     expect(onEditOverlay).not.toHaveBeenCalled()
     expect(onSelectCaption).not.toHaveBeenCalled()
+  })
+
+  it('finds a 3D item on track 0 between video clips in a footage project', () => {
+    const onViewScene3d = vi.fn()
+    const project = makeFootageProject([[clip('c1', 0, 2), scene('s0', 2, 6), clip('c2', 6, 8)]])
+    const { frame } = mountProject(project, 3.5, { onViewScene3d })
+    fireEvent.pointerEnter(frame)
+    fireEvent.click(screen.getByLabelText('View in 3D'))
+    expect(onViewScene3d).toHaveBeenCalledWith({ itemId: 's0', itemTime: 1.5 })
+  })
+
+  it('prefers a 3D item on an overlay track over one on track 0', () => {
+    const onViewScene3d = vi.fn()
+    const project = makeFootageProject([[clip('c1', 0, 2), scene('s0', 2, 6), clip('c2', 6, 8)], [scene('top', 1, 7)]])
+    const { frame } = mountProject(project, 3.5, { onViewScene3d })
+    fireEvent.pointerEnter(frame)
+    fireEvent.click(screen.getByLabelText('View in 3D'))
+    expect(onViewScene3d).toHaveBeenCalledWith({ itemId: 'top', itemTime: 2.5 })
   })
 })
