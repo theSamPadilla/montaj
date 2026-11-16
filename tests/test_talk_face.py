@@ -4,14 +4,14 @@ The golden clips in fixtures/talk/golden_*.json were made by running the spike t
 audio, so test_equals_golden pins the port to it: every morph and bone key, time and value, and the report. The audio is CMU ARCTIC
 (a0023, English) and a LibriVox reading (Portuguese); both allow redistribution. The rest checks the behaviour the spike's tests did.
 """
-import copy, json, os, unittest
+import copy, json, os, shutil, tempfile, unittest
 from unittest import mock
 
 import numpy as np
 import pytest
 
 from lib.talk import face, prosody, recipes
-from tests.test_talk_reach import make_glb
+from tests.test_talk_reach import add_glb_mesh, make_glb
 
 FIX = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', 'talk')
 EN = ('arctic_a0023', 'en')
@@ -129,6 +129,56 @@ class TongueLift(unittest.TestCase):
         # the lift is the tongue's alone: the face keys are the ones the visemes, moods and gestures make, unchanged by it
         self.assertNotIn('tongueOut', face.GESTURE_KEYS)
         self.assertTrue(all(k in Golden.GOLD[key]['morphs'] for key in self.CASES for k in ('tongueOut', 'jawOpen', 'viseme_DD')))
+
+
+class FullTongue(unittest.TestCase):
+    """A head with the tongue correctives (face.FULL_TONGUE_KEY on any mesh: the Montaj app's version-2 characters, 3D29) holds the
+    tip consonants at full and takes no tongueOut lift, which pushed its tongue into the teeth; every other key and bone is the clip
+    the same head makes without them. Today's heads keep the lift and TONGUE_HOLD (Golden pins them)."""
+    TIP = ('viseme_TH', 'viseme_DD', 'viseme_nn')
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = tempfile.mkdtemp()
+        cls.today_glb = os.path.join(cls.d, 'today.glb'); cls.full_glb = os.path.join(cls.d, 'full.glb')
+        make_glb(cls.today_glb, [{'jaw': [[0, .03, 0]] * 4, 'brow': ([1], [[.004, 0, 0]])}])
+        shutil.copy(cls.today_glb, cls.full_glb); add_glb_mesh(cls.full_glb, ('jawOpen', face.FULL_TONGUE_KEY))
+        cls.today, cls.rep = run(EN, expressive=1, head=cls.today_glb)
+        cls.full, _ = run(EN, expressive=1, head=cls.full_glb)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.d, ignore_errors=True)
+
+    def test_detects_the_key_on_any_mesh(self):
+        self.assertTrue(face.full_tongue(self.full_glb))
+        self.assertFalse(face.full_tongue(self.today_glb))
+        self.assertFalse(face.full_tongue(None))
+        self.assertFalse(face.full_tongue(os.path.join(self.d, 'gone.glb')))  # unreadable: today's head
+
+    def test_no_lift(self):
+        self.assertIn('tongueOut', self.today['morphs'])
+        self.assertNotIn('tongueOut', self.full['morphs'])
+
+    def test_tip_consonants_held_at_full(self):
+        from lib.talk.align import VIS
+        segs = self.rep['segs']; lab = [g for g in segs if g['p'] in ('m', 'b', 'p')]
+        tips = [g for g in segs if VIS.get(g['p'], 'sil') in face.TONGUE_TIP
+                and not any(b['s'] < g['e'] + .08 and b['e'] > g['s'] - .08 for b in lab)]
+        self.assertGreater(len(tips), 3)
+        for g in tips:
+            k = face.TARGET[VIS[g['p']]][0]; tq = np.arange(g['s'] - face.LEAD - .03, g['e'] - face.LEAD + .03, .002)
+            full, today = float(val(self.full, k, tq).max()), float(val(self.today, k, tq).max())
+            # the hold is 1.0 at the contact; keys at KEY_RATE (48 a second) can sample a .03 s pulse up to 10 ms off its peak (.89)
+            self.assertGreater(full, .85, (g, full))
+            self.assertGreater(full, max(today, face.TONGUE_HOLD) + .1, (g, full, today))
+
+    def test_everything_else_is_the_same_clip(self):
+        self.assertEqual(self.full['duration'], self.today['duration'])
+        self.assertEqual(self.full['bones'], self.today['bones'])
+        rest = set(self.today['morphs']) - {'tongueOut', *self.TIP}
+        self.assertEqual(set(self.full['morphs']) - set(self.TIP), rest)
+        for k in rest: self.assertEqual(self.full['morphs'][k], self.today['morphs'][k], k)
 
 
 @pytest.mark.slow  # about 30 s: a dozen builds

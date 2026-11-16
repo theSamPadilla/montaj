@@ -1,5 +1,5 @@
 """How far each face key moves the head at weight 1.0, in mm, read from the head's own morph targets.
-In code: reach(head) -> {key: mm}; weight_for(reach_mm, key, target_mm) -> weight.
+In code: reach(head) -> {key: mm}; weight_for(reach_mm, key, target_mm) -> weight; key_names(head) -> every shape key name on any mesh.
 head is a GLB, or the Montaj app's own model.json (told apart by content). Same number from either, within the app's int16
 quantisation of its shape keys.
 Reach is the p99 of the moved vertices' displacement length (vertices over 1e-5 m), times 1000. Deterministic.
@@ -99,16 +99,22 @@ def _siblings(a, b):
     return n >= 3
 
 
-def _reach_model(path, keys):
+def _load_model(path):
+    """model.json and its folder. A variant that lists no parts of its own wears its base's."""
     with open(path) as f:
         model = json.load(f)
     dirname = os.path.dirname(os.path.abspath(path))
-    if not model.get("parts"):  # a variant that lists no parts of its own wears its base's
+    if not model.get("parts"):
         base = variant_base(model, dirname)
         if base:
             with open(os.path.join(base, "model.json")) as f:
                 bm = json.load(f)
             model = dict(bm, meshes=model.get("meshes") or bm.get("meshes"), variantOf=model.get("variantOf"))
+    return model, dirname
+
+
+def _reach_model(path, keys):
+    model, dirname = _load_model(path)
     rig = os.path.join(dirname, "rig.json")
     placed = 1.0
     if os.path.isfile(rig):
@@ -169,6 +175,20 @@ def reach(head_path, keys=None):
             v = float(np.percentile(mv, 99)) * 1000 if len(mv) else 0.0
             out[k] = max(out.get(k, 0.0), v)
     return out
+
+
+def key_names(head_path):
+    """Every shape key name on any mesh of the head: a GLB's meshes' extras.targetNames, or every mesh part of the app's model.json.
+    reach() reads the face mesh alone; this reads them all, so a key that only the tongue carries is seen."""
+    if _is_glb(head_path):
+        j, _ = load_glb(head_path)
+        return {n for m in j.get("meshes", []) for n in ((m.get("extras") or {}).get("targetNames") or [])}
+    model, dirname = _load_model(head_path)
+    names = set()
+    for p in model.get("parts", []):
+        if p.get("shape") == "mesh" and "mesh" in p:
+            names.update(m["name"] for m in _mesh_data(model, dirname, p["mesh"]).get("morphs") or [])
+    return names
 
 
 def weight_for(reach_mm, key, target_mm, cap=1.0):

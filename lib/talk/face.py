@@ -17,6 +17,7 @@ in any language; only the visemes need a language's rules.
 
 head: the head's GLB, or the app's model.json. Gestures ask for millimetres and the head's own reach per key (reach.py) gives the weight, so ICT and GNM move
   the same distance; moods and beats scale the same way (recipes.weights). Without it, recipes.json's reference_reach_mm (C2, ICT).
+  A head with the tongue correctives (full_tongue) holds the tip consonants at full and takes no tongueOut lift.
 expressive: one knob over the gesture layer: brow flashes, brows down, held lifts, squint and wide pulses, speech's lift of a smile,
   nods, phrase-end drops and tilts, look-aways with the head following, the breath's parted lips. 0 turns that layer off; moods, beats,
   blinks, today's carriage, sway, pitch lift and saccades stay.
@@ -49,6 +50,11 @@ TONGUE_HOLD = .7
 TONGUE_TIP = {'DD', 'nn', 'TH'}
 TONGUE_LIFT = {'DD': .4, 'nn': .45, 'TH': .45}  # tongueOut's peak per tip class: about 5 to 6 mm up on C2 and C3, nothing through the teeth
 TONGUE_RISE, TONGUE_FALL, TONGUE_GAP = .06, .07, .1  # s
+# A head whose tip visemes carry the whole tongue rule, with three tongue correctives the stage drives against the jaw
+# (corr_TH_jawOpen, corr_DD_jawOpen, corr_nn_jawOpen: the Montaj app's version-2 characters, 3D29) has this key. Its tongue reaches
+# its place on the visemes alone, so it gets no lift, and the tip consonants are held at FULL_TONGUE_HOLD (see full_tongue).
+FULL_TONGUE_KEY = 'corr_TH_jawOpen'
+FULL_TONGUE_HOLD = 1.0
 
 LOOKS = ('eyeLookOutLeft', 'eyeLookInRight', 'eyeLookInLeft', 'eyeLookOutRight', 'eyeLookUpLeft', 'eyeLookUpRight', 'eyeLookDownLeft', 'eyeLookDownRight')
 
@@ -118,6 +124,19 @@ def tongue_lift(segs, t):
     n = int(round(TONGUE_GAP / 2 / DT)); win = np.lib.stride_tricks.sliding_window_view
     lift = win(np.pad(win(np.pad(lift, n, mode='edge'), 2 * n + 1).max(1), n, mode='edge'), 2 * n + 1).min(1)
     return smooth(lift, .012, DT)
+
+
+def full_tongue(head):
+    """True when the head (a GLB or the app's model.json) carries FULL_TONGUE_KEY on any mesh. On such a head the lift would push the
+    tip into or past the upper teeth (1 to 6 mm in at the speech's peaks, about 7 mm out on th; 5 to 13 mm in with a viseme at full,
+    measured on C2, C3 and C7). Held at FULL_TONGUE_HOLD instead of TONGUE_HOLD, d, n and l lift the tip to the ridge, and th's tip
+    reaches the teeth where the jaw stays near th's own opening; beside an open vowel it stays low in the open mouth.
+    No head, or one whose keys can't be read, is today's head: lift and TONGUE_HOLD."""
+    if not head: return False
+    try:
+        return FULL_TONGUE_KEY in reach.key_names(head)
+    except (ValueError, KeyError, TypeError, OSError):
+        return False
 
 
 def thin(t, y, tol):
@@ -192,6 +211,7 @@ def build(wav, whisper, lang, moods, gain=1.0, cmudict=None, sigma=70, phrased=T
     for b in beats: recipes.meta(b['beat'], RD)
     if reach_mm is None:
         reach_mm = reach.reach(head_glb) if head_glb else dict(RD['reference_reach_mm'])
+    tongue_full = full_tongue(head_glb)
     EX = max(0., float(expressive))
     wf = lambda key, mm: reach.weight_for(reach_mm, key, mm, cap=1)  # mm asked of this head to its weight
     x = read_wav(wav); F = features(x); N = len(F['e']); dur = len(x) / SR
@@ -453,17 +473,22 @@ def build(wav, whisper, lang, moods, gain=1.0, cmudict=None, sigma=70, phrased=T
         if k in morphs: morphs[k] = morphs[k] * (1 - cl)
 
     # ---- the tongue rides these keys (e1), baked at a fraction of full per key. Only the tip consonants get a short hold, so it shows on T, D, N, L, TH and flicks back; K, G, S, SH, R stay at their blended weight. It should be noticed only when it's missing.
+    # A full-tongue head (full_tongue) holds them at FULL_TONGUE_HOLD and takes no lift.
     tall = np.zeros(T); hold = {}
     for g in segs:
         v = VIS.get(g['p'], 'sil')
         if v in TONGUE_TIP:
             d = g['e'] - g['s']; c0 = g['s'] + .6 * d - LEAD; hw = min(max(.03, .4 * d), .04); w = np.exp(-(np.abs(t - c0) / hw) ** 2); hold[v] = np.maximum(hold.get(v, np.zeros(T)), w); tall = np.maximum(tall, w)
     for v, w in hold.items():
-        k = TARGET[v][0]; morphs[k] = np.maximum(morphs.get(k, np.zeros(T)), TONGUE_HOLD * smooth(w, .006, DT) * (1 - cl))
+        # A full-tongue head's hold reaches FULL_TONGUE_HOLD at the contact: the pulse is smooth already, and smoothing it again took
+        # its peak down to about .85.
+        h = FULL_TONGUE_HOLD * w if tongue_full else TONGUE_HOLD * smooth(w, .006, DT)
+        k = TARGET[v][0]; morphs[k] = np.maximum(morphs.get(k, np.zeros(T)), h * (1 - cl))
     for k in ('viseme_aa', 'viseme_E', 'viseme_I', 'viseme_O', 'viseme_U'):
         if k in morphs: morphs[k] = morphs[k] * (1 - .35 * smooth(tall, .006, DT))
-    # ---- the tongue's own lift (tongue_lift): gives way on m, b and p like the visemes.
-    morphs['tongueOut'] = np.maximum(morphs.get('tongueOut', np.zeros(T)), tongue_lift(segs, t) * (1 - cl))
+    # ---- the tongue's own lift (tongue_lift): gives way on m, b and p like the visemes. None on a full-tongue head.
+    if not tongue_full:
+        morphs['tongueOut'] = np.maximum(morphs.get('tongueOut', np.zeros(T)), tongue_lift(segs, t) * (1 - cl))
 
     # ---- a breath in through parted lips in each pause of .3 s or more before a phrase: mouthLowerDown up to .08 on the reference
     # head (asked as its mm, so every head parts the same), from up to .45 s before the phrase, closing as it starts. The jaw stays

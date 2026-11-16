@@ -189,3 +189,45 @@ class ReachModelJsonTest(unittest.TestCase):
         with self.assertRaises(ValueError): R.reach(p)  # mesh not found
         with open(p, "w") as f: json.dump({"parts": [part("head", "a")], "meshes": {"a": {"count": 1, "morphs": [morph("browInnerUp", [0], [[0, .01, 0]])]}}}, f)
         with self.assertRaises(ValueError): R.reach(p)  # no jawOpen
+
+
+def add_glb_mesh(path, names):
+    """Append a mesh to a GLB that reuses mesh 0's primitives and carries `names` as its targetNames (a tongue beside the face)."""
+    j, bin_ = R.load_glb(path)
+    j["meshes"].append({"primitives": j["meshes"][0]["primitives"], "extras": {"targetNames": list(names)}})
+    j["nodes"].append({"mesh": len(j["meshes"]) - 1})
+    jb = pad4(json.dumps(j).encode(), b" ")
+    with open(path, "wb") as f:
+        f.write(b"glTF" + struct.pack("<II", 2, 12 + 8 + len(jb) + 8 + len(bin_)) + struct.pack("<I", len(jb)) + b"JSON" + jb + struct.pack("<I", len(bin_)) + b"BIN\0" + bin_)
+
+
+class KeyNamesTest(unittest.TestCase):
+    """key_names reads every mesh, where reach reads the face alone: the tongue correctives live on the tongue only."""
+
+    def setUp(self):
+        self.d = tempfile.TemporaryDirectory(); self.addCleanup(self.d.cleanup)
+
+    def test_glb_every_mesh(self):
+        p = os.path.join(self.d.name, "a.glb")
+        make_glb(p, [{"jaw": [[0, 0.01, 0]] * 2, "brow": ([0], [[0.002, 0, 0]])}])
+        self.assertEqual(R.key_names(p), {"jawOpen", "browInnerUp"})
+        add_glb_mesh(p, ("jawOpen", "corr_TH_jawOpen"))
+        self.assertEqual(R.key_names(p), {"jawOpen", "browInnerUp", "corr_TH_jawOpen"})
+        self.assertNotIn("corr_TH_jawOpen", R.reach(p))  # reach stays the face's
+
+    def test_model_json_every_part_and_a_variant(self):
+        skin = {"count": 5000, "morphs": [morph("jawOpen", [0, 1], [[0, .04, 0]] * 2)]}
+        tongue = {"count": 300, "morphs": [morph("jawOpen", [0], [[0, .01, 0]]), morph("corr_TH_jawOpen", [0], [[0, .002, 0]])]}
+        os.makedirs(os.path.join(self.d.name, "base", "meshes")); os.makedirs(os.path.join(self.d.name, "var"))
+        with open(os.path.join(self.d.name, "base", "meshes", "t.json"), "w") as f: json.dump(tongue, f)
+        base = os.path.join(self.d.name, "base", "model.json")
+        with open(base, "w") as f: json.dump({"parts": [part("head_skin", "s"), part("tongue", "t")], "meshes": {"s": skin}}, f)
+        self.assertEqual(R.key_names(base), {"jawOpen", "corr_TH_jawOpen"})
+        self.assertNotIn("corr_TH_jawOpen", R.reach(base))
+        var = os.path.join(self.d.name, "var", "model.json")
+        with open(var, "w") as f: json.dump({"variantOf": "base"}, f)
+        self.assertEqual(R.key_names(var), {"jawOpen", "corr_TH_jawOpen"})  # a variant with no parts wears its base's
+
+    def test_fixtures_have_no_tongue_correctives(self):
+        self.assertEqual(R.key_names(TINY_GLB), {"jawOpen", "browInnerUp"})
+        self.assertEqual(R.key_names(TINY_MODEL), {"jawOpen", "browInnerUp"})
