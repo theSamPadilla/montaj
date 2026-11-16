@@ -155,6 +155,10 @@ def _render_phase_for(line: str) -> str | None:
     nothing about captions: captions starts when captions RENDER, and they render
     last. That is the engine's `rendering <label> (N frames)...` line, whose label
     is `captions` or `captions chunk i/n`."""
+    # A sliced render captures its captions window last in EVERY slice, so a captions line at the end of slice 1
+    # arrives while later slices still bake 3D: each slice's own line puts the phase back to rendering.
+    if re.search(r"slice \d+/\d+ \([^)]*\): capturing ", line):
+        return "rendering"
     if "rendering captions" in line:
         return "captions"
     if "bundling segment" in line or "with Puppeteer" in line:

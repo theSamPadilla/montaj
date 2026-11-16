@@ -85,6 +85,7 @@ def _reserve(job):
     ("[render] bundling segment 65/65 (captions)", "rendering"),
     ("rendering captions (900 frames)...", "captions"),
     ("rendering captions chunk 2/3 (300 frames)...", "captions"),
+    ("[montaj render] slice 2/3 (10.00-20.00s): capturing 4 overlay window(s)", "rendering"),
     ("[montaj render] rendering 66 segment(s) with Puppeteer...", "rendering"),
     ("rendering overlay-0--s15 (73 frames)...", None),
     ("[montaj render] rendering with Puppeteer...", "rendering"),
@@ -154,6 +155,25 @@ def test_detached_render_phase_reflects_last_marker_mid_run(monkeypatch, tmp_pat
 
     assert job.status == "error"
     assert job.phase == "captions"
+
+
+def test_detached_render_phase_returns_to_rendering_at_the_next_slice(monkeypatch, tmp_path):
+    proc = _FakeProc(
+        stderr_lines=[
+            b"[montaj render] slice 1/3 (0.00-10.00s): capturing 4 overlay window(s)\n",
+            b"[montaj render] rendering captions (90 frames)...\n",
+            b"[montaj render] slice 2/3 (10.00-20.00s): capturing 4 overlay window(s)\n",
+        ],
+        returncode=1,
+    )
+    _patch_spawn(monkeypatch, proc)
+    job = _RenderJob()
+    _reserve(job)
+    pp = tmp_path / "project.json"
+
+    asyncio.run(_run_render_detached(PID, ["node", "render.js"], {}, pp, pp, job))
+
+    assert job.phase == "rendering"
 
 
 def test_detached_render_phase_stays_sdr_derive_through_the_sdr_compose(monkeypatch, tmp_path):
