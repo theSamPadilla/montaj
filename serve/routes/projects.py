@@ -138,13 +138,37 @@ class _RenderJob:
     to completion independent of any client connection — a dropped SSE (e.g. the
     Cloudflare tunnel's ~100s wall on a multi-minute render, or a closed tab) must
     NOT abort it. An explicit stop goes through POST /render/cancel."""
-    __slots__ = ("lines", "status", "result", "phase")
+    __slots__ = ("lines", "status", "result", "phase", "baked", "bake_left")
 
     def __init__(self) -> None:
         self.lines: list[str] = []      # accumulated stderr log lines
         self.status: str = "running"    # running | done | error
         self.result: str = ""           # output path (done) or message (error)
         self.phase: str = "preparing"   # preparing | captions | rendering | encoding | done
+        # §737: the bake counter's latest readings (_note_bake_reading), for render_status.
+        self.baked: dict | None = None      # {"done", "total", "at"}: the last `baked n/total frames` line
+        self.bake_left: dict | None = None  # {"sec", "at"}: the last `bake left <s> s` line
+
+
+_BAKED_RE = re.compile(r"\bbaked (\d+)/(\d+) frames\b")
+_BAKE_LEFT_RE = re.compile(r"\bbake left (\d+) s\b")
+
+
+def _note_bake_reading(job: "_RenderJob", line: str, now_ms: int) -> None:
+    """§737: keep the bake counter's latest `baked n/total frames` and `bake left <s> s`
+    readings (renderer.js), each with the time serve read it (`at`, epoch ms). A client
+    that follows a render by status, because its stream dropped (a Mac going to sleep
+    drops every request) or it never held one, then sees the bake move and its time
+    left, not only the phase."""
+    m = _BAKED_RE.search(line)
+    if m:
+        done, total = int(m.group(1)), int(m.group(2))
+        if total > 0 and 0 <= done <= total:
+            job.baked = {"done": done, "total": total, "at": now_ms}
+        return
+    m = _BAKE_LEFT_RE.search(line)
+    if m:
+        job.bake_left = {"sec": int(m.group(1)), "at": now_ms}
 
 
 def _render_phase_for(line: str) -> str | None:
@@ -354,6 +378,7 @@ async def _run_render_detached(project_id: str, cmd: list[str], env: dict,
             if text:
                 job.lines.append(text)
                 _echo_render_line(project_id, text, echo_state)
+                _note_bake_reading(job, text, int(time.time() * 1000))
                 p = _render_phase_for(text)
                 # sdr_derive is the last phase before done. The SDR rendition
                 # is a compose of its own (PV42), so its "concatenating" line
@@ -6444,6 +6469,14 @@ async def render_status(project_id: str, project_dir: Path = Depends(get_project
     if job is None:
         return {"status": "idle"}
     out = {"status": job.status, "phase": job.phase}
+    if job.status == "running":
+        # §737: the bake counter's latest readings, each with `ageMs` (how long ago serve
+        # read it, so a caller needs no clock of serve's) beside `at` (which reading it is).
+        now_ms = int(time.time() * 1000)
+        if job.baked is not None:
+            out["baked"] = {**job.baked, "ageMs": max(0, now_ms - job.baked["at"])}
+        if job.bake_left is not None:
+            out["bakeLeft"] = {**job.bake_left, "ageMs": max(0, now_ms - job.bake_left["at"])}
     if job.status == "done":
         # --export both prints two stdout lines (master, then derived SDR
         # sibling); outputPaths carries the full list, outputPath stays the

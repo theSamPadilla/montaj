@@ -537,3 +537,82 @@ def test_sse_done_event_carries_only_first_output_path(tmp_path, monkeypatch):
 
     chunk = asyncio.run(_first_done_chunk())
     assert chunk == "event: done\ndata: /out/master.mp4\n\n"
+
+
+# ---------------------------------------------------------------------------
+# §737: the bake counter's latest readings reach render_status
+# ---------------------------------------------------------------------------
+
+from serve.routes.projects import _note_bake_reading
+
+
+def test_note_bake_reading_keeps_the_latest_counter_and_time_left():
+    job = _RenderJob()
+    # The engine's own lines (renderer.js), as serve reads them from render.js's stderr.
+    _note_bake_reading(job, "[montaj render] baked 33/660 frames", 1000)
+    _note_bake_reading(job, "[montaj render] bake left 134 s", 1001)
+    _note_bake_reading(job, "[montaj render] baked 40/660 frames", 2000)
+    assert job.baked == {"done": 40, "total": 660, "at": 2000}
+    assert job.bake_left == {"sec": 134, "at": 1001}
+    # Not readings: a progress bar, a chunk line, an impossible count, an empty total.
+    for line in [
+        "[montaj render]   overlay-0--shot-s02   10%|██   | 3/30 [00:00<00:05]",
+        "[montaj render] 3d chunk overlay-0--shot-s02: 30 frames x1 in 6378 ms (lanes 1)",
+        "[montaj render] baked 700/660 frames",
+        "[montaj render] baked 0/0 frames",
+        "half-baked 3/4 framesets",
+    ]:
+        _note_bake_reading(job, line, 9999)
+    assert job.baked == {"done": 40, "total": 660, "at": 2000}
+    assert job.bake_left == {"sec": 134, "at": 1001}
+
+
+def test_detached_render_records_bake_readings(monkeypatch, tmp_path):
+    proc = _FakeProc(
+        stderr_lines=[
+            b"[montaj render] bundling segment 1/2 (overlay-1)...\n",
+            b"[montaj render] baked 33/660 frames\n",
+            b"[montaj render] bake left 134 s\n",
+            b"[montaj render] baked 60/660 frames\n",
+        ],
+        returncode=1,
+    )
+    _patch_spawn(monkeypatch, proc)
+    monkeypatch.setattr(projects_mod.time, "time", lambda: 1_763_330_411.5)
+    job = _RenderJob()
+    _reserve(job)
+    pp = tmp_path / "project.json"
+
+    asyncio.run(_run_render_detached(PID, ["node", "render.js"], {}, pp, pp, job))
+
+    assert job.baked == {"done": 60, "total": 660, "at": 1_763_330_411_500}
+    assert job.bake_left == {"sec": 134, "at": 1_763_330_411_500}
+
+
+def test_render_status_running_carries_the_bake_readings_with_their_age(monkeypatch, tmp_path):
+    job = _RenderJob()
+    job.phase = "rendering"
+    job.baked = {"done": 330, "total": 660, "at": 100_000}
+    job.bake_left = {"sec": 60, "at": 98_000}
+    projects_mod._render_jobs[PID] = job
+    monkeypatch.setattr(projects_mod.time, "time", lambda: 102.5)
+
+    out = asyncio.run(render_status(PID, project_dir=tmp_path))
+    assert out == {
+        "status": "running", "phase": "rendering",
+        "baked": {"done": 330, "total": 660, "at": 100_000, "ageMs": 2_500},
+        "bakeLeft": {"sec": 60, "at": 98_000, "ageMs": 4_500},
+    }
+    # The job's own readings are not changed by a poll.
+    assert job.baked == {"done": 330, "total": 660, "at": 100_000}
+
+
+def test_render_status_done_and_error_carry_no_bake_readings(tmp_path):
+    for status, result in (("done", "/p/output/x.mp4"), ("error", "Render failed (exit 1)")):
+        job = _RenderJob()
+        job.status, job.phase, job.result = status, "done" if status == "done" else "rendering", result
+        job.baked = {"done": 660, "total": 660, "at": 1}
+        job.bake_left = {"sec": 0, "at": 1}
+        projects_mod._render_jobs[PID] = job
+        out = asyncio.run(render_status(PID, project_dir=tmp_path))
+        assert "baked" not in out and "bakeLeft" not in out, status
