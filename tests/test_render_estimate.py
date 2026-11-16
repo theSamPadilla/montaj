@@ -158,6 +158,9 @@ def test_argv_is_the_renders_argv_plus_estimate(tmp_path, monkeypatch):
     cmd = list(captured["cmd"])
     i = cmd.index("--speech-set")
     del cmd[i:i + 2]
+    # The render's node also gets a heap sized to the machine (--max-old-space-size, e8d8c7f6); the estimate is a
+    # small plan and keeps Node's default heap. Node's own flags are not the render's arguments.
+    cmd = [a for a in cmd if not a.startswith("--max-old-space-size=")]
     assert calls[0]["argv"] == cmd + ["--estimate"]
 
 
