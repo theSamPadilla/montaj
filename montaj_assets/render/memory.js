@@ -10,6 +10,16 @@
  * 1.5 GB (24 workers on 36 GB), so it never bound, and a 3D worker holds far
  * more than a 2D one.
  *
+ * §737: a 3D render's SECOND lane is lazy. The first reading at the start no
+ * longer fixes a render at one lane for its life (a Mac busy for a minute then
+ * cost 44 minutes for 73 shots at one at a time): renderer.js starts one
+ * browser, and the second lane's browser launches only when that lane's first
+ * chunk is admitted (admitsSecond3dLane), re-checked before each of its
+ * chunks. It needs free memory above the reserve, macOS's memory pressure at
+ * normal and swap not growing past SWAP_GROWTH_MAX_BYTES since the render
+ * began: free memory alone does not see a machine that is already swapping.
+ * Anything unreadable keeps one lane.
+ *
  * Every budget is here, with what it is calibrated against.
  */
 import os from 'os'
@@ -117,6 +127,12 @@ export const SCENE3D_TEXTURE_COPIES = 1 + 4 / 3
 /** Decoded over encoded bytes for a texture whose header gives no size (a 4K photo JPEG is about 10x; a PNG less). */
 export const TEXTURE_UNKNOWN_EXPANSION = 8
 
+/**
+ * §737: a second 3D lane is held back once swap in use has grown by this much since the render began. PROVISIONAL until
+ * measured: §737 T6's measurement sets it.
+ */
+export const SWAP_GROWTH_MAX_BYTES = 1 * GB
+
 /** How often a held-back worker reads the memory again. */
 export const GOVERNOR_POLL_MS = 3000
 /**
@@ -188,6 +204,77 @@ export function availableMemoryBytes({
     bytes = null
   }
   return Number.isFinite(bytes) && bytes >= 0 ? bytes : freemem()
+}
+
+// ---------------------------------------------------------------------------
+// Memory pressure and swap (§737)
+// ---------------------------------------------------------------------------
+
+/** macOS's memory pressure level from `sysctl -n kern.memorystatus_vm_pressure_level` (1 normal, 2 warn, 4 critical), or null. */
+export function parsePressureLevel(text) {
+  if (typeof text !== 'string') return null
+  const m = /^\s*(\d+)\s*$/.exec(text)
+  return m ? Number(m[1]) : null
+}
+
+/**
+ * Swap from `sysctl -n vm.swapusage`: `total = 2048.00M  used = 1503.25M  free = 544.75M  (encrypted)`, units K, M, G or T
+ * (binary). `{ swapTotalBytes, swapUsedBytes }`, or null when the text is not that.
+ */
+export function parseSwapUsage(text) {
+  if (typeof text !== 'string') return null
+  const unit = { K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 }
+  const field = (label) => {
+    const m = new RegExp(`\\b${label}\\s*=\\s*(\\d+(?:\\.\\d+)?)([KMGT])`).exec(text)
+    return m ? Number(m[1]) * unit[m[2]] : null
+  }
+  const swapTotalBytes = field('total'), swapUsedBytes = field('used')
+  if (swapTotalBytes === null || swapUsedBytes === null) return null
+  return { swapTotalBytes: Math.round(swapTotalBytes), swapUsedBytes: Math.round(swapUsedBytes) }
+}
+
+function runSysctl(name) {
+  const r = spawnSync('/usr/sbin/sysctl', ['-n', name], { encoding: 'utf8', timeout: 2000 })
+  return r.status === 0 ? r.stdout : null
+}
+
+/**
+ * The machine's memory pressure and swap now: `{ level, swapUsedBytes, swapTotalBytes }`. Each is null when it cannot be
+ * read, and all are null off macOS.
+ */
+export function readMemoryPressure({ platform = process.platform, sysctl = runSysctl } = {}) {
+  const none = { level: null, swapUsedBytes: null, swapTotalBytes: null }
+  if (platform !== 'darwin') return none
+  try {
+    const swap = parseSwapUsage(sysctl('vm.swapusage'))
+    return {
+      level: parsePressureLevel(sysctl('kern.memorystatus_vm_pressure_level')),
+      swapUsedBytes: swap?.swapUsedBytes ?? null,
+      swapTotalBytes: swap?.swapTotalBytes ?? null,
+    }
+  } catch {
+    return none
+  }
+}
+
+/**
+ * Why a second 3D lane may not run now, or null when it may: free memory above the reserve for one more worker, memory
+ * pressure normal (1), and swap grown by less than SWAP_GROWTH_MAX_BYTES since the render began. A missing reading is a
+ * refusal: one lane is the safe path.
+ */
+export function secondLaneRefusal({ available, reserve, perWorker, pressure, swapUsedAtStart, swapUsedNow }) {
+  const num = (v) => typeof v === 'number' && Number.isFinite(v)
+  if (![available, reserve, perWorker, pressure, swapUsedAtStart, swapUsedNow].every(num)) return 'a reading is unavailable'
+  if (available - reserve < perWorker) return `memory: available=${gb(available)} reserve=${gb(reserve)} perWorker=${gb(perWorker)}`
+  if (pressure !== 1) return `memory pressure ${pressure}`
+  const grown = swapUsedNow - swapUsedAtStart
+  if (grown >= SWAP_GROWTH_MAX_BYTES) return `swap grew ${gb(grown)}`
+  return null
+}
+
+/** Whether a second 3D lane may run now (secondLaneRefusal). */
+export function admitsSecond3dLane(args) {
+  return secondLaneRefusal(args) === null
 }
 
 // ---------------------------------------------------------------------------
@@ -419,6 +506,10 @@ const sleepFor = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
  * `graceMs` ago (GOVERNOR_ADMIT_GRACE_MS) is counted as holding its share on
  * top of the reading.
  *
+ * §737: `admitExtra(name, readAdjusted)` is a further check a worker passes before it takes a chunk, whether or not it is
+ * alone: it returns null to admit, or a reason to wait (its caller logs it). `readAdjusted()` is the memory available less
+ * the share of workers let in lately.
+ *
  * @param {{ perWorkerBytes: number, reserveBytes: number, readAvailable?: () => number,
  *           sleep?: (ms: number) => Promise<void>, pollMs?: number, log?: (msg: string) => void,
  *           now?: () => number, graceMs?: number }} opts
@@ -426,7 +517,7 @@ const sleepFor = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 export function createMemoryGovernor({
   perWorkerBytes, reserveBytes: reserve, readAvailable = availableMemoryBytes,
   sleep = sleepFor, pollMs = GOVERNOR_POLL_MS, log = () => {},
-  now = Date.now, graceMs = GOVERNOR_ADMIT_GRACE_MS,
+  now = Date.now, graceMs = GOVERNOR_ADMIT_GRACE_MS, admitExtra = null,
 }) {
   let running = 0
   // When each worker rendering now was let in, by its name.
@@ -446,10 +537,17 @@ export function createMemoryGovernor({
       let waited = false
       for (;;) {
         if (!more()) return false
-        if (running === 0) break
-        const available = readAvailable(), fresh = justStarted()
-        if (available - fresh * perWorkerBytes >= reserve + perWorkerBytes) break
-        if (!waited) {
+        let read = null
+        const readOnce = () => (read ??= readAvailable())
+        const fresh = justStarted()
+        const refusal = admitExtra ? admitExtra(name, () => readOnce() - fresh * perWorkerBytes) : null
+        if (refusal === null) {
+          if (running === 0) break
+          if (readOnce() - fresh * perWorkerBytes >= reserve + perWorkerBytes) break
+        }
+        const available = readOnce()
+        if (refusal !== null) waited = true
+        else if (!waited) {
           log(`${name}: waiting for memory: available=${gb(available)} reserve=${gb(reserve)} perWorker=${gb(perWorkerBytes)} rendering=${running} justStarted=${fresh}`)
           waited = true
         }

@@ -14,6 +14,7 @@ import {
   parseVmStat, parseMeminfo, availableMemoryBytes, imageSize, scene3dFootprint, workerFootprint, planWorkers,
   createMemoryGovernor, GOVERNOR_ADMIT_GRACE_MS, reserveBytes, isScene3dSegment, captureWorkerBytes, PER_WORKER_BYTES, PER_WORKER_MIN_BYTES, SCENE3D_BASE_BYTES, SCENE3D_MAX_WORKERS,
   SCENE3D_TEXT_FACTOR, SCENE3D_TEXTURE_COPIES, SCENE3D_UNKNOWN_BYTES, TEXTURE_UNKNOWN_EXPANSION,
+  parsePressureLevel, parseSwapUsage, readMemoryPressure, admitsSecond3dLane, SWAP_GROWTH_MAX_BYTES,
 } from '../memory.js'
 
 const GB = 1e9
@@ -360,4 +361,52 @@ test('governor (§394): a release frees that worker\'s share, by its name', asyn
   g.release('worker 1')
   clock.wake(); await turns()
   assert.equal(third.done, true)
+})
+
+// --- §737: memory pressure, swap and the second 3D lane ---------------------
+
+test('parsePressureLevel: the level sysctl prints, and null for anything else', () => {
+  assert.equal(parsePressureLevel('1\n'), 1)
+  assert.equal(parsePressureLevel('2'), 2)
+  assert.equal(parsePressureLevel('4\n'), 4)
+  for (const bad of ['', 'normal', '1 2', null, undefined, 7]) assert.equal(parsePressureLevel(bad), null, String(bad))
+})
+
+test('parseSwapUsage: vm.swapusage in M and in G, and garbage is null', () => {
+  const MiB = 1024 ** 2
+  assert.deepEqual(parseSwapUsage('total = 2048.00M  used = 1503.25M  free = 544.75M  (encrypted)\n'),
+    { swapTotalBytes: 2048 * MiB, swapUsedBytes: 1503.25 * MiB })
+  assert.deepEqual(parseSwapUsage('total = 12.00G  used = 8.14G  free = 3.86G  (encrypted)'),
+    { swapTotalBytes: 12 * 1024 * MiB, swapUsedBytes: Math.round(8.14 * 1024 * MiB) })
+  assert.deepEqual(parseSwapUsage('total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)'), { swapTotalBytes: 0, swapUsedBytes: 0 })
+  for (const bad of ['', 'garbage', 'total = lots  used = some', 'total = 2048.00M', null, undefined]) assert.equal(parseSwapUsage(bad), null, String(bad))
+})
+
+test('readMemoryPressure: reads both sysctls on macOS, null for what it cannot read, all null elsewhere', () => {
+  const out = { 'vm.swapusage': 'total = 2048.00M  used = 1024.00M  free = 1024.00M  (encrypted)', 'kern.memorystatus_vm_pressure_level': '2\n' }
+  assert.deepEqual(readMemoryPressure({ platform: 'darwin', sysctl: (n) => out[n] }),
+    { level: 2, swapUsedBytes: 1024 * 1024 ** 2, swapTotalBytes: 2048 * 1024 ** 2 })
+  assert.deepEqual(readMemoryPressure({ platform: 'darwin', sysctl: () => null }), { level: null, swapUsedBytes: null, swapTotalBytes: null })
+  assert.deepEqual(readMemoryPressure({ platform: 'darwin', sysctl: () => { throw new Error('no') } }), { level: null, swapUsedBytes: null, swapTotalBytes: null })
+  for (const platform of ['linux', 'win32']) {
+    assert.deepEqual(readMemoryPressure({ platform, sysctl: () => { throw new Error('never run') } }), { level: null, swapUsedBytes: null, swapTotalBytes: null })
+  }
+})
+
+test('admitsSecond3dLane: memory above the reserve, pressure normal and swap growth under the limit, all at once', () => {
+  const GB = 1e9
+  assert.equal(SWAP_GROWTH_MAX_BYTES, 1 * GB)
+  const ok = { available: 20 * GB, reserve: 9 * GB, perWorker: 4.7 * GB, pressure: 1, swapUsedAtStart: 2 * GB, swapUsedNow: 2 * GB }
+  assert.equal(admitsSecond3dLane(ok), true)
+  assert.equal(admitsSecond3dLane({ ...ok, available: 13.7 * GB }), true, 'exactly reserve + one worker')
+  assert.equal(admitsSecond3dLane({ ...ok, available: 13.6 * GB }), false, 'memory short')
+  assert.equal(admitsSecond3dLane({ ...ok, pressure: 2 }), false, 'warn')
+  assert.equal(admitsSecond3dLane({ ...ok, pressure: 4 }), false, 'critical')
+  assert.equal(admitsSecond3dLane({ ...ok, swapUsedNow: 2.9 * GB }), true, 'swap grew less than 1 GB')
+  assert.equal(admitsSecond3dLane({ ...ok, swapUsedNow: 3 * GB }), false, 'swap grew 1 GB')
+  assert.equal(admitsSecond3dLane({ ...ok, swapUsedNow: 1 * GB }), true, 'swap shrank')
+  for (const key of Object.keys(ok)) {
+    assert.equal(admitsSecond3dLane({ ...ok, [key]: null }), false, `${key} null`)
+    assert.equal(admitsSecond3dLane({ ...ok, [key]: undefined }), false, `${key} undefined`)
+  }
 })

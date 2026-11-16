@@ -17,7 +17,7 @@ import { FFMPEG } from './ffmpeg-bin.js'
 import { ffmpegErrorTail, describeFfmpegExit } from './ffmpeg-error.js'
 import { childKilledError, isChildKilled, syncResultError, CHILD_KILLED_PHASES } from './child-killed.js'
 import { adaptiveChunkSize } from './chunk-plan.js'
-import { availableMemoryBytes, workerFootprint, planWorkers, planWorkers2d, createMemoryGovernor, gb, isScene3dSegment, SCENE3D_MAX_WORKERS, SCENE3D_MAX_CHUNK_FRAMES } from './memory.js'
+import { availableMemoryBytes, workerFootprint, planWorkers, planWorkers2d, createMemoryGovernor, readMemoryPressure, secondLaneRefusal, gb, isScene3dSegment, SCENE3D_MAX_WORKERS, SCENE3D_MAX_CHUNK_FRAMES } from './memory.js'
 import { defaultWorkerTarget, ffmpegThreads } from './load.js'
 import { createPlaybackThrottle, sharedPlaybackWatcher } from './playback.js'
 import { toFileHref } from './file-url.js'
@@ -343,7 +343,18 @@ export async function renderAllSegments(segments, config = {}) {
     log(`reused ${chunkLabel(job)} (${jobsDone}/${jobs.length} done)`)
   }
   if (queue.length === 0) return assemble()
-  const launched = Math.min(workerCount, queue.length)
+  // §737: with 3D jobs left, a render plans SCENE3D_MAX_WORKERS lanes whatever the first memory reading, but starts ONE
+  // browser: the second lane's launches when its first chunk is admitted (admitsSecond3dLane, below).
+  const lazyLanes = memory.has3d && queue.some(isScene3dSegment) && Math.min(memory.asked, SCENE3D_MAX_WORKERS, queue.length) > 1
+  const lanes = lazyLanes ? Math.min(memory.asked, SCENE3D_MAX_WORKERS, queue.length) : Math.min(workerCount, queue.length)
+  const launched = lazyLanes ? 1 : lanes
+  const readPressure = config.memory?.readMemoryPressure ?? readMemoryPressure
+  let swapUsedAtStart = null
+  if (lazyLanes) {
+    const p = readPressure()
+    swapUsedAtStart = p.swapUsedBytes
+    log(`3d lanes: up to ${lanes} (available=${gb(memory.availableBytes)} reserve=${gb(memory.reserveBytes)} perWorker=${gb(memory.perWorkerBytes)} pressure=${p.level ?? 'unknown'} swap=${p.swapUsedBytes == null ? 'unknown' : gb(p.swapUsedBytes)})`)
+  }
 
   log(`launching ${launched} browser worker(s) for ${queue.length} job(s)...`)
 
@@ -373,8 +384,22 @@ export async function renderAllSegments(segments, config = {}) {
   // and waits while its chunk would take the machine below the reserve
   // (memory.js). A worker alone never waits; a chunk in flight is never
   // stopped. A 2D-only render never waits, as in 1.3.10 (planWorkers2d).
+  // §737: a lane past the first also passes admitsSecond3dLane before every chunk, and says once why it waits.
+  let widened = !memory.has3d
+  let laneWaitLogged = false
+  const admitExtra = (name, readAdjusted) => {
+    if (widened || name === 'worker 0') return null
+    const p = readPressure()
+    const refusal = secondLaneRefusal({
+      available: readAdjusted(), reserve: memory.reserveBytes, perWorker: memory.perWorkerBytes,
+      pressure: p.level, swapUsedAtStart, swapUsedNow: p.swapUsedBytes,
+    })
+    if (refusal !== null && !laneWaitLogged) { laneWaitLogged = true; log(`3d lane 2: waits for memory (${refusal})`) }
+    return refusal
+  }
   const governor = memory.has3d
     ? createMemoryGovernor({
+      admitExtra,
       perWorkerBytes: memory.perWorkerBytes,
       reserveBytes:   memory.reserveBytes,
       readAvailable:  config.memory?.readAvailable ?? availableMemoryBytes,
@@ -397,7 +422,6 @@ export async function renderAllSegments(segments, config = {}) {
   // browsers are launched, up to what a 2D-only render of them would run
   // (planWorkers2d), and the governor stops holding workers back.
   let running3d = 0
-  let widened = !memory.has3d
   const gate = {
     acquire: (name, more) => (widened ? Promise.resolve(more()) : governor.acquire(name, more)),
     release: (name) => { if (!widened) governor.release(name) },
@@ -423,11 +447,11 @@ export async function renderAllSegments(segments, config = {}) {
     widened = true
     const target = planWorkers2d({ target: targetWorkers, jobs: queue.length, totalBytes: memory.totalBytes }).workers
     // Every worker the render started is still in its loop while jobs are left.
-    const extra = target - launched
+    const extra = target - lanes
     if (extra <= 0) return
     log(`3d done: ${extra} more worker(s) for the ${queue.length} 2d job(s) left (${target} in all)`)
     for (let i = 0; i < extra; i++) {
-      const idx = launched + i
+      const idx = lanes + i
       runs.push((async () => {
         let browser
         try {
@@ -443,7 +467,7 @@ export async function renderAllSegments(segments, config = {}) {
     }
   }
   const runWorker = async (worker, workerIdx) => {
-      let current = worker
+      let current = worker // null for a lane whose browser launches with its first chunk (§737)
       let jobsOnThisBrowser = 0
       try {
       for (;;) {
@@ -454,6 +478,20 @@ export async function renderAllSegments(segments, config = {}) {
         const job = queue.shift()
         // Another worker can take the last job between the acquire and here.
         if (!job) { gate.release(`worker ${workerIdx}`); break }
+        if (!current) {
+          log(`3d lane ${workerIdx + 1}: starts`)
+          try {
+            current = await launchWorker({ needsGoogleFonts, gpuCompositing: compositesOnGpu(job) })
+          } catch (err) {
+            // The chunk goes back for the other lane.
+            queue.unshift(job)
+            gate.release(`worker ${workerIdx}`)
+            log(`worker ${workerIdx}: could not launch (${err?.message ?? err}); the others carry on`)
+            break
+          }
+          current.gpuCompositing ??= compositesOnGpu(job)
+          live.add(current)
+        }
         const is3d = isScene3dSegment(job)
         if (is3d) running3d++
         // §392(c): captions run on a browser that composites in software,
@@ -510,14 +548,17 @@ export async function renderAllSegments(segments, config = {}) {
         }
         throw err
       } finally {
-        live.delete(current)
-        await current.close().catch(() => {})
+        if (current) {
+          live.delete(current)
+          await current.close().catch(() => {})
+        }
       }
   }
   // §737: with every 3D chunk reused, the 2D jobs left start at the 2D worker count, as they would once the last 3D
   // chunk rendered (§392).
   if (reusedPaths.size > 0) await widen()
   runs.push(...workers.map((worker, workerIdx) => runWorker(worker, workerIdx)))
+  for (let idx = launched; idx < lanes; idx++) runs.push(runWorker(null, idx))
   // A worker widen() adds joins `runs` while the first ones run: settle every one.
   const settled = []
   for (let k = 0; k < runs.length;) {
