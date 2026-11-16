@@ -4,7 +4,8 @@
 // line the app's export bar moves on between whole chunks.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createBakeProgress, renderAllSegments } from '../renderer.js'
+import { createBakeProgress, renderAllSegments, chunkJobs } from '../renderer.js'
+import { createBakeTally } from '../bake-tally.js'
 
 test('one line per whole percent, ending at the total', () => {
   const lines = []
@@ -114,4 +115,83 @@ test('two 3D lanes: the chunk line says lanes 2 and bake left divides the queued
 test('a motion-blur 3D chunk names its subframes', async () => {
   const lines = await run([stage('a')], () => 5000, { motionBlur: 4 })
   assert.ok(lines.includes('3d chunk a: 10 frames x4 in 5000 ms (lanes 1)'))
+})
+
+// --- seeds, whole-render tally, lane arithmetic (§737) -------------------------
+
+test('with the app\'s seeds, bake left speaks from the first 3D frames, before any caption has been timed', async () => {
+  const segs = [stage('a'), stage('b'), stage('c'), ...Array.from({ length: 10 }, (_, i) => flat(`t${i}`))]
+  const lines = await run(segs, (j) => (j.scene3d ? 30000 : 1000), { estimateRates: { ms3dPerChunk: 30000, ms2dPerFrame: 100 } })
+  const first = at(lines, (l) => l.startsWith('bake left '))
+  assert.ok(first >= 0 && first < at(lines, (l) => l.startsWith('encoded t0 ')), 'before the first caption job ends')
+  assert.ok(first < at(lines, (l) => l.startsWith('3d chunk b')), 'during the 3D bake')
+  // a in flight (30 s) + b, c queued on one lane (60 s) + 100 caption frames x 100 ms.
+  assert.equal(lines[first], 'bake left 100 s')
+})
+
+test('a seed covers only a kind that has not been measured; a kind with work left and no seed stays silent', async () => {
+  const segs = [stage('a'), flat('t0')]
+  const lines = await run(segs, (j) => (j.scene3d ? 30000 : 1000), { estimateRates: { ms3dPerChunk: 30000, ms2dPerFrame: 100 } })
+  assert.equal(left(lines)[0], 'bake left 31 s')
+})
+
+test('two slices share one tally: the first call counts the second call\'s 3D chunks', async () => {
+  const first = [stage('a'), stage('b')], second = [stage('c'), stage('d')]
+  const cfg = { workers: 1, chunkSize: 1000 }
+  const bakeTally = createBakeTally([...chunkJobs(first, cfg).jobs, ...chunkJobs(second, cfg).jobs])
+  const bakeProgress = createBakeProgress({ total: 40, log: () => {} })
+  const shared = { bakeTally, bakeProgress, estimateRates: { ms3dPerChunk: 30000, ms2dPerFrame: 100 } }
+  const l1 = await run(first, () => 30000, shared)
+  // a in flight (30 s) + b queued + the second call's two chunks: 4 x 30 s.
+  assert.equal(left(l1)[0], 'bake left 120 s')
+  const l2 = await run(second, () => 30000, shared)
+  assert.equal(bakeTally.left3d, 0)
+  assert.ok(left(l2).length > 0)
+  // c in flight (30 s) + d queued, both counted from the shared tally.
+  assert.equal(left(l2)[0], 'bake left 60 s')
+})
+
+test('8 equal caption jobs in flight add one job\'s time left, not eight', async () => {
+  const segs = Array.from({ length: 8 }, (_, i) => flat(`t${i}`))
+  let started = 0
+  let release
+  const allStarted = new Promise((r) => { release = r })
+  const lines = await run(segs, () => 4000, {
+    workers: 8, estimateRates: { ms3dPerChunk: 1, ms2dPerFrame: 400 },
+    // Every job waits for all eight to be in flight before its first frame, so the first line sees them side by side.
+    renderJob: async (_w, job, { onFrame }) => {
+      if (++started === 8) release()
+      await allStarted
+      for (let f = job.frameStart; f < job.frameEnd; f++) onFrame()
+      return { webmPath: job.outputPath }
+    },
+  })
+  // 10 frames x 400 ms seed = 4 s per job; all 8 in flight at elapsed 0 (fake clock), none queued: 4 s, not 32 s.
+  assert.equal(left(lines)[0], 'bake left 4 s')
+})
+
+test('one queued chunk with two idle lanes counts one chunk, not half', async () => {
+  const segs = [stage('a'), stage('b')]
+  const calm = () => ({ level: 1, swapUsedBytes: 1 * GB, swapTotalBytes: 4 * GB })
+  const lines = await run(segs, () => 30000, {
+    workers: 2, tickMs: 10, estimateRates: { ms3dPerChunk: 30000, ms2dPerFrame: 1 },
+    memory: { readAvailable: () => 30 * GB, totalBytes: 36 * GB, pollMs: 1, readMemoryPressure: calm },
+  })
+  // a in flight, b queued, one lane active when the first line is logged: 30 s + 30 s.
+  assert.equal(left(lines)[0], 'bake left 60 s')
+})
+
+test('a parked second lane stops halving the queued 3D time', async () => {
+  const segs = Array.from({ length: 6 }, (_, i) => stage(`s${i}`))
+  let reads = 0
+  const pressure = () => ({ level: ++reads <= 2 ? 1 : 2, swapUsedBytes: 1 * GB, swapTotalBytes: 4 * GB })
+  const lines = await run(segs, () => 30000, {
+    workers: 2, tickMs: 10, estimateRates: { ms3dPerChunk: 30000, ms2dPerFrame: 1 },
+    memory: { readAvailable: () => 30 * GB, totalBytes: 36 * GB, pollMs: 1, readMemoryPressure: pressure },
+  })
+  const waits = at(lines, (l) => l.startsWith('3d lane 2: waits'))
+  assert.ok(waits > 0)
+  const after = left(lines.slice(waits))
+  // Measured mean (30 + 60 + 60) / 3 = 50 s (the fake clock is shared by both lanes); s3 in flight, s4 and s5 queued on ONE lane.
+  assert.equal(after[0], 'bake left 150 s')
 })

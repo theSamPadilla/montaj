@@ -138,6 +138,21 @@ test('one bake counter, sized over every slice, is passed to every capture', asy
   assert.equal(caps[0].config.motionBlur, 2)
 })
 
+test('with chunkJobs, one bake tally built from every slice\'s jobs is passed to every capture (§737)', async () => {
+  const w = world()
+  const chunkJobs = (specs) => ({ jobs: specs.map((s) => ({ frameStart: 0, frameEnd: s.frameTo - s.frameFrom, scene3d: !!s.scene3d })) })
+  await runSlices({
+    plans: [planOf('main', [0, 5, 10])], slices: [{ start: 0, end: 5 }, { start: 5, end: 10 }],
+    specs: [{ ...spec('a', 0, 10), scene3d: true }, spec('b', 6, 8)], segDir: SEG, fps: FPS, ...w,
+    captureConfig: { workers: 1 }, bakeTotal: () => 1, createBakeProgress: () => () => {}, chunkJobs,
+  })
+  const caps = w.calls.filter((c) => c.op === 'capture')
+  assert.equal(caps[0].config.bakeTally, caps[1].config.bakeTally)
+  // Two 3D windows (a in both slices); b is one 2D job of 60 frames.
+  assert.equal(caps[0].config.bakeTally.left3d, 2)
+  assert.equal(caps[0].config.bakeTally.left2dFrames, 60)
+})
+
 test('a failure in slice 2 stops the loop: nothing after it runs, nothing finishes', async () => {
   const w = world({ failCaptureAt: 2 })
   await assert.rejects(
@@ -257,5 +272,5 @@ test('render.js renderInSlices: no phase marker in the loop, one of each before 
   // main() takes the unsliced path, today's compose(), whenever slicing is off.
   const main = src.slice(src.indexOf('async function main('), at)
   assert.match(main, /if \(slicing\.sliced\) \{\n\s+await renderInSlices\(/)
-  assert.match(main, /\} else \{\n\s+log\(slicingLine\(slicing\)\)\n[\s\S]*renderAllSegments\(segmentSpecs, \{ workers, motionBlur, segmentCache, swapUsedAtStart \}\)[\s\S]*await compose\(/)
+  assert.match(main, /\} else \{\n\s+log\(slicingLine\(slicing\)\)\n[\s\S]*renderAllSegments\(segmentSpecs, \{ workers, motionBlur, segmentCache, swapUsedAtStart.*\}\)[\s\S]*await compose\(/)
 })

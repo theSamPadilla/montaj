@@ -49,7 +49,7 @@ process.env.MONTAJ_FFPROBE = PROBE_STUB
 process.env.STUB_FACTS = FACTS
 
 const {
-  resolveEstimateOverrides, planVideoItemWrites, isConformant, normalizedMasterCache, estimateMain,
+  resolveEstimateOverrides, resolveEstimateRates, planVideoItemWrites, isConformant, normalizedMasterCache, estimateMain,
   buildNormalizedOutputPath, UNTAGGED_MASTER_MARKER, planSlicing,
 } = await import('../render.js')
 const { estimateRenderDisk } = await import('../disk-space.js')
@@ -85,6 +85,13 @@ const SDR_OK = { transfer: 'bt709', pix: 'yuv420p', width: 1080, height: 1920, f
 const SDR_444 = { ...SDR_OK, pix: 'yuv444p' }           // not a pixel format an SDR project keeps
 const SDR_LONG_GOP = { ...SDR_OK, gop: 12 }             // past MAX_KEYFRAME_INTERVAL_S
 const HLG = { transfer: 'arib-std-b67', pix: 'yuv420p10le', width: 2160, height: 3840, fps: 30, duration: 61, gop: 1, audio: 2 }
+
+test('--estimate-rates: exactly two positive finite numbers, else refused (§737)', () => {
+  assert.deepEqual(resolveEstimateRates('90000,35.5'), { ms3dPerChunk: 90000, ms2dPerFrame: 35.5 })
+  for (const bad of ['', '5', '1,2,3', 'a,b', '0,5', '5,0', '-1,5', '5,-1', 'Infinity,5', '5,NaN', '5,', ',5', '1 2']) {
+    assert.throws(() => resolveEstimateRates(bad), /--estimate-rates/, JSON.stringify(bad))
+  }
+})
 
 test('--resolution and --fps: absent is null, well formed is parsed, anything else is refused', () => {
   assert.equal(resolveEstimateOverrides({}), null)

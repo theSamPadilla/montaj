@@ -269,7 +269,7 @@ if (isMain) {
   if (!argv.length || argv[0] === '--help') {
     process.stderr.write('Usage: render.js <project.json> [--out <path>] [--workers <n>] [--clean] '
       + '[--export <auto|sdr|both>] [--sdr-curve <id>] [--fps <n>] [--motion-blur <n>] '
-      + '[--speech-set <file>] [--estimate [--resolution <W>x<H>]]\n')
+      + '[--speech-set <file>] [--estimate-rates <ms3dPerChunk>,<ms2dPerFrame>] [--estimate [--resolution <W>x<H>]]\n')
     process.exit(1)
   }
 
@@ -284,6 +284,7 @@ if (isMain) {
   let fpsArg       = null
   let motionBlurArg = null
   let speechSetArg = null
+  let estimateRatesArg = null
 
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--out')        { outArg       = argv[++i]; continue }
@@ -297,6 +298,8 @@ if (isMain) {
     if (argv[i] === '--motion-blur') { motionBlurArg = argv[++i]; continue }
     // §697: serve's speech set (mix-loudness.js), what the master gain is measured on.
     if (argv[i] === '--speech-set') { speechSetArg = argv[++i]; continue }
+    // §737: the app's seeds for `bake left` (what a 3D chunk and a 2D frame cost on this machine before any is measured).
+    if (argv[i] === '--estimate-rates') { estimateRatesArg = argv[++i]; continue }
     if (!projectArg) projectArg = argv[i]
   }
 
@@ -309,10 +312,12 @@ if (isMain) {
   let exportMode = 'auto'
   let sdrCurve   = null
   let overrides  = null
+  let estimateRates = null
   try {
     exportMode = resolveExportMode(exportArg)
     sdrCurve   = resolveSdrCurve(sdrCurveArg)
     overrides  = resolveEstimateOverrides({ resolution: resolutionArg, fps: fpsArg, motionBlur: motionBlurArg })
+    if (estimateRatesArg != null) estimateRates = resolveEstimateRates(estimateRatesArg)
   } catch (err) {
     fail('invalid_argument', err.message)
   }
@@ -330,7 +335,7 @@ if (isMain) {
       .catch((err) => fail(err.code === 'missing_files' ? 'missing_files' : 'estimate_error', err.message))
   } else main(projectArg, {
     out: outArg, workers: workersArg, clean: cleanArg,
-    exportMode, sdrCurve, overrides, speechSetPath: speechSetArg,
+    exportMode, sdrCurve, overrides, speechSetPath: speechSetArg, estimateRates,
   }).catch(err => {
     // §128: a disk that ran out mid-render is said plainly, with the space the
     // render is expected to need (disk-space.js), never as a generic failure.
@@ -429,6 +434,19 @@ function resolveEstimateOverrides({ resolution = null, fps = null, motionBlur = 
     }
   }
   return overrides
+}
+
+/**
+ * §737: `--estimate-rates <ms per 3D chunk>,<ms per 2D frame>`, the seeds `bake left` uses until a job of that kind has
+ * finished. Exactly two positive finite numbers, else throws (the CLI says invalid_argument). Ignored by --estimate.
+ */
+function resolveEstimateRates(value) {
+  const parts = String(value).split(',')
+  const nums = parts.map((p) => (p.trim() === '' ? NaN : Number(p)))
+  if (parts.length !== 2 || !nums.every((n) => Number.isFinite(n) && n > 0)) {
+    throw new Error(`--estimate-rates must be <ms per 3D chunk>,<ms per 2D frame>, two positive numbers, got ${JSON.stringify(value)}`)
+  }
+  return { ms3dPerChunk: nums[0], ms2dPerFrame: nums[1] }
 }
 
 /**
@@ -594,7 +612,7 @@ async function measureMasterGain(absProjectPath, settings, speechSetPath, workDi
   return gainDb
 }
 
-async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdrCurve = null, overrides = null, speechSetPath = null }) {
+async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdrCurve = null, overrides = null, speechSetPath = null, estimateRates = null }) {
   // §284: `overrides` (--fps, --motion-blur) stand in for the project's own
   // settings for this render only, in memory; project.json is never written
   // with them (its colorSpace write-back below re-reads the file).
@@ -793,7 +811,7 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
     await renderInSlices({
       projectJson, pristineProject, settings, fps, workers, motionBlur, segmentSpecs, imageItems, videoItems,
       renderWidth, renderHeight, captureScale, projectColorSpace, exportPlan, workspaceDir, segDir, sdrCurve, slicing,
-      masterGainDb, segmentCache, swapUsedAtStart,
+      masterGainDb, segmentCache, swapUsedAtStart, estimateRates,
     })
   } else {
     log(slicingLine(slicing))
@@ -804,7 +822,7 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
     // space (encode-segment.js, hdr-graphics.js). So one capture serves the HDR
     // master and the SDR rendition alike. A saved `settings.imageTone` (the
     // removed per-image tone) is ignored.
-    const renderedSegments = await renderAllSegments(segmentSpecs, { workers, motionBlur, segmentCache, swapUsedAtStart })
+    const renderedSegments = await renderAllSegments(segmentSpecs, { workers, motionBlur, segmentCache, swapUsedAtStart, ...(estimateRates ? { estimateRates } : {}) })
 
     // Attach positioning offsets back onto rendered segments so compose.js can apply
     // x/y coordinates. Overlay size is derived from the output canvas at compose
@@ -917,7 +935,7 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
 async function renderInSlices({
   projectJson, pristineProject, settings, fps, workers, motionBlur, segmentSpecs, imageItems, videoItems,
   renderWidth, renderHeight, captureScale, projectColorSpace, exportPlan, workspaceDir, segDir, sdrCurve, slicing,
-  masterGainDb = null, segmentCache = null, swapUsedAtStart = null,
+  masterGainDb = null, segmentCache = null, swapUsedAtStart = null, estimateRates = null,
 }) {
   const descriptors = plannedDescriptors(segmentSpecs)
   const passes = []
@@ -975,8 +993,8 @@ async function renderInSlices({
     },
     keep: !!process.env.MONTAJ_KEEP_SEGMENTS,
     log,
-    captureConfig: { workers, motionBlur, swapUsedAtStart, ...(segmentCache ? { segmentCache } : {}) },
-    bakeTotal,
+    captureConfig: { workers, motionBlur, swapUsedAtStart, ...(segmentCache ? { segmentCache } : {}), ...(estimateRates ? { estimateRates } : {}) },
+    bakeTotal, chunkJobs,
     createBakeProgress: ({ total }) => createBakeProgress({ total, log }),
   })
 }
@@ -2801,7 +2819,7 @@ function fail(code, message, extra = {}) {
 export { normalizeIfNeeded, killNormalizeTree, failLine, stampSourceProbes, getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath,
          EXPORT_MODES, resolveExportMode, resolvePictureColorSpace, fillsFrameOpaquely, resolveSdrCurve, planExport, captureScaleFor,
          // §213: the disk estimate's planning, for its tests.
-         resolveEstimateOverrides, planVideoItemWrites, isConformant, normalizedMasterCache, estimateMain, planSlicing,
+         resolveEstimateOverrides, resolveEstimateRates, planVideoItemWrites, isConformant, normalizedMasterCache, estimateMain, planSlicing,
          UNTAGGED_MASTER_MARKER, originalOfSdrMaster,
          // glass-plate.js renders the base composite through the export's own item preparation.
          resolveProjectPaths, validateProjectFiles, audioTrackNoSrcMessage, repointStaleUntaggedMasters, prepareVideoItems, prepareSdrPass, outputSize,

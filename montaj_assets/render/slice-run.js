@@ -14,6 +14,7 @@
 import { mkdirSync, rmSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { planSegments, groupShortSegments, MIN_SEGMENT_FRAMES } from './segment-plan.js'
+import { createBakeTally } from './bake-tally.js'
 import { FFV1_CAPTION_BYTES_PER_PIXEL, FFV1_DENSE_BYTES_PER_PIXEL, FFV1_SPARSE_BYTES_PER_PIXEL } from './disk-space.js'
 
 const EDGE_EPSILON = 1e-6
@@ -202,12 +203,13 @@ export function slicingLine({ sliced, slices = 1, budgetBytes, peakBytes = 0, wa
  * @param {{ mkdir?: Function, rm?: Function }} [p.fsOps]
  * @param {object} [p.captureConfig]  { workers, motionBlur }
  * @param {Function} [p.bakeTotal]
+ * @param {Function} [p.chunkJobs]  (specs, config) => { jobs }: with it, one bake tally spans every slice's jobs (`bake left` counts the whole render)
  * @param {Function} [p.createBakeProgress]
  * @returns {Promise<object[]>} finish's results, per plan
  */
 export async function runSlices({
   plans, slices, specs, segDir, fps, capture, encode, finish, keep = false, log = () => {},
-  fsOps = {}, captureConfig = {}, bakeTotal = null, createBakeProgress = null,
+  fsOps = {}, captureConfig = {}, bakeTotal = null, createBakeProgress = null, chunkJobs = null,
 }) {
   const mkdir = fsOps.mkdir ?? ((dir) => mkdirSync(dir, { recursive: true }))
   const rm = fsOps.rm ?? ((dir) => rmSync(dir, { recursive: true, force: true }))
@@ -216,10 +218,11 @@ export async function runSlices({
     const dir = join(segDir, sliceDirName(k))
     return { slice, dir, specs: sliceSpecs(specs, slice, fps, dir) }
   })
-  let bakeProgress
+  let bakeProgress, bakeTally
   if (bakeTotal && createBakeProgress) {
     const total = jobs.reduce((n, j) => n + (j.specs.length ? bakeTotal(j.specs, captureConfig) : 0), 0)
     bakeProgress = createBakeProgress({ total })
+    if (chunkJobs) bakeTally = createBakeTally(jobs.flatMap((j) => (j.specs.length ? chunkJobs(j.specs, captureConfig).jobs : [])))
   }
 
   const encoded = plans.map(() => [])
@@ -229,7 +232,7 @@ export async function runSlices({
     mkdir(dir)
     log(`${label}: capturing ${windowSpecs.length} overlay window(s)`)
     const captured = windowSpecs.length
-      ? await capture(windowSpecs, { ...captureConfig, ...(bakeProgress ? { bakeProgress } : {}) })
+      ? await capture(windowSpecs, { ...captureConfig, ...(bakeProgress ? { bakeProgress } : {}), ...(bakeTally ? { bakeTally } : {}) })
       : []
     const byId = new Map(captured.map((r) => [r.id, r]))
     const overlaysFor = (ov) => {

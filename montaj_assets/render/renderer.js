@@ -28,6 +28,7 @@ import { fontLoadFailure, fontFailureWarning } from './google-fonts.js'
 import { captureWithThree, isThreeBlurUnsupported } from './three-frame.js'
 import { check3dGraphics, no3dGraphicsError, softwareAllowed } from './gpu-3d.js'
 import { createReadRecorder } from './read-set.js'
+import { createBakeTally, addJob } from './bake-tally.js'
 
 // A stream copy of chunks already on disk cannot stall for long, and spawnSync
 // cannot watch progress, so this is a generous wall clock (the callers are sync).
@@ -317,30 +318,39 @@ export async function renderAllSegments(segments, config = {}) {
   // frames is wrong whenever the mix of work changes. The engine knows the queue and what each kind of job has taken
   // so far, so it logs `bake left <s> s` at every step the frame counter logs. Nothing is said until each kind of job
   // that still has work has finished once (no guess, no default), and the app then keeps its own pace estimate.
-  const timing = { n3d: 0, ms3d: 0, ms2d: 0, frames2d: 0 }
+  // The means and the work left live in a tally a sliced render shares across its calls (bake-tally.js).
+  const timing = config.bakeTally ?? createBakeTally(jobs)
   const inflight = new Map() // job -> { start, is3d }
-  const lanes3dSeen = new Set() // workers that have rendered a 3D job: the 3D lanes admitted
+  const lanes3dActive = new Set() // workers taking 3D jobs: the lanes a queued chunk can run on (a parked or finished lane leaves)
   let workers2dNow = () => 1
   let queueReady = false // the reuse pass below fills the queue; until then the queue says nothing about the work left
   const logBakeLeft = () => {
     if (!queueReady) return
-    let queued3d = 0, queued2dFrames = 0
-    for (const j of queue) { if (isScene3dSegment(j)) queued3d++; else queued2dFrames += j.frameEnd - j.frameStart }
-    let flight3d = 0, flight2d = 0
-    for (const { is3d } of inflight.values()) { if (is3d) flight3d++; else flight2d++ }
-    const need3d = queued3d + flight3d > 0
-    const need2d = queued2dFrames + flight2d > 0
-    if ((need3d && timing.n3d === 0) || (need2d && timing.frames2d === 0)) return
-    const mean3d = timing.n3d > 0 ? timing.ms3d / timing.n3d : 0
-    const perFrame2d = timing.frames2d > 0 ? timing.ms2d / timing.frames2d : 0
-    const lanes3d = Math.max(1, lanes3dSeen.size)
-    let ms = (queued3d * mean3d) / lanes3d + (queued2dFrames * perFrame2d) / workers2dNow()
+    let flight3d = 0, flight2d = 0, flight2dFrames = 0
+    for (const [j, { is3d }] of inflight) { if (is3d) flight3d++; else { flight2d++; flight2dFrames += j.frameEnd - j.frameStart } }
+    const queued3d = Math.max(0, timing.left3d - flight3d)
+    const queued2dFrames = Math.max(0, timing.left2dFrames - flight2dFrames)
+    const need3d = timing.left3d > 0
+    const need2d = timing.left2dFrames > 0
+    // A measured mean, else the app's seed (--estimate-rates); a kind with work left and neither stays silent.
+    const mean3d = timing.n3d > 0 ? timing.ms3d / timing.n3d : (config.estimateRates?.ms3dPerChunk ?? null)
+    const perFrame2d = timing.frames2d > 0 ? timing.ms2d / timing.frames2d : (config.estimateRates?.ms2dPerFrame ?? null)
+    if ((need3d && mean3d === null) || (need2d && perFrame2d === null)) return
     const t = now()
-    for (const [j, { start, is3d }] of inflight) {
-      const est = is3d ? mean3d : (j.frameEnd - j.frameStart) * perFrame2d
-      ms += Math.max(0, est - (t - start)) / (is3d ? lanes3d : 1)
+    // 3D: each lane is free when its chunk in flight ends; a queued chunk goes to the lane free first.
+    let ms3d = 0
+    if (need3d) {
+      const free = []
+      for (const [, { start, is3d }] of inflight) if (is3d) free.push(Math.max(0, mean3d - (t - start)))
+      while (free.length < Math.max(1, lanes3dActive.size)) free.push(0)
+      for (let i = 0; i < queued3d; i++) { free.sort((a, b) => a - b); free[0] += mean3d }
+      ms3d = Math.max(...free)
     }
-    log(`bake left ${Math.round(ms / 1000)} s`)
+    // 2D: the queued frames spread over the workers, plus the jobs in flight, side by side.
+    let flightLeft2d = 0
+    for (const [j, { start, is3d }] of inflight) if (!is3d) flightLeft2d += Math.max(0, (j.frameEnd - j.frameStart) * perFrame2d - (t - start))
+    const ms2d = need2d ? (queued2dFrames * perFrame2d) / workers2dNow() + flightLeft2d / Math.max(1, flight2d) : 0
+    log(`bake left ${Math.round((ms3d + ms2d) / 1000)} s`)
   }
   // §434: a render cut in time slices passes one counter that spans every call.
   const bakeCounter = config.bakeProgress
@@ -377,6 +387,7 @@ export async function renderAllSegments(segments, config = {}) {
   for (const job of jobs) {
     const hit = cache && isScene3dSegment(job) ? cache.lookup(job) : null
     if (!hit) { queue.push(job); continue }
+    addJob(timing, job, -1)
     for (let f = job.frameStart; f < job.frameEnd; f++) noteFrame()
     jobsDone++
     reusedPaths.add(hit)
@@ -439,6 +450,7 @@ export async function renderAllSegments(segments, config = {}) {
       available: readAdjusted(), reserve: memory.reserveBytes, perWorker: memory.perWorkerBytes,
       pressure: p.level, swapUsedAtStart, swapUsedNow: p.swapUsedBytes,
     })
+    if (refusal !== null) lanes3dActive.delete(Number(name.split(' ')[1]))
     if (refusal !== null && !laneWaitLogged) { laneWaitLogged = true; log(`3d lane 2: waits for memory (${refusal})`) }
     return refusal
   }
@@ -567,17 +579,17 @@ export async function renderAllSegments(segments, config = {}) {
         // `reads` (§737): what a 3D chunk's page read (read-set.js); a renderJob that gives none read nothing.
         let webmPath, reads
         let lanesNow = 1
-        if (is3d) lanes3dSeen.add(workerIdx)
+        if (is3d) lanes3dActive.add(workerIdx)
         try {
           ({ webmPath, reads } = await renderJob(current, job, { onFrame: noteFrame, threads: encoderThreads }))
           lanesNow = Math.max(1, running3d)
           const took = now() - jobStart
           const frames = job.frameEnd - job.frameStart
           if (is3d) {
-            timing.n3d++; timing.ms3d += took
+            timing.n3d++; timing.ms3d += took; addJob(timing, job, -1)
             log(`3d chunk ${label}: ${frames} frames x${job.subframes ?? 1} in ${took} ms (lanes ${lanesNow})`)
           } else {
-            timing.ms2d += took; timing.frames2d += frames
+            timing.ms2d += took; timing.frames2d += frames; addJob(timing, job, -1)
           }
         } finally {
           inflight.delete(job)
@@ -616,6 +628,7 @@ export async function renderAllSegments(segments, config = {}) {
         }
         throw err
       } finally {
+        lanes3dActive.delete(workerIdx)
         if (current) {
           live.delete(current)
           await current.close().catch(() => {})
