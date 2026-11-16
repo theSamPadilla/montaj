@@ -752,8 +752,11 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
 
   // 5. Bundle + render all overlay and caption segments
   // PHASE MARKERS: serve's `_render_phase_for` (serve/routes/projects.py) maps
-  // "with Puppeteer" + "bundling segment" → rendering, and a `(captions)` segment
-  // id → captions. Keep these substrings in sync if you reword these log lines.
+  // "with Puppeteer" + "bundling segment" → rendering, and the engine's
+  // `rendering <label> (N frames)...` line for the captions job (label `captions`
+  // or `captions chunk i/n`) → captions. Every segment is bundled before any
+  // renders, so a bundling line never means captions. Keep these substrings in
+  // sync if you reword these log lines.
   log(`rendering ${segmentSpecs.length} segment(s) with Puppeteer...`)
 
   const workDirs = []

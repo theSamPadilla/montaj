@@ -149,10 +149,13 @@ class _RenderJob:
 
 def _render_phase_for(line: str) -> str | None:
     """Map a render stderr line to a coarse progress phase, or None if it carries
-    no phase signal. Markers below are the VERIFIED stderr strings emitted by
-    render.js / compose.js. Captions is checked FIRST because a captions segment
-    line also matches the generic "bundling segment" marker."""
-    if "bundling segment" in line and "(captions)" in line:
+    no phase signal. Markers are the stderr strings emitted by render.js /
+    compose.js. Phases only move forward in the app, and render.js bundles EVERY
+    segment before any renders, so a bundling line for the captions segment says
+    nothing about captions: captions starts when captions RENDER, and they render
+    last. That is the engine's `rendering <label> (N frames)...` line, whose label
+    is `captions` or `captions chunk i/n`."""
+    if "rendering captions" in line:
         return "captions"
     if "bundling segment" in line or "with Puppeteer" in line:
         return "rendering"
@@ -161,6 +164,48 @@ def _render_phase_for(line: str) -> str | None:
     if "deriving SDR rendition" in line:
         return "sdr_derive"
     return None
+
+
+# Every render stderr line is also echoed to serve's own stderr (the app mirrors it
+# into main.log), cut, home-redacted and capped per render.
+RENDER_ECHO_MAX_LINES = 5000
+_RENDER_ECHO_MAX_CHARS = 500
+_HOME_RES = (
+    re.compile(r"/Users/[^/\s\"']+"),
+    re.compile(r"/home/[^/\s\"']+"),
+    re.compile(r"[A-Za-z]:\\Users\\[^\\\s\"']+"),
+)
+
+
+def _redact_home(text: str) -> str:
+    for rx in _HOME_RES:
+        text = rx.sub("~", text)
+    return text
+
+
+def _echo_render_line(project_id: str, text: str, state: dict) -> None:
+    """Echo one render line to serve's stderr. `state` is the per-render counter
+    dict (`{"n": 0, "held": 0}`). Never raises."""
+    try:
+        if state["n"] >= RENDER_ECHO_MAX_LINES:
+            state["held"] += 1
+            return
+        state["n"] += 1
+        line = _redact_home(text[:_RENDER_ECHO_MAX_CHARS])
+        sys.stderr.write(f"[montaj render {project_id[:8]}] {line}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _echo_render_close(project_id: str, state: dict) -> None:
+    """Once the render ends, say how many lines the cap held back. Never raises."""
+    try:
+        if state["held"]:
+            sys.stderr.write(f"[montaj render {project_id[:8]}] \u2026 {state['held']} more lines not echoed\n")
+            sys.stderr.flush()
+    except Exception:
+        pass
 
 
 _render_jobs: dict[str, _RenderJob] = {}
@@ -285,6 +330,7 @@ async def _run_render_detached(project_id: str, cmd: list[str], env: dict,
     ``cover``/``output_path`` (both optional) trigger a best-effort poster-frame
     extraction after a successful render — see `_extract_cover_frame`."""
     proc = None
+    echo_state = {"n": 0, "held": 0}
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -303,6 +349,7 @@ async def _run_render_detached(project_id: str, cmd: list[str], env: dict,
             text = line.decode().rstrip()
             if text:
                 job.lines.append(text)
+                _echo_render_line(project_id, text, echo_state)
                 p = _render_phase_for(text)
                 # sdr_derive is the last phase before done. The SDR rendition
                 # is a compose of its own (PV42), so its "concatenating" line
@@ -320,6 +367,7 @@ async def _run_render_detached(project_id: str, cmd: list[str], env: dict,
     except Exception as e:  # surface any spawn/IO failure to the viewer
         job.status, job.result = "error", str(e)
     finally:
+        _echo_render_close(project_id, echo_state)
         # Only release if we're still the tracked render — a later request may have
         # superseded us and taken the slot, and must not have its entry clobbered.
         if _render_procs.get(project_id) is proc:

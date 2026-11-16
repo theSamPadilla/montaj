@@ -82,7 +82,11 @@ def _reserve(job):
 
 @pytest.mark.parametrize("line,expected", [
     ("[montaj render] bundling segment 2/16 (overlay-1--ov-hook)...", "rendering"),
-    ("[montaj render] bundling segment 3/16 (captions)...", "captions"),
+    ("[render] bundling segment 65/65 (captions)", "rendering"),
+    ("rendering captions (900 frames)...", "captions"),
+    ("rendering captions chunk 2/3 (300 frames)...", "captions"),
+    ("[montaj render] rendering 66 segment(s) with Puppeteer...", "rendering"),
+    ("rendering overlay-0--s15 (73 frames)...", None),
     ("[montaj render] rendering with Puppeteer...", "rendering"),
     ("[montaj render] composing final video...", "encoding"),
     ("[montaj compose] concatenating 16 segment(s)...", "encoding"),
@@ -94,11 +98,10 @@ def test_render_phase_for(line, expected):
     assert _render_phase_for(line) == expected
 
 
-def test_render_phase_captions_checked_before_rendering():
-    # A captions bundling line must classify as captions, not rendering, even
-    # though it also matches "bundling segment".
-    line = "[montaj render] bundling segment 9/16 (captions)..."
-    assert _render_phase_for(line) == "captions"
+def test_render_phase_bundling_captions_is_rendering_not_captions():
+    # Changed from the old rule: every segment is bundled before any renders, so
+    # the captions bundling line is still the rendering phase.
+    assert _render_phase_for("[montaj render] bundling segment 9/16 (captions)...") == "rendering"
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +141,7 @@ def test_detached_render_phase_reflects_last_marker_mid_run(monkeypatch, tmp_pat
     proc = _FakeProc(
         stderr_lines=[
             b"[montaj render] bundling segment 1/4 (overlay-1)...\n",
-            b"[montaj render] bundling segment 2/4 (captions)...\n",
+            b"[montaj render] rendering captions (900 frames)...\n",
         ],
         returncode=1,
     )
@@ -175,6 +178,66 @@ def test_detached_render_phase_stays_sdr_derive_through_the_sdr_compose(monkeypa
 
     assert job.status == "error"
     assert job.phase == "sdr_derive"
+
+
+# ---------------------------------------------------------------------------
+# echo to serve's stderr
+# ---------------------------------------------------------------------------
+
+def test_echo_prefix_uses_first_8_chars(capsys):
+    projects_mod._echo_render_line("abcdef1234567890", "hello", {"n": 0, "held": 0})
+    assert capsys.readouterr().err == "[montaj render abcdef12] hello\n"
+
+
+def test_echo_cuts_long_lines_to_500(capsys):
+    projects_mod._echo_render_line(PID, "x" * 900, {"n": 0, "held": 0})
+    err = capsys.readouterr().err
+    assert err == f"[montaj render {PID[:8]}] " + "x" * 500 + "\n"
+
+
+def test_echo_redacts_home_dirs(capsys):
+    st = {"n": 0, "held": 0}
+    projects_mod._echo_render_line(PID, "wrote /Users/sam/Montaj/x.mp4", st)
+    projects_mod._echo_render_line(PID, "in /home/bob/a and C:\\Users\\Al\\v.mp4", st)
+    err = capsys.readouterr().err
+    assert "wrote ~/Montaj/x.mp4" in err
+    assert "in ~/a and ~\\v.mp4" in err
+    assert "Users" not in err and "sam" not in err and "bob" not in err
+
+
+def test_echo_caps_lines_and_reports_held_back(monkeypatch, capsys):
+    monkeypatch.setattr(projects_mod, "RENDER_ECHO_MAX_LINES", 3)
+    st = {"n": 0, "held": 0}
+    for i in range(5):
+        projects_mod._echo_render_line(PID, f"line {i}", st)
+    projects_mod._echo_render_close(PID, st)
+    lines = capsys.readouterr().err.splitlines()
+    assert [l.split("] ", 1)[1] for l in lines[:3]] == ["line 0", "line 1", "line 2"]
+    assert len(lines) == 4
+    assert lines[3] == f"[montaj render {PID[:8]}] \u2026 2 more lines not echoed"
+
+
+def test_detached_render_echoes_lines_and_keeps_job_lines(monkeypatch, tmp_path, capsys):
+    proc = _FakeProc(
+        stderr_lines=[
+            b"[montaj render] bundling segment 1/2 (overlay-1)...\n",
+            b"[montaj render] composing final video...\n",
+        ],
+        returncode=0,
+    )
+    _patch_spawn(monkeypatch, proc)
+    job = _RenderJob()
+    _reserve(job)
+    pp = tmp_path / "project.json"
+
+    asyncio.run(_run_render_detached(PID, ["node", "render.js"], {}, pp, pp, job))
+
+    assert job.lines == [
+        "[montaj render] bundling segment 1/2 (overlay-1)...",
+        "[montaj render] composing final video...",
+    ]
+    err = capsys.readouterr().err
+    assert f"[montaj render {PID[:8]}] [montaj render] composing final video...\n" in err
 
 
 # ---------------------------------------------------------------------------
