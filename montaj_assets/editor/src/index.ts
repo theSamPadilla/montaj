@@ -79,6 +79,7 @@ export type {
   AskAiRequest,
   CarouselEditorProps,
   VideoEditorProps,
+  Scene3dViewRequest,
   RenderModalContext,
   CarouselRenderModalContext,
   // The host-drawn Controls window (`renderControls`) and its content.

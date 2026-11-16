@@ -1682,6 +1682,9 @@ export interface RenderModalContext<P extends Project = Project> {
   onRenderComplete: () => void
 }
 
+/** What "View in 3D" asks the host to open: the 3D item and the seconds into it on show. */
+export interface Scene3dViewRequest { itemId: string; itemTime: number }
+
 /**
  * Props for the video editor component. Mirrors `CarouselEditorProps` —
  * controlled `project` + `onProjectChange`, adapter-driven transport, optional
@@ -1897,6 +1900,10 @@ export interface VideoEditorProps<P extends Project = Project> {
    * and must still opt in.
    */
   engine?: { enabled: boolean; debugHud?: boolean }
+  /**
+   * When set, hovering the preview while a 3D item is on screen shows a View in 3D button at the frame's top right. A click pauses playback and calls this with that item and the item time on show. Absent: no button.
+   */
+  onViewScene3d?: (req: Scene3dViewRequest) => void
 
   /**
    * Opt-in seam letting a host's footage bin drive the MAIN preview on hover.

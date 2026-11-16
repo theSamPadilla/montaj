@@ -286,6 +286,7 @@ export default function VideoEditor<P extends Project = Project>({
   renderControls,
   onProvideSeek,
   engine,
+  onViewScene3d,
   sourcePreview,
   onRegenerateCaptions,
   onAddCaptionLanguage,
@@ -457,6 +458,7 @@ export default function VideoEditor<P extends Project = Project>({
           getWaveformPeaks={getWaveformPeaks}
           getFilmstrip={getFilmstrip}
           engine={engine}
+          onViewScene3d={onViewScene3d}
           timelineMode={timelineMode}
         />
       </div>
@@ -488,6 +490,7 @@ export default function VideoEditor<P extends Project = Project>({
         renderControls={renderControls}
         onProvideSeek={onProvideSeek}
         engine={engine}
+        onViewScene3d={onViewScene3d}
         sourcePreview={sourcePreview}
         onRegenerateCaptions={onRegenerateCaptions}
         onAddCaptionLanguage={onAddCaptionLanguage}
@@ -648,6 +651,7 @@ interface SurfaceProps<P extends Project> {
   renderControls?: VideoEditorProps<P>['renderControls']
   onProvideSeek?: VideoEditorProps<P>['onProvideSeek']
   engine?: VideoEditorProps<P>['engine']
+  onViewScene3d?: VideoEditorProps<P>['onViewScene3d']
   /** Light/dark for the canvas timeline, resolved from the host theme by
    *  `VideoEditor` (the canvas can't read the CSS vars the rest of the chrome
    *  uses). Both surfaces render a `Timeline`, so both need it. */
@@ -664,6 +668,7 @@ function PendingSurface<P extends Project>({
   getWaveformPeaks,
   getFilmstrip,
   engine,
+  onViewScene3d,
   timelineMode,
 }: SurfaceProps<P> & { onBackToSetup?: () => void }) {
   const project = sync.project
@@ -739,6 +744,7 @@ function PendingSurface<P extends Project>({
               fileUrl={adapter.fileUrl}
               resolveCaptionTemplate={adapter.resolveCaptionTemplate}
               engine={engine}
+              onViewScene3d={onViewScene3d}
             />
           ) : (
             <div className="flex flex-col items-center gap-6 text-center max-w-lg w-full">
@@ -881,6 +887,7 @@ function ReviewSurface<P extends Project>({
   renderControls,
   onProvideSeek,
   engine,
+  onViewScene3d,
   sourcePreview,
   onRegenerateCaptions,
   onAddCaptionLanguage,
@@ -2512,6 +2519,7 @@ function ReviewSurface<P extends Project>({
                 selectedCaptionIds={selectedCaptionIds}
                 onCaptionSegmentsChange={handleCaptionSegmentsChange}
                 engine={engine}
+                onViewScene3d={onViewScene3d}
                 transportRef={transportRef}
                 onPlayingChange={setPreviewPlaying}
                 scrubHandleRef={scrubHandleRef}

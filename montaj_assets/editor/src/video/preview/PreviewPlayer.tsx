@@ -2,7 +2,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { blurAngleOf, blurCenterOf, blurOf, blurTypeOf, containsTime, geometryAt, hasCropKeyframes, maskAt, transitionPairs, videoFitFor } from '@bycrux/timeline-core'
 import { videoTransformContainerStyle, videoTransformBoxPct, mediaBoxStyle, perAxisRatio, zoomTo, type VideoTransform } from './transformStyle'
 import type { EditorProject as Project, VisualItem } from '../../schema'
-import type { OverlayFactory } from '../../types'
+import type { OverlayFactory, Scene3dViewRequest } from '../../types'
+import { Rotate3d } from 'lucide-react'
+import { isScene3dItem } from '../scene3d'
+import { enabledTrackItems } from '../timeline/timeline-model'
 import CaptionPreview from './CaptionPreview'
 import { getOverlayDesignCanvas } from '../design-canvas'
 import { applyOverlayChanges, useDragOverlay } from './useDragOverlay'
@@ -147,6 +150,9 @@ interface PreviewPlayerProps {
    * actually gets it is decided by `useEngineMode` below.
    */
   engine?: { enabled: boolean; debugHud?: boolean }
+  /** Mirrors `VideoEditorProps['onViewScene3d']`. Set: hovering the frame while a 3D item is on screen shows
+   *  a View in 3D button at its top right; a click pauses and calls this. Absent: no button. */
+  onViewScene3d?: (req: Scene3dViewRequest) => void
   /**
    * SP5 T9 — imperative play/pause handle for a host-level keymap/command
    * palette. Filled from whichever playback hook is active (legacy or
@@ -518,6 +524,7 @@ function PreviewSurface({
   selectedCaptionIds,
   onCaptionSegmentsChange,
   engine,
+  onViewScene3d,
   transportRef,
   onPlayingChange,
   scrubHandleRef,
@@ -618,6 +625,24 @@ function PreviewSurface({
     transportRef.current = { togglePlay: guardedTogglePlay, isPlaying: () => isPlaying, setRate }
     return () => { transportRef.current = null }
   }, [transportRef, guardedTogglePlay, isPlaying, setRate])
+
+  // View in 3D: pointer over the frame, and the topmost 3D item on screen. Overlays paint in track order
+  // (`zIndex = trackIdx + 12`, later in a track on top), so the last match is the topmost.
+  const [frameHovered, setFrameHovered] = useState(false)
+  let sceneItem: VisualItem | null = null
+  if (onViewScene3d && frameHovered) {
+    for (const trackItems of isCanvasProject ? enabledTrackItems(project) : overlayTracks) {
+      for (const it of trackItems) {
+        if (isScene3dItem(it) && containsTime(it.start, it.end, currentTime)) sceneItem = it
+      }
+    }
+  }
+  const viewScene3d = (e: { stopPropagation: () => void }) => {
+    e.stopPropagation()
+    if (!sceneItem || !onViewScene3d) return
+    if (isPlaying) guardedTogglePlay()
+    onViewScene3d({ itemId: sceneItem.id, itemTime: currentTime - sceneItem.start })
+  }
 
   const glyphClickPlays = useGlyphClickPlays(containerRef, isPlaying)
 
@@ -858,7 +883,7 @@ function PreviewSurface({
     <div style={FIT_PARENT_STYLE}>
     <div data-montaj-preview-stage="" className="relative bg-black overflow-hidden rounded" style={{ ...fitBoxStyle(STAGE_W, STAGE_H), isolation: 'isolate' }}>
     <div className="absolute inset-0" style={FIT_PARENT_STYLE}>
-    <div ref={containerRef} data-montaj-preview-frame="" className="relative bg-black overflow-hidden" style={{ ...fitBoxStyle(RENDER_W, RENDER_H), isolation: 'isolate' }}>
+    <div ref={containerRef} data-montaj-preview-frame="" className="relative bg-black overflow-hidden" style={{ ...fitBoxStyle(RENDER_W, RENDER_H), isolation: 'isolate' }} onPointerEnter={onViewScene3d ? () => setFrameHovered(true) : undefined} onPointerLeave={onViewScene3d ? () => setFrameHovered(false) : undefined}>
       {isCanvasProject ? (
         <div className="absolute inset-0 cursor-pointer" style={{ zIndex: 10 }} role="button" aria-label="Play or pause" data-montaj-play-target="" onClick={guardedTogglePlay} />
       ) : clips.length === 0 ? (
@@ -1106,6 +1131,24 @@ function PreviewSurface({
           onCaptionSegmentsChange={onCaptionSegmentsChange}
           designCanvas={[RENDER_W, RENDER_H]}
         />
+      )}
+
+      {/* View in 3D: the label and its button, over every overlay, at the frame's top right. */}
+      {sceneItem && (
+        <div className="absolute flex items-center" style={{ right: 12, top: 12, gap: 8, zIndex: 1000 }}>
+          <span className="flex items-center text-xs font-semibold pointer-events-none" style={{ height: 26, padding: '0 9px', borderRadius: 6, background: 'rgba(3, 7, 18, 0.88)', color: '#f3f4f6' }}>View in 3D</span>
+          <button
+            type="button"
+            aria-label="View in 3D"
+            data-montaj-view-scene3d=""
+            className="flex items-center justify-center"
+            style={{ width: 36, height: 36, borderRadius: 10, border: 0, background: 'rgba(255, 255, 255, 0.94)', color: '#1c1c1e', cursor: 'pointer' }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={viewScene3d}
+          >
+            <Rotate3d size={18} aria-hidden="true" />
+          </button>
+        </div>
       )}
     </div>
     </div>
