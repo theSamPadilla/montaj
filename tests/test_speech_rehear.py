@@ -183,3 +183,94 @@ def test_the_second_listen_is_the_small_english_model_when_installed(monkeypatch
     assert cc._second_listen("en", "tiny.en-q5_1") is None, "never the same model twice"
     have.clear()
     assert cc._second_listen("en", "large-v3-turbo-q5_0") is None, "not installed: no second pass at all"
+
+
+# §739 (the Camera video, 2026-11-15): on a generated voice cut's re-hearing wrote "that that", "salt, salt" and
+# "buckets into buckets into" with overlapping times, and the captions read the same transcript. A generated voice
+# reads on with no pauses, so a run is one long gapless phrase and the hearing takes the words around its held word
+# only; its window, padded into the words beside it, heard them too, and a word heard there whose text is one of the
+# phrase's own passed as a second saying. Only the phrase's entries were replaced, so the word beside it stayed:
+# doubled, on one sound. The voice below is generated-voice-like (gapless, one word every 0.22 s, one word holding a
+# breath) and `hear` is a FAITHFUL hearing: it writes every word whose sound the window reaches, a cut piece of one
+# included, timed inside the window. A faithful hearing of a phrase said once must never add a word.
+def _voice(text, start=20.0, step=0.22, held=(), hold=0.62):
+    out, t = [], start
+    for k, w in enumerate(text.split()):
+        d = hold if k in held else step
+        out.append((w, round(t, 3), round(t + d, 3)))
+        t += d
+    return out
+
+
+def _hear(truth):
+    return lambda s, e: [(w, max(a, s), min(b, e)) for w, a, b in truth if b > s + 0.02 and a < e - 0.02]
+
+
+def _rewrite(tmp_path, words, hear):
+    src, sidecar = tmp_path / "vo.wav", tmp_path / "vo.json"
+    src.write_bytes(b"")
+    sidecar.write_text(json.dumps({"transcription": _entries(words), "montaj": {"by": "runs"}}))
+    out = rh.rehear_file(str(sidecar), str(src), hear, budget=rh.Budget())
+    got = [(e["text"].strip(), e["offsets"]["from"] / 1000, e["offsets"]["to"] / 1000)
+           for e in json.loads(sidecar.read_text())["transcription"]]
+    return out, got
+
+
+def _no_overlap(words):
+    return all(b[1] >= a[2] - 1e-6 for a, b in zip(words, words[1:]))
+
+
+# "lands" holds a breath; the phrase heard is "light ... and", and the word before it is "that", one of its own
+VO_BEFORE = "so the lens bends it and that light from that lamp lands on that film and we see it upside down now"
+
+
+def test_a_word_beside_the_phrase_is_never_heard_as_its_second_saying(tmp_path):
+    words = _voice(VO_BEFORE, held={11})
+    assert rh.slow_phrases(_entries(words)) == [(7, 15)]
+    out, got = _rewrite(tmp_path, words, _hear(words))
+    assert out == [], out
+    assert [w for w, _, _ in got] == VO_BEFORE.split(), "no word doubled"
+    assert _no_overlap(got)
+
+
+# one run of its own (a pause each side): only the held try's window, which starts HELD_PAD_S before the held word,
+# reaches a word that is not the phrase's held one, the word before it, "salt"
+def test_the_held_words_try_never_takes_the_word_before_it_again():
+    words = _voice("then you pour the salt into a bowl", held={5})
+    assert rh.slow_phrases(_entries(words)) == [(0, 7)]
+    assert rh.rehear_phrase(_hear(words), words) is None
+
+
+# the four words after the phrase ("water from the buckets", 0.88 s, then a pause) are all its own, and the run-on try
+# reaches them
+VO_AFTER = "so we pour the water from the buckets into the tank and the water from the buckets goes down"
+
+
+def test_the_words_after_the_phrase_are_never_taken_as_its_second_saying():
+    words = _voice(VO_AFTER, held={8})
+    words = words[:17] + [(w, round(a + 0.3, 3), round(b + 0.3, 3)) for w, a, b in words[17:]]
+    i, j = rh.slow_phrases(_entries(words))[0]
+    assert (i, j) == (4, 12)
+    phrase, until = words[i:j + 1], rh.until_after(words, j)
+    assert until == words[16][2], "it runs on through 'buckets'"
+    run_on = rh._clean(_hear(words)(phrase[0][1], until + rh.PAD_S))
+    assert rh._better(phrase, run_on), "judged whole, the run-on hearing would pass"
+    assert rh.rehear_phrase(_hear(words), phrase, until=until, before=words[i - 1][2], after=words[j + 1][1]) is None
+
+
+def test_a_hearing_whose_added_words_overlap_in_time_is_not_a_second_saying():
+    words = _voice("we add the salt then stir it in", held={3})
+    phrase = words[:8]
+    a, b = phrase[3][1], phrase[3][2]
+    # whisper invents a repeat on one sound: "salt, salt" at overlapping times
+    invented = phrase[:3] + [("salt,", a, b), ("salt", a + 0.1, b)] + phrase[4:]
+    assert rh.rehear_phrase(lambda s, e: invented, phrase) is None
+
+
+def test_a_second_saying_a_generated_voice_really_said_is_still_heard(tmp_path):
+    # the transcript holds "into" over a real second saying of "buckets into"; the voice said it twice
+    said = _voice("pour the water from the buckets into buckets into the tank now")
+    words = said[:6] + [("into", said[6][1], said[8][2])] + said[9:]
+    out, got = _rewrite(tmp_path, words, _hear(said))
+    assert [w for w, _, _ in got] == [w for w, _, _ in said], got
+    assert _no_overlap(got)

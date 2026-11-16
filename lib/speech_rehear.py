@@ -13,6 +13,13 @@ MAX_AUDIO_S of audio a cut. One hearing can collapse the repeat the way the tran
 once on the phrase's window and 0.1 s earlier; base.en heard it twice), so a phrase not heard better is heard again
 EARLY_S earlier, then with a second model; a hearing is judged on the words that end clear of the window's end (EDGE_S),
 where the next word is cut, and the phrase's own words past that edge are kept.
+
+A window never reaches into the words beside the phrase (§739). A generated voice reads on with no pauses, so its run is
+one long gapless phrase and only the words around its held word are heard; padded into the words beside them, the
+window heard those words too, and one whose text was among the phrase's own passed as a second saying while the word
+itself stayed in the transcript: "that that" on one sound, in the cut and in the captions. So the windows stop at the
+words beside the phrase, the run-on try (which goes past them on purpose) is judged only up to the phrase's own end,
+the held try's hearing must open on the held word, and the words put in must each take their own sound (_fits).
 """
 import json
 import os
@@ -33,6 +40,7 @@ RATE_MIN_WORDS = 3       # ... with at least this many words, may hold a second 
 EARLY_S = 0.1            # the second try's window starts this much earlier
 EDGE_S = 0.15            # words ending this close to the window's end may be cut by it: judged without them
 EXTEND_S = 1.0           # the first retry runs on through the words ending this soon after the phrase (1.5.0)
+OVERLAP_S = 0.02         # words put in may overlap the word before them by this much, no more (§739)
 
 
 @dataclass
@@ -130,11 +138,25 @@ def _better(orig, new):
     return k == len(want) and all(e in want for e in extra)
 
 
-def _accept(words, heard, end):
+def _fits(new, before, after):
+    """The words put in each take their own sound: each has a length, none starts more than OVERLAP_S before the word
+    ahead of it ends, and none reaches into the words beside the phrase (before: where the word before it ends; after:
+    where the word after it starts; None at the clip's edge). A second saying follows the first on sound of its own; a
+    repeat whisper invents sits on one sound (§739: "salt, salt" at overlapping times)."""
+    prev = before
+    for _, a, b in new:
+        if b <= a or (prev is not None and a < prev - OVERLAP_S):
+            return False
+        prev = b
+    return after is None or prev <= after + OVERLAP_S
+
+
+def _accept(words, heard, end, whole=True):
     """The phrase's words as `heard` gives them, or None: when heard is better (_better), or, judged only on the words
     of both that end clear of the window's end (EDGE_S, where the next word is cut), better there; then the phrase's
-    own words past that edge follow, none starting before the last word heard."""
-    if _better(words, heard):
+    own words past that edge follow, none starting before the last word heard. whole=False: judged only there (a
+    window that runs on past the phrase heard the words after it, which are never its own)."""
+    if whole and _better(words, heard):
         return heard
     cut = end - EDGE_S
     ow = [w for w in words if w[2] <= cut]
@@ -155,29 +177,41 @@ def until_after(words, j):
     return words[k][2] if k > j else None
 
 
-def rehear_phrase(window, words, alt=None, until=None):
+def rehear_phrase(window, words, alt=None, until=None, before=None, after=None):
     """The phrase's words as heard again, or None. window(start, end) -> [(text, start, end)] in source seconds; alt:
-    the same with a second model, or None; until: where the words after the phrase reach a natural end (until_after).
+    the same with a second model, or None; until: where the words after the phrase reach a natural end (until_after);
+    before / after: where the word before the phrase ends and the word after it starts (None at the clip's edge): no
+    window reaches past them, but the run-on one, judged only up to the phrase's own end (§739).
     First the whole phrase; when that hears it once again, from its longest held word on, the words before kept; then
     run on to `until` (1.5.0, CV pl89r: a window cut mid-word collapsed the repeat, one ending on whole words did not),
-    judged up to the phrase's own end; then the whole phrase EARLY_S earlier; then with `alt`."""
-    start, end = words[0][1] - PAD_S, words[-1][2] + PAD_S
-    got = _accept(words, _clean(window(round(start, 3), round(end, 3))), end)
+    judged up to the phrase's own end; then the whole phrase EARLY_S earlier; then with `alt`. Whatever is taken
+    must _fit."""
+    lo = lambda t: t if before is None else max(t, before)
+    start, end = lo(words[0][1] - PAD_S), words[-1][2] + PAD_S
+    if after is not None:
+        end = max(min(end, after), words[-1][2])
+
+    def take(got):
+        return got if got and _fits(got, before, after) else None
+    got = take(_accept(words, _clean(window(round(start, 3), round(end, 3))), end))
     if got:
         return got
     held = [k for k, w in enumerate(words) if _held(w)]
     if held:
         h = max(held, key=lambda k: words[k][2] - words[k][1])
-        at = words[h][1] - HELD_PAD_S
+        at = lo(words[h][1] - HELD_PAD_S)
         tail = [w for w in _clean(window(round(at, 3), round(end, 3))) if w[1] >= at - 1e-6]
+        # heard from the held word on: a hearing that opens on another word heard the one before it (§739)
         combined = list(words[:h]) + tail
-        if _better(words, combined):
+        if tail and _norm(tail[0][0]) == _norm(words[h][0]) and _better(words, combined) and _fits(combined, before, after):
             return combined
-    tries = [(window, start, until + PAD_S)] if until is not None and until + PAD_S > end else []
-    for hear, s0, e0 in tries + [(window, start - EARLY_S, end), (alt, start, end)]:
+    tries = [(window, start, until + PAD_S, False)] if until is not None and until + PAD_S > end else []
+    early = lo(start - EARLY_S)
+    tries += [(window, early, end, True)] if early < start else []
+    for hear, s0, e0, whole in tries + [(alt, start, end, True)]:
         if hear is None:
             continue
-        got = _accept(words, _clean(hear(round(max(0.0, s0), 3), round(e0, 3))), end)
+        got = take(_accept(words, _clean(hear(round(max(0.0, s0), 3), round(e0, 3))), end, whole))
         if got:
             return got
     return None
@@ -228,7 +262,9 @@ def rehear_file(sidecar, src, window, budget, only=None, alt=None):
         phrase = [w for _, w in indexed[i:j + 1]]
         if not budget.take(phrase[-1][2] - phrase[0][1] + 2 * PAD_S):
             break
-        new = rehear_phrase(window, phrase, alt, until_after([w for _, w in indexed], j))
+        new = rehear_phrase(window, phrase, alt, until_after([w for _, w in indexed], j),
+                            before=indexed[i - 1][1][2] if i > 0 else None,
+                            after=indexed[j + 1][1][1] if j + 1 < len(indexed) else None)
         if new:
             changes.append((indexed[i][0], indexed[j][0], phrase, new))
     if not changes:
