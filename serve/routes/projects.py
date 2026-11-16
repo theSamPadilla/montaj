@@ -5955,6 +5955,21 @@ def _render_motion_blur(body: dict):
     return blur
 
 
+def _render_estimate_rates(body: dict):
+    """The body's `estimateRates` (§737): `(ms3dPerChunk, ms2dPerFrame)` when it is a dict of two positive finite
+    numbers (not bools), else None. Never an error: a bad value is dropped and the render logs no early `bake left`."""
+    rates = body.get("estimateRates")
+    if not isinstance(rates, dict):
+        return None
+    vals = []
+    for key in ("ms3dPerChunk", "ms2dPerFrame"):
+        v = rates.get(key)
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
+            return None
+        vals.append(v)
+    return vals[0], vals[1]
+
+
 def _validate_render_body(body: dict, *, overrides: bool = True) -> None:
     """422 on an `export` or `sdrCurve` render.js would refuse, and with
     `overrides` (a render, not an estimate) on a bad `fps` or `motionBlur`."""
@@ -6025,6 +6040,10 @@ def _render_js_args(project_dir: Path, project_path: Path, body: dict, *, overri
     blur = _render_motion_blur(body)
     if blur is not None:
         script_args += ["--motion-blur", str(blur)]
+    # §737: the app's seeds for `bake left` (what a 3D chunk and a 2D frame cost here), a render only. Invalid is dropped.
+    rates = _render_estimate_rates(body)
+    if rates is not None:
+        script_args += ["--estimate-rates", f"{rates[0]:g},{rates[1]:g}"]
     return script_args, output_path
 
 

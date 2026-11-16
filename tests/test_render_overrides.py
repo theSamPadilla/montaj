@@ -61,3 +61,29 @@ def test_the_estimate_takes_motion_blur_leniently():
     assert _estimate_overrides({"fps": 30, "motionBlur": 3}) == ["--fps", "30", "--motion-blur", "3"]
     for bad in (0, 9, 1.5, "1", True, None):
         assert "--motion-blur" not in _estimate_overrides({"motionBlur": bad})
+
+
+# §737: the app's seeds for the engine's `bake left` line.
+@pytest.mark.parametrize("rates,flag", [
+    ({"ms3dPerChunk": 90000, "ms2dPerFrame": 35.5}, "90000,35.5"),
+    ({"ms3dPerChunk": 1.5, "ms2dPerFrame": 2}, "1.5,2"),
+])
+def test_estimate_rates_become_the_flag(rates, flag):
+    argv = _args({"estimateRates": rates})
+    assert argv[-2:] == ["--estimate-rates", flag]
+
+
+@pytest.mark.parametrize("rates", [
+    {"ms3dPerChunk": -1, "ms2dPerFrame": 5}, {"ms3dPerChunk": 5, "ms2dPerFrame": 0}, {"ms3dPerChunk": "5", "ms2dPerFrame": 5},
+    {"ms3dPerChunk": True, "ms2dPerFrame": 5}, {"ms3dPerChunk": 5}, {"ms2dPerFrame": 5}, {"ms3dPerChunk": float("inf"), "ms2dPerFrame": 5},
+    {"ms3dPerChunk": float("nan"), "ms2dPerFrame": 5}, [1, 2], "1,2", None, {},
+])
+def test_bad_estimate_rates_are_dropped_silently(rates):
+    assert "--estimate-rates" not in _args({"estimateRates": rates})
+    _validate_render_body({"estimateRates": rates})  # never a 422
+
+
+def test_the_estimate_route_never_carries_the_rates():
+    argv = _args({"estimateRates": {"ms3dPerChunk": 5, "ms2dPerFrame": 5}}, overrides=False)
+    assert "--estimate-rates" not in argv
+    assert "--estimate-rates" not in _estimate_overrides({"estimateRates": {"ms3dPerChunk": 5, "ms2dPerFrame": 5}})
