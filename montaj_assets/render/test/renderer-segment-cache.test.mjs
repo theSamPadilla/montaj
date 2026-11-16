@@ -140,6 +140,9 @@ test('a 3-chunk 3D segment with chunks 1 and 2 cached renders only chunk 3, and 
   assert.match(stderr, /reused shot chunk 1\/3 \(1\/3 done\)/)
   assert.match(stderr, /reused shot chunk 2\/3 \(2\/3 done\)/)
   assert.match(stderr, /encoded shot chunk 3\/3 \(3\/3 done\)/)
+  assert.doesNotMatch(stderr, /3d chunk shot chunk [12]\/3:/, 'a reused chunk logs no timing (§737)')
+  assert.match(stderr, /3d chunk shot chunk 3\/3: 3 frames x1 in \d+ ms \(lanes 1\)/)
+  assert.doesNotMatch(stderr, /bake left/, 'no time left is said with no 2D work')
   // The joined segment holds all nine frames, and the concat left the two cached chunks in place.
   const video = probeSegmentStreams(outs[0][0].webmPath).find((s) => s.codec_type === 'video')
   assert.equal(Number(video.nb_read_packets), 9)

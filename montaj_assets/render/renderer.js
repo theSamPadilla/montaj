@@ -235,18 +235,19 @@ export function memoryPlanLines(memory) {
  * A chunk that runs again never pushes it past the total.
  *
  * @param {{ total: number, log: (msg: string) => void }} opts
- * @returns {() => void} call once per output frame written
+ * @returns {() => boolean} call once per output frame written; true when it logged a line (a whole percent passed)
  */
 export function createBakeProgress({ total, log: write }) {
   let done = 0
   let lastPct = -1
   return () => {
-    if (!(total > 0)) return
+    if (!(total > 0)) return false
     done = Math.min(total, done + 1)
     const pct = Math.floor((done / total) * 100)
-    if (pct === lastPct) return
+    if (pct === lastPct) return false
     lastPct = pct
     write(`baked ${done}/${total} frames`)
+    return true
   }
 }
 
@@ -302,9 +303,41 @@ export async function renderAllSegments(segments, config = {}) {
 
   const { jobs, workerCount, chunkSize, memory, targetWorkers } = planChunks(segments, config)
   lastPlan = { workers: workerCount, chunkFrames: chunkSize }
+  // §737: the clock every timing below reads (a test drives it).
+  const now = config.now ?? Date.now
+  // §737: why the engine says the time left: a 3D shot costs far more than a caption frame, so a pace counted in
+  // frames is wrong whenever the mix of work changes. The engine knows the queue and what each kind of job has taken
+  // so far, so it logs `bake left <s> s` at every step the frame counter logs. Nothing is said until each kind of job
+  // that still has work has finished once (no guess, no default), and the app then keeps its own pace estimate.
+  const timing = { n3d: 0, ms3d: 0, ms2d: 0, frames2d: 0 }
+  const inflight = new Map() // job -> { start, is3d }
+  const lanes3dSeen = new Set() // workers that have rendered a 3D job: the 3D lanes admitted
+  let workers2dNow = () => 1
+  let queueReady = false // the reuse pass below fills the queue; until then the queue says nothing about the work left
+  const logBakeLeft = () => {
+    if (!queueReady) return
+    let queued3d = 0, queued2dFrames = 0
+    for (const j of queue) { if (isScene3dSegment(j)) queued3d++; else queued2dFrames += j.frameEnd - j.frameStart }
+    let flight3d = 0, flight2d = 0
+    for (const { is3d } of inflight.values()) { if (is3d) flight3d++; else flight2d++ }
+    const need3d = queued3d + flight3d > 0
+    const need2d = queued2dFrames + flight2d > 0
+    if ((need3d && timing.n3d === 0) || (need2d && timing.frames2d === 0)) return
+    const mean3d = timing.n3d > 0 ? timing.ms3d / timing.n3d : 0
+    const perFrame2d = timing.frames2d > 0 ? timing.ms2d / timing.frames2d : 0
+    const lanes3d = Math.max(1, lanes3dSeen.size)
+    let ms = (queued3d * mean3d) / lanes3d + (queued2dFrames * perFrame2d) / workers2dNow()
+    const t = now()
+    for (const [j, { start, is3d }] of inflight) {
+      const est = is3d ? mean3d : (j.frameEnd - j.frameStart) * perFrame2d
+      ms += Math.max(0, est - (t - start)) / (is3d ? lanes3d : 1)
+    }
+    log(`bake left ${Math.round(ms / 1000)} s`)
+  }
   // §434: a render cut in time slices passes one counter that spans every call.
-  const noteFrame = config.bakeProgress
+  const bakeCounter = config.bakeProgress
     ?? createBakeProgress({ total: jobs.reduce((n, j) => n + (j.frameEnd - j.frameStart), 0), log })
+  const noteFrame = () => { if (bakeCounter() === true) logBakeLeft() }
   log(`workers=${workerCount} chunk=${chunkSize}`)
   for (const line of memoryPlanLines(memory)) log(line)
   // Test seams: the browser a worker runs and how it renders a chunk.
@@ -342,6 +375,7 @@ export async function renderAllSegments(segments, config = {}) {
     keepChunk(job, hit)
     log(`reused ${chunkLabel(job)} (${jobsDone}/${jobs.length} done)`)
   }
+  queueReady = true
   if (queue.length === 0) return assemble()
   // §737: with 3D jobs left, a render plans SCENE3D_MAX_WORKERS lanes whatever the first memory reading, but starts ONE
   // browser: the second lane's launches when its first chunk is admitted (admitsSecond3dLane, below).
@@ -442,6 +476,13 @@ export async function renderAllSegments(segments, config = {}) {
     log,
   })
   const runs = []
+  workers2dNow = () => {
+    if (queue.some(isScene3dSegment) || running3d > 0) {
+      const jobs2d = queue.filter((j) => !isScene3dSegment(j)).length
+      return Math.max(1, jobs2d > 0 ? planWorkers2d({ target: targetWorkers, jobs: jobs2d, totalBytes: memory.totalBytes }).workers : 1)
+    }
+    return Math.max(1, live.size)
+  }
   const widen = async () => {
     if (widened || running3d > 0 || queue.length === 0 || queue.some(isScene3dSegment) || firstFailure) return
     widened = true
@@ -478,6 +519,8 @@ export async function renderAllSegments(segments, config = {}) {
         const job = queue.shift()
         // Another worker can take the last job between the acquire and here.
         if (!job) { gate.release(`worker ${workerIdx}`); break }
+        const jobStart = now()
+        inflight.set(job, { start: jobStart, is3d: isScene3dSegment(job) })
         if (!current) {
           log(`3d lane ${workerIdx + 1}: starts`)
           try {
@@ -510,9 +553,21 @@ export async function renderAllSegments(segments, config = {}) {
         log(`rendering ${label} (${job.frameEnd - job.frameStart} frames)...`)
         // `reads` (§737): what a 3D chunk's page read (read-set.js); a renderJob that gives none read nothing.
         let webmPath, reads
+        let lanesNow = 1
+        if (is3d) lanes3dSeen.add(workerIdx)
         try {
           ({ webmPath, reads } = await renderJob(current, job, { onFrame: noteFrame, threads: encoderThreads }))
+          lanesNow = Math.max(1, running3d)
+          const took = now() - jobStart
+          const frames = job.frameEnd - job.frameStart
+          if (is3d) {
+            timing.n3d++; timing.ms3d += took
+            log(`3d chunk ${label}: ${frames} frames x${job.subframes ?? 1} in ${took} ms (lanes ${lanesNow})`)
+          } else {
+            timing.ms2d += took; timing.frames2d += frames
+          }
         } finally {
+          inflight.delete(job)
           gate.release(`worker ${workerIdx}`)
           if (is3d) running3d--
         }
