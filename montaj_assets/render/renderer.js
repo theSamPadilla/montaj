@@ -17,7 +17,7 @@ import { FFMPEG } from './ffmpeg-bin.js'
 import { ffmpegErrorTail, describeFfmpegExit } from './ffmpeg-error.js'
 import { childKilledError, isChildKilled, syncResultError, CHILD_KILLED_PHASES } from './child-killed.js'
 import { adaptiveChunkSize } from './chunk-plan.js'
-import { availableMemoryBytes, workerFootprint, planWorkers, planWorkers2d, createMemoryGovernor, readMemoryPressure, secondLaneRefusal, gb, isScene3dSegment, SCENE3D_MAX_WORKERS, SCENE3D_MAX_CHUNK_FRAMES } from './memory.js'
+import { availableMemoryBytes, workerFootprint, planWorkers, planWorkers2d, createMemoryGovernor, readMemoryPressure, secondLaneRefusal, gb, isScene3dSegment, SCENE3D_MAX_WORKERS, LAZY_SECOND_3D_LANE, SCENE3D_MAX_CHUNK_FRAMES } from './memory.js'
 import { defaultWorkerTarget, ffmpegThreads } from './load.js'
 import { createPlaybackThrottle, sharedPlaybackWatcher } from './playback.js'
 import { toFileHref } from './file-url.js'
@@ -396,12 +396,14 @@ export async function renderAllSegments(segments, config = {}) {
   }
   queueReady = true
   if (queue.length === 0) return assemble()
-  // §737: with 3D jobs left, a render plans SCENE3D_MAX_WORKERS lanes whatever the first memory reading, but starts ONE
-  // browser: the second lane's launches when its first chunk is admitted (admitsSecond3dLane, below).
-  // Off macOS no pressure reading exists (supported false), so the render plans its lanes by memory alone, as before.
+  // §737: with the lazy lane on (LAZY_SECOND_3D_LANE, off by default since its measurement) and 3D jobs left, a render
+  // plans SCENE3D_MAX_WORKERS lanes whatever the first memory reading, but starts ONE browser: the second lane's launches
+  // when its first chunk is admitted (admitsSecond3dLane, below). Off, or off macOS (no pressure reading, supported
+  // false), the render plans its lanes by memory alone, as before.
+  const lazyOn = config.memory?.lazySecondLane ?? LAZY_SECOND_3D_LANE
   const readPressure = config.memory?.readMemoryPressure ?? readMemoryPressure
-  const p0 = memory.has3d ? readPressure() : null
-  const lazyLanes = p0?.supported !== false && memory.has3d && queue.some(isScene3dSegment) && Math.min(memory.asked, SCENE3D_MAX_WORKERS, queue.length) > 1
+  const p0 = memory.has3d && lazyOn ? readPressure() : null
+  const lazyLanes = lazyOn && p0?.supported !== false && memory.has3d && queue.some(isScene3dSegment) && Math.min(memory.asked, SCENE3D_MAX_WORKERS, queue.length) > 1
   const lanes = lazyLanes ? Math.min(memory.asked, SCENE3D_MAX_WORKERS, queue.length) : Math.min(workerCount, queue.length)
   const launched = lazyLanes ? 1 : lanes
   let swapUsedAtStart = null

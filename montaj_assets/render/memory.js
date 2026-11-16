@@ -18,7 +18,8 @@
  * chunks. It needs free memory above the reserve, macOS's memory pressure at
  * normal and swap not growing past SWAP_GROWTH_MAX_BYTES since the render
  * began: free memory alone does not see a machine that is already swapping.
- * Anything unreadable keeps one lane.
+ * Anything unreadable keeps one lane. It is OFF by default (LAZY_SECOND_3D_LANE,
+ * below): measured, it took turns with the first lane and was slower.
  *
  * Every budget is here, with what it is calibrated against.
  */
@@ -128,10 +129,25 @@ export const SCENE3D_TEXTURE_COPIES = 1 + 4 / 3
 export const TEXTURE_UNKNOWN_EXPANSION = 8
 
 /**
- * §737: a second 3D lane is held back once swap in use has grown by this much since the render began. PROVISIONAL until
- * measured: §737 T6's measurement sets it.
+ * §737: a second 3D lane is held back once swap in use has grown by this much since the render began. PROVISIONAL: in
+ * §737 T6's measurement (below) swap never grew, so nothing tested this limit.
  */
 export const SWAP_GROWTH_MAX_BYTES = 1 * GB
+
+/**
+ * §737 T6: whether a render with 3D starts one browser and admits a second 3D lane later (admitsSecond3dLane). OFF, a
+ * render with 3D plans its lanes once from the first memory reading, as before §737. A test turns it on with
+ * renderAllSegments' `config.memory.lazySecondLane`.
+ *
+ * MEASURED 2026-11-15 on a 36 GB M3 Pro (Mac15,7) with 8 GB of swap in use and pressure normal, 6 3D shots of 30 frames,
+ * render.js with an empty segment cache, under the test lock at nice 10. The plan's gate was 1.4x faster:
+ *   one lane:        52 s, then 54 s (each shot 5.8 to 6.0 s)
+ *   lazy second lane: 64 s, then 60 s (0.81x and 0.90x)
+ * Peak RSS of the render's processes 2.5 to 3.3 GB either way, swap unchanged. The two lanes never rendered at once:
+ * lane 2 was admitted in the gap between lane 1's chunks, when lane 1 held no memory, and lane 1 then waited on the
+ * governor (available 12.9 GB, reserve 9.7 GB, 2.6 GB a worker), so the lanes took turns, each turn with a browser launch.
+ */
+export const LAZY_SECOND_3D_LANE = false
 
 /** How often a held-back worker reads the memory again. */
 export const GOVERNOR_POLL_MS = 3000

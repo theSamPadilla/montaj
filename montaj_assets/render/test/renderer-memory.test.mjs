@@ -10,7 +10,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { planChunks, renderAllSegments, memoryPlanLines, relaunchWorker, compositesOnGpu } from '../renderer.js'
 import { overlayPageLaunchOptions } from '../page-guard.js'
-import { SCENE3D_MAX_WORKERS, SCENE3D_MAX_CHUNK_FRAMES, SCENE3D_UNKNOWN_BYTES, PER_WORKER_BYTES } from '../memory.js'
+import { SCENE3D_MAX_WORKERS, SCENE3D_MAX_CHUNK_FRAMES, SCENE3D_UNKNOWN_BYTES, PER_WORKER_BYTES, LAZY_SECOND_3D_LANE } from '../memory.js'
 
 const GB = 1e9
 const TOTAL_36GB = 36 * GB
@@ -306,6 +306,25 @@ test('renderAllSegments (§392(c)): caption chunks run on software-composited br
 
 // --- §737: the second 3D lane is lazy ---------------------------------------
 
+test('renderAllSegments (§737): by default (LAZY_SECOND_3D_LANE off) a 3D render plans its lanes from the first reading and never reads pressure', async () => {
+  assert.equal(LAZY_SECOND_3D_LANE, false)
+  const neverRead = () => { throw new Error('pressure read with the lazy lane off') }
+  const roomy = fakes()
+  await renderAllSegments(renderable3d(4), {
+    workers: 2, chunkSize: 1000, launchWorker: roomy.launchWorker, renderJob: roomy.renderJob,
+    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, readMemoryPressure: neverRead },
+  })
+  assert.equal(roomy.seen.most, 2, 'room at the start: both lanes from the start')
+  let reads = 0
+  const short = fakes()
+  const lines = await captureLog(() => renderAllSegments(renderable3d(4), {
+    workers: 2, chunkSize: 1000, launchWorker: short.launchWorker, renderJob: short.renderJob,
+    memory: { readAvailable: () => (reads++ === 0 ? 5 * GB : 30 * GB), totalBytes: TOTAL_36GB, pollMs: 1, readMemoryPressure: neverRead },
+  }))
+  assert.equal(short.seen.most, 1, 'short at the start: one lane for the whole render, as before §737')
+  assert.ok(!lines.some((l) => l.startsWith('3d lane')), lines.join('\n'))
+})
+
 test('renderAllSegments (§737): a reading low at the start and high later launches the second browser mid-render', async () => {
   let available = 5 * GB
   let launches = 0
@@ -313,7 +332,7 @@ test('renderAllSegments (§737): a reading low at the start and high later launc
   const out = await renderAllSegments(renderable3d(6), {
     workers: 2, chunkSize: 1000, relaunchDelayMs: 0,
     launchWorker: async () => { launches++; return { close: async () => {} } }, renderJob: f.renderJob,
-    memory: { readAvailable: () => available, totalBytes: TOTAL_36GB, pollMs: 1, readMemoryPressure: calm },
+    memory: { readAvailable: () => available, totalBytes: TOTAL_36GB, pollMs: 1, lazySecondLane: true, readMemoryPressure: calm },
   })
   assert.equal(out.length, 6)
   assert.equal(f.seen.most, 2, 'two lanes ran although the first reading was low')
@@ -328,7 +347,7 @@ test('renderAllSegments (§737): the second browser launches only when its lane 
     workers: 2, chunkSize: 1000, relaunchDelayMs: 0,
     launchWorker: async () => { events.push('launch'); return { close: async () => {} } },
     renderJob: async (w, job) => { events.push(job.id); available = 30 * GB; return f.renderJob(w, job) },
-    memory: { readAvailable: () => available, totalBytes: TOTAL_36GB, pollMs: 1, readMemoryPressure: calm },
+    memory: { readAvailable: () => available, totalBytes: TOTAL_36GB, pollMs: 1, lazySecondLane: true, readMemoryPressure: calm },
   })
   assert.equal(events.filter((e) => e === 'launch').length, 2, 'one at the start, one when admitted (the first lane has no chunk after seg0)')
   assert.equal(events[0], 'launch')
@@ -341,7 +360,7 @@ test('renderAllSegments (§737): memory pressure above normal keeps one lane, an
   const out = await renderAllSegments(renderable3d(4), {
     workers: 2, chunkSize: 1000, relaunchDelayMs: 0,
     launchWorker: async () => { launches++; return { close: async () => {} } }, renderJob: f.renderJob,
-    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, readMemoryPressure: () => ({ level: 2, swapUsedBytes: 0, swapTotalBytes: 0 }) },
+    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, lazySecondLane: true, readMemoryPressure: () => ({ level: 2, swapUsedBytes: 0, swapTotalBytes: 0 }) },
   })
   assert.equal(out.length, 4)
   assert.equal(f.seen.most, 1)
@@ -365,7 +384,7 @@ test('renderAllSegments (§737): swap growing past the limit parks lane 2 before
       seg1Done = true
       return r
     },
-    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, readMemoryPressure: () => ({ level: 1, swapUsedBytes: swap, swapTotalBytes: 8 * GB }) },
+    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, lazySecondLane: true, readMemoryPressure: () => ({ level: 1, swapUsedBytes: swap, swapTotalBytes: 8 * GB }) },
   })
   assert.equal(out.length, 8, 'every chunk renders, including the one in flight when swap grew')
   assert.ok(seg1Done)
@@ -379,7 +398,7 @@ test('renderAllSegments (§737): a render with no 3D launches the browsers it di
   await renderAllSegments(renderable(6), {
     workers: 2, chunkSize: 1000, relaunchDelayMs: 0,
     launchWorker: async () => { launches++; return { close: async () => {} } }, renderJob: f.renderJob,
-    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, readMemoryPressure: () => { throw new Error('not read') } },
+    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, lazySecondLane: true, readMemoryPressure: () => { throw new Error('not read') } },
   })
   assert.equal(launches, 2, 'both at the start, none recycled under 5 chunks each')
   assert.equal(f.seen.most, 2)
@@ -392,7 +411,7 @@ test('renderAllSegments (§737): a render whose 3D chunks are all cached launche
   const out = await renderAllSegments(segs, {
     workers: 2, chunkSize: 1000, launchWorker: async () => { launches++; return { close: async () => {} } }, renderJob: f.renderJob,
     segmentCache: { lookup: (job) => `/cache/${job.id}.mkv`, store: () => {} },
-    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, readMemoryPressure: calm },
+    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, lazySecondLane: true, readMemoryPressure: calm },
   })
   assert.equal(launches, 0)
   assert.equal(f.seen.rendered.length, 0)
@@ -423,7 +442,7 @@ test('renderAllSegments (§737): a failed launch of lane 2 loses no chunk; lane 
         await new Promise((r) => setTimeout(r, 30))
         return { webmPath: job.outputPath }
       },
-      memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, readMemoryPressure: calm },
+      memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, lazySecondLane: true, readMemoryPressure: calm },
     })
   })
   assert.equal(out.length, 4, 'every chunk is in the result')
@@ -446,7 +465,7 @@ test('renderAllSegments (§737): when lane 1 takes the last chunk during lane 2\
       perChunk.set(job.id, (perChunk.get(job.id) ?? 0) + 1)
       return { webmPath: job.outputPath }
     },
-    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, readMemoryPressure: calm },
+    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, lazySecondLane: true, readMemoryPressure: calm },
   })
   assert.equal(out.length, 2)
   assert.ok([...perChunk.values()].every((n) => n === 1), 'every chunk once')
@@ -471,7 +490,7 @@ test('renderAllSegments (§737): the 2D widen waits for the last 3D chunk even w
         if (is3d) in3d--
         return { webmPath: job.outputPath }
       },
-      memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, readMemoryPressure: calm },
+      memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, lazySecondLane: true, readMemoryPressure: calm },
     })
   })
   const widen = lines.findIndex((l) => /^3d done: .* more worker\(s\)/.test(l))
@@ -491,7 +510,7 @@ test('renderAllSegments (§737): off macOS (no pressure reading) both 3D lanes l
     workers: 2, chunkSize: 1000, relaunchDelayMs: 0,
     launchWorker: async () => { launches++; events.push('launch'); return { close: async () => {} } },
     renderJob: async (w, job) => { events.push(job.id); return f.renderJob(w, job) },
-    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, readMemoryPressure: () => ({ supported: false, level: null, swapUsedBytes: null, swapTotalBytes: null }) },
+    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, lazySecondLane: true, readMemoryPressure: () => ({ supported: false, level: null, swapUsedBytes: null, swapTotalBytes: null }) },
   })
   assert.deepEqual(events.slice(0, 3), ['launch', 'launch', 'seg0'], 'two browsers before the first job')
   assert.equal(f.seen.most, 2, 'both workers render')
@@ -504,7 +523,7 @@ test('renderAllSegments (§737): the swap baseline passed in by the render holds
     await renderAllSegments(renderable3d(4), {
       workers: 2, chunkSize: 1000, relaunchDelayMs: 0, swapUsedAtStart: 1 * GB,
       launchWorker: async () => { launches++; return { close: async () => {} } }, renderJob: f.renderJob,
-      memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, readMemoryPressure: () => ({ level: 1, swapUsedBytes: 2.5 * GB, swapTotalBytes: 8 * GB }) },
+      memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, lazySecondLane: true, readMemoryPressure: () => ({ level: 1, swapUsedBytes: 2.5 * GB, swapTotalBytes: 8 * GB }) },
     })
   })
   assert.equal(f.seen.most, 1, 'lane 2 never ran')

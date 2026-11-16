@@ -187,7 +187,7 @@ test('a parked second lane stops halving the queued 3D time', async () => {
   const pressure = () => ({ level: ++reads <= 2 ? 1 : 2, swapUsedBytes: 1 * GB, swapTotalBytes: 4 * GB })
   const lines = await run(segs, () => 30000, {
     workers: 2, tickMs: 10, estimateRates: { ms3dPerChunk: 30000, ms2dPerFrame: 1 },
-    memory: { readAvailable: () => 30 * GB, totalBytes: 36 * GB, pollMs: 1, readMemoryPressure: pressure },
+    memory: { readAvailable: () => 30 * GB, totalBytes: 36 * GB, pollMs: 1, lazySecondLane: true, readMemoryPressure: pressure },
   })
   const waits = at(lines, (l) => l.startsWith('3d lane 2: waits'))
   assert.ok(waits > 0)
