@@ -516,25 +516,27 @@ export async function renderAllSegments(segments, config = {}) {
         if (!(await gate.acquire(`worker ${workerIdx}`, () => queue.length > 0))) break
         // A wait at the memory governor can be long: the preview may have started meanwhile. Rest again before the chunk.
         if (workerIdx >= throttle.keep && isPlayingNow() && queue.length > 0) { gate.release(`worker ${workerIdx}`); continue }
+        // §737: a lane with no browser launches it once admitted and BEFORE it takes a job, so a failed launch loses none
+        // and no 3D chunk is shifted but not yet counted in running3d (widen() reads both).
+        if (!current) {
+          try {
+            current = await relaunchWorker(() => launchWorker({ needsGoogleFonts, gpuCompositing: compositesOnGpu(queue[0]) }), { label: `worker ${workerIdx}`, delayMs: config.relaunchDelayMs })
+          } catch (err) {
+            gate.release(`worker ${workerIdx}`)
+            log(`3d lane ${workerIdx + 1}: could not launch (${err?.message ?? err}); the other lane carries on`)
+            break
+          }
+          current.gpuCompositing ??= compositesOnGpu(queue[0])
+          live.add(current)
+          // The other lane took the last job while this browser launched: the finally closes it.
+          if (queue.length === 0) { gate.release(`worker ${workerIdx}`); break }
+          log(`3d lane ${workerIdx + 1}: starts`)
+        }
         const job = queue.shift()
         // Another worker can take the last job between the acquire and here.
         if (!job) { gate.release(`worker ${workerIdx}`); break }
         const jobStart = now()
         inflight.set(job, { start: jobStart, is3d: isScene3dSegment(job) })
-        if (!current) {
-          log(`3d lane ${workerIdx + 1}: starts`)
-          try {
-            current = await launchWorker({ needsGoogleFonts, gpuCompositing: compositesOnGpu(job) })
-          } catch (err) {
-            // The chunk goes back for the other lane.
-            queue.unshift(job)
-            gate.release(`worker ${workerIdx}`)
-            log(`worker ${workerIdx}: could not launch (${err?.message ?? err}); the others carry on`)
-            break
-          }
-          current.gpuCompositing ??= compositesOnGpu(job)
-          live.add(current)
-        }
         const is3d = isScene3dSegment(job)
         if (is3d) running3d++
         // §392(c): captions run on a browser that composites in software,

@@ -309,7 +309,6 @@ test('renderAllSegments (§392(c)): caption chunks run on software-composited br
 test('renderAllSegments (§737): a reading low at the start and high later launches the second browser mid-render', async () => {
   let available = 5 * GB
   let launches = 0
-  const lines = []
   const f = fakes({ ms: 25, onDone: (seen) => { if (seen.rendered.length === 1) available = 30 * GB } })
   const out = await renderAllSegments(renderable3d(6), {
     workers: 2, chunkSize: 1000, relaunchDelayMs: 0,
@@ -333,11 +332,11 @@ test('renderAllSegments (§737): the second browser launches only when its lane 
   })
   assert.equal(events.filter((e) => e === 'launch').length, 2, 'one at the start, one when admitted (the first lane has no chunk after seg0)')
   assert.equal(events[0], 'launch')
+  assert.ok(events.indexOf('launch', 1) > events.indexOf('seg0'), `the second launch waits for the admission that seg0 raised (${events.join(',')})`)
 })
 
 test('renderAllSegments (§737): memory pressure above normal keeps one lane, and never launches a second browser', async () => {
   let launches = 0
-  const lines = []
   const f = fakes()
   const out = await renderAllSegments(renderable3d(4), {
     workers: 2, chunkSize: 1000, relaunchDelayMs: 0,
@@ -398,4 +397,88 @@ test('renderAllSegments (§737): a render whose 3D chunks are all cached launche
   assert.equal(launches, 0)
   assert.equal(f.seen.rendered.length, 0)
   assert.equal(out.length, 2)
+})
+
+// --- §737: lane 2 launches its browser before it takes a job ----------------
+
+/** Runs `fn` with the render's stderr log captured; returns the lines (the "[montaj render]" prefix stripped). */
+async function captureLog(fn) {
+  const lines = []
+  const orig = process.stderr.write
+  process.stderr.write = (c) => { lines.push(String(c).replace(/\n$/, '').replace(/^.*\[montaj render\]\S* /, '')); return true }
+  try { await fn(lines) } finally { process.stderr.write = orig }
+  return lines
+}
+
+test('renderAllSegments (§737): a failed launch of lane 2 loses no chunk; lane 1 renders all of them', async () => {
+  let launches = 0
+  const perChunk = new Map()
+  let out
+  const lines = await captureLog(async () => {
+    out = await renderAllSegments(renderable3d(4), {
+      workers: 2, chunkSize: 1000, relaunchDelayMs: 0,
+      launchWorker: async () => { if (++launches === 2 || launches === 3) throw new Error('no chrome'); return { close: async () => {} } },
+      renderJob: async (_w, job) => {
+        perChunk.set(job.id, (perChunk.get(job.id) ?? 0) + 1)
+        await new Promise((r) => setTimeout(r, 30))
+        return { webmPath: job.outputPath }
+      },
+      memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, readMemoryPressure: calm },
+    })
+  })
+  assert.equal(out.length, 4, 'every chunk is in the result')
+  for (const id of ['seg0', 'seg1', 'seg2', 'seg3']) assert.equal(perChunk.get(id), 1, `${id} rendered once`)
+  assert.ok(lines.some((l) => /^3d lane 2: could not launch \(no chrome\); the other lane carries on$/.test(l)), lines.join('\n'))
+})
+
+test('renderAllSegments (§737): when lane 1 takes the last chunk during lane 2\'s launch, lane 2 closes its browser and nothing runs twice', async () => {
+  let launches = 0
+  const closed = [], ranOn = [], perChunk = new Map()
+  const out = await renderAllSegments(renderable3d(2), {
+    workers: 2, chunkSize: 1000, relaunchDelayMs: 0,
+    launchWorker: async () => {
+      const id = ++launches
+      if (id === 2) await new Promise((r) => setTimeout(r, 60))
+      return { id, close: async () => { closed.push(id) } }
+    },
+    renderJob: async (w, job) => {
+      ranOn.push(w.id)
+      perChunk.set(job.id, (perChunk.get(job.id) ?? 0) + 1)
+      return { webmPath: job.outputPath }
+    },
+    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, readMemoryPressure: calm },
+  })
+  assert.equal(out.length, 2)
+  assert.ok([...perChunk.values()].every((n) => n === 1), 'every chunk once')
+  assert.ok(!ranOn.includes(2), 'the slow browser ran nothing')
+  assert.ok(closed.includes(2), 'lane 2 closed it')
+  assert.equal(closed.filter((id) => id === 2).length, 1, 'closed once')
+})
+
+test('renderAllSegments (§737): the 2D widen waits for the last 3D chunk even while lane 2 launches holding nothing', async () => {
+  let launches = 0
+  let in3d = 0
+  const segs = [...renderable3d(2), ...renderable(4).map((s, i) => ({ ...s, id: `cap${i}` }))]
+  const lines = await captureLog(async (lines) => {
+    await renderAllSegments(segs, {
+      workers: 6, chunkSize: 1000, relaunchDelayMs: 0,
+      launchWorker: async () => { if (++launches === 2) await new Promise((r) => setTimeout(r, 60)); return { close: async () => {} } },
+      renderJob: async (_w, job) => {
+        const is3d = job.id.startsWith('seg')
+        if (!is3d) lines.push(`START ${job.id} with ${in3d} 3d in flight`)
+        if (is3d) in3d++
+        await new Promise((r) => setTimeout(r, is3d ? 20 : 5))
+        if (is3d) in3d--
+        return { webmPath: job.outputPath }
+      },
+      memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, readMemoryPressure: calm },
+    })
+  })
+  const widen = lines.findIndex((l) => /^3d done: .* more worker\(s\)/.test(l))
+  const lastEncoded3d = lines.findIndex((l) => /^encoded seg1 /.test(l))
+  assert.ok(lastEncoded3d >= 0 && widen > lastEncoded3d, `widen after the last 3D chunk (widen ${widen}, encoded ${lastEncoded3d})\n${lines.join('\n')}`)
+  for (const [i, l] of lines.entries()) {
+    const m = /^START cap\d+ with (\d+) 3d in flight$/.exec(l)
+    if (m && Number(m[1]) > 0) assert.ok(i < widen, `a 2D job started beside a 3D one only before the widen: ${l}`)
+  }
 })
