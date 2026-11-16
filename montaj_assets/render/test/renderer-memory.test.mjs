@@ -482,3 +482,31 @@ test('renderAllSegments (§737): the 2D widen waits for the last 3D chunk even w
     if (m && Number(m[1]) > 0) assert.ok(i < widen, `a 2D job started beside a 3D one only before the widen: ${l}`)
   }
 })
+
+test('renderAllSegments (§737): off macOS (no pressure reading) both 3D lanes launch before the first job and both render', async () => {
+  const events = []
+  let launches = 0
+  const f = fakes()
+  await renderAllSegments(renderable3d(3), {
+    workers: 2, chunkSize: 1000, relaunchDelayMs: 0,
+    launchWorker: async () => { launches++; events.push('launch'); return { close: async () => {} } },
+    renderJob: async (w, job) => { events.push(job.id); return f.renderJob(w, job) },
+    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, readMemoryPressure: () => ({ supported: false, level: null, swapUsedBytes: null, swapTotalBytes: null }) },
+  })
+  assert.deepEqual(events.slice(0, 3), ['launch', 'launch', 'seg0'], 'two browsers before the first job')
+  assert.equal(f.seen.most, 2, 'both workers render')
+})
+
+test('renderAllSegments (§737): the swap baseline passed in by the render holds across slices', async () => {
+  let launches = 0
+  const f = fakes()
+  const lines = await captureLog(async () => {
+    await renderAllSegments(renderable3d(4), {
+      workers: 2, chunkSize: 1000, relaunchDelayMs: 0, swapUsedAtStart: 1 * GB,
+      launchWorker: async () => { launches++; return { close: async () => {} } }, renderJob: f.renderJob,
+      memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1, readMemoryPressure: () => ({ level: 1, swapUsedBytes: 2.5 * GB, swapTotalBytes: 8 * GB }) },
+    })
+  })
+  assert.equal(f.seen.most, 1, 'lane 2 never ran')
+  assert.ok(lines.some((l) => /swap grew/.test(l)), lines.join('\n'))
+})

@@ -265,6 +265,22 @@ test('a sliced render: one begin for every slice, each window its own key, and t
   assert.equal(files(cacheDir).length, 4)
 })
 
+test('a re-export sliced at a different budget (other windows) reuses the interior chunks', async () => {
+  const { cacheDir, segDir } = scratch()
+  const spec = shot(segDir, 'long', 9)
+  const windowsFor = (slices) => slices.map((s, k) => sliceSpecs([spec], s, 30, join(segDir, `slice-0${k + 1}`)))
+  const launchWorker = async () => ({ close: async () => {} })
+  const first = []
+  const one = await exportOnce(cacheDir, windowsFor([{ start: 0, end: 0.1 }, { start: 0.1, end: 0.3 }]), { renderJob: fakeRender(first), launchWorker })
+  assert.equal(one.error, null)
+  assert.equal(first.length, 3, 'three chunks on the 3-frame grid')
+  const second = []
+  const two = await exportOnce(cacheDir, windowsFor([{ start: 0, end: 0.2 }, { start: 0.2, end: 0.3 }]), { renderJob: fakeRender(second), launchWorker })
+  assert.equal(two.error, null)
+  assert.deepEqual(second, [], 'other edges, the same chunks')
+  assert.equal(files(cacheDir).length, 6)
+})
+
 test('what a chunk\'s page read rides from renderJob to the cache: a changed read renders that chunk again', async () => {
   const { cacheDir, segDir } = scratch()
   const texture = join(root, 'texture.png')

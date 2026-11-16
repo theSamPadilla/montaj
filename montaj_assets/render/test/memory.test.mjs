@@ -385,11 +385,12 @@ test('parseSwapUsage: vm.swapusage in M and in G, and garbage is null', () => {
 test('readMemoryPressure: reads both sysctls on macOS, null for what it cannot read, all null elsewhere', () => {
   const out = { 'vm.swapusage': 'total = 2048.00M  used = 1024.00M  free = 1024.00M  (encrypted)', 'kern.memorystatus_vm_pressure_level': '2\n' }
   assert.deepEqual(readMemoryPressure({ platform: 'darwin', sysctl: (n) => out[n] }),
-    { level: 2, swapUsedBytes: 1024 * 1024 ** 2, swapTotalBytes: 2048 * 1024 ** 2 })
-  assert.deepEqual(readMemoryPressure({ platform: 'darwin', sysctl: () => null }), { level: null, swapUsedBytes: null, swapTotalBytes: null })
-  assert.deepEqual(readMemoryPressure({ platform: 'darwin', sysctl: () => { throw new Error('no') } }), { level: null, swapUsedBytes: null, swapTotalBytes: null })
+    { supported: true, level: 2, swapUsedBytes: 1024 * 1024 ** 2, swapTotalBytes: 2048 * 1024 ** 2 })
+  assert.deepEqual(readMemoryPressure({ platform: 'darwin', sysctl: () => null }), { supported: true, level: null, swapUsedBytes: null, swapTotalBytes: null })
+  assert.deepEqual(readMemoryPressure({ platform: 'darwin', sysctl: () => { throw new Error('no') } }), { supported: true, level: null, swapUsedBytes: null, swapTotalBytes: null })
   for (const platform of ['linux', 'win32']) {
-    assert.deepEqual(readMemoryPressure({ platform, sysctl: () => { throw new Error('never run') } }), { level: null, swapUsedBytes: null, swapTotalBytes: null })
+    assert.equal(readMemoryPressure({ platform }).supported, false)
+    assert.deepEqual(readMemoryPressure({ platform, sysctl: () => { throw new Error('never run') } }), { supported: false, level: null, swapUsedBytes: null, swapTotalBytes: null })
   }
 })
 

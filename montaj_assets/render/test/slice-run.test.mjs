@@ -257,5 +257,5 @@ test('render.js renderInSlices: no phase marker in the loop, one of each before 
   // main() takes the unsliced path, today's compose(), whenever slicing is off.
   const main = src.slice(src.indexOf('async function main('), at)
   assert.match(main, /if \(slicing\.sliced\) \{\n\s+await renderInSlices\(/)
-  assert.match(main, /\} else \{\n\s+log\(slicingLine\(slicing\)\)\n[\s\S]*renderAllSegments\(segmentSpecs, \{ workers, motionBlur, segmentCache \}\)[\s\S]*await compose\(/)
+  assert.match(main, /\} else \{\n\s+log\(slicingLine\(slicing\)\)\n[\s\S]*renderAllSegments\(segmentSpecs, \{ workers, motionBlur, segmentCache, swapUsedAtStart \}\)[\s\S]*await compose\(/)
 })

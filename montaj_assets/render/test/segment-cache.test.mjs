@@ -162,8 +162,6 @@ test('changing any one key field gives a new key', () => {
     ['isCaption', { isCaption: true }],
     ['props', { props: { sceneJson: '{"cast":[1]}', inPoint: 0 } }],
     ['frame range', { frameStart: 1, frameEnd: 3 }],
-    ['window from', { frameFrom: 0 }],
-    ['window to', { frameTo: 3 }],
   ]
   const seen = new Set([base])
   for (const [name, change] of rows) {
@@ -205,6 +203,34 @@ test('changing the source bytes, the stage bytes or the page bytes gives a new k
   const copy = join(dir, 'Copy.jsx')
   copyFileSync(comp, copy)
   assert.equal(keyOfJob(job({ componentPath: copy, htmlPath: pg }), opts), at(), 'the source path is not in the key, its bytes are')
+})
+
+test('the same frame range under two different windows is one key', () => {
+  assert.equal(keyOfJob(job({ frameFrom: 0, frameTo: 3 })), keyOfJob(job({ frameFrom: 0, frameTo: 9 })))
+  assert.equal(keyOfJob(job()), keyOfJob(job({ frameFrom: 1, frameTo: 5 })))
+})
+
+test('a chunk is not kept when the disk would be left below minFreeBytes, and the line is logged', () => {
+  const { cache, dir, lines } = session(undefined, { freeBytes: () => 5, minFreeBytes: 10 })
+  assert.equal(cache.store(job(), fixture3), false)
+  assert.deepEqual(entries(dir), [])
+  assert.ok(lines.some((l) => /not kept \(the disk is low\)/.test(l)), lines.join('\n'))
+  const ok = session(undefined, { freeBytes: () => 1e12, minFreeBytes: 10 })
+  assert.equal(ok.cache.store(job(), fixture3), true)
+})
+
+test('a props URL in a reason is logged as origin and path, never its query', () => {
+  const url = 'https://cdn.example/texture.png?X-Amz-Signature=secret'
+  const rec = createReadRecorder()
+  rec.cached(url)
+  assert.doesNotMatch(sealReads(rec.reads(), job()).why, /secret/)
+  const at = (body) => job({ propsCache: new Map([[url, { contentType: 'image/png', body: Buffer.from(body) }]]) })
+  const s = session()
+  assert.equal(s.cache.store(at('v1'), fixture3, rec.reads()), true)
+  const next = session(s.dir)
+  assert.equal(next.cache.lookup(at('v2')), null)
+  assert.ok(next.lines.some((l) => l.includes('https://cdn.example/texture.png')), next.lines.join('\n'))
+  assert.ok(!next.lines.some((l) => /secret/.test(l)), next.lines.join('\n'))
 })
 
 test('what never changes a pixel of the capture is not in the key', () => {

@@ -239,15 +239,17 @@ function runSysctl(name) {
 }
 
 /**
- * The machine's memory pressure and swap now: `{ level, swapUsedBytes, swapTotalBytes }`. Each is null when it cannot be
- * read, and all are null off macOS.
+ * The machine's memory pressure and swap now: `{ supported, level, swapUsedBytes, swapTotalBytes }`. Each reading is null when it
+ * cannot be read, and all are null (supported false) off macOS.
  */
 export function readMemoryPressure({ platform = process.platform, sysctl = runSysctl } = {}) {
-  const none = { level: null, swapUsedBytes: null, swapTotalBytes: null }
+  const supported = platform === 'darwin'
+  const none = { supported, level: null, swapUsedBytes: null, swapTotalBytes: null }
   if (platform !== 'darwin') return none
   try {
     const swap = parseSwapUsage(sysctl('vm.swapusage'))
     return {
+      supported,
       level: parsePressureLevel(sysctl('kern.memorystatus_vm_pressure_level')),
       swapUsedBytes: swap?.swapUsedBytes ?? null,
       swapTotalBytes: swap?.swapTotalBytes ?? null,

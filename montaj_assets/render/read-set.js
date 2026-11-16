@@ -123,7 +123,7 @@ export const EMPTY_READS = Object.freeze({ files: [], props: [], blocked: [], ne
  */
 export function sealReads(reads, job, { stat = statSync, hash = fileSha256 } = {}) {
   const r = reads ?? EMPTY_READS
-  if (r.network?.length) return { why: `it fetched from the network (${r.network[0]})` }
+  if (r.network?.length) return { why: `it fetched from the network (${forLog(r.network[0])})` }
   const files = []
   for (const f of r.files ?? []) {
     const now = readStat(f.path, { stat })
@@ -139,7 +139,7 @@ export function sealReads(reads, job, { stat = statSync, hash = fileSha256 } = {
   const props = []
   for (const url of r.props ?? []) {
     const body = job.propsCache?.get(url)?.body
-    if (!body) return { why: `its props URL ${url} was fetched on demand` }
+    if (!body) return { why: `its props URL ${forLog(url)} was fetched on demand` }
     props.push({ url, sha256: sha256Of(body) })
   }
   return { reads: { files, props, blocked: [...(r.blocked ?? [])] } }
@@ -165,7 +165,7 @@ export function checkReads(sealed, job, { stat = statSync, hash = fileSha256 } =
   }
   for (const p of sealed?.props ?? []) {
     const entry = job.propsCache?.get(p.url)
-    if (!entry?.body || sha256Of(entry.body) !== p.sha256) return `props URL ${p.url} changed`
+    if (!entry?.body || sha256Of(entry.body) !== p.sha256) return `props URL ${forLog(p.url)} changed`
   }
   const ctx = { boundary: job.boundary, propsCache: job.propsCache ?? new Map(), needsGoogleFonts: job.needsGoogleFonts === true }
   for (const url of sealed?.blocked ?? []) {
@@ -174,4 +174,9 @@ export function checkReads(sealed, job, { stat = statSync, hash = fileSha256 } =
     if (d.action !== 'abort') return `${url} is no longer blocked`
   }
   return null
+}
+
+/** A URL as the log may say it: origin and path only (a signed URL's query is a secret), or its first 64 characters. */
+export function forLog(url) {
+  try { const u = new URL(String(url)); return `${u.origin}${u.pathname}` } catch { return String(url).slice(0, 64) }
 }

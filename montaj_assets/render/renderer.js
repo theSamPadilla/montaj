@@ -188,7 +188,15 @@ export function chunkJobs(segments, config = {}) {
     const opaque = seg.opaque ?? false
     const segChunk = isScene3dSegment(seg) ? chunk3d : chunkSize
     const { from, to, length } = windowOf(seg)
-    if (length > segChunk) {
+    if (isScene3dSegment(seg)) {
+      // A 3D chunk is cut on the segment's own grid of segChunk frames, clipped to the window, so a different slice plan
+      // re-cuts the same interior chunks and the segment cache (segment-cache.js) still reuses them.
+      const starts = []
+      for (let s = Math.floor(from / segChunk) * segChunk; s < to; s += segChunk) starts.push(s)
+      starts.forEach((s, i) => {
+        jobs.push({ ...seg, opaque, subframes, frameStart: Math.max(s, from), frameEnd: Math.min(s + segChunk, to), chunkIndex: i, totalChunks: starts.length })
+      })
+    } else if (length > segChunk) {
       const numChunks = Math.ceil(length / segChunk)
       for (let i = 0; i < numChunks; i++) {
         const frameStart = from + i * segChunk
@@ -379,14 +387,16 @@ export async function renderAllSegments(segments, config = {}) {
   if (queue.length === 0) return assemble()
   // §737: with 3D jobs left, a render plans SCENE3D_MAX_WORKERS lanes whatever the first memory reading, but starts ONE
   // browser: the second lane's launches when its first chunk is admitted (admitsSecond3dLane, below).
-  const lazyLanes = memory.has3d && queue.some(isScene3dSegment) && Math.min(memory.asked, SCENE3D_MAX_WORKERS, queue.length) > 1
+  // Off macOS no pressure reading exists (supported false), so the render plans its lanes by memory alone, as before.
+  const readPressure = config.memory?.readMemoryPressure ?? readMemoryPressure
+  const p0 = memory.has3d ? readPressure() : null
+  const lazyLanes = p0?.supported !== false && memory.has3d && queue.some(isScene3dSegment) && Math.min(memory.asked, SCENE3D_MAX_WORKERS, queue.length) > 1
   const lanes = lazyLanes ? Math.min(memory.asked, SCENE3D_MAX_WORKERS, queue.length) : Math.min(workerCount, queue.length)
   const launched = lazyLanes ? 1 : lanes
-  const readPressure = config.memory?.readMemoryPressure ?? readMemoryPressure
   let swapUsedAtStart = null
   if (lazyLanes) {
-    const p = readPressure()
-    swapUsedAtStart = p.swapUsedBytes
+    const p = p0
+    swapUsedAtStart = config.swapUsedAtStart !== undefined ? config.swapUsedAtStart : (p.swapUsedBytes ?? null)
     log(`3d lanes: up to ${lanes} (available=${gb(memory.availableBytes)} reserve=${gb(memory.reserveBytes)} perWorker=${gb(memory.perWorkerBytes)} pressure=${p.level ?? 'unknown'} swap=${p.swapUsedBytes == null ? 'unknown' : gb(p.swapUsedBytes)})`)
   }
 
@@ -422,6 +432,7 @@ export async function renderAllSegments(segments, config = {}) {
   let widened = !memory.has3d
   let laneWaitLogged = false
   const admitExtra = (name, readAdjusted) => {
+    if (!lazyLanes) return null
     if (widened || name === 'worker 0') return null
     const p = readPressure()
     const refusal = secondLaneRefusal({

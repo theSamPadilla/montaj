@@ -39,8 +39,9 @@
  *      totalChunks, startSeconds and endSeconds (a shot moved in time or renamed is still the same capture), and
  *      `threads` (FFV1 is lossless, and its stream parameters do not follow the thread count: MEASURED 2026-11-15,
  *      ffmpeg 8.1.2, 1920x1080 yuva420p, -threads 1 and 8 give the same extradata).
- *   7. `frames`: the chunk's frame range (frameStart, frameEnd); `window`: the segment's window (frameFrom, frameTo),
- *      which a sliced render (slice-run.js) sets.
+ *   7. `frames`: the chunk's frame range (frameStart, frameEnd). The segment's window (frameFrom, frameTo, which a
+ *      sliced render sets) is not in the key: capture reads only the range, and renderer.js chunkJobs cuts a 3D
+ *      segment on its own chunk grid, so a different slice plan reuses the same interior chunks.
  *
  * THE BUMP RULE. Bump SEGMENT_CACHE_VERSION whenever capture or encode output can change for the same inputs, in a way
  * the engine digest cannot see: a change outside this folder and timeline-core's source (an overlay-runtime change is
@@ -60,8 +61,9 @@
  * reused nor wrote. An export that stops before begin() leaves the cache as it was.
  */
 import {
-  constants, copyFileSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
+  constants, copyFileSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, statfsSync, writeFileSync,
 } from 'fs'
+import os from 'os'
 import { basename, dirname, join } from 'path'
 import { spawnSync } from 'child_process'
 import { fileURLToPath } from 'url'
@@ -190,6 +192,7 @@ export function engineFingerprint() {
     ffmpeg: ffmpeg.status === 0 ? String(ffmpeg.stdout).split('\n')[0].trim() : null,
     chrome: process.env.PUPPETEER_EXECUTABLE_PATH || null,
     software3d: softwareAllowed(),
+    os: `${process.platform} ${os.release()} ${process.arch}`,
   }
   return engineMemo
 }
@@ -264,7 +267,6 @@ export function keyFields(job, { engine = engineFingerprint(), context = {}, env
       isCaption: job.isCaption === true,
     },
     frames: [frameStart, frameEnd],
-    window: [orNull(job.frameFrom), orNull(job.frameTo)],
   }
 }
 
@@ -344,8 +346,12 @@ const defaultLog = (msg) => process.stderr.write(`${TTY ? '\x1b[96m' : ''}[monta
  * @param {(file: string) => object[]} [opts.probe]  probeSegmentStreams, or a test's stand-in
  * @param {object} [opts.engine]  engineFingerprint(), or a test's stand-in
  * @param {object} [opts.env]  where MONTAJ_SCENE3D_STAGE is read
+ * @param {number} [opts.minFreeBytes]  a chunk is kept only while the disk would still have this much free after it
+ * @param {(dir: string) => number} [opts.freeBytes]  the free bytes of `dir`'s disk, or a test's stand-in
  */
-export function openSegmentCache({ dir, context = {}, log = defaultLog, probe = probeSegmentStreams, engine = null, env = process.env } = {}) {
+export function openSegmentCache({ dir, context = {}, log = defaultLog, probe = probeSegmentStreams, engine = null, env = process.env,
+  minFreeBytes = 0, freeBytes = (d) => { const s = statfsSync(d); return s.bavail * s.bsize },
+} = {}) {
   if (typeof dir !== 'string' || dir.length === 0) throw new TypeError('openSegmentCache: a dir is required')
   const mkvOf = (key) => join(dir, `${key}.mkv`)
   const jsonOf = (key) => join(dir, `${key}.json`)
@@ -471,6 +477,9 @@ export function openSegmentCache({ dir, context = {}, log = defaultLog, probe = 
     const tmpJson = `${json}.tmp.${process.pid}`
     try {
       mkdirSync(dir, { recursive: true })
+      let low = false
+      try { low = freeBytes(dir) - statSync(file).size < minFreeBytes } catch { low = false }
+      if (low) { log(`segment cache: ${label} not kept (the disk is low)`); return false }
       // Any older manifest goes first, so the new .mkv is never paired with it.
       rmSync(json, { force: true })
       cloneFile(file, tmpMkv)

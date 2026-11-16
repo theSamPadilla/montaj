@@ -815,3 +815,13 @@ test('resolveProjectPaths: a URL or protocol form of nobg_src or normalizedSrc i
     }
   }
 })
+
+import { diskReclaim } from '../render.js'
+
+test('diskReclaim: scratch never holds the segment cache, and reclaimBytes counts it', () => {
+  const sizes = { '/r/segments': 10, '/out/a.mp4.segments': 5, '/r/segment-cache': 100 }
+  const { scratch, reclaimBytes } = diskReclaim({ segDir: '/r/segments', renderDir: '/r', outputs: ['/out/a.mp4'], bytesOf: (d) => sizes[d] ?? 0 })
+  assert.deepEqual(scratch, ['/r/segments', '/out/a.mp4.segments'])
+  assert.ok(!scratch.some((d) => d.includes('segment-cache')))
+  assert.equal(reclaimBytes, 115)
+})

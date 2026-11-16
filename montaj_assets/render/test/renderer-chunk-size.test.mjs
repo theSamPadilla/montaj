@@ -68,3 +68,13 @@ test('subframes=1 leaves a small segment at exactly the un-multiplied MIN_CHUNK_
 test('never returns less than 1', () => {
   assert.ok(resolveChunkSize(1, 64, 8, undefined, undefined) >= 1)
 })
+
+import { chunkJobs } from '../renderer.js'
+
+test('chunkJobs: a 3D window cuts on the segment\'s own 120-frame grid, clipped to the window; unwindowed is unchanged', () => {
+  const seg = { id: 's', scene3d: true, frameCount: 400, fps: 30 }
+  const cuts = (s) => chunkJobs([s], { userConfig: {}, workers: 1, cpus: 4 }).jobs.map((j) => [j.frameStart, j.frameEnd, j.chunkIndex, j.totalChunks])
+  assert.deepEqual(cuts({ ...seg, frameFrom: 100, frameTo: 300 }), [[100, 120, 0, 3], [120, 240, 1, 3], [240, 300, 2, 3]])
+  assert.deepEqual(cuts(seg), [[0, 120, 0, 4], [120, 240, 1, 4], [240, 360, 2, 4], [360, 400, 3, 4]])
+  assert.deepEqual(cuts({ ...seg, frameCount: 50 }), [[0, 50, 0, 1]])
+})

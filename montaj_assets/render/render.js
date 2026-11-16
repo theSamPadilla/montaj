@@ -35,6 +35,7 @@ import { lowerPriority } from './load.js'
 import { isMain as isMainModule }        from './is-main.js'
 import { renderAllSegments, planChunks, chunkJobs, currentRenderPlan, stopSignal, bakeTotal, createBakeProgress }  from './renderer.js'
 import { openSegmentCache, SEGMENT_CACHE_DIR } from './segment-cache.js'
+import { readMemoryPressure } from './memory.js'
 import { isChildKilled }              from './child-killed.js'
 import { isThreeFrameBlank }          from './three-frame.js'
 import { isNo3dGraphics }             from './gpu-3d.js'
@@ -775,8 +776,15 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
   // §737: the project's 3D chunks from earlier exports, keyed on their inputs
   // (segment-cache.js): a chunk whose inputs are unchanged is not rendered
   // again, and every 3D chunk this export encodes is kept for the next one.
-  const segmentCache = openSegmentCache({ dir: join(renderDir, SEGMENT_CACHE_DIR), context: { colorSpace: projectColorSpace }, log })
+  // A chunk is kept only while the disk still has room for the rest of the render's own writes (minFreeBytes).
+  const segmentCache = openSegmentCache({
+    dir: join(renderDir, SEGMENT_CACHE_DIR), context: { colorSpace: projectColorSpace }, log,
+    minFreeBytes: diskRun?.estimate?.expected?.projectBytes ?? 0,
+  })
   segmentCacheRun = segmentCache
+  // The swap baseline is the render's, read once before any capture: a sliced render captures once per slice, and
+  // swap growth across all of them counts against the second 3D lane (renderer.js).
+  const swapUsedAtStart = readMemoryPressure().swapUsedBytes
 
   // §434: a render whose captures would not fit the slice budget captures and
   // encodes in time slices (renderInSlices). Every other render takes the
@@ -785,7 +793,7 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
     await renderInSlices({
       projectJson, pristineProject, settings, fps, workers, motionBlur, segmentSpecs, imageItems, videoItems,
       renderWidth, renderHeight, captureScale, projectColorSpace, exportPlan, workspaceDir, segDir, sdrCurve, slicing,
-      masterGainDb, segmentCache,
+      masterGainDb, segmentCache, swapUsedAtStart,
     })
   } else {
     log(slicingLine(slicing))
@@ -796,7 +804,7 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
     // space (encode-segment.js, hdr-graphics.js). So one capture serves the HDR
     // master and the SDR rendition alike. A saved `settings.imageTone` (the
     // removed per-image tone) is ignored.
-    const renderedSegments = await renderAllSegments(segmentSpecs, { workers, motionBlur, segmentCache })
+    const renderedSegments = await renderAllSegments(segmentSpecs, { workers, motionBlur, segmentCache, swapUsedAtStart })
 
     // Attach positioning offsets back onto rendered segments so compose.js can apply
     // x/y coordinates. Overlay size is derived from the output canvas at compose
@@ -909,7 +917,7 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
 async function renderInSlices({
   projectJson, pristineProject, settings, fps, workers, motionBlur, segmentSpecs, imageItems, videoItems,
   renderWidth, renderHeight, captureScale, projectColorSpace, exportPlan, workspaceDir, segDir, sdrCurve, slicing,
-  masterGainDb = null, segmentCache = null,
+  masterGainDb = null, segmentCache = null, swapUsedAtStart = null,
 }) {
   const descriptors = plannedDescriptors(segmentSpecs)
   const passes = []
@@ -967,10 +975,21 @@ async function renderInSlices({
     },
     keep: !!process.env.MONTAJ_KEEP_SEGMENTS,
     log,
-    captureConfig: { workers, motionBlur, ...(segmentCache ? { segmentCache } : {}) },
+    captureConfig: { workers, motionBlur, swapUsedAtStart, ...(segmentCache ? { segmentCache } : {}) },
     bakeTotal,
     createBakeProgress: ({ total }) => createBakeProgress({ total, log }),
   })
+}
+
+/**
+ * What the render deletes before writing its own (`scratch`, never the segment cache) and the bytes that frees
+ * (`reclaimBytes`). The cache's bytes count as reclaimable too: its stale entries are deleted at begin(), and its reused
+ * ones stand in for chunk writes the estimate counts, so they must not shrink the room a slice plan sees.
+ */
+export function diskReclaim({ segDir, renderDir, outputs, bytesOf = dirBytes }) {
+  const scratch = [segDir, ...outputs.map(p => `${p}.segments`)]
+  const reclaimBytes = scratch.reduce((n, dir) => n + bytesOf(dir), 0) + bytesOf(join(renderDir, SEGMENT_CACHE_DIR))
+  return { scratch, reclaimBytes }
 }
 
 /**
@@ -1183,8 +1202,7 @@ function planDisk({
     copies: [...writes.copies.values()],
     cutouts: [...writes.cutouts.values()],
   }
-  const scratch = [segDir, ...exportPlan.outputs.map(p => `${p}.segments`)]
-  const reclaimBytes = scratch.reduce((n, dir) => n + dirBytes(dir), 0)
+  const { scratch, reclaimBytes } = diskReclaim({ segDir, renderDir, outputs: exportPlan.outputs })
   const unsliced = estimateRenderDisk(inputs)
   const slicing = planSlicing({
     inputs, unsliced, segmentSpecs, items: [...imageItems, ...videoItems], fps: settings.fps || 30,
