@@ -11,8 +11,13 @@ aside), and the timings always come from `heard`:
   prefix of the other: "protect" stays when the script says "protecting") or a run with an apostrophe in it ("it is"
   stays when the script says "it's"): the speaker said those;
 - a heard word said twice where the script has it once ("a a") is one word over both timings;
-- any other heard word stays as heard (the speaker said it), and script words never said are not added.
-`corrected` counts the words whose spelling changed beyond case and punctuation (and the stutters merged).
+- any other heard word stays as heard (the speaker said it), and script words never said are not added;
+- but a generated voice (its heard words marked "generated": lib/caption_words, from the provenance record) says every
+  word of the script, so a run of at most INSERT_WORDS script words between two words heard as written is put back:
+  the transcriber dropped it. It shares the two neighbours' time with them, in proportion to length. A person may skip
+  a word, so a run beside a word not marked generated stays out.
+`corrected` counts the words whose spelling changed beyond case and punctuation (and the stutters merged); `counts`,
+when given, gets `inserted`, the words put back.
 Pure: never mutates `heard`.
 """
 import copy
@@ -30,6 +35,8 @@ SOUND_RATIO = 0.8
 MAX_PAIRS = 1600
 # Shorter than this on both sides is too little to judge by letters ("a" against "at").
 MIN_LETTERS = 3
+# A generated voice's dropped words are put back only this many at a time (between two words heard as written).
+INSERT_WORDS = 3
 
 _ONES = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
          "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
@@ -155,16 +162,20 @@ def _replace(heard_run, script_run):
     return left + _lay(heard_run[a:b], script_run[c:d]) + right, nl + (d - c) + nr
 
 
-def align(heard, script):
-    """(words, corrected): `heard` spelled from `script` (see the module doc). No script, or no words, changes nothing."""
+def align(heard, script, counts=None):
+    """(words, corrected): `heard` spelled from `script` (see the module doc). No script, or no words, changes nothing.
+    `counts`, a dict when given, gets `inserted`: the words a generated voice's transcript dropped, put back."""
     tokens = _tokens(script)
+    if isinstance(counts, dict):
+        counts["inserted"] = 0
     if not tokens or not heard:
         return heard, 0
     hk = [_key(w.get("word", "")) for w in heard]
     sk = [_key(t) for t in tokens]
-    out, corrected = [], 0
+    out, corrected, inserted = [], 0, 0
     scripted = []      # per word in `out`: laid from a script word (the script has it there, once)
     starts_at = None   # a stutter before the word it repeats: that word starts at the first saying
+    pending = None     # script words a generated voice said and the transcript dropped, laid with the next word
     opcodes = SequenceMatcher(None, hk, sk, autojunk=False).get_opcodes()
     in_script = {i for op, i1, i2, _, _ in opcodes if op == "equal" for i in range(i1, i2)}
 
@@ -175,9 +186,21 @@ def align(heard, script):
         out.append(w)
         scripted.append(laid)
 
-    for op, i1, i2, j1, j2 in opcodes:
+    for k, (op, i1, i2, j1, j2) in enumerate(opcodes):
         if op == "equal":
-            for h, s in zip(heard[i1:i2], tokens[j1:j2]):
+            pairs = list(zip(heard[i1:i2], tokens[j1:j2]))
+            if pending:
+                # The word before and this one share their time with what was dropped between them, by length.
+                h, s = pairs.pop(0)
+                nxt = copy.deepcopy(h)
+                nxt["word"] = s
+                prev = out.pop()
+                scripted.pop()
+                for w in _lay([prev, nxt], [prev["word"], *pending, s]):
+                    put(w, laid=True)
+                inserted += len(pending)
+                pending = None
+            for h, s in pairs:
                 w = copy.deepcopy(h)
                 w["word"] = s
                 put(w, laid=True)
@@ -199,7 +222,16 @@ def align(heard, script):
                     corrected += 1
                 else:
                     put(copy.deepcopy(h))
-        # "insert": script words never said are not added
+        elif op == "insert":
+            # Script words not heard stay out (the speaker skipped them), but for a generated voice that read the script:
+            # a short run between two words heard as written, both the voice's, was said and dropped by the transcriber.
+            after = opcodes[k + 1] if k + 1 < len(opcodes) else None
+            if (j2 - j1 <= INSERT_WORDS and k > 0 and opcodes[k - 1][0] == "equal" and after is not None
+                    and after[0] == "equal" and starts_at is None and out and scripted[-1]
+                    and heard[i1 - 1].get("generated") is True and heard[i1].get("generated") is True):
+                pending = tokens[j1:j2]
+    if isinstance(counts, dict):
+        counts["inserted"] = inserted
     return out, corrected
 
 
@@ -217,15 +249,18 @@ def script_of(project) -> str:
     return re.sub(r"\s+", " ", re.sub(r"<[^>]*>", " ", script)).strip()
 
 
-def spell_from_script(words_json_path, script) -> int:
+def spell_from_script(words_json_path, script, counts=None) -> int:
     """Rewrite the transcript's words (whisper's `transcription`, one entry per word) in the script's spelling, on the
-    same timings (lib/caption_script.align). Returns how many words changed beyond case and punctuation."""
+    same timings (lib/caption_script.align). An entry's `generated: true` (lib/caption_words.write_transcript: a
+    generated voice's word) lets a word it dropped be put back. Returns how many words changed beyond case and
+    punctuation; `counts`, when given, gets `inserted`."""
     with open(words_json_path, encoding="utf-8", errors="replace") as f:
         doc = json.load(f)
     entries = [e for e in (doc.get("transcription") or []) if isinstance(e, dict) and str(e.get("text", "")).strip()]
     heard = [{"word": e["text"].strip(), "start": (e.get("offsets") or {}).get("from", 0) / 1000.0,
-              "end": (e.get("offsets") or {}).get("to", 0) / 1000.0} for e in entries]
-    words, corrected = align(heard, script)
+              "end": (e.get("offsets") or {}).get("to", 0) / 1000.0, **({"generated": True} if e.get("generated") is True else {})}
+             for e in entries]
+    words, corrected = align(heard, script, counts)
     doc["transcription"] = [{"text": " " + w["word"], "offsets": {"from": round(w["start"] * 1000), "to": round(w["end"] * 1000)}}
                             for w in words]
     with open(words_json_path, "w", encoding="utf-8") as f:

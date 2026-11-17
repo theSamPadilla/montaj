@@ -225,6 +225,42 @@ class Words(list):
     language = None
 
 
+VOICE_STEPS = ("generate_voiceover",)
+
+
+def generated_voices(project_dir) -> set:
+    """The project's files that are a voice made from text, by its provenance record (serve/provenance.py): an `ai`
+    entry of a VOICE_STEPS step, and a `derived` one whose inputs are all such files (a trimmed or levelled copy), each
+    file unchanged since it was recorded. Keys as the record's. A file the record does not know is a person's."""
+    from serve import provenance
+    try:
+        rec = provenance.merged(project_dir)
+    except (OSError, ValueError):
+        return set()
+    live = {k: e for k, e in rec.items() if not provenance._is_stale(project_dir, k, e)}
+    out = {k for k, e in live.items() if e.get("kind") == "ai" and e.get("step") in VOICE_STEPS}
+    grew = True
+    while grew:
+        grew = False
+        for k, e in live.items():
+            src = e.get("from") if e.get("kind") == "derived" else None
+            if k not in out and isinstance(src, list) and src and all(f in out for f in src):
+                out.add(k)
+                grew = True
+    return out
+
+
+def _is_generated(project_dir, src, voices) -> bool:
+    """`src` (a media path) is one of `voices` (generated_voices' keys)."""
+    if not voices:
+        return False
+    from serve import provenance
+    try:
+        return provenance.key_for(project_dir, src) in voices
+    except provenance.ProvenanceError:
+        return False
+
+
 def timeline_words(project, project_dir, keep_all=False, language="auto", model=None):
     """[{"text", "start", "end"}] in timeline seconds, in time order, from each audible speech source's own transcript
     (a word belongs to a segment when its middle is in the part it plays), or None when one has no transcript, or one
@@ -244,6 +280,7 @@ def timeline_words(project, project_dir, keep_all=False, language="auto", model=
         sources.setdefault(sc, src)
     if _fitting(sources, language, model, project_dir):
         return None
+    voices = generated_voices(project_dir)   # Mayflower gap 56: a generated voice's words are marked for the script pass
     for seg, sc in found:
         if sc not in cache:
             try:
@@ -252,11 +289,12 @@ def timeline_words(project, project_dir, keep_all=False, language="auto", model=
                 return None
         speed = seg.get("speed", 1.0) or 1.0
         end = seg["start"] + (seg["out"] - seg["in"]) / speed
+        gen = {"generated": True} if _is_generated(project_dir, seg["src"] if os.path.isabs(seg["src"]) else os.path.join(project_dir, seg["src"]), voices) else {}
         for w in cache[sc]:
             if seg["in"] <= (w.start + w.end) / 2 < seg["out"]:
                 t0 = seg["start"] + (w.start - seg["in"]) / speed
                 t1 = min(seg["start"] + (w.end - seg["in"]) / speed, end)
-                words.append({"text": w.text.strip(), "start": max(t0, seg["start"]), "end": max(t1, t0)})
+                words.append({"text": w.text.strip(), "start": max(t0, seg["start"]), "end": max(t1, t0), **gen})
     words.sort(key=lambda w: w["start"])
     out = Words(words)
     from lib.common import whisper_language
@@ -272,7 +310,8 @@ def write_transcript(words, path):
     read; marked as made from the sources. When `words` (timeline_words') say the language every source is in, it is
     `result.language`, where the caption track's language is read from."""
     doc = {"transcription": [{"text": f" {w['text']}", "offsets": {"from": int(round(w["start"] * 1000)),
-                                                                 "to": int(round(w["end"] * 1000))}}
+                                                                 "to": int(round(w["end"] * 1000))},
+                              **({"generated": True} if w.get("generated") is True else {})}
                              for w in words],
            "montaj": {"input": "timeline", "from": "source transcripts", "offsets": "timeline"}}
     if getattr(words, "language", None):

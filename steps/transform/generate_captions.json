@@ -50,7 +50,7 @@
     {
       "name": "script",
       "type": "string",
-      "description": "The script the speaker read. Defaults to the project's editing prompt (its <tags> left out), so a script given there needs no param; an empty string turns it off. Caption words take its spelling on the transcript's timings (a misheard word that reads alike is replaced; words not in it stay as heard). The answer counts `corrected`."
+      "description": "The script the speaker read. Defaults to the project's editing prompt (its <tags> left out), so a script given there needs no param; an empty string turns it off. Caption words take its spelling on the transcript's timings (a misheard word that reads alike is replaced; words not in it stay as heard; a generated voice's dropped words come back). The answer counts `corrected` and `inserted`."
     }
   ]
 }

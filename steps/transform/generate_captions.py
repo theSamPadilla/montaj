@@ -171,7 +171,8 @@ def main():
 
         # 3b. Spell the words from the script, when one is given (lib/caption_script.py): timings stay the transcript's.
         script = args.script if args.script is not None else script_of(project)
-        corrected = spell_from_script(words_json_path, script) if script and script.strip() else None
+        counts = {}   # `inserted`: a generated voice's words the transcript dropped, put back from the script
+        corrected = spell_from_script(words_json_path, script, counts) if script and script.strip() else None
 
         # 4. Group words into a styled caption track.
         run([sys.executable, caption_py,
@@ -237,6 +238,8 @@ def main():
         }
         if corrected is not None:
             answer["corrected"] = corrected
+        if counts.get("inserted"):
+            answer["inserted"] = counts["inserted"]
         if written.get("kept"):
             answer["keptYours"] = written["kept"]
         if unguarded:

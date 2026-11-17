@@ -249,3 +249,58 @@ def test_a_stutter_before_a_script_word_is_still_one_word():
     out, n = align(heard, "the robot")
     assert words_of(out) == ["the", "robot", "so", "so"], words_of(out)
     assert out[0]["start"] == 0.0 and n == 1
+
+
+# -- a generated voice's dropped words (Mayflower gap 56) -----------------------------------------------------------
+# A voice made from the script (generate_voiceover) says every word of it, so a script word the transcriber dropped
+# between two words it heard as written is put back ("beer", "Wrong", "Cape", "take" stayed out of the captions). A
+# person may skip a word, so only a generated voice's words are filled: each heard word's "generated" (lib/caption_words).
+
+def G(*spec):
+    return [{**w, "generated": True} for w in W(*spec)]
+
+
+def test_a_generated_voice_gets_back_a_word_the_transcriber_dropped():
+    counts = {}
+    out, n = align(G(("a", 1.0, 1.2), ("for", 1.2, 1.9), ("everyone", 1.9, 2.5)), "A beer for everyone.", counts)
+    assert words_of(out) == ["A", "beer", "for", "everyone."]
+    # the two neighbours' time, shared by letters (a 1, beer 4, for 3 over 1.0-1.9), end to end
+    assert out[0]["start"] == 1.0 and out[2]["end"] == 1.9 and out[3] == {"word": "everyone.", "start": 1.9, "end": 2.5, "generated": True}
+    assert all(a["end"] == b["start"] for a, b in zip(out, out[1:]))
+    assert out[1]["end"] - out[1]["start"] > out[2]["end"] - out[2]["start"] > out[0]["end"] - out[0]["start"]
+    assert counts == {"inserted": 1} and n == 0
+
+
+def test_up_to_three_dropped_words_come_back_and_a_longer_run_stays_out():
+    c3, c4 = {}, {}
+    out, _ = align(G(("we", 0.0, 0.3), ("home", 0.3, 1.2)), "We sail past Cape home", c3)
+    assert words_of(out) == ["We", "sail", "past", "Cape", "home"] and c3 == {"inserted": 3}
+    out, _ = align(G(("we", 0.0, 0.3), ("home", 0.3, 1.2)), "We sail around Cape Cod home", c4)
+    assert words_of(out) == ["We", "home"] and c4 == {"inserted": 0}
+
+
+def test_a_person_s_skipped_word_stays_out_and_so_does_one_beside_a_person_s_word():
+    c = {}
+    out, _ = align(W(("a", 1.0, 1.2), ("for", 1.2, 1.9)), "A beer for", c)
+    assert words_of(out) == ["A", "for"] and c == {"inserted": 0}
+    mixed = G(("a", 1.0, 1.2)) + W(("for", 1.2, 1.9))
+    out, _ = align(mixed, "A beer for", c)
+    assert words_of(out) == ["A", "for"]
+
+
+def test_a_generated_voice_s_words_outside_the_heard_span_are_still_not_added():
+    heard = G(("kung", 4.6, 4.8), ("fu", 4.8, 5.0), ("bodyguard", 5.0, 5.6))
+    out, n = align(heard, "a humanoid kung-fu bodyguard, and honestly")
+    assert words_of(out) == ["kung-fu", "bodyguard,"]
+
+
+def test_spell_from_script_reads_generated_and_counts_what_it_put_back(tmp_path):
+    from lib.caption_script import spell_from_script
+    p = tmp_path / "w.json"
+    p.write_text(json.dumps({"transcription": [
+        {"text": " a", "offsets": {"from": 1000, "to": 1200}, "generated": True},
+        {"text": " for", "offsets": {"from": 1200, "to": 1900}, "generated": True}]}))
+    counts = {}
+    assert spell_from_script(p, "A beer for", counts) == 0
+    assert [e["text"].strip() for e in json.loads(p.read_text())["transcription"]] == ["A", "beer", "for"]
+    assert counts == {"inserted": 1}
