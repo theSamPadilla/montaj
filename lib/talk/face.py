@@ -17,7 +17,8 @@ in any language; only the visemes need a language's rules.
 
 head: the head's GLB, or the app's model.json. Gestures ask for millimetres and the head's own reach per key (reach.py) gives the weight, so ICT and GNM move
   the same distance; moods and beats scale the same way (recipes.weights). Without it, recipes.json's reference_reach_mm (C2, ICT).
-  A head with the tongue correctives (full_tongue) holds the tip consonants at full and takes no tongueOut lift.
+  A head with the tongue correctives (full_tongue) holds the tip consonants at full and takes no tongueOut lift, and th takes the mouth
+  at its contact (the jaw and the vowels give way, TH_MOUTH), so its tip reaches the teeth beside an open vowel too.
 expressive: one knob over the gesture layer: brow flashes, brows down, held lifts, squint and wide pulses, speech's lift of a smile,
   nods, phrase-end drops and tilts, look-aways with the head following, the breath's parted lips. 0 turns that layer off; moods, beats,
   blinks, today's carriage, sway, pitch lift and saccades stay.
@@ -55,6 +56,14 @@ TONGUE_RISE, TONGUE_FALL, TONGUE_GAP = .06, .07, .1  # s
 # its place on the visemes alone, so it gets no lift, and the tip consonants are held at FULL_TONGUE_HOLD (see full_tongue).
 FULL_TONGUE_KEY = 'corr_TH_jawOpen'
 FULL_TONGUE_HOLD = 1.0
+# On such a head th takes the mouth at its contact (§742): the tongue's tip rides the lower teeth, and th's rule puts it between the
+# teeth only where the jaw stays near th's own opening (about 5 mm at the incisors). Beside an open vowel the talk driver's jawOpen and
+# the vowel visemes (which carry the jaw fit's opening) held the mouth 11 to 17 mm open, and the tip sat 5 to 11 mm below the upper
+# teeth (C2, C7). At the contact both give way by TH_MOUTH, over th's own hold: the tip comes to 2.4 to 4.4 mm under the upper
+# teeth (th alone: 2.2), the vowels on either side keep their opening, and the jaw moves no faster than elsewhere in the clip. A pulse
+# 1.5 or 2 times as wide gained under 1 mm and took a third to a half of the next vowel's opening (measured on C2 and C7).
+TH_MOUTH = 1.0
+VOWELS = ('viseme_aa', 'viseme_E', 'viseme_I', 'viseme_O', 'viseme_U')
 
 LOOKS = ('eyeLookOutLeft', 'eyeLookInRight', 'eyeLookInLeft', 'eyeLookOutRight', 'eyeLookUpLeft', 'eyeLookUpRight', 'eyeLookDownLeft', 'eyeLookDownRight')
 
@@ -130,7 +139,7 @@ def full_tongue(head):
     """True when the head (a GLB or the app's model.json) carries FULL_TONGUE_KEY on any mesh. On such a head the lift would push the
     tip into or past the upper teeth (1 to 6 mm in at the speech's peaks, about 7 mm out on th; 5 to 13 mm in with a viseme at full,
     measured on C2, C3 and C7). Held at FULL_TONGUE_HOLD instead of TONGUE_HOLD, d, n and l lift the tip to the ridge, and th's tip
-    reaches the teeth where the jaw stays near th's own opening; beside an open vowel it stays low in the open mouth.
+    reaches the teeth, beside an open vowel too, since th takes the mouth at its contact (TH_MOUTH).
     No head, or one whose keys can't be read, is today's head: lift and TONGUE_HOLD."""
     if not head: return False
     try:
@@ -484,8 +493,13 @@ def build(wav, whisper, lang, moods, gain=1.0, cmudict=None, sigma=70, phrased=T
         # its peak down to about .85.
         h = FULL_TONGUE_HOLD * w if tongue_full else TONGUE_HOLD * smooth(w, .006, DT)
         k = TARGET[v][0]; morphs[k] = np.maximum(morphs.get(k, np.zeros(T)), h * (1 - cl))
-    for k in ('viseme_aa', 'viseme_E', 'viseme_I', 'viseme_O', 'viseme_U'):
+    for k in VOWELS:
         if k in morphs: morphs[k] = morphs[k] * (1 - .35 * smooth(tall, .006, DT))
+    # th takes the mouth at its contact on a full-tongue head (TH_MOUTH): the jaw and the vowels give way.
+    if tongue_full and 'TH' in hold:
+        give = 1 - TH_MOUTH * hold['TH']
+        for k in ('jawOpen', *VOWELS):
+            if k in morphs: morphs[k] = morphs[k] * give
     # ---- the tongue's own lift (tongue_lift): gives way on m, b and p like the visemes. None on a full-tongue head.
     if not tongue_full:
         morphs['tongueOut'] = np.maximum(morphs.get('tongueOut', np.zeros(T)), tongue_lift(segs, t) * (1 - cl))

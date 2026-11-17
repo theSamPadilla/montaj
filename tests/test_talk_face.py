@@ -133,8 +133,9 @@ class TongueLift(unittest.TestCase):
 
 class FullTongue(unittest.TestCase):
     """A head with the tongue correctives (face.FULL_TONGUE_KEY on any mesh: the Montaj app's version-2 characters, 3D29) holds the
-    tip consonants at full and takes no tongueOut lift, which pushed its tongue into the teeth; every other key and bone is the clip
-    the same head makes without them. Today's heads keep the lift and TONGUE_HOLD (Golden pins them)."""
+    tip consonants at full and takes no tongueOut lift, which pushed its tongue into the teeth, and th takes the mouth at its contact
+    (§742: the jaw and the vowels give way); every other key and bone is the clip the same head makes without them. Today's heads keep
+    the lift and TONGUE_HOLD (Golden pins them)."""
     TIP = ('viseme_TH', 'viseme_DD', 'viseme_nn')
 
     @classmethod
@@ -176,9 +177,41 @@ class FullTongue(unittest.TestCase):
     def test_everything_else_is_the_same_clip(self):
         self.assertEqual(self.full['duration'], self.today['duration'])
         self.assertEqual(self.full['bones'], self.today['bones'])
-        rest = set(self.today['morphs']) - {'tongueOut', *self.TIP}
-        self.assertEqual(set(self.full['morphs']) - set(self.TIP), rest)
+        rest = set(self.today['morphs']) - {'tongueOut', *self.TIP, *self.MOUTH}
+        self.assertEqual(set(self.full['morphs']) - {*self.TIP, *self.MOUTH}, rest)
         for k in rest: self.assertEqual(self.full['morphs'][k], self.today['morphs'][k], k)
+
+    MOUTH = ('jawOpen', *face.VOWELS)
+
+    def th_contacts(self):
+        """Each th's contact (the hold's peak, as face.build places it) and the hold's half width."""
+        out = []
+        for g in self.rep['segs']:
+            if g['p'] not in ('th', 'dh'): continue
+            d = g['e'] - g['s']; out.append((g['s'] + .6 * d - face.LEAD, min(max(.03, .4 * d), .04)))
+        return out
+
+    def test_th_takes_the_mouth_at_its_contact(self):
+        th = self.th_contacts()
+        self.assertTrue(th, 'the fixture has a th (\'the\')')
+        for c0, hw in th:
+            near = np.arange(c0 - hw / 4, c0 + hw / 4, .002)
+            jt, jf = float(val(self.today, 'jawOpen', near).max()), float(val(self.full, 'jawOpen', near).max())
+            self.assertGreater(jt, .05, 'today the jaw is open at th')
+            # given way at the contact (keys at 48 a second sample the pulse up to 10 ms off its peak)
+            self.assertLess(jf, .25 * jt, (c0, jt, jf))
+            for k in face.VOWELS:
+                vt = float(val(self.today, k, near).max())
+                if vt > .02: self.assertLess(float(val(self.full, k, near).max()), .25 * vt, (k, c0))
+
+    def test_the_mouth_is_today_s_away_from_th(self):
+        th = self.th_contacts()
+        tq = np.arange(0, self.today['duration'], .005)
+        away = np.ones(len(tq), dtype=bool)
+        for c0, hw in th: away &= np.abs(tq - c0) > 3 * hw
+        for k in self.MOUTH:
+            # thinned keys (tolerance .004) may land on other times, so equal within that
+            self.assertLess(float(np.abs(val(self.full, k, tq[away]) - val(self.today, k, tq[away])).max()), .01, k)
 
 
 @pytest.mark.slow  # about 30 s: a dozen builds
