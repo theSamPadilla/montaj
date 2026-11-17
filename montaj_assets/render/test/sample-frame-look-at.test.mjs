@@ -110,3 +110,38 @@ test('a frame with no 3D on screen answers look_at_no_3d', async () => {
     sampleFrame({ projectJson: proj, projectDir: '/p', atSeconds: 1, outPath: '/Users/Shared/c5-lookat-tmp/tmp/x.png', lookAt: { follow: { cast: 0, bone: 'b' }, distance: 0.4, lens: 50 } }),
     (e) => frameErrorCode(e) === 'look_at_no_3d' && /no 3D/.test(e.message))
 })
+
+// §743 Mayflower gap 53: sample_frame with a 3D id, look_at and several times failed "no 3D is on screen" for every time
+// but the first. sampleScenes hands one project to every time, and sampling rewrote its 3D item in place (src to the
+// stage), so the next time found no 3D to close in on. A project given to sampleFrame as an object is now left as given.
+test('§743 gap 53: a sheet of one 3D with look_at samples every time, and the project given is left as it was', { timeout: 180_000 }, async () => {
+  const { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { sampleScenes } = await import('../sample-frame.js')
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-743-53-'))
+  const before = process.env[SCENE3D_STAGE_ENV]
+  try {
+    const stageFile = join(dir, 'stage.jsx')
+    writeFileSync(stageFile, 'export default () => null')
+    process.env[SCENE3D_STAGE_ENV] = stageFile
+    const pdir = join(dir, 'project')
+    mkdirSync(join(pdir, 'models', 'scenes', 'hands'), { recursive: true })
+    writeFileSync(join(pdir, 'models', 'scenes', 'hands', 'active.json'), text)
+    const path = join(pdir, 'project.json')
+    writeFileSync(path, JSON.stringify({ version: '0.2', id: 'p743', status: 'final', projectType: 'editing',
+      settings: { resolution: [180, 320], fps: 10, colorSpace: 'sdr_bt709' }, tracks: [[]], audio: { tracks: [] } }))
+    const outPaths = [join(dir, 'a.png'), join(dir, 'b.png')]
+    const got = await sampleScenes({ projectJson: path, scene: 'hands', times: [0, 0.5], outPaths, lookAt: { follow: { cast: 1, bone: 'hand_r' }, distance: 0.4, lens: 50 } })
+    const bad = got.filter((g) => !g || g.error || !existsSync(g.pngPath))
+    assert.deepEqual(bad, [], JSON.stringify(got))
+    // the project object a caller hands over keeps its 3D item
+    const p = project()
+    await sampleFrame({ projectJson: { settings: { resolution: [180, 320], fps: 10, colorSpace: 'sdr_bt709' }, ...p, audio: { tracks: [] } }, projectDir: pdir, atSeconds: 0, outPath: join(dir, 'c.png'), lookAt: { follow: { cast: 1, bone: 'hand_r' }, distance: 0.4, lens: 50 } })
+    assert.equal(p.tracks[0][0].src, SCENE3D_SRC, 'the caller\'s 3D item is left as given')
+  } finally {
+    if (before === undefined) delete process.env[SCENE3D_STAGE_ENV]
+    else process.env[SCENE3D_STAGE_ENV] = before
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

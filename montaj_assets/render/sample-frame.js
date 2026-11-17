@@ -67,7 +67,7 @@ import { writeItemMask } from './item-mask.js'
 import { resolveAt, sourceWindow, opaqueReplacesPicture, isFullCanvasPlacement, opacityAt, maskAt, blendModeOf, blurOf, blurTypeOf, blurAngleOf, blurCenterOf, trackLayerPositions, RESOLVER_VERSION } from '@bycrux/timeline-core'
 import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
 import { captionOverlayFields } from './caption-spec.js'
-import { materializeScene3d, Scene3dError, SCENE3D_SRC } from './scene3d.js'
+import { materializeScene3d, Scene3dError, SCENE3D_SRC, isScene3dItem } from './scene3d.js'
 import { SCENE3D_MAX_WORKERS } from './memory.js'
 import { resolveProjectSrc, resolveDerivedSrc } from './project-paths.js'
 
@@ -1519,6 +1519,19 @@ export function tooLargeError(cause, project, atSeconds) {
  * costs one read and a missing one would fail the sample. A function declaration: the CLI above calls it while this
  * module is still evaluating.
  */
+/**
+ * §743 gap 53: `project` with its tracks and 3D items its own (what materializeScene3d rewrites) and everything else shared,
+ * every property kept as it is defined (a getter stays a getter).
+ */
+export function withOwnScene3dItems(project) {
+  const out = Object.defineProperties({}, Object.getOwnPropertyDescriptors(project))
+  const item = (x) => (isScene3dItem(x) ? { ...x } : x)
+  if (Array.isArray(project.tracks)) {
+    out.tracks = project.tracks.map((t) => (Array.isArray(t) ? t.map(item) : t && typeof t === 'object' && Array.isArray(t.items) ? { ...t, items: t.items.map(item) } : t))
+  }
+  return out
+}
+
 export function onScreenAt(t) {
   return (item) => !(Number(item.start) > t) && !(Number(item.end) < t)
 }
@@ -1554,7 +1567,9 @@ async function sampleFrameAt({
     if (!existsSync(projectPath)) throw new Error(`project.json not found: ${projectPath}`)
     project = JSON.parse(readFileSync(projectPath, 'utf8'))
   } else {
-    project = projectJson
+    // §743 gap 53: a project given as an object is the caller's, and materializeScene3d rewrites its 3D items in place:
+    // sampleScenes hands one project to every time of a sheet, so the first time left the rest no 3D to close in on.
+    project = withOwnScene3dItems(projectJson)
   }
   seen.project = project
 
