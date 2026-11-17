@@ -65,6 +65,18 @@ describe('resolveOverlayPropPaths', () => {
     }
   })
 
+  // A map keyed by path is looked up by the rewritten src (paper_collage's sizes, __hOf). Its keys are rewritten
+  // like values, so the lookup finds them; other keys stay as they are.
+  it('rewrites an object key that is an absolute path, the way it rewrites the value', () => {
+    const a = '/Users/x/project/cutouts/a.png'
+    const out = resolveOverlayPropPaths(
+      { sizes: { [a]: [600, 400], 'b.png': [1, 1], 'C:\\p\\c.png': [2, 2], '/api/x': [3, 3] }, pieces: [{ src: a, w: 600 }] },
+      fileUrl,
+    ) as { sizes: Record<string, number[]>; pieces: Array<{ src: string }> }
+    expect(out.sizes).toEqual({ [fileUrl(a)]: [600, 400], 'b.png': [1, 1], [fileUrl('C:\\p\\c.png')]: [2, 2], '/api/x': [3, 3] })
+    expect(out.sizes[out.pieces[0].src]).toEqual([600, 400])
+  })
+
   it('keeps posix behaviour exactly: /abs and //host rewritten, /api/ untouched', () => {
     expect(resolveOverlayPropPaths('/abs/x.png', fileUrl)).toBe(fileUrl('/abs/x.png'))
     expect(resolveOverlayPropPaths('//host/x.png', fileUrl)).toBe(fileUrl('//host/x.png'))

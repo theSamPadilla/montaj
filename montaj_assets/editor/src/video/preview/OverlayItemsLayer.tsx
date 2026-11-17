@@ -201,22 +201,27 @@ function MediaBox({ scaleX, scaleY, mask, blur, children }: {
 // Already-proxied /api/ URLs are left untouched (idempotent). On Windows an
 // absolute path is a drive-letter one (C:\ or C:/); this runs in the browser,
 // so that is a regex, not Node's path module. UNC (\\host) is not rewritten.
+// An object KEY that is an absolute path is rewritten the same way, so a map
+// keyed by path (a collage's sizes: { <path>: [w, h] }) still answers a lookup
+// by the rewritten src. The render leaves keys raw and gives src as a file://
+// URL, which such a component decodes back to the raw key; a files-route URL
+// cannot be decoded back, so without this the lookup missed in the preview only.
 const DRIVE_ABS_PATH = /^[A-Za-z]:[\\/]/
+const isAbsPropPath = (value: string) => (value.startsWith('/') && !value.startsWith('/api/')) || DRIVE_ABS_PATH.test(value)
 
 export function resolveOverlayPropPaths(
   value: unknown,
   fileUrl: (path: string) => string,
 ): unknown {
   if (typeof value === 'string') {
-    const abs = (value.startsWith('/') && !value.startsWith('/api/')) || DRIVE_ABS_PATH.test(value)
-    return abs ? fileUrl(value) : value
+    return isAbsPropPath(value) ? fileUrl(value) : value
   }
   if (Array.isArray(value)) {
     return value.map((v) => resolveOverlayPropPaths(v, fileUrl))
   }
   if (value && typeof value === 'object') {
     return Object.fromEntries(
-      Object.entries(value).map(([k, v]) => [k, resolveOverlayPropPaths(v, fileUrl)]),
+      Object.entries(value).map(([k, v]) => [isAbsPropPath(k) ? fileUrl(k) : k, resolveOverlayPropPaths(v, fileUrl)]),
     )
   }
   return value
