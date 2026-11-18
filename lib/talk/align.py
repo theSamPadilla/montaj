@@ -111,14 +111,24 @@ def audio_pauses(F, min_s=.12):
     return out
 
 
+# The longest silence the DP's 'sil' node spans (150 frames). A pause at least LONG_PAUSE long closes a phrase whatever the
+# punctuation, and route_b keeps at most EDGE_SIL of silence before a chunk's first word and after its last.
+LONG_PAUSE = 1.2; EDGE_SIL = .6
+
+
 def route_b_phrased(words, F, sigma=70, end_slack=.55):
     """Route B between the line's own pauses. A word ending in punctuation closes a phrase at the first audio pause it can reach, so a word can't slide past a pause into the next phrase and leave everything after it late.
-    Whisper's words are gapless, so its end for such a word is about the end of the pause: the pause must start after the word does and be within end_slack of that end."""
+    Whisper's words are gapless, so its end for such a word is about the end of the pause: the pause must start after the word does and be within end_slack of that end.
+    A pause of LONG_PAUSE or more between two words closes a phrase too, punctuation or not: the DP's silence node can't span it."""
     P = audio_pauses(F); cuts = []; used = -1; T = len(F['e']) * FR
     for i, w in enumerate(words[:-1]):
-        if not re.search(r"[,.;:!?]$", w['w']): continue
+        nxt = words[i + 1]
         for k, (a, b) in enumerate(P):
-            if k > used and a > w['start'] + .05 and b >= w['end'] - end_slack and a <= w['end'] + end_slack:
+            if k <= used: continue
+            said = re.search(r"[,.;:!?]$", w['w']) and a > w['start'] + .05 and b >= w['end'] - end_slack and a <= w['end'] + end_slack
+            # A long pause after this word starts and before the next one is over (whisper's gapless times put both near it).
+            long = b - a >= LONG_PAUSE and a > w['start'] + .05 and b <= nxt['end'] and a < nxt['start'] + end_slack
+            if said or long:
                 cuts.append((i, a, b)); used = k; break
     segs = []; i0 = 0; t0 = 0.
     for i, a, b in cuts + [(len(words) - 1, T, T)]:
@@ -133,6 +143,37 @@ def route_b_phrased(words, F, sigma=70, end_slack=.55):
 
 
 def route_b(words, F, sigma=70, wdur=5.0, dmin_on=True):
+    """The DP below on the stretch from EDGE_SIL before the first word to EDGE_SIL after the last, the rest silence: its 'sil'
+    node spans at most 150 frames, so a long lead-in (a gated voice whose first word is 36 s in) had no path or smeared the
+    words' phones into the silence. A stretch with no path still keeps the words' own times (spread_words)."""
+    T = len(F['e'])
+    if not words: return [{'p': 'sil', 's': 0., 'e': float(T * FR)}] if T else []
+    a = max(0, int((words[0]['start'] - EDGE_SIL) / FR)); b = min(T, int(np.ceil((words[-1]['end'] + EDGE_SIL) / FR)))
+    if b - a < 2: a, b = 0, T
+    Fs = {k: v[a:b] for k, v in F.items()} if (a, b) != (0, T) else F
+    segs = _route_b([dict(w, start=max(0., w['start'] - a * FR)) for w in words], Fs, sigma=sigma, wdur=wdur, dmin_on=dmin_on)
+    if segs is None: return spread_words(words, T * FR)
+    if a: segs = [{'p': 'sil', 's': 0., 'e': float(a * FR)}] + [dict(g, s=g['s'] + a * FR, e=g['e'] + a * FR) for g in segs]
+    if b < T: segs.append({'p': 'sil', 's': float(b * FR), 'e': float(T * FR)})
+    return segs
+
+
+def spread_words(words, end):
+    """No DP path (silence too long inside a phrase, a word with no sound): each word's phones evenly over its own whisper
+    times, silence between and around them, to `end` seconds."""
+    out = []; t = 0.
+    for w in words:
+        s0 = max(t, w['start']); e0 = max(s0 + .02 * len(w['ph']), w['end'])
+        if s0 > t: out.append({'p': 'sil', 's': t, 'e': s0})
+        d = (e0 - s0) / len(w['ph'])
+        out += [{'p': p, 's': s0 + k * d, 'e': s0 + (k + 1) * d} for k, p in enumerate(w['ph'])]
+        t = e0
+    if end > t: out.append({'p': 'sil', 's': t, 'e': end})
+    return out
+
+
+def _route_b(words, F, sigma=70, wdur=5.0, dmin_on=True):
+    """The segmental DP over F's frames, from frame 0 to the end; None when no path reaches the end."""
     C = emission(F); T = len(F['e'])
     seq = []  # (phone, klass, optional, word start time or None)
     seq.append(('sil','sil',True,None))
@@ -176,6 +217,7 @@ def route_b(words, F, sigma=70, wdur=5.0, dmin_on=True):
     # The end: the last non-optional node or anything optional after it, at T.
     last = max(i for i in range(M) if not seq[i][2])
     ends = [i for i in range(last, M) if best[i, T] > INF / 2]
+    if not ends: return None
     i = max(ends, key=lambda q: best[q, T]); t = T
     out = []
     while i >= 0 and t > 0:

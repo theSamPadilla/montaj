@@ -368,3 +368,53 @@ class Dictionary(unittest.TestCase):
             p = os.path.join(t, 'd.dict')
             with open(p, 'wb') as f: f.write(gzip.open(CMUDICT).read())
             self.assertEqual(load_cmudict(p), load_cmudict())
+
+
+class LongSilence(unittest.TestCase):
+    """A voice with long silence the aligner's silence node can't span (it holds at most 1.5 s): a gated track whose first
+    word is 36 s in failed with "max() iterable argument is empty". Before the first word and after the last the step trims
+    the silence itself; a gap inside a phrase that still has no path falls back to the words' own times."""
+
+    def padded(self, lead_s=0., tail_s=0., gap_at=None, gap_s=0.):
+        """The English fixture with silence added: `lead_s` before, `tail_s` after, and `gap_s` at word time `gap_at` (s)."""
+        import wave
+        with wave.open(os.path.join(FIX, EN[0] + '.wav')) as w:
+            sr = w.getframerate(); x = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+        z = lambda s: np.zeros(int(round(s * sr)), dtype=np.int16)
+        if gap_at is not None:
+            k = int(round(gap_at * sr)); x = np.concatenate([x[:k], z(gap_s), x[k:]])
+        x = np.concatenate([z(lead_s), x, z(tail_s)])
+        d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d)
+        wav = os.path.join(d, 'v.wav')
+        with wave.open(wav, 'wb') as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr); w.writeframes(x.tobytes())
+        j = load(EN[0] + '.words.json')
+        for t in j['transcription']:
+            for side in ('from', 'to'):
+                ms = t['offsets'][side]
+                t['offsets'][side] = ms + int(lead_s * 1000) + (int(gap_s * 1000) if gap_at is not None and ms >= gap_at * 1000 else 0)
+        words = os.path.join(d, 'v.words.json')
+        with open(words, 'w') as f: json.dump(j, f)
+        return wav, words
+
+    def mouth(self, clip, a, b):
+        """The jaw's largest opening between a and b seconds."""
+        return float(np.max(val(clip, 'jawOpen', np.arange(a, b, .02))))
+
+    def test_first_word_60_s_in_and_4_s_after_the_last(self):
+        # Past what the phones can stretch over, this was the "max() iterable argument is empty" failure; under it (36 s) the
+        # phones were smeared into the silence and the mouth moved there.
+        for lead in (60., 36.):
+            wav, words = self.padded(lead_s=lead, tail_s=4.)
+            clip, _ = face.build(wav, words, 'en', MOODS['en'])
+            self.assertLess(self.mouth(clip, 0, lead - .5), .05, f'shut through {lead} s of silence')
+            self.assertGreater(self.mouth(clip, lead, lead + 5.), .2, 'talking from the first word')
+            self.assertLess(self.mouth(clip, lead + 6., lead + 9.), .05, 'shut after the last')
+
+    def test_a_long_gap_inside_a_phrase(self):
+        # 3 s of silence between "capital" and "quickly": no punctuation cuts a phrase there.
+        wav, words = self.padded(gap_at=2.0, gap_s=3.)
+        clip, _ = face.build(wav, words, 'en', MOODS['en'])
+        self.assertGreater(self.mouth(clip, 0., 2.), .2, 'talking before the gap')
+        self.assertLess(self.mouth(clip, 2.6, 4.4), .05, 'shut inside it')
+        self.assertGreater(self.mouth(clip, 5., 8.), .2, 'talking after it')
