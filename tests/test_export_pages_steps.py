@@ -79,6 +79,20 @@ def test_pages_go_in_a_new_zip_and_nothing_in_out_changes(tmp_path):
     assert (tmp_path / "a-file").read_text() == "x"
 
 
+def test_carousel_zip_is_named_after_the_project(tmp_path):
+    """Sam 11-20: the pages zip is `<project name>.zip`, not `slides 3.zip`. The name is made safe as a file name on
+    macOS and Windows; with no usable name it is the project folder's, then `slides`."""
+    zip_name = load("export_carousel_pages").zip_name
+    proj = tmp_path / "2026-11-20-wisdom" / "project.json"
+    assert zip_name({"name": "8 Stages of Wisdom Teeth"}, str(proj)) == "8 Stages of Wisdom Teeth"
+    assert zip_name({"name": 'Q3: "Launch" / Recap?'}, str(proj)) == "Q3 Launch Recap"
+    assert zip_name({"name": "  ..Caf\u00e9 \u2728  "}, str(proj)) == "Caf\u00e9 \u2728"
+    assert len(zip_name({"name": "x" * 300}, str(proj))) == 100
+    assert zip_name({"name": "///"}, str(proj)) == "2026-11-20-wisdom"
+    assert zip_name({}, str(proj)) == "2026-11-20-wisdom"
+    assert zip_name({"name": "?"}, "/project.json") == "slides"
+
+
 def test_zip_folder_keeps_relative_paths_under_one_top_folder(tmp_path):
     """PL89: a user shared the loose folder without its assets/. The zip carries the pages and assets/ together, under
     one top folder, every path relative; names with spaces and U+202F survive; a skipped file is left out."""
@@ -121,7 +135,7 @@ def test_carousel_step_writes_one_zip_with_its_images(tmp_path):
     shot = proj / "Screenshot 2026-10-24 at 2.32.11\u202fPM.png"
     _png(shot)
     p = proj / "project.json"
-    p.write_text(json.dumps({"projectType": "carousel", "settings": {"resolution": [540, 675]}, "slides": [
+    p.write_text(json.dumps({"projectType": "carousel", "name": "Spring drop: 8/10", "settings": {"resolution": [540, 675]}, "slides": [
         {"id": "s1", "base_color": "#fff", "elements": [{"id": "i", "type": "image", "src": str(shot), "x": 0, "y": 0, "w": 100, "h": 100}]},
         {"id": "s2", "base_color": "#000", "elements": []}]}))
     out = tmp_path / "picked"
@@ -129,15 +143,16 @@ def test_carousel_step_writes_one_zip_with_its_images(tmp_path):
     r = run("export_carousel_pages", "--project", str(p), "--out", str(out))
     assert r.returncode == 0, r.stderr
     res = json.loads(r.stdout)
-    assert res["zip"] == str(out / "slides.zip") and os.listdir(out) == ["slides.zip"]
+    assert res["zip"] == str(out / "Spring drop 8 10.zip") and os.listdir(out) == ["Spring drop 8 10.zip"]
     assert res["warnings"] == [] and res["pages"] == ["slide-01.html", "slide-02.html"] and res["index"] == "index.html"
     with zipfile.ZipFile(res["zip"]) as z:
         names = set(z.namelist())
-        assert {f"slides/{f}" for f in res["files"]} == names
-        asset = next(n for n in names if n.startswith("slides/assets/"))
+        top = "Spring drop 8 10/"
+        assert {f"{top}{f}" for f in res["files"]} == names
+        asset = next(n for n in names if n.startswith(f"{top}assets/"))
         assert asset.endswith("\u202fPM.png") and z.read(asset) == shot.read_bytes()
-        page = z.read("slides/slide-01.html").decode()
-        assert asset[len("slides/"):] in page and "file://" not in page
+        page = z.read(f"{top}slide-01.html").decode()
+        assert asset[len(top):] in page and "file://" not in page
 
 
 @pytest.mark.skipif(not NODE_READY, reason="needs node and the render engine's node_modules")

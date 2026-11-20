@@ -1,6 +1,6 @@
 {
   "name": "export_carousel_pages",
-  "description": "Export a carousel as web pages, in one new zip inside out (slides.zip, then slides 2.zip, ...; nothing already there is changed). Inside, one folder holds a still HTML page per slide (slide-01.html ...), plain HTML and CSS with no scripts, index.html, which swipes through them, and the images the slides use (assets/) with relative paths, so it opens anywhere once unzipped. Fonts load from Google Fonts the first time the pages open. With list true, writes nothing and lists the slides.",
+  "description": "Export a carousel as web pages, in one new zip inside out named after the project (then 2, 3, ...; nothing there is changed). Inside, one folder holds a still HTML page per slide (slide-01.html ...), plain HTML and CSS with no scripts, index.html, which swipes through them, and the images the slides use (assets/) with relative paths, so it opens anywhere once unzipped. Fonts load from Google Fonts the first time the pages open. With list true, writes nothing and lists the slides.",
   "input": { "type": "none", "description": "No file input: operates on a carousel project (see the project param)." },
   "output": { "type": "json", "description": "{zip, pages: [slide-NN.html ...], index, files: [paths inside the zip's folder], warnings: [...]}; with list: {items: [{index, id}]}" },
   "params": [

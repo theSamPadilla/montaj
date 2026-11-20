@@ -2,19 +2,33 @@
 """Export a carousel as web pages: one still page per slide and a swipeable index.html.
 
 Runs render/render-carousel.js with --html-dir --html-only (the slides are drawn by the same code and page that
-produce the PNGs) into a temporary folder, then writes it as one new zip inside --out (`slides.zip`, then
-`slides 2.zip`, ...; nothing already in --out is changed; inside, one folder named like the zip holds the pages and
-assets/) and prints a JSON result. Its progress lines go to stderr; its error, if any, is the last JSON line on
-stderr, which serve reads.
+produce the PNGs) into a temporary folder, then writes it as one new zip inside --out, named after the project
+(`<name>.zip`, then `<name> 2.zip`, ...; nothing already in --out is changed; inside, one folder named like the zip
+holds the pages and assets/) and prints a JSON result. Its progress lines go to stderr; its error, if any, is the last
+JSON line on stderr, which serve reads.
 """
-import argparse, json, os, shutil, subprocess, sys, tempfile
+import argparse, json, os, re, shutil, subprocess, sys, tempfile
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
 from cli.deps import render_runtime_dir
 from lib.common import node_child_env, fail, folder_files, new_file_in, require_file, zip_folder
 
-NAME = "slides"
+NAME = "slides"  # the zip's name when the project has none usable
+
+# Characters a file name cannot hold on macOS or Windows, and control characters.
+_UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+
+
+def zip_name(project: dict, project_path: str) -> str:
+    """The zip's name: the project's name (its folder's when it has none), made safe as a file name on macOS and
+    Windows; `slides` when nothing usable is left."""
+    for raw in (project.get("name"), os.path.basename(os.path.dirname(os.path.abspath(project_path)))):
+        if isinstance(raw, str):
+            n = " ".join(_UNSAFE.sub(" ", raw).split()).strip(" .")[:100].strip(" .")
+            if n:
+                return n
+    return NAME
 
 
 def read_project(path: str) -> dict:
@@ -61,7 +75,7 @@ def main():
     if not os.path.isfile(os.path.join(render_runtime_dir(), "render-carousel.js")):
         fail("not_found", "render-carousel.js not found")
 
-    dest = new_file_in(args.out, NAME, ".zip")
+    dest = new_file_in(args.out, zip_name(project, args.project), ".zip")
     top = os.path.basename(dest)[:-len(".zip")]
 
     env = node_child_env()
