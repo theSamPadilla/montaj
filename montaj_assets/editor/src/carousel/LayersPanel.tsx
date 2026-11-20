@@ -21,7 +21,13 @@ const groupRowId = (group: string) => `group:${group}`
 // A row is 40px: its lock and eye take Montaj's 32px tool.
 const iconBtn = railIconBtn
 
-/** A layer row's label: a text's words, an image's file name, an overlay's template name. */
+/** An overlay's name from its template path: the file name, without its folders or extension. */
+export function overlayName(template: string): string {
+  const file = template.split(/[\\/]/).pop() ?? template
+  return file.replace(/\.(jsx|tsx|mjs|js|ts)$/i, '')
+}
+
+/** A layer row's label: a text's words, an image's file name, an overlay's name (never its path). */
 export function layerName(el: CarouselElement, overlayLabel?: (template: string) => string | undefined): string {
   if (el.type === 'image') {
     const file = el.src.split(/[\\/]/).pop() ?? el.src
@@ -32,7 +38,7 @@ export function layerName(el: CarouselElement, overlayLabel?: (template: string)
     return t || 'Text'
   }
   const template = (el as OverlayElement).overlay.template
-  return overlayLabel?.(template) || template || 'Element'
+  return overlayLabel?.(template) || overlayName(template) || 'Element'
 }
 
 export interface LayersPanelProps {
