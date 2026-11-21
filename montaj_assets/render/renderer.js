@@ -29,7 +29,7 @@ import { captureWithThree, isThreeBlurUnsupported } from './three-frame.js'
 import { check3dGraphics, no3dGraphicsError, softwareAllowed } from './gpu-3d.js'
 import { createReadRecorder } from './read-set.js'
 import { createBakeTally, addJob } from './bake-tally.js'
-import { scene3dHost, CinematicUnavailableError } from './scene3d-host.js'
+import { scene3dHost, CinematicUnavailableError, reportCinematicFrame } from './scene3d-host.js'
 
 // A stream copy of chunks already on disk cannot stall for long, and spawnSync
 // cannot watch progress, so this is a generous wall clock (the callers are sync).
@@ -1369,7 +1369,7 @@ async function captureChunkFrames(worker, job, sinkFor, at, onFrame, recorder = 
         page, job, cuts, log,
         frameTimes: (frame) => frameTimes(job, frame, cuts),
         write: (png) => sinkFor(true).write(png),
-        onFrame,
+        onFrame: (info) => { reportCinematicFrame(job.id, info); onFrame?.() },
       })
       return guard
     }

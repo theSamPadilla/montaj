@@ -6230,6 +6230,123 @@ async def render_estimate(project_id: str, request: Request, project_dir: Path =
     return out
 
 
+# 3D36: how long the path-traced look's 2-frame test may take: a cold kernel compile (about 2 minutes, once per
+# machine), the shot's metering, two frames at the export's samples (a minute each at the top quality) and two page
+# loads. Past this the app gets no estimate.
+_CINEMATIC_TEST_TIMEOUT_S = 900
+_LOOK3D_QUALITY_RE = re.compile(r"^[a-z0-9-]{1,32}$")
+
+
+def _no_cinematic_estimate(error: str | None = None, code: str | None = None) -> dict:
+    """The cinematic estimate route's "no estimate" answer."""
+    out: dict = {"cinematic": None}
+    if error:
+        out["error"] = error
+    if code:
+        out["code"] = code
+    return out
+
+
+def _render_error_code(stderr: str) -> str | None:
+    """render.js's failure code (its last JSON line on stderr, `error`), else None."""
+    for line in reversed(stderr.strip().splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                parsed = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict) and isinstance(parsed.get("error"), str):
+                return parsed["error"]
+    return None
+
+
+@router.post("/projects/{project_id}/render/cinematic-estimate")
+async def render_cinematic_estimate(project_id: str, request: Request, project_dir: Path = Depends(get_project_dir)):
+    """How long the path-traced 3D look (3D36) would take this project, from a 2-frame test.
+
+    Takes POST /render's body plus an optional `look3dQuality` (the quality the
+    export window is asking about, else the project's own). Runs ``render.js
+    --cinematic-test``, which takes the project as cinematic without writing it,
+    renders its longest cinematic shot's first and middle frame through the host
+    into a scratch folder, and returns its JSON: ``{"cinematic": {"frames",
+    "shots", "secondsPerFrame", "seconds", "lowerSeconds", "upperSeconds",
+    "testFrames", "testSeconds"}}``. Only the 3D seconds count. A project with no
+    cinematic shot answers ``frames: 0`` at once.
+
+    It uses the GPU, so it does not run beside a render: while one is running
+    the answer is ``{"cinematic": null, "error": ...}``. Every failure is that
+    shape, still 200, with render.js's `code` when it gave one
+    (`cinematic_unavailable` when no path-traced renderer is installed). A
+    carousel has none.
+    """
+    project_path = project_dir / "project.json"
+    body = await _render_body(request)
+    _validate_render_body(body, overrides=False)
+    quality = body.get("look3dQuality")
+    if quality is not None and (not isinstance(quality, str) or not _LOOK3D_QUALITY_RE.match(quality)):
+        raise HTTPException(422, detail={
+            "error": "invalid_argument",
+            "message": f"look3dQuality must be a short lower-case name (got {quality!r})",
+        })
+
+    try:
+        project = json.loads(project_path.read_text())
+    except Exception as e:
+        return _no_cinematic_estimate(f"project.json unreadable: {e}")
+    if isinstance(project, dict) and project.get("projectType") == "carousel":
+        return _no_cinematic_estimate()
+    if _active_renders:
+        return _no_cinematic_estimate("a render is running", "render_running")
+
+    script_args, _ = _render_js_args(project_dir, project_path, body, overrides=False)
+    render_script = Path(render_runtime_dir()) / "render.js"
+    if not render_script.is_file():
+        return _no_cinematic_estimate(f"{render_script.name} not found")
+    node_bin = shutil.which("node")
+    if not node_bin:
+        return _no_cinematic_estimate("node not found in PATH")
+
+    env = node_child_env()
+    env["MONTAJ_ROOT"] = str(MONTAJ_ROOT)
+    cmd = [node_bin, str(render_script), *script_args, "--cinematic-test"]
+    if quality:
+        cmd += ["--look3d-quality", quality]
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(MONTAJ_ROOT),
+            env=env,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_CINEMATIC_TEST_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        if proc is not None:
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
+        return _no_cinematic_estimate(f"the 2-frame test took longer than {_CINEMATIC_TEST_TIMEOUT_S}s")
+    except Exception as e:
+        return _no_cinematic_estimate(f"render.js --cinematic-test could not run: {e}")
+
+    err_text = stderr.decode(errors="replace") if stderr else ""
+    if proc.returncode != 0:
+        return _no_cinematic_estimate(_estimate_error_from(err_text, proc.returncode), _render_error_code(err_text))
+    lines = (stdout.decode(errors="replace") if stdout else "").strip().splitlines()
+    try:
+        cinematic = json.loads(lines[-1])["cinematic"]
+        if not isinstance(cinematic, dict) or not isinstance(cinematic.get("frames"), int) \
+                or not isinstance(cinematic.get("seconds"), (int, float)):
+            raise ValueError("unexpected shape")
+    except Exception:
+        return _no_cinematic_estimate("render.js --cinematic-test printed no estimate")
+    return {"cinematic": cinematic}
+
+
 async def mark_final_for_render(project_id: str, project_dir: Path, broadcaster=None) -> bool:
     """An export marks its project final, first, whoever asks for it (the editor's Export, an agent's render, a
     review send, the CLI through serve). `status` is a label: any status renders, so this never stops a render and

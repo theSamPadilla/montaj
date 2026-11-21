@@ -6,6 +6,7 @@
  *   node render/render.js <project.json> [--out <path>] [--workers <n>] [--clean]
  *   node render/render.js <project.json> --estimate [--out <path>] [--workers <n>]
  *       [--export <mode>] [--resolution <W>x<H>] [--fps <n>]
+ *   node render/render.js <project.json> --cinematic-test [--look3d-quality <q>]
  *
  * stdout: absolute path to the final MP4 (follows step output convention)
  * stderr: progress lines + JSON error on failure
@@ -20,6 +21,19 @@
  * fetches nothing, normalizes nothing and launches no browser; it only reads
  * the project, probes its sources and reads the memory available. --resolution and --fps stand in for the project's settings, for an
  * estimate asked before a settings change is saved; they apply to --estimate only.
+ *
+ * --cinematic-test (3D36): how long the path-traced 3D look would take, from a
+ * 2-frame test. The project is taken as cinematic (at --look3d-quality, else its
+ * own) without writing it, and the first and middle frame of its longest
+ * cinematic shot are rendered by the host (scene3d-host.js), as a render would,
+ * into a scratch folder deleted after. Prints one JSON line,
+ * `{"cinematic":{"frames","shots","secondsPerFrame","seconds","lowerSeconds",
+ * "upperSeconds","testFrames":[{"frame","ms"}],"testSeconds"}}`: the cinematic
+ * frames times the test frames' mean render time (lower and upper from the
+ * faster and slower). Only the 3D seconds count. A project with no cinematic
+ * shot answers `{"cinematic":{"frames":0,...}}` without starting anything. It
+ * launches a browser and the host's renderer, so it takes as long as two frames
+ * plus the host's one-off setup. No host fails it with cinematic_unavailable.
  *
  * MONTAJ_SLICE_BUDGET_MB (§434): a smaller budget, in MB, for one time slice's
  * overlay captures (default and ceiling 2000); it forces slicing on a small
@@ -68,7 +82,7 @@ import { loudnessFilter }                 from './mix-audio.js'
 import { effectiveItemAudio, enabledTrackItems, enabledTracks, trackItems } from './project-tracks.js'
 import { captionOverlayFields }           from './caption-spec.js'
 import { materializeScene3d, Scene3dError, isThreeStageOverlay, cloneSharingSceneText } from './scene3d.js'
-import { look3dOf, look3dQualityOf, stampCinematic, LOOK3D_CINEMATIC } from './scene3d-host.js'
+import { look3dOf, look3dQualityOf, stampCinematic, LOOK3D_CINEMATIC, onCinematicFrame } from './scene3d-host.js'
 import { resolveProjectSrc, resolveDerivedSrc, resolveFilePath } from './project-paths.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
@@ -270,7 +284,8 @@ if (isMain) {
   if (!argv.length || argv[0] === '--help') {
     process.stderr.write('Usage: render.js <project.json> [--out <path>] [--workers <n>] [--clean] '
       + '[--export <auto|sdr|both>] [--sdr-curve <id>] [--fps <n>] [--motion-blur <n>] '
-      + '[--speech-set <file>] [--estimate-rates <ms3dPerChunk>,<ms2dPerFrame>] [--estimate [--resolution <W>x<H>]]\n')
+      + '[--speech-set <file>] [--estimate-rates <ms3dPerChunk>,<ms2dPerFrame>] [--estimate [--resolution <W>x<H>]] '
+      + '[--cinematic-test [--look3d-quality <q>]]\n')
     process.exit(1)
   }
 
@@ -286,6 +301,8 @@ if (isMain) {
   let motionBlurArg = null
   let speechSetArg = null
   let estimateRatesArg = null
+  let cinematicTestArg = false
+  let look3dQualityArg = null
 
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--out')        { outArg       = argv[++i]; continue }
@@ -301,6 +318,9 @@ if (isMain) {
     if (argv[i] === '--speech-set') { speechSetArg = argv[++i]; continue }
     // §737: the app's seeds for `bake left` (what a 3D chunk and a 2D frame cost on this machine before any is measured).
     if (argv[i] === '--estimate-rates') { estimateRatesArg = argv[++i]; continue }
+    // 3D36: the path-traced look's 2-frame test, and the quality it is asked at.
+    if (argv[i] === '--cinematic-test') { cinematicTestArg = true; continue }
+    if (argv[i] === '--look3d-quality') { look3dQualityArg = argv[++i]; continue }
     if (!projectArg) projectArg = argv[i]
   }
 
@@ -327,7 +347,17 @@ if (isMain) {
   // estimate only.
   if (overrides?.resolution && !estimateArg) fail('invalid_argument', '--resolution applies to --estimate only')
 
-  if (estimateArg) {
+  if (look3dQualityArg != null && !cinematicTestArg) fail('invalid_argument', '--look3d-quality applies to --cinematic-test only')
+  if (look3dQualityArg != null && look3dQualityOf({ look3dQuality: look3dQualityArg }) !== look3dQualityArg) {
+    fail('invalid_argument', `--look3d-quality must be a short lower-case name, got ${JSON.stringify(look3dQualityArg)}`)
+  }
+
+  if (cinematicTestArg) {
+    // 3D36: one JSON line on stdout, exit 0; a failure is a render's (JSON on stderr, exit 1).
+    cinematicTestMain(projectArg, { out: outArg, quality: look3dQualityArg })
+      .then((result) => { process.stdout.write(JSON.stringify(result) + '\n'); process.exit(0) })
+      .catch((err) => fail(err.code || 'render_error', err.message))
+  } else if (estimateArg) {
     // §213: one JSON line on stdout, exit 0. A project the estimate cannot plan
     // fails like a render would (JSON on stderr, exit 1); serve reads that as
     // "no estimate".
@@ -543,6 +573,9 @@ function loadRenderProject(projectPath, { out = null, overrides = null } = {}) {
       ...(overrides.resolution ? { resolution: overrides.resolution } : {}),
       ...(overrides.fps ? { fps: overrides.fps } : {}),
       ...(overrides.motionBlur ? { motionBlur: overrides.motionBlur } : {}),
+      // 3D36: --cinematic-test takes the project as cinematic, at its quality, before the choice is saved.
+      ...(overrides.look3d ? { look3d: overrides.look3d } : {}),
+      ...(overrides.look3dQuality ? { look3dQuality: overrides.look3dQuality } : {}),
     }
   }
 
@@ -1151,6 +1184,76 @@ async function estimateMain(projectPath, { out = null, workers = null, exportMod
 
   const check = checkDiskSpace({ tmpDir: tmpdir(), projectDir: renderDir, estimate: estimate.expected, reclaimBytes })
   return { estimate, volumes: check?.volumes ?? [], memory, ...(pictureColor ?? {}), slicing }
+}
+
+/**
+ * 3D36: what the 2-frame test renders. The cinematic specs' frames (their windows), how many shots, the longest one,
+ * and its first and middle frame (spec-relative, as frameFrom/frameTo are).
+ */
+export function planCinematicTest(specs) {
+  const cine = specs.filter((s) => s.cinematic === true)
+  const len = (s) => Math.max(0, (s.frameTo ?? s.frameCount) - (s.frameFrom ?? 0))
+  if (!cine.length) return { frames: 0, shots: 0, spec: null, testFrames: [] }
+  const spec = cine.reduce((a, b) => (len(b) > len(a) ? b : a))
+  const from = spec.frameFrom ?? 0
+  return {
+    frames: cine.reduce((n, s) => n + len(s), 0),
+    shots: cine.length,
+    spec,
+    testFrames: [...new Set([from, from + Math.floor(len(spec) / 2)])],
+  }
+}
+
+/** 3D36: the test's answer from the frames it timed (`[{ frame, ms }]`): the cinematic frames times their mean. */
+export function cinematicEstimate({ frames, shots }, timed) {
+  if (!frames) return { frames: 0, shots: 0, secondsPerFrame: null, seconds: 0, lowerSeconds: 0, upperSeconds: 0, testFrames: [] }
+  const ms = timed.map((t) => t.ms).filter((x) => Number.isFinite(x) && x > 0)
+  if (!ms.length) throw new Error('the 2-frame test timed no frame (the host reported no render times)')
+  const mean = ms.reduce((a, b) => a + b, 0) / ms.length
+  return {
+    frames, shots,
+    secondsPerFrame: Math.round(mean) / 1000,
+    seconds: Math.round((frames * mean) / 1000),
+    lowerSeconds: Math.round((frames * Math.min(...ms)) / 1000),
+    upperSeconds: Math.round((frames * Math.max(...ms)) / 1000),
+    testFrames: timed.map((t) => ({ frame: t.frame, ms: t.ms })),
+  }
+}
+
+/**
+ * 3D36 --cinematic-test: the project as cinematic, its longest cinematic shot's first and middle frame rendered by the
+ * host into a scratch folder (each a one-frame window of that shot, marked `cinematicTest`), timed by the host's own
+ * per-frame report (onCinematicFrame), then the scratch removed.
+ */
+async function cinematicTestMain(projectPath, { out = null, quality = null } = {}) {
+  const { projectJson, settings, fps, motionBlur, renderWidth, renderHeight, projectDir, renderDir } =
+    loadRenderProject(projectPath, { out, overrides: { look3d: LOOK3D_CINEMATIC, ...(quality ? { look3dQuality: quality } : {}) } })
+  const testDir = join(renderDir, `cinematic-test-${process.pid}`)
+  const plan = planCinematicTest(collectPuppeteerSegments(projectJson, fps, renderWidth, renderHeight, testDir))
+  if (!plan.spec) return { cinematic: cinematicEstimate(plan, []) }
+  await stampCinematic([plan.spec])
+  plan.spec.captureScale = captureScaleFor(settings.resolution)
+  plan.spec.sdrMaster = true
+  await prefetchPropsUrls(namedPropsUrls(plan.spec.props))
+  mkdirSync(testDir, { recursive: true })
+  const timed = []
+  const off = onCinematicFrame((f) => { if (f.id === plan.spec.id) timed.push({ frame: f.frame, ms: f.ms }) })
+  const t0 = Date.now()
+  let workDir = null
+  try {
+    log(`cinematic test: ${plan.shots} shot(s), ${plan.frames} frames; rendering frames ${plan.testFrames.join(', ')} of ${plan.spec.id}...`)
+    workDir = await bundleSegmentSpec(plan.spec, { fps, width: renderWidth, height: renderHeight, projectDir })
+    const trimmed = plan.testFrames.map((f, i) => ({
+      ...plan.spec, frameFrom: f, frameTo: f + 1, cinematicTest: true,
+      outputPath: join(testDir, `test-${i}-${basename(plan.spec.outputPath)}`),
+    }))
+    await renderAllSegments(trimmed, { workers: 1, motionBlur })
+  } finally {
+    off()
+    if (workDir) { try { cleanupBundle(workDir) } catch {} }
+    rmSync(testDir, { recursive: true, force: true })
+  }
+  return { cinematic: { ...cinematicEstimate(plan, timed), testSeconds: Math.round((Date.now() - t0) / 1000) } }
 }
 
 /**

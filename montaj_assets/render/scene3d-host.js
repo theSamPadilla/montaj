@@ -20,6 +20,11 @@
  *       so a chunk rendered at another quality or by another renderer is never
  *       reused.
  *   export async function captureChunk({ page, job, cuts, frameTimes, write, onFrame, log }): Promise<void>
+ *       `onFrame(info?)` once per frame written. A frame the host rendered just now passes
+ *       `{ frame, ms }`: its render time, without the chunk's one-off setup. That is what
+ *       the 2-frame test (render.js --cinematic-test) multiplies out. A job marked
+ *       `cinematicTest` is such a test: the host keeps nothing of it but the shot's own
+ *       one-off state (a metered exposure, say), so a later render reuses that and nothing else.
  *
  * No host configured, or one that fails to load or lacks this contract, fails
  * the render with `cinematic_unavailable` before any chunk is drawn: a
@@ -35,6 +40,23 @@ export class CinematicUnavailableError extends Error {
   constructor(message) {
     super(message)
     this.code = 'cinematic_unavailable'
+  }
+}
+
+// Per-frame render times the host reports (onFrame's `{ frame, ms }`), for --cinematic-test.
+const frameListeners = new Set()
+
+/** Hear each cinematic frame's `{ id, frame, ms }`. Returns the unsubscribe. */
+export function onCinematicFrame(cb) {
+  frameListeners.add(cb)
+  return () => frameListeners.delete(cb)
+}
+
+/** renderer.js: a host's onFrame info for chunk `id`. A listener that throws never fails the render. */
+export function reportCinematicFrame(id, info) {
+  if (!info || typeof info.ms !== 'number') return
+  for (const cb of [...frameListeners]) {
+    try { cb({ id, frame: info.frame, ms: info.ms }) } catch { /* a listener never fails the render */ }
   }
 }
 
