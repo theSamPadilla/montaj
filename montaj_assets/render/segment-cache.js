@@ -76,7 +76,6 @@ import { FFMPEG } from './ffmpeg-bin.js'
 import { assertSegmentHasVideo, probeSegmentStreams } from './segment-check.js'
 import { captureOptionsFor, chunkLabel } from './renderer.js'
 import { checkReads, fileSha256, readStat, sealReads, sha256Of } from './read-set.js'
-import { scene3dHostKey } from './scene3d-host.js'
 
 /** Bump whenever capture or encode output can change for the same inputs (the bump rule above). */
 export const SEGMENT_CACHE_VERSION = 1
@@ -232,6 +231,7 @@ export function keyFields(job, { engine = engineFingerprint(), context = {}, env
   const page = pageDigest(job.htmlPath)
   const source = sourceDigest(job.componentPath)
   if (!page || !source) return null
+  if (job.cinematic === true && !job.cinematicKey) return null   // 3D36: never cached without its host's key
   const stagePath = job.scene3d === true ? (env[SCENE3D_STAGE_ENV] || null) : null
   const stage = stagePath ? sourceDigest(stagePath) : null
   if (stagePath && !stage) return null
@@ -244,9 +244,9 @@ export function keyFields(job, { engine = engineFingerprint(), context = {}, env
     source,
     stage,
     props: propsDigest(job.props),
-    // 3D36: a cinematic chunk names its host (path and version), so a different renderer never reuses it. Absent
-    // otherwise, so every existing key is unchanged.
-    ...(job.cinematic === true ? { cinematic: scene3dHostKey(env) } : {}),
+    // 3D36: a cinematic chunk carries its host's key (renderer, version, samples, denoise, look: scene3d-host.js), so
+    // one rendered at another quality or by another renderer is never reused. Absent otherwise: existing keys unchanged.
+    ...(job.cinematic === true ? { cinematic: job.cinematicKey } : {}),
     capture: {
       fps: orNull(job.fps),
       width: orNull(job.width),
