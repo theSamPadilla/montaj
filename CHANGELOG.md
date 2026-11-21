@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Changed (overlay runtime): three.js 0.160.0 → 0.170.0, the `THREE` every overlay gets (3D34).** The Montaj app's 3D stage moves to three 0.170 with postprocessing 6.36.7, and an overlay's `THREE`, `Canvas` and `useThreeFrame` follow it. three removed WebGL 1 (r163) and `useLegacyLights` (r165) in between, so an overlay that still reads either needs a change; the runtime's own use (`resetState`, the motion-blur accumulator) is unchanged. Measured: the 3D render tests (gpu-3d, overlay-build, preview-bundle, page-blur, sample-frame-3d-size, scene3d-host, scene3d integration, scene3d motion blur) pass. (`overlay-runtime/package.json`)
 - **Changed (steps): `talk_face` on a head with the tongue correctives lets th take the mouth at its contact, so the tongue shows between the teeth in running speech (§742).**
   - **The problem.** On such a head the tongue's tip rides the lower teeth, and th's own shape puts it between the teeth only near th's own opening, about 5 mm at the incisors. Beside an open vowel, the clip's `jawOpen` and the vowel visemes (which carry the jaw's opening) held the mouth 11 to 17 mm open, so the tip sat 5 to 11 mm under the upper teeth.
   - **The change.** At each th's contact, over th's own hold, `jawOpen` and the vowel visemes now give way.
