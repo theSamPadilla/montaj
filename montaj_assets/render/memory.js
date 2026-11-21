@@ -74,7 +74,8 @@ export const SCENE3D_MAX_WORKERS = 2
  * (bundle.js __bakeStyle) at opacity < 1, about 8 MB a screenshot at opacity
  * 0 on Sam's bundles, or the studio grade, about 41 to 48 MB. Growth within
  * one page is unbounded but by its screenshots: a chunk captures one per
- * output frame when its page blurs in-page, and up to 120 x subframes when it
+ * output frame when its page blurs in-page, and up to 120 x subframes (8 for 3D
+ * under blur, motion-blur.js SUBFRAMES_3D) when it
  * captures every sub-frame (keyframes moving within a frame, or a page that
  * cannot blur in-page). MEASURED with this bound: about 2.6 GB per worker on
  * Sam's main bundle (4 workers, opacity 0). Short chunks do not change the

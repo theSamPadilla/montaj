@@ -4,6 +4,21 @@
 // carry it), so it renders as 1 rather than failing the render.
 export const MOTION_BLUR_MAX = 8
 
+// A 3D overlay under motion blur (settings.motionBlur above 1) takes at least
+// SUBFRAMES_3D sub-frames: at 5, a fast camera move showed stepped copies of
+// the scene inside its half-frame shutter (shutterTimes). Each extra sub-frame
+// is one more draw of the scene in its page, averaged there to one capture per
+// frame (renderer.js blursInPage), so a 3D frame costs about 8/5 of its draws.
+// 2D items keep the setting: their sub-frames are screenshots, and their
+// motion is rarely that fast.
+export const SUBFRAMES_3D = 8
+
+// The sub-frames a segment's frames take: `n` (settings.motionBlur, resolved),
+// or SUBFRAMES_3D for a 3D segment when blur is on.
+export function subframesOf(n, is3d) {
+  return is3d && n > 1 ? Math.max(n, SUBFRAMES_3D) : n
+}
+
 export function resolveMotionBlur(value) {
   if (value === undefined || value === null || value === 0) return 1
   if (!Number.isInteger(value) || value < 1 || value > MOTION_BLUR_MAX) {

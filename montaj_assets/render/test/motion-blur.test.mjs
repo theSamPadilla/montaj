@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveMotionBlur, subframeTimes, motionBlurFilter, shutterTimes, cameraCutFrames, shutterOf, frameTimes } from '../motion-blur.js'
+import { resolveMotionBlur, subframeTimes, motionBlurFilter, shutterTimes, cameraCutFrames, shutterOf, frameTimes, subframesOf, SUBFRAMES_3D, MOTION_BLUR_MAX } from '../motion-blur.js'
 
 test('absent, 0 or 1 means off (a project saved with 0 renders, unblurred)', () => {
   assert.equal(resolveMotionBlur(undefined), 1)
@@ -64,4 +64,19 @@ test('alpha capture averages premultiplied colour', () => {
     motionBlurFilter(3, { alpha: true }),
     "premultiply=inplace=1,tmix=frames=3,unpremultiply=inplace=1,select='eq(mod(n\\,3)\\,2)',setpts=PTS-STARTPTS",
   )
+})
+
+test('subframesOf: 3D under blur takes at least SUBFRAMES_3D (8, within the cap); 2D and blur off are unchanged', () => {
+  assert.equal(SUBFRAMES_3D, 8)
+  assert.ok(SUBFRAMES_3D <= MOTION_BLUR_MAX)
+  assert.equal(subframesOf(5, true), 8)
+  assert.equal(subframesOf(2, true), 8)
+  assert.equal(subframesOf(8, true), 8)
+  assert.equal(subframesOf(1, true), 1)
+  assert.equal(subframesOf(5, false), 5)
+  assert.equal(subframesOf(1, false), 1)
+  // the centred 3D shutter spreads 8 samples over the same half frame
+  const t = shutterTimes(10, subframesOf(5, true))
+  assert.equal(t.length, 8)
+  assert.ok(Math.abs(t[0] - (10 - 0.25 + 0.5 / 16)) < 1e-12 && Math.abs(t[7] - (10 + 0.25 - 0.5 / 16)) < 1e-12)
 })

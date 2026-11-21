@@ -21,7 +21,7 @@ import { availableMemoryBytes, workerFootprint, planWorkers, planWorkers2d, crea
 import { defaultWorkerTarget, ffmpegThreads } from './load.js'
 import { createPlaybackThrottle, sharedPlaybackWatcher } from './playback.js'
 import { toFileHref } from './file-url.js'
-import { frameTimes, shutterOf, cameraCutFrames, SHUTTER_3D, motionBlurFilter } from './motion-blur.js'
+import { frameTimes, shutterOf, cameraCutFrames, SHUTTER_3D, motionBlurFilter, subframesOf } from './motion-blur.js'
 import { geometryAt } from '@bycrux/timeline-core'
 import { overlayPageLaunchOptions, installPageGuard } from './page-guard.js'
 import { fontLoadFailure, fontFailureWarning } from './google-fonts.js'
@@ -177,6 +177,8 @@ export function chunkJobs(segments, config = {}) {
   const subframes     = Math.max(1, Math.trunc(Number(config.motionBlur) || 1))
   const chunkSize     = resolveChunkSize(longest, targetWorkers, subframes, config.chunkSize, userConfig.render?.chunkSize)
 
+  // A 3D segment's chunks take at least SUBFRAMES_3D sub-frames when blur is on (motion-blur.js subframesOf); the
+  // returned `subframes` is the setting's, which every other segment takes.
   // A 3D segment's chunk is the cap, or an explicit chunk size under it, never the adaptive default: that one is
   // divided by the sub-frames for a capture per sub-frame, and a 3D page averages its sub-frames and captures once
   // per frame, so it would only pay more fresh browsers and more physics replayed from t=0.
@@ -195,7 +197,7 @@ export function chunkJobs(segments, config = {}) {
       const starts = []
       for (let s = Math.floor(from / segChunk) * segChunk; s < to; s += segChunk) starts.push(s)
       starts.forEach((s, i) => {
-        jobs.push({ ...seg, opaque, subframes, frameStart: Math.max(s, from), frameEnd: Math.min(s + segChunk, to), chunkIndex: i, totalChunks: starts.length })
+        jobs.push({ ...seg, opaque, subframes: subframesOf(subframes, true), frameStart: Math.max(s, from), frameEnd: Math.min(s + segChunk, to), chunkIndex: i, totalChunks: starts.length })
       })
     } else if (length > segChunk) {
       const numChunks = Math.ceil(length / segChunk)

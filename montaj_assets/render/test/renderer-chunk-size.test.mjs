@@ -78,3 +78,15 @@ test('chunkJobs: a 3D window cuts on the segment\'s own 120-frame grid, clipped 
   assert.deepEqual(cuts(seg), [[0, 120, 0, 4], [120, 240, 1, 4], [240, 360, 2, 4], [360, 400, 3, 4]])
   assert.deepEqual(cuts({ ...seg, frameCount: 50 }), [[0, 50, 0, 1]])
 })
+
+test('chunkJobs: a 3D segment under motion blur takes at least 8 sub-frames; 2D keeps the setting; off stays off', () => {
+  const sub = (seg, motionBlur) => [...new Set(chunkJobs([seg], { userConfig: {}, workers: 1, cpus: 4, motionBlur }).jobs.map((j) => j.subframes))]
+  const s3d = { id: 'a', scene3d: true, frameCount: 300, fps: 30 }, s2d = { id: 'b', frameCount: 300, fps: 30 }
+  assert.deepEqual(sub(s3d, 5), [8])
+  assert.deepEqual(sub(s3d, 8), [8])
+  assert.deepEqual(sub(s3d, 1), [1])
+  assert.deepEqual(sub(s3d, undefined), [1])
+  assert.deepEqual(sub(s2d, 5), [5])
+  assert.deepEqual(sub({ id: 'c', props: { sceneJson: '{}' }, frameCount: 60, fps: 30 }, 2), [8], 'a scene item before its spec says scene3d')
+  assert.equal(chunkJobs([s3d, s2d], { userConfig: {}, workers: 1, cpus: 4, motionBlur: 5 }).subframes, 5, 'the returned count is the setting\'s')
+})
