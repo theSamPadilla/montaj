@@ -68,6 +68,7 @@ import { loudnessFilter }                 from './mix-audio.js'
 import { effectiveItemAudio, enabledTrackItems, enabledTracks, trackItems } from './project-tracks.js'
 import { captionOverlayFields }           from './caption-spec.js'
 import { materializeScene3d, Scene3dError, isThreeStageOverlay, cloneSharingSceneText } from './scene3d.js'
+import { look3dOf, LOOK3D_CINEMATIC }    from './scene3d-host.js'
 import { resolveProjectSrc, resolveDerivedSrc, resolveFilePath } from './project-paths.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
@@ -1865,6 +1866,7 @@ function overlaySegmentPath(segDir, trackIdx, itemIdx, id) {
 
 function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
   const specs = []
+  const look3d = look3dOf(projectJson.settings)
   // Quantize every spec time to the frame grid so it matches the segment
   // planner's quantization (segment-plan.js). Without this the overlay's
   // startSeconds/endSeconds disagree with the segment boundaries that display
@@ -1941,6 +1943,10 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
           // §377: a 3D stage (a scene item, or an older project's own stage
           // overlay) averages its motion blur in its page. Absent otherwise.
           ...(isThreeStageOverlay(item, overlayTemplatePath(item)) ? { scene3d: true } : {}),
+          // 3D36: a full 3D shot (opaque, covering the picture) in a project whose 3D look is 'cinematic' is
+          // rendered by the path-tracing host (scene3d-host.js). Absent otherwise, so nothing else changes.
+          ...(look3d === LOOK3D_CINEMATIC && isThreeStageOverlay(item, overlayTemplatePath(item))
+            && isOpaqueCover(item) && opaqueReplacesPicture(item) ? { cinematic: true } : {}),
           googleFonts:   item.googleFonts ?? [],
           // Keyframes drive BOTH ends of the render: bundleComponent bakes the
           // animated transform into the capture, and buildOverlayFilterParts

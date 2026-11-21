@@ -76,6 +76,7 @@ import { FFMPEG } from './ffmpeg-bin.js'
 import { assertSegmentHasVideo, probeSegmentStreams } from './segment-check.js'
 import { captureOptionsFor, chunkLabel } from './renderer.js'
 import { checkReads, fileSha256, readStat, sealReads, sha256Of } from './read-set.js'
+import { scene3dHostKey } from './scene3d-host.js'
 
 /** Bump whenever capture or encode output can change for the same inputs (the bump rule above). */
 export const SEGMENT_CACHE_VERSION = 1
@@ -243,6 +244,9 @@ export function keyFields(job, { engine = engineFingerprint(), context = {}, env
     source,
     stage,
     props: propsDigest(job.props),
+    // 3D36: a cinematic chunk names its host (path and version), so a different renderer never reuses it. Absent
+    // otherwise, so every existing key is unchanged.
+    ...(job.cinematic === true ? { cinematic: scene3dHostKey(env) } : {}),
     capture: {
       fps: orNull(job.fps),
       width: orNull(job.width),

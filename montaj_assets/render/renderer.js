@@ -29,6 +29,7 @@ import { captureWithThree, isThreeBlurUnsupported } from './three-frame.js'
 import { check3dGraphics, no3dGraphicsError, softwareAllowed } from './gpu-3d.js'
 import { createReadRecorder } from './read-set.js'
 import { createBakeTally, addJob } from './bake-tally.js'
+import { scene3dHost, CinematicUnavailableError } from './scene3d-host.js'
 
 // A stream copy of chunks already on disk cannot stall for long, and spawnSync
 // cannot watch progress, so this is a generous wall clock (the callers are sync).
@@ -923,7 +924,8 @@ async function unlessChromeDies(worker, work, phaseOf, what) {
  */
 export function captureOptionsFor(job) {
   const needsAlpha = !job.opaque || job.transitionTo === true || job.fades === true
-  const format = !needsAlpha && job.sdrMaster === true ? 'jpeg' : 'png'
+  // 3D36: a cinematic chunk's frames come from the path-tracing host as PNG, never a JPEG screenshot.
+  const format = !needsAlpha && job.sdrMaster === true && job.cinematic !== true ? 'jpeg' : 'png'
   return { omitBackground: needsAlpha, pixFmt: needsAlpha ? 'yuva420p' : 'yuv420p', format }
 }
 
@@ -996,7 +998,8 @@ async function renderChunkOnce(worker, job, { onFrame, threads, recorder = null 
     sink = frameSink(spawnAsync(FFMPEG, chunkEncodeArgs(job, chunkMkv, { blurInPage: inPage, threads }), what, 'overlay-encode'), what)
     return sink
   }
-  if (!blursInPage(job)) {
+  // 3D36: a cinematic chunk's host writes one frame per output frame, as a page that averages its own blur.
+  if (!blursInPage(job) && job.cinematic !== true) {
     sinkFor(false)
     if (job.scene3d === true && (job.subframes ?? 1) > 1) noteKeyframesMove(job)
   }
@@ -1009,7 +1012,7 @@ async function renderChunkOnce(worker, job, { onFrame, threads, recorder = null 
     // A props image the page asked for and could not get fails the render,
     // naming it, rather than exporting without it (page-guard.js).
     guard.assertPropsServed()
-    await sinkFor(sinkBlursInPage ?? blursInPage(job)).end()
+    await sinkFor(sinkBlursInPage ?? (job.cinematic === true || blursInPage(job))).end()
     return { webmPath: chunkMkv, ...(recorder ? { reads: recorder.reads(guard.blocked) } : {}) }
   } catch (err) {
     await sink?.abort()
@@ -1356,6 +1359,20 @@ async function captureChunkFrames(worker, job, sinkFor, at, onFrame, recorder = 
       : []
 
     // Screenshot each frame
+    // 3D36: a cinematic chunk is rendered by the path-tracing host from this page (scene3d-host.js): it steps the
+    // page itself and writes one PNG per output frame. Never a silent fallback to the capture below.
+    if (job.cinematic === true) {
+      const host = await scene3dHost()
+      if (!host) throw new CinematicUnavailableError('The path-traced renderer is not available on this machine.')
+      at.phase = 'cinematic'
+      await host.captureChunk({
+        page, job, cuts, log,
+        frameTimes: (frame) => frameTimes(job, frame, cuts),
+        write: (png) => sinkFor(true).write(png),
+        onFrame,
+      })
+      return guard
+    }
     at.phase = 'overlay-capture'
     const totalFrames = frameEnd - frameStart
     const reportEvery = Math.max(1, Math.floor(totalFrames / 20))
