@@ -405,6 +405,8 @@ if (isMain) {
     if (isThreeFrameBlank(err)) {
       fail('three_frame_blank', err.message, { overlay: err.overlay, frame: err.frame, reason: err.reason })
     }
+    // 3D36: a path-traced chunk whose host found no renderer: its sentence is written for the user.
+    if (err.code === 'cinematic_unavailable') fail('cinematic_unavailable', err.message)
     // A file deleted after validateProjectFiles ran: same code, same message.
     fail(err.code === 'missing_files' ? 'missing_files' : 'render_error', err.message)
   })

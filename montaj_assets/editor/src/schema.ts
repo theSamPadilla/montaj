@@ -580,6 +580,12 @@ export interface EditorProject {
      *  output frame and averaged. Absent or 1 = off. Render time and temp disk
      *  scale ~N×. */
     motionBlur?: number
+    /** 3D36: the look full 3D shots render with. 'cinematic' is the host app's path-traced look (render.js hands
+     *  such a shot to MONTAJ_SCENE3D_NATIVE); absent or 'standard' is the real-time stage. */
+    look3d?: 'standard' | 'cinematic'
+    /** 3D36: the cinematic look's quality, a short lower-case name the host maps to samples ('standard',
+     *  'high'). Absent = 'standard'. */
+    look3dQuality?: string
     /** Integrated loudness target in LUFS (-30 to -5) for the final audio mix,
      *  e.g. -14 for social platforms. Absent = no normalization. */
     loudness?: number
