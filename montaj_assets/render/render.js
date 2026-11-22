@@ -62,7 +62,7 @@ import {
   runSlices, overlayDescriptor, plannedDescriptors, previewGroups, commonEdges,
   sliceDiskTerms, slicingLine, sliceSpecs,
 } from './slice-run.js'
-import { tmpdir }                         from 'os'
+import { tmpdir, totalmem }               from 'os'
 import { prefetchPropsUrls }              from './page-guard.js'
 import { namedPropsUrls }                 from './overlay-build.js'
 import { compose, planCompose, startCompose, encodeComposeGroups, finishCompose } from './compose.js'
@@ -1206,6 +1206,23 @@ export function planCinematicTest(specs) {
   }
 }
 
+/**
+ * The share of this computer's memory a Cinematic render may take at its peak and still be called a fit: the rest is
+ * for macOS, the app and the browser that draws the stage beside the renderer. 0.75 of 16 GB is 12 GB.
+ */
+export const CINEMATIC_MEMORY_SHARE = 0.75
+
+/**
+ * The test's memory verdict from the frames it timed (`[{ peakBytes }]`, the renderer's peak memory so far) against the
+ * computer's (`totalBytes`): { peakBytes, totalBytes, fits }, or null when the renderer reported no peak (an older one).
+ */
+export function cinematicMemory(timed, totalBytes = totalmem()) {
+  const peaks = timed.map((t) => t.peakBytes).filter((x) => Number.isFinite(x) && x > 0)
+  if (!peaks.length || !(totalBytes > 0)) return null
+  const peakBytes = Math.max(...peaks)
+  return { peakBytes, totalBytes, fits: peakBytes <= totalBytes * CINEMATIC_MEMORY_SHARE }
+}
+
 /** 3D36: the test's answer from the frames it timed (`[{ frame, ms }]`): the cinematic frames times their mean. */
 export function cinematicEstimate({ frames, shots }, timed) {
   if (!frames) return { frames: 0, shots: 0, secondsPerFrame: null, seconds: 0, lowerSeconds: 0, upperSeconds: 0, testFrames: [] }
@@ -1239,7 +1256,7 @@ async function cinematicTestMain(projectPath, { out = null, quality = null } = {
   await prefetchPropsUrls(namedPropsUrls(plan.spec.props))
   mkdirSync(testDir, { recursive: true })
   const timed = []
-  const off = onCinematicFrame((f) => { if (f.id === plan.spec.id) timed.push({ frame: f.frame, ms: f.ms }) })
+  const off = onCinematicFrame((f) => { if (f.id === plan.spec.id) timed.push({ frame: f.frame, ms: f.ms, peakBytes: f.peakBytes }) })
   const t0 = Date.now()
   let workDir = null
   try {
@@ -1255,7 +1272,9 @@ async function cinematicTestMain(projectPath, { out = null, quality = null } = {
     if (workDir) { try { cleanupBundle(workDir) } catch {} }
     rmSync(testDir, { recursive: true, force: true })
   }
-  return { cinematic: { ...cinematicEstimate(plan, timed), testSeconds: Math.round((Date.now() - t0) / 1000) } }
+  // §777: whether the render fits this computer's memory (the export window says so and keeps Export off when it does not).
+  const memory = cinematicMemory(timed)
+  return { cinematic: { ...cinematicEstimate(plan, timed), testSeconds: Math.round((Date.now() - t0) / 1000), ...(memory ? { memory } : {}) } }
 }
 
 /**
