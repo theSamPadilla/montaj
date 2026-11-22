@@ -43,11 +43,11 @@ export class CinematicUnavailableError extends Error {
   }
 }
 
-// Per-frame render times the host reports (onFrame's `{ frame, ms, peakBytes? }`: peakBytes is the renderer's peak memory
-// so far), for --cinematic-test.
+// Per-frame render times the host reports (onFrame's `{ frame, ms, peakBytes?, gpuBytes?, gpuLimitBytes? }`: the renderer's
+// peak memory so far, its GPU allocations at their peak and the GPU memory the process may keep), for --cinematic-test.
 const frameListeners = new Set()
 
-/** Hear each cinematic frame's `{ id, frame, ms, peakBytes? }`. Returns the unsubscribe. */
+/** Hear each cinematic frame's `{ id, frame, ms, peakBytes?, gpuBytes?, gpuLimitBytes? }`. Returns the unsubscribe. */
 export function onCinematicFrame(cb) {
   frameListeners.add(cb)
   return () => frameListeners.delete(cb)
@@ -57,8 +57,9 @@ export function onCinematicFrame(cb) {
 export function reportCinematicFrame(id, info) {
   if (!info || typeof info.ms !== 'number') return
   for (const cb of [...frameListeners]) {
-    const peak = Number.isFinite(info.peakBytes) && info.peakBytes > 0 ? { peakBytes: info.peakBytes } : {}
-    try { cb({ id, frame: info.frame, ms: info.ms, ...peak }) } catch { /* a listener never fails the render */ }
+    const mem = {}
+    for (const k of ['peakBytes', 'gpuBytes', 'gpuLimitBytes']) if (Number.isFinite(info[k]) && info[k] > 0) mem[k] = info[k]
+    try { cb({ id, frame: info.frame, ms: info.ms, ...mem }) } catch { /* a listener never fails the render */ }
   }
 }
 

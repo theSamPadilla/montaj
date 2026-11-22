@@ -6,7 +6,7 @@
 // reaching a listener without ever failing a render.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { planCinematicTest, cinematicEstimate, cinematicMemory, CINEMATIC_MEMORY_SHARE } from '../render.js'
+import { planCinematicTest, cinematicEstimate, cinematicMemory, CINEMATIC_MEMORY_BANDS } from '../render.js'
 import { onCinematicFrame, reportCinematicFrame } from '../scene3d-host.js'
 
 const spec = (id, frameCount, extra = {}) => ({ id, frameCount, cinematic: true, ...extra })
@@ -53,22 +53,28 @@ test("the host's per-frame report reaches a listener; a frame without a time, or
   reportCinematicFrame('s1', { frame: 4, ms: 1234 })
   reportCinematicFrame('s1', undefined)
   reportCinematicFrame('s1', { frame: 5 })
-  reportCinematicFrame('s1', { frame: 7, ms: 900, peakBytes: 11.9e9 })
-  reportCinematicFrame('s1', { frame: 8, ms: 900, peakBytes: 'lots' })
+  reportCinematicFrame('s1', { frame: 7, ms: 900, peakBytes: 11.9e9, gpuBytes: 3.9e9, gpuLimitBytes: 11.4e9 })
+  reportCinematicFrame('s1', { frame: 8, ms: 900, peakBytes: 'lots', gpuBytes: -1 })
   off(); offBad()
   reportCinematicFrame('s1', { frame: 6, ms: 1 })
-  assert.deepEqual(heard, [{ id: 's1', frame: 4, ms: 1234 }, { id: 's1', frame: 7, ms: 900, peakBytes: 11.9e9 }, { id: 's1', frame: 8, ms: 900 }])
+  assert.deepEqual(heard, [{ id: 's1', frame: 4, ms: 1234 }, { id: 's1', frame: 7, ms: 900, peakBytes: 11.9e9, gpuBytes: 3.9e9, gpuLimitBytes: 11.4e9 }, { id: 's1', frame: 8, ms: 900 }])
 })
 
-test("the test's memory verdict: the highest peak of its frames against the computer's memory, 0.75 of it a fit", () => {
+test("the test's memory verdict in three bands: fits, slow (Export stays on), too_big (the memory or the GPU's limit)", () => {
   const GB = 2 ** 30
-  assert.equal(CINEMATIC_MEMORY_SHARE, 0.75)
-  // P6 after §777 (11.9 GB) on a 16 GB Mac fits; before it (28 GB) it does not; on an 8 GB Mac neither does.
-  assert.deepEqual(cinematicMemory([{ peakBytes: 11.1 * GB }, { peakBytes: 10.8 * GB }], 16 * GB), { peakBytes: 11.1 * GB, totalBytes: 16 * GB, fits: true })
-  assert.equal(cinematicMemory([{ peakBytes: 26.2 * GB }], 16 * GB).fits, false)
-  assert.equal(cinematicMemory([{ peakBytes: 11.1 * GB }], 8 * GB).fits, false)
-  assert.equal(cinematicMemory([{ peakBytes: 12 * GB }], 16 * GB).fits, true, 'exactly the share fits')
-  // an older renderer reports no peak: no verdict (the window does not guess)
+  assert.deepEqual(CINEMATIC_MEMORY_BANDS, { fit: 0.9, slow: 1.2 })
+  const v = (peak, total, gpu, limit) => cinematicMemory([{ peakBytes: peak * GB, ...(gpu ? { gpuBytes: gpu * GB, gpuLimitBytes: limit * GB } : {}) }], total * GB)
+  // P6 after §777 peaks at 11.0 to 13.4 GiB between runs: every one fits a 16 GB Mac (GPU 3.6 GiB against about 10.7).
+  for (const p of [11.0, 11.5, 12.3, 13.4]) assert.equal(v(p, 16, 3.6, 10.7).verdict, 'fits', `P6 at ${p} GiB`)
+  assert.deepEqual(v(11.1, 16, 3.6, 10.7), { verdict: 'fits', peakBytes: 11.1 * GB, totalBytes: 16 * GB, gpuBytes: 3.6 * GB, gpuLimitBytes: 10.7 * GB })
+  assert.equal(v(14.4, 16).verdict, 'fits', 'exactly 0.9 fits')
+  assert.equal(v(15, 16, 3.6, 10.7).verdict, 'slow')
+  assert.equal(v(19.2, 16).verdict, 'slow', 'exactly 1.2 is still slow')
+  assert.equal(v(26.2, 16, 12.6, 10.7).verdict, 'too_big', 'P6 before §777')
+  assert.equal(v(11.1, 8).verdict, 'too_big', 'P6 on an 8 GB Mac')
+  assert.equal(v(9, 16, 11, 10.7).verdict, 'too_big', 'the GPU part past its limit, whatever the total')
+  // the highest of the frames counts; an older renderer reports no peak: no verdict
+  assert.equal(cinematicMemory([{ peakBytes: 10 * GB }, { peakBytes: 15 * GB }], 16 * GB).verdict, 'slow')
   assert.equal(cinematicMemory([{ frame: 0, ms: 900 }], 16 * GB), null)
   assert.equal(cinematicMemory([{ peakBytes: 5 * GB }], 0), null)
 })

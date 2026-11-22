@@ -1207,20 +1207,30 @@ export function planCinematicTest(specs) {
 }
 
 /**
- * The share of this computer's memory a Cinematic render may take at its peak and still be called a fit: the rest is
- * for macOS, the app and the browser that draws the stage beside the renderer. 0.75 of 16 GB is 12 GB.
+ * §777: how a Cinematic render's peak memory sits against this computer, in three bands (protections fail open: a band
+ * stops an export only where it would crash or crawl). The renderer's peak moves by about 2 GB between identical runs
+ * of one scene (the CPU denoiser and the path state; P6: 11.0 to 13.4 GiB), so the lines leave room for it.
+ *   fits     peak at most `fit` of the memory, and the GPU part within the GPU's limit: nothing to say.
+ *   slow     peak between `fit` and `slow` of the memory: macOS swaps and the export takes longer. Export stays on.
+ *   too_big  peak past `slow` of the memory, or the GPU part past the GPU's limit (that one cannot swap). Export off.
+ * 0.9 and 1.2 of 16 GB are 14.4 and 19.2 GB.
  */
-export const CINEMATIC_MEMORY_SHARE = 0.75
+export const CINEMATIC_MEMORY_BANDS = Object.freeze({ fit: 0.9, slow: 1.2 })
 
 /**
- * The test's memory verdict from the frames it timed (`[{ peakBytes }]`, the renderer's peak memory so far) against the
- * computer's (`totalBytes`): { peakBytes, totalBytes, fits }, or null when the renderer reported no peak (an older one).
+ * The test's memory verdict from the frames it timed (`[{ peakBytes, gpuBytes?, gpuLimitBytes? }]`) against the
+ * computer's memory (`totalBytes`): { verdict: 'fits' | 'slow' | 'too_big', peakBytes, totalBytes, gpuBytes?,
+ * gpuLimitBytes? }, or null when the renderer reported no peak (an older one: no verdict, nothing shown).
  */
 export function cinematicMemory(timed, totalBytes = totalmem()) {
-  const peaks = timed.map((t) => t.peakBytes).filter((x) => Number.isFinite(x) && x > 0)
-  if (!peaks.length || !(totalBytes > 0)) return null
-  const peakBytes = Math.max(...peaks)
-  return { peakBytes, totalBytes, fits: peakBytes <= totalBytes * CINEMATIC_MEMORY_SHARE }
+  const most = (k) => { const v = timed.map((t) => t[k]).filter((x) => Number.isFinite(x) && x > 0); return v.length ? Math.max(...v) : null }
+  const peakBytes = most('peakBytes')
+  if (peakBytes === null || !(totalBytes > 0)) return null
+  const gpuBytes = most('gpuBytes'), gpuLimitBytes = most('gpuLimitBytes')
+  const gpuOver = gpuBytes !== null && gpuLimitBytes !== null && gpuBytes > gpuLimitBytes
+  const { fit, slow } = CINEMATIC_MEMORY_BANDS
+  const verdict = gpuOver || peakBytes > totalBytes * slow ? 'too_big' : peakBytes > totalBytes * fit ? 'slow' : 'fits'
+  return { verdict, peakBytes, totalBytes, ...(gpuBytes !== null ? { gpuBytes } : {}), ...(gpuLimitBytes !== null ? { gpuLimitBytes } : {}) }
 }
 
 /** 3D36: the test's answer from the frames it timed (`[{ frame, ms }]`): the cinematic frames times their mean. */
@@ -1256,7 +1266,7 @@ async function cinematicTestMain(projectPath, { out = null, quality = null } = {
   await prefetchPropsUrls(namedPropsUrls(plan.spec.props))
   mkdirSync(testDir, { recursive: true })
   const timed = []
-  const off = onCinematicFrame((f) => { if (f.id === plan.spec.id) timed.push({ frame: f.frame, ms: f.ms, peakBytes: f.peakBytes }) })
+  const off = onCinematicFrame((f) => { if (f.id === plan.spec.id) timed.push({ frame: f.frame, ms: f.ms, peakBytes: f.peakBytes, gpuBytes: f.gpuBytes, gpuLimitBytes: f.gpuLimitBytes }) })
   const t0 = Date.now()
   let workDir = null
   try {
@@ -1272,7 +1282,7 @@ async function cinematicTestMain(projectPath, { out = null, quality = null } = {
     if (workDir) { try { cleanupBundle(workDir) } catch {} }
     rmSync(testDir, { recursive: true, force: true })
   }
-  // §777: whether the render fits this computer's memory (the export window says so and keeps Export off when it does not).
+  // §777: how the render sits against this computer's memory (the export window shows a slow or too_big verdict).
   const memory = cinematicMemory(timed)
   return { cinematic: { ...cinematicEstimate(plan, timed), testSeconds: Math.round((Date.now() - t0) / 1000), ...(memory ? { memory } : {}) } }
 }
