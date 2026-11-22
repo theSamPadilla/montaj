@@ -411,3 +411,16 @@ test('admitsSecond3dLane: memory above the reserve, pressure normal and swap gro
     assert.equal(admitsSecond3dLane({ ...ok, [key]: undefined }), false, `${key} undefined`)
   }
 })
+
+// §773: a packed scene (each mesh once) is priced as the stage holds it: it builds each entry's geometry from its own copy.
+test('scene3dFootprint: a packed scene counts each mesh piece once per entry that names it, a texture once', () => {
+  const mesh = { v: 1, count: 3, position: 'A'.repeat(4000) }, id = '0123456789abcdef'
+  const entry = { model: { meshRefs: [id], parts: [{ mesh: id }] } }
+  const packed = JSON.stringify({ pieces: { v: 1, meshes: { [id]: mesh }, textures: {} }, slug: 's', model: entry.model, moves: {}, scene: { cast: Array.from({ length: 10 }, () => entry) } })
+  const f = scene3dFootprint(packed), m = JSON.stringify(mesh).length
+  assert.equal(f.packedBytes, packed.length)
+  assert.equal(f.textBytes, packed.length + 10 * m, 'the model and its 10 entries: 11 uses, 10 more than the text holds')
+  const plain = scene3dFootprint(JSON.stringify({ model: { meshes: { [id]: mesh } }, moves: {} }))
+  assert.equal(plain.packedBytes, undefined)
+  assert.equal(scene3dFootprint(`${'{"pieces":{"v":1,'}broken`).packedBytes, undefined, 'a packed head that does not parse is priced as text')
+})

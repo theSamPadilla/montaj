@@ -10,7 +10,7 @@ import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { SCENE3D_SRC, SCENE3D_STAGE_ENV, Scene3dError, isScene3dItem, materializeScene3d, isThreeStageOverlay, STAGE_BUNDLE_HEAD, cloneSharingSceneText } from '../scene3d.js'
+import { SCENE3D_SRC, SCENE3D_STAGE_ENV, Scene3dError, isScene3dItem, materializeScene3d, isThreeStageOverlay, STAGE_BUNDLE_HEAD, cloneSharingSceneText, PIECES_HEAD, stageTakesPieces } from '../scene3d.js'
 import { collectPuppeteerSegments } from '../render.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -381,5 +381,79 @@ test('an inline scene is unchanged by the by-reference path, and a by-reference 
     assert.equal(sceneOf('hands', w), SCENE_JSON)
     writeFileSync(join(w.project, 'models', 'scenes', 'hands', 'active.json'), JSON.stringify({ byRef: { v: 1, slug: 'hands', store: '../../_store', moves: KEY } }))
     assert.throws(() => sceneOf('hands', w), (e) => e instanceof Scene3dError && e.code === 'scene3d_invalid')
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+// §773: 100 cast entries of one tree carried its meshes and textures 100 times (sample_too_large). For a stage that fills a
+// packed scene, each piece goes once under `pieces`, the refs left in place.
+const fillPieces = (v, P) => {
+  if (Array.isArray(v)) return v.map((x) => fillPieces(x, P))
+  if (!v || typeof v !== 'object') return v
+  const o = {}
+  for (const [k, x] of Object.entries(v)) {
+    if (k === 'meshRefs') { o.meshes = {}; for (const id of x) o.meshes[id] = P.meshes[id] }
+    else if (k === 'textureRefs') { o.textures = {}; for (const id of x) o.textures[id] = P.textures[id] }
+    else o[k] = fillPieces(x, P)
+  }
+  return o
+}
+const unpack = (text) => { const { pieces, ...r } = JSON.parse(text); return { ...r, model: fillPieces(r.model, pieces), ...(r.scene !== undefined ? { scene: fillPieces(r.scene, pieces) } : {}) } }
+
+test('§773: a by-reference scene packed: pieces first, each piece once, and filling it back gives the inline text exactly', () => {
+  const w = refWorld()
+  try {
+    const text = sceneOf('hands', w, { pieces: true })
+    assert.ok(text.startsWith(PIECES_HEAD), text.slice(0, 30))
+    const d = JSON.parse(text)
+    assert.deepEqual(Object.keys(d.pieces.meshes).sort(), [MID, MID2].sort())
+    assert.deepEqual(Object.keys(d.pieces.textures).sort(), [TID, TID2].sort())
+    assert.deepEqual(d.model.meshRefs, [MID])
+    assert.equal(JSON.stringify(unpack(text)), JSON.stringify(inlineOf()))
+    assert.equal(sceneOf('hands', w, { pieces: false }), JSON.stringify(inlineOf()), 'a stage that cannot fill it gets the inline text')
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('§773: 100 cast entries of one model carry its meshes and textures once', () => {
+  const w = refWorld()
+  try {
+    const f = join(w.project, 'models', 'scenes', 'hands', 'active.json'), j = JSON.parse(readFileSync(f, 'utf8'))
+    j.byRef.scene = { duration: 2, cast: Array.from({ length: 100 }, (_, i) => ({ model: { ...refModel }, at: [i, 0, 0] })) }
+    writeFileSync(f, JSON.stringify(j))
+    const inline = sceneOf('hands', w, { pieces: false }), packed = sceneOf('hands', w, { pieces: true })
+    const mesh = JSON.stringify(MESH).length
+    assert.ok(inline.split(JSON.stringify(MESH)).length - 1 === 101, 'inline: the model and its 100 entries each hold the mesh')
+    assert.equal(packed.split(JSON.stringify(MESH)).length - 1, 1, 'packed: once')
+    assert.ok(packed.length < inline.length - 99 * mesh, `${packed.length} vs ${inline.length}`)
+    assert.equal(JSON.stringify(unpack(packed)), inline)
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('§773: an inline scene is packed only when a piece repeats in it, and filling it back gives it exactly', () => {
+  const w = world({ main: false, scenes: ['one', 'two'] })
+  try {
+    const once = inlineOf(); once.scene = { duration: 2 } // inlineOf's prop shares texture TID with the model: drop it
+    writeFileSync(join(w.project, 'models', 'scenes', 'one', 'active.json'), JSON.stringify(once))
+    assert.equal(sceneOf('one', w, { pieces: true }), JSON.stringify(once), 'nothing repeats: the file text as it is')
+    const twice = inlineOf(); twice.scene.cast = [{ model: structuredClone(twice.model) }, { model: structuredClone(twice.model) }]
+    writeFileSync(join(w.project, 'models', 'scenes', 'two', 'active.json'), JSON.stringify(twice))
+    const text = sceneOf('two', w, { pieces: true })
+    assert.ok(text.startsWith(PIECES_HEAD))
+    assert.equal(JSON.stringify(unpack(text)), JSON.stringify(twice))
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('§773 stageTakesPieces: "SCENE_PIECES v1" in the stage header\'s first three lines; elsewhere, none or no file is no; materialize asks it', () => {
+  const w = refWorld()
+  try {
+    const head = (l2, more = '') => `// GENERATED by x. Do not edit;\n// run it. ${l2}\n// notices\n// ENGINE_VERSION 46\n${more}export default () => null\n`
+    writeFileSync(w.stageFile, head('The stage. SCENE_PIECES v1: a sceneJson may give its meshes once.'))
+    assert.equal(stageTakesPieces(w.stageFile), true)
+    assert.ok(sceneOf('hands', w).startsWith(PIECES_HEAD), 'the default asks the stage')
+    const other = join(w.dir, 'engine', 'old.jsx')
+    writeFileSync(other, head('The stage.', '// SCENE_PIECES v1\n'))
+    assert.equal(stageTakesPieces(other), false, 'past the header is not the header')
+    assert.equal(stageTakesPieces(join(w.dir, 'engine', 'gone.jsx')), false)
+    const p = projectOf(scene({ scene: 'hands' })); materializeScene3d(p, w.project, { env: { [SCENE3D_STAGE_ENV]: other } })
+    assert.equal(p.tracks[0][0].props.sceneJson, JSON.stringify(inlineOf()), 'an older stage gets the inline text')
   } finally { rmSync(w.dir, { recursive: true, force: true }) }
 })

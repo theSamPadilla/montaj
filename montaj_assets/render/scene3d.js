@@ -171,10 +171,10 @@ function fillRefs(v, piece) {
 }
 
 /**
- * A by-reference scene as the inline `{slug, model, moves, scene?}` its text would have been. Each store file is read once
- * per call (`files`, by path). A missing or unreadable piece says so in words, with no path in it.
+ * A by-reference scene's reader: `piece(kind, id)` (a mesh, parsed, or a texture as a data URI) and its move pool. Each store
+ * file is read once per call (`files`, by path). A missing or unreadable piece says so in words, with no path in it.
  */
-function inlineByRef(sceneData, sceneFile, projectDir, fail, { read, readBytes, files }) {
+function byRefReader(sceneData, sceneFile, projectDir, fail, { read, readBytes, files }) {
   const R = sceneData.byRef
   const modelsDir = resolve(projectDir, 'models')
   const store = typeof R.store === 'string' && R.store.length > 0 ? resolve(dirname(sceneFile), R.store) : null
@@ -206,7 +206,93 @@ function inlineByRef(sceneData, sceneFile, projectDir, fail, { read, readBytes, 
   let moves = null
   try { const t = once(join(store, 'moves', `${R.moves}.json`), text); if (t !== null) moves = JSON.parse(t) } catch { /* the same error */ }
   if (!isObj(moves)) throw gone('move pool', R.moves)
+  return { R, piece, moves }
+}
+
+/** A by-reference scene as the inline `{slug, model, moves, scene?}` its text would have been. */
+function inlineByRef(sceneData, sceneFile, projectDir, fail, io) {
+  const { R, piece, moves } = byRefReader(sceneData, sceneFile, projectDir, fail, io)
   return { slug: R.slug, model: fillRefs(R.model, piece), moves, ...(R.scene !== undefined ? { scene: fillRefs(R.scene, piece) } : {}) }
+}
+
+// §773: a scene whose meshes and textures are given once. Filled per cast entry, 100 entries of one tree carried its meshes and
+// textures 100 times (about 680 MB for a library tree, past V8's 512 MB string limit: sample_too_large). Packed, it is the
+// Montaj app's store.js packPieces shape (this file cannot import it), pieces first:
+//   {pieces: {v: 1, meshes: {id: mesh}, textures: {id: data URI}}, slug, model, moves, scene?}
+// with each id map in model and scene left as its ids in place (meshRefs, textureRefs, as a by-reference scene has them). The
+// stage fills them back, one object per id. Only for a stage whose header says it can (stageTakesPieces).
+const PIECES_V = 1
+export const PIECES_HEAD = `{"pieces":{"v":${PIECES_V},`
+const PIECE_ID = /^[0-9a-f]{16}$/
+const pieceMap = (m) => isObj(m) && Object.keys(m).length > 0 && Object.keys(m).every((k) => PIECE_ID.test(k))
+const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k)
+
+/** Every meshRefs and textureRefs id under `v`, into the sets. */
+function collectRefs(v, meshes, textures) {
+  if (Array.isArray(v)) { for (const x of v) collectRefs(x, meshes, textures); return }
+  if (!isObj(v)) return
+  for (const [k, x] of Object.entries(v)) {
+    if (k === 'meshRefs' && Array.isArray(x)) for (const id of x) meshes.add(id)
+    else if (k === 'textureRefs' && Array.isArray(x)) for (const id of x) textures.add(id)
+    else collectRefs(x, meshes, textures)
+  }
+}
+
+/** A by-reference scene packed: its refs left in place, each piece read from the store once. */
+function packByRef(sceneData, sceneFile, projectDir, fail, io) {
+  const { R, piece, moves } = byRefReader(sceneData, sceneFile, projectDir, fail, io)
+  const meshes = new Set(), textures = new Set()
+  collectRefs(R.model, meshes, textures)
+  collectRefs(R.scene, meshes, textures)
+  const pieces = { v: PIECES_V, meshes: {}, textures: {} }
+  for (const id of meshes) pieces.meshes[id] = piece('mesh', id)
+  for (const id of textures) pieces.textures[id] = piece('texture', id)
+  return { pieces, slug: R.slug, model: R.model, moves, ...(R.scene !== undefined ? { scene: R.scene } : {}) }
+}
+
+/** `v` with each id map of meshes or textures as its ids in place, each id's data into `out` once; `out.repeats` counts a map
+ *  naming an id already taken (the app's store.js strip). */
+function stripPieces(v, out) {
+  if (Array.isArray(v)) return v.map((x) => stripPieces(x, out))
+  if (!isObj(v)) return v
+  const o = {}
+  for (const [k, x] of Object.entries(v)) {
+    const tex = k === 'textures' && pieceMap(x) && Object.values(x).every((u) => typeof u === 'string')
+    if ((k === 'meshes' && pieceMap(x)) || tex) {
+      const into = tex ? out.textures : out.meshes
+      for (const id of Object.keys(x)) { if (own(into, id)) out.repeats++; else into[id] = x[id] }
+      o[tex ? 'textureRefs' : 'meshRefs'] = Object.keys(x)
+    } else o[k] = stripPieces(x, out)
+  }
+  return o
+}
+
+/** An inline scene packed, and how many of its maps repeated a piece (0: packing saves nothing). */
+function packInline(sceneData) {
+  const out = { meshes: {}, textures: {}, repeats: 0 }
+  const model = stripPieces(sceneData.model, out)
+  const scene = isObj(sceneData.scene) ? stripPieces(sceneData.scene, out) : sceneData.scene
+  // model and scene keep their places among the keys (a spread then the same key keeps its place)
+  return { packed: { pieces: { v: PIECES_V, meshes: out.meshes, textures: out.textures }, ...sceneData, model, ...(sceneData.scene !== undefined ? { scene } : {}) }, repeats: out.repeats }
+}
+
+const piecesByStage = new Map()
+/**
+ * Whether the stage fills a packed scene: its header (the first three lines) says "SCENE_PIECES v1" (the Montaj app's scene
+ * stage from engine 46). Read once per stage file and version. An unreadable stage is no.
+ */
+export function stageTakesPieces(stage) {
+  let key
+  try { const st = statSync(stage); key = `${stage}:${st.size}:${st.mtimeMs}` } catch { return false }
+  if (piecesByStage.has(key)) return piecesByStage.get(key)
+  let head = ''
+  try {
+    const fd = openSync(stage, 'r')
+    try { const b = Buffer.alloc(8192); head = b.subarray(0, readSync(fd, b, 0, b.length, 0)).toString('utf8') } finally { closeSync(fd) }
+  } catch { head = '' }
+  const yes = /SCENE_PIECES v1\b/.test(head.split('\n').slice(0, 3).join('\n'))
+  piecesByStage.set(key, yes)
+  return yes
 }
 
 const readText = (f) => readFileSync(f, 'utf8')
@@ -243,10 +329,14 @@ function sceneStamp(sceneFile) {
  *
  * `closeUp` (§673, a sample's look_at: {follow, distance, lens}) replaces each rewritten scene's camera with
  * closeUpCamera, in the text handed to the stage only; the scene's file is not touched.
+ *
+ * §773: for a stage that fills a packed scene (stageTakesPieces; `pieces` true or false decides instead), a by-reference scene
+ * is handed over packed (each mesh and texture once) and an inline one is packed when a piece repeats in it.
  */
-export function materializeScene3d(project, projectDir, { env = process.env, exists = existsSync, read = readText, readBytes = (f) => readFileSync(f), log = logToStderr, only = null, closeUp = null } = {}) {
+export function materializeScene3d(project, projectDir, { env = process.env, exists = existsSync, read = readText, readBytes = (f) => readFileSync(f), log = logToStderr, only = null, closeUp = null, pieces = null } = {}) {
   let n = 0
   const files = new Map()
+  const packs = new Map() // a stage path: whether its stage fills a packed scene
   for (const track of trackItems(project)) {
     for (const item of track ?? []) {
       if (!isScene3dItem(item)) continue
@@ -269,13 +359,15 @@ export function materializeScene3d(project, projectDir, { env = process.env, exi
         throw new Scene3dError('scene3d_invalid', `${label}: timeMap is [[item time, scene second, length]] pieces in order, the first at item time 0 (got ${JSON.stringify(props.timeMap)}).`)
       }
       const stage = scene3dStage({ env, exists, log })
+      if (!packs.has(stage)) packs.set(stage, pieces === null ? stageTakesPieces(stage) : pieces === true)
+      const pack = packs.get(stage)
       const sceneFile = name === undefined ? join(projectDir, 'models', 'active.json') : join(projectDir, 'models', 'scenes', name, 'active.json')
       if (!exists(sceneFile)) {
         throw new Scene3dError('scene3d_scene_missing', `${label}: ${which} is not saved yet.`)
       }
       const stamp = read === readText && !closeUp ? sceneStamp(sceneFile) : null
       const known = stamp !== null ? sceneTexts.get(sceneFile) : undefined
-      if (known && known.stamp === stamp) {
+      if (known && known.stamp === stamp && known.pack === pack) {
         item.src = stage
         item.props = { ...props, sceneFile, sceneJson: known.sceneJson, inPoint }
         n += 1
@@ -292,8 +384,11 @@ export function materializeScene3d(project, projectDir, { env = process.env, exi
       }
       if (isObj(sceneData) && isObj(sceneData.byRef) && sceneData.byRef.v === 1) {
         const fail = (_, why) => new Scene3dError('scene3d_invalid', `${label}: ${which} ${why}`)
-        sceneData = inlineByRef(sceneData, sceneFile, projectDir, fail, { read, readBytes, files })
+        sceneData = (pack ? packByRef : inlineByRef)(sceneData, sceneFile, projectDir, fail, { read, readBytes, files })
         sceneJson = JSON.stringify(sceneData)
+      } else if (pack && isObj(sceneData) && isObj(sceneData.model)) {
+        const { packed, repeats } = packInline(sceneData)
+        if (repeats > 0) { sceneData = packed; sceneJson = JSON.stringify(packed) }
       }
       if (!sceneData || typeof sceneData !== 'object' || Array.isArray(sceneData) || !sceneData.model || typeof sceneData.model !== 'object') {
         throw new Scene3dError('scene3d_invalid', `${label}: ${which} has no model in it.`)
@@ -308,7 +403,7 @@ export function materializeScene3d(project, projectDir, { env = process.env, exi
         const follow = { ...closeUp.follow, cast: i }
         sceneJson = JSON.stringify({ ...sceneData, scene: { ...scene, camera: closeUpCamera({ ...closeUp, follow }, typeof rot === 'number' && Number.isFinite(rot) ? rot : 0) } })
       }
-      if (stamp !== null) sceneTexts.set(sceneFile, { stamp, sceneJson })
+      if (stamp !== null) sceneTexts.set(sceneFile, { stamp, pack, sceneJson })
       item.src = stage
       item.props = { ...props, sceneFile, sceneJson, inPoint }
       n += 1

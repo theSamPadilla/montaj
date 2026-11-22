@@ -352,7 +352,11 @@ const TEXTURE_URI = /"data:(image\/(?:png|jpeg));base64,/g
  * twice is the same image (its id is a hash of its text), which the stage
  * decodes once (stage-textures.js).
  *
- * @returns {{ bytes: number, textBytes: number, textures: number, textureBytes: number }}
+ * §773: a packed scene (scene3d.js: each mesh and texture once, under `pieces`) is priced as the stage holds it: it builds
+ * each cast entry's geometry from its own copy of the mesh (build.js), so `textBytes` counts each mesh piece once per map
+ * that names it, as the inline text would have; a texture stays once (the stage decodes it once). `packedBytes` is the text.
+ *
+ * @returns {{ bytes: number, textBytes: number, textures: number, textureBytes: number, packedBytes?: number }}
  *   `textureBytes` is the decoded RGBA of the distinct textures, once.
  */
 export function scene3dFootprint(sceneJson) {
@@ -376,9 +380,32 @@ export function scene3dFootprint(sceneJson) {
       ? size.width * size.height * 4
       : Math.floor(((end - start) * 3) / 4) * TEXTURE_UNKNOWN_EXPANSION
   }
-  const textBytes = text.length
+  const unpacked = text.startsWith(PIECES_HEAD) ? meshesAsInline(text) : null
+  const textBytes = unpacked ?? text.length
   const bytes = Math.ceil(SCENE3D_BASE_BYTES + textBytes * SCENE3D_TEXT_FACTOR + textureBytes * SCENE3D_TEXTURE_COPIES)
-  return { bytes, textBytes, textures, textureBytes }
+  return { bytes, textBytes, textures, textureBytes, ...(unpacked !== null ? { packedBytes: text.length } : {}) }
+}
+
+const PIECES_HEAD = '{"pieces":{"v":1,'
+/** A packed scene's text length with each mesh piece counted once per meshRefs list naming it; null when it does not parse. */
+function meshesAsInline(text) {
+  let d
+  try { d = JSON.parse(text) } catch { return null }
+  const meshes = d && d.pieces && typeof d.pieces.meshes === 'object' && d.pieces.meshes ? d.pieces.meshes : null
+  if (!meshes) return null
+  const uses = new Map()
+  const walk = (v) => {
+    if (Array.isArray(v)) { for (const x of v) walk(x); return }
+    if (!v || typeof v !== 'object') return
+    for (const [k, x] of Object.entries(v)) {
+      if (k === 'meshRefs' && Array.isArray(x)) for (const id of x) uses.set(id, (uses.get(id) || 0) + 1)
+      else walk(x)
+    }
+  }
+  walk(d.model); walk(d.scene)
+  let extra = 0
+  for (const [id, n] of uses) if (n > 1 && Object.prototype.hasOwnProperty.call(meshes, id)) extra += (n - 1) * JSON.stringify(meshes[id]).length
+  return text.length + extra
 }
 
 /**
