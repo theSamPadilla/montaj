@@ -65,6 +65,21 @@ export interface PreRenderOptions {
     available: number[]
     set: (f: number) => void
   }
+  /**
+   * The 3D look (Standard or Cinematic, the path-traced one), offered only for a
+   * project with a 3D scene item that covers the whole picture (`engine:scene3d`,
+   * opaque over the full canvas: what render.js renders path-traced). `value` is
+   * settings.look3d and `quality` settings.look3dQuality, each 'standard' when
+   * unset; each setter persists through the editor's save, as `resolution` and
+   * `fps` do, so render.js and the host read the same choice from project.json.
+   * Whether this computer can render it is the host's call. Absent → no choice.
+   */
+  look3d?: {
+    value: 'standard' | 'cinematic'
+    set: (v: 'standard' | 'cinematic') => void
+    quality: 'standard' | 'high'
+    setQuality: (q: 'standard' | 'high') => void
+  }
 }
 
 interface RenderModalProps<P extends Project = Project> {

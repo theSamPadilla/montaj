@@ -24,7 +24,8 @@ import { laneOf, normalizeCaptionLanes } from './captionLanes'
 import { isCaptionTranslation } from './captionTranslation'
 import { mergeCaptionProfileDefaults } from './captionProfileDefaults'
 import Timeline, { type TimelineActions, type TimelineMode } from './timeline/Timeline'
-import { geometryAt, visualDuration } from '@bycrux/timeline-core'
+import { geometryAt, isOpaqueCover, visualDuration } from '@bycrux/timeline-core'
+import { isScene3dItem } from './scene3d'
 import { audioEnd, computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, effectiveItemAudio, enabledTrackItems, enabledTracks, mapTrackItems, normalizeAudioTracks, stampAudioLanes, trackItems, withEnabledItemTracks } from './timeline/timeline-model'
 import { makeCaptionEdit, makeCaptionEditAll, makeCaptionEditMany, type CaptionEditAllPatch, type CaptionEditPatch } from './timeline/makeCaptionEdit'
 import PreviewPlayer, { type TransportHandle, type ScrubHandle } from './preview/PreviewPlayer'
@@ -1398,6 +1399,27 @@ function ReviewSurface<P extends Project>({
     })
   }, [syncMutate, syncProjectRef])
 
+  // 3D36: the 3D look and its quality, persisted the same way. Offered only when a 3D scene item covers the whole
+  // picture (render.js renders exactly those path-traced).
+  const handleLook3dChange = useCallback((look3d: 'standard' | 'cinematic') => {
+    void syncMutate(() => {
+      const cur = syncProjectRef.current
+      return { ...cur, settings: { ...cur.settings, look3d } } as P
+    })
+  }, [syncMutate, syncProjectRef])
+
+  const handleLook3dQualityChange = useCallback((look3dQuality: 'standard' | 'high') => {
+    void syncMutate(() => {
+      const cur = syncProjectRef.current
+      return { ...cur, settings: { ...cur.settings, look3dQuality } } as P
+    })
+  }, [syncMutate, syncProjectRef])
+
+  const has3dCover = useMemo(
+    () => enabledTrackItems(project).some(items => items.some(item => isScene3dItem(item) && isOpaqueCover(item))),
+    [project.tracks],
+  )
+
   // Source-capped tier lists for the export dialog's resolution/fps pickers.
   // Memoized separately from preRenderOptions so a project mutation unrelated
   // to tracks/resolution/fps doesn't recompute the (mildly more expensive)
@@ -1427,6 +1449,14 @@ function ReviewSurface<P extends Project>({
       available: availableFpsList,
       set: handleExportFpsChange,
     },
+    ...(has3dCover ? {
+      look3d: {
+        value: project.settings?.look3d === 'cinematic' ? 'cinematic' as const : 'standard' as const,
+        set: handleLook3dChange,
+        quality: project.settings?.look3dQuality === 'high' ? 'high' as const : 'standard' as const,
+        setQuality: handleLook3dQualityChange,
+      },
+    } : {}),
   }), [
     // `project.tracks` is listed for `exportDurationSec`, which reads every
     // track rather than just the footage keeps. `renderKeeps` already changes
@@ -1437,6 +1467,7 @@ function ReviewSurface<P extends Project>({
     isHdrProject, renderKeeps, project.tracks,
     project.name, project.settings?.resolution, project.settings?.fps,
     availableRes, availableFpsList, handleExportResolutionChange, handleExportFpsChange,
+    has3dCover, project.settings?.look3d, project.settings?.look3dQuality, handleLook3dChange, handleLook3dQualityChange,
   ])
 
   const openRender = useCallback(() => {

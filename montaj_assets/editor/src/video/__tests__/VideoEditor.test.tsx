@@ -861,6 +861,38 @@ describe('VideoEditor — editor-package integration', () => {
     await waitFor(() => expect(queryByTestId('host-render-window')).toBeNull())
   })
 
+  // 3D36: the 3D look is offered only for a project with a 3D scene item over the whole picture, and its setters save
+  // settings.look3d / settings.look3dQuality like the fps and resolution pickers.
+  it('preRenderOptions.look3d: only with a full-picture 3D scene item; its setters save the project settings', async () => {
+    const scene3d = { id: 'sc-1', type: 'overlay', src: 'engine:scene3d', start: 0, end: 4, opaque: true, props: { scene: 'demo', inPoint: 0 } }
+    const seen: RenderModalContext<Project>[] = []
+    const host = (ctx: RenderModalContext<Project>) => { seen.push(ctx); return null }
+
+    const plain = render(<VideoEditor project={makeVideoProject()} adapter={makeFakeAdapter()} onProjectChange={vi.fn()} renderModal={host} />)
+    await waitFor(() => expect(seen.length).toBeGreaterThan(0))
+    expect(seen[seen.length - 1].preRenderOptions.look3d).toBeUndefined()
+    plain.unmount()
+
+    seen.length = 0
+    const adapter = makeFakeAdapter()
+    render(
+      <VideoEditor
+        project={{ ...makeVideoProject(), tracks: [(makeVideoProject().tracks as unknown as unknown[][])[0], [scene3d]] } as unknown as Project}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        renderModal={host}
+      />,
+    )
+    await waitFor(() => expect(seen.length).toBeGreaterThan(0))
+    const look = seen[seen.length - 1].preRenderOptions.look3d
+    expect(look).toMatchObject({ value: 'standard', quality: 'standard' })
+    await act(async () => { look!.set('cinematic') })
+    await waitFor(() => expect(adapter.saveCalls.some((c) => (c.project.settings as { look3d?: string }).look3d === 'cinematic')).toBe(true))
+    await waitFor(() => expect(seen[seen.length - 1].preRenderOptions.look3d?.value).toBe('cinematic'))
+    await act(async () => { seen[seen.length - 1].preRenderOptions.look3d!.setQuality('high') })
+    await waitFor(() => expect(adapter.saveCalls.some((c) => (c.project.settings as { look3dQuality?: string }).look3dQuality === 'high')).toBe(true))
+  })
+
   // FQ54: a host can move the playhead (e.g. to a review comment's time).
   it('onProvideSeek hands the host a stable seek that moves the playhead, clamped to [0, duration]', async () => {
     clockSpy.clocks.length = 0
