@@ -23,10 +23,14 @@
  * the sha256 of the scene file's bytes). When one exists for the file as it is now, `props.physicsBake` carries its bytes
  * as base64 and the stage plays it; else the stage plays keyed motion. The segment cache keys on the props, so a new bake
  * re-renders and an unchanged one reuses the chunks.
+ *
+ * 3D39 T1.9: a generated stage placed as a plain overlay (the model-3d template's `overlays/model3d_stage.jsx`, which bundles
+ * the project's scene) says which scene file it draws in its header, `PHYSICS_BAKE v1 scene=../models/active.json` (relative
+ * to the overlay's file), and takes that file's bake the same way (overlayBakeScene).
  */
 import { createHash } from 'crypto'
 import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, statSync } from 'fs'
-import { dirname, join, resolve } from 'path'
+import { dirname, join, resolve, sep } from 'path'
 import { trackItems } from './project-tracks.js'
 
 export const SCENE3D_SRC = 'engine:scene3d'
@@ -304,6 +308,28 @@ export function stageTakesPieces(stage) {
 const readText = (f) => readFileSync(f, 'utf8')
 const readBytesDefault = (f) => readFileSync(f)
 
+// 3D39 T1.9: a generated stage overlay that plays the bake of the scene file it bundles says so in its header's first three lines.
+export const PHYSICS_BAKE_MARKER = /PHYSICS_BAKE v1 scene=(\S+)/
+const bakeSceneByStage = new Map()
+/**
+ * The scene file a generated stage overlay draws, from its header (STAGE_BUNDLE_HEAD first, then PHYSICS_BAKE_MARKER in the
+ * first three lines): the marker's path resolved against the overlay's folder. null for any other overlay, one without the
+ * marker (an older copy, which carries its own solver), or a file that cannot be read. Read once per file and version.
+ */
+export function overlayBakeScene(overlayPath) {
+  let key
+  try { const st = statSync(overlayPath); if (!st.isFile()) return null; key = `${overlayPath}:${st.size}:${st.mtimeMs}` } catch { return null }
+  if (bakeSceneByStage.has(key)) return bakeSceneByStage.get(key)
+  const head = readHead(overlayPath, 8192) ?? ''
+  const m = head.startsWith(STAGE_BUNDLE_HEAD) ? PHYSICS_BAKE_MARKER.exec(head.split('\n').slice(0, 3).join('\n')) : null
+  const scene = m ? resolve(dirname(overlayPath), m[1]) : null
+  bakeSceneByStage.set(key, scene)
+  return scene
+}
+
+/** Each overlay scene file's bake key by its path, `{ stamp, key }`: the file is a model's whole scene, tens of MB. */
+const overlayKeys = new Map()
+
 /**
  * Each scene file's text as handed to the stage, by its path: `{ stamp, sceneJson }`, the stamp being the file's inode, size
  * and mtime. A by-reference scene inlines to tens of MB (GPS, 2026-11-13: 34 items, 8.8 to 113 MB each, 1.4 GB in all), and
@@ -377,6 +403,9 @@ function sceneStamp(sceneFile) {
  *
  * 3D39: `physicsBake` (base64) joins the props when the scene file's bake exists (physicsBakeOf); a prop of that name the
  * item already had is dropped, so the bake is always the file's.
+ *
+ * 3D39 T1.9: an overlay item whose source is a generated stage naming its scene (overlayBakeScene) gets the same `physicsBake`
+ * from that scene file, which must be in the project's models folder. It stays a plain overlay and is not counted.
  */
 export function materializeScene3d(project, projectDir, { env = process.env, exists = existsSync, read = readText, readBytes = readBytesDefault, log = logToStderr, only = null, closeUp = null, pieces = null } = {}) {
   let n = 0
@@ -384,7 +413,10 @@ export function materializeScene3d(project, projectDir, { env = process.env, exi
   const packs = new Map() // a stage path: whether its stage fills a packed scene
   for (const track of trackItems(project)) {
     for (const item of track ?? []) {
-      if (!isScene3dItem(item)) continue
+      if (!isScene3dItem(item)) {
+        if (!(only && !only(item))) bakeOverlay(item, projectDir, { exists, readBytes, log })
+        continue
+      }
       if (only && !only(item)) continue
       const label = item.id ? `3D item "${item.id}"` : 'A 3D item'
       if (typeof projectDir !== 'string' || projectDir.length === 0) {
@@ -460,6 +492,36 @@ export function materializeScene3d(project, projectDir, { env = process.env, exi
     }
   }
   return n
+}
+
+/**
+ * T1.9: an overlay item that draws a generated stage naming its scene file (overlayBakeScene) takes that file's bake as
+ * `physicsBake`, or none (a carried one dropped). The scene file must be inside `<projectDir>/models/`; the key is the sha256
+ * of its bytes (sceneBakeKey's rule), cached by the file's stamp for the default reader. Never throws: no bake is keyed motion.
+ */
+function bakeOverlay(item, projectDir, { exists, readBytes, log }) {
+  if (!item || item.type !== 'overlay' || typeof item.src !== 'string' || item.src.length === 0) return
+  if (typeof projectDir !== 'string' || projectDir.length === 0) return
+  const sceneFile = overlayBakeScene(resolve(projectDir, item.src))
+  if (sceneFile === null) return
+  const props = isObj(item.props) ? item.props : {}
+  const { physicsBake: _stale, ...rest } = props
+  item.props = rest
+  if (!sceneFile.startsWith(join(resolve(projectDir), 'models') + sep) || !exists(sceneFile)) return
+  const stamp = readBytes === readBytesDefault ? sceneStamp(sceneFile) : null
+  const known = stamp !== null ? overlayKeys.get(sceneFile) : undefined
+  let key = known && known.stamp === stamp ? known.key : null
+  if (key === null) {
+    try {
+      key = createHash('sha256').update(readBytes(sceneFile)).digest('hex').slice(0, 32)
+    } catch (e) {
+      log(`[montaj] a 3D overlay's scene cannot be read for its physics bake (${e && e.code ? e.code : e}): ${sceneFile}`)
+      return
+    }
+    if (stamp !== null) overlayKeys.set(sceneFile, { stamp, key })
+  }
+  const physicsBake = physicsBakeOf(sceneFile, key, { exists, readBytes, log })
+  if (physicsBake !== null) item.props = { ...rest, physicsBake }
 }
 
 /**

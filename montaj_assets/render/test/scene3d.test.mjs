@@ -10,7 +10,7 @@ import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { SCENE3D_SRC, SCENE3D_STAGE_ENV, Scene3dError, isScene3dItem, materializeScene3d, isThreeStageOverlay, STAGE_BUNDLE_HEAD, cloneSharingSceneText, PIECES_HEAD, stageTakesPieces, sceneBakeKey, bakeFileOf } from '../scene3d.js'
+import { SCENE3D_SRC, SCENE3D_STAGE_ENV, Scene3dError, isScene3dItem, materializeScene3d, isThreeStageOverlay, STAGE_BUNDLE_HEAD, cloneSharingSceneText, PIECES_HEAD, stageTakesPieces, sceneBakeKey, bakeFileOf, overlayBakeScene } from '../scene3d.js'
 import { keyFields, cacheKey } from '../segment-cache.js'
 import { buildFrameCacheKey } from '../sample-frame.js'
 import { createHash } from 'node:crypto'
@@ -573,4 +573,88 @@ test('3D39: a sampled frame\'s cache key moves with its bakes, and a frame with 
   assert.notEqual(baked, plain, 'a bake that landed after the frame was sampled misses')
   assert.equal(buildFrameCacheKey('/nowhere/project.json', p({ physicsBake: BAKE.toString('base64') }), 1), baked)
   assert.notEqual(buildFrameCacheKey('/nowhere/project.json', p({ physicsBake: Buffer.from('MJBK 2').toString('base64') }), 1), baked)
+})
+
+// 3D39 T1.9: the model-3d template's overlay (overlays/model3d_stage.jsx, a generated stage that bundles models/active.json)
+// names its scene in its header and takes that scene's bake the same way.
+const OVERLAY_HEAD = (marker = 'PHYSICS_BAKE v1 scene=../models/active.json', at = 1) => {
+  const lines = [STAGE_BUNDLE_HEAD + ' from library/model3d/stage-overlay.jsx. Do not edit;', '// run the build. The 3D stage overlay; reads ../models/active.json.', '// Third-party code in this bundle: none.', 'import S from"../models/active.json";export default()=>null']
+  if (marker) lines[at] += ` ${marker}`
+  return lines.join('\n')
+}
+function overlayWorld(head = OVERLAY_HEAD()) {
+  const w = world()
+  mkdirSync(join(w.project, 'overlays'), { recursive: true })
+  writeFileSync(join(w.project, 'overlays', 'model3d_stage.jsx'), head)
+  return { ...w, scene: join(w.project, 'models', 'active.json') }
+}
+const overlayItem = (props, extra = {}) => ({ id: 'stage', type: 'overlay', src: 'overlays/model3d_stage.jsx', start: 0, end: 4, opaque: true, ...(props === undefined ? {} : { props }), ...extra })
+const materialized = (w, item, opts = {}) => { const p = projectOf(item); const n = materializeScene3d(p, w.project, { env: w.env, ...opts }); return { n, item: p.tracks[0][0] } }
+
+test('T1.9: the template overlay takes models/active.json\'s bake as props.physicsBake; it stays a plain overlay and is not counted', () => {
+  const w = overlayWorld()
+  try {
+    assert.equal(overlayBakeScene(join(w.project, 'overlays', 'model3d_stage.jsx')), w.scene)
+    let r = materialized(w, overlayItem({ keep: 1 }))
+    assert.equal(r.n, 0)
+    assert.deepEqual(r.item.props, { keep: 1 }, 'no bake yet: keyed motion, no prop')
+    writeBake(w.scene)
+    r = materialized(w, overlayItem({ keep: 1 }))
+    assert.equal(r.n, 0, 'an overlay is not a scene item')
+    assert.equal(r.item.src, 'overlays/model3d_stage.jsx', 'its source is untouched')
+    assert.deepEqual(r.item.props, { keep: 1, physicsBake: BAKE.toString('base64') })
+    assert.equal(materialized(w, overlayItem(undefined)).item.props.physicsBake, BAKE.toString('base64'), 'an item with no props')
+    assert.equal(materialized(w, overlayItem({}, { src: join(w.project, 'overlays', 'model3d_stage.jsx') })).item.props.physicsBake, BAKE.toString('base64'), 'an absolute source')
+    // the key is the scene file's bytes: an edited scene has no bake until the app writes one
+    writeFileSync(w.scene, JSON.stringify({ model: { name: 'edited' } }))
+    assert.equal('physicsBake' in materialized(w, overlayItem({ physicsBake: 'c3RhbGU=' })).item.props, false, 'and a carried one is dropped')
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('T1.9: an overlay without the marker (an older copy, a hand-made overlay) is left exactly as it is', () => {
+  for (const head of [OVERLAY_HEAD(null), OVERLAY_HEAD(undefined, 3), 'export default () => null // PHYSICS_BAKE v1 scene=../models/active.json']) {
+    const w = overlayWorld(head)
+    try {
+      writeBake(w.scene)
+      const props = { physicsBake: 'Y2FycmllZA==' }
+      const r = materialized(w, overlayItem(props))
+      assert.equal(r.item.props, props, 'the same props object, untouched')
+      assert.equal(overlayBakeScene(join(w.project, 'overlays', 'model3d_stage.jsx')), null)
+    } finally { rmSync(w.dir, { recursive: true, force: true }) }
+  }
+})
+
+test('T1.9: a scene outside the project\'s models folder, a linked bake, a missing source or an item not on screen gets no bake', () => {
+  const w = overlayWorld(OVERLAY_HEAD('PHYSICS_BAKE v1 scene=../outside.json'))
+  try {
+    const outside = join(w.project, 'outside.json')
+    writeFileSync(outside, SCENE_JSON); writeBake(outside)
+    assert.equal('physicsBake' in materialized(w, overlayItem({})).item.props, false, 'outside models/')
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+  const v = overlayWorld()
+  try {
+    const target = join(v.dir, 'elsewhere.mjbk'); writeFileSync(target, BAKE)
+    mkdirSync(join(v.project, 'models', 'bake'))
+    symlinkSync(target, bakeFileOf(v.scene, sceneBakeKey(SCENE_JSON)))
+    assert.equal('physicsBake' in materialized(v, overlayItem({}), { log: () => {} }).item.props, false, 'a linked bake')
+    rmSync(join(v.project, 'models', 'bake'), { recursive: true }); writeBake(v.scene)
+    assert.equal(materialized(v, overlayItem({}, { src: 'overlays/missing.jsx' })).item.props.physicsBake, undefined, 'a missing source')
+    assert.equal('physicsBake' in materialized(v, overlayItem({}), { only: () => false }).item.props, false, 'off screen (only)')
+    assert.equal(materialized(v, overlayItem({}), { only: () => true }).item.props.physicsBake, BAKE.toString('base64'), 'on screen')
+  } finally { rmSync(v.dir, { recursive: true, force: true }) }
+})
+
+test('T1.9: the overlay\'s chunks re-render when its bake lands or changes and reuse it otherwise', () => {
+  const w = overlayWorld()
+  try {
+    const key = (item) => chunkKey(w, materialized(w, item).item.props)
+    const none = key(overlayItem({}))
+    writeBake(w.scene)
+    const baked = key(overlayItem({}))
+    assert.ok(none && baked)
+    assert.notEqual(baked, none)
+    assert.equal(key(overlayItem({})), baked)
+    writeBake(w.scene, Buffer.from('MJBK rebaked'))
+    assert.notEqual(key(overlayItem({})), baked)
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
 })

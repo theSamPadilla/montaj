@@ -444,3 +444,13 @@ test('3D39: a scene\'s physics bake (props.physicsBake, base64) adds its decoded
   assert.equal(both.id, 'b')
   assert.equal(both.bytes, baked.bytes)
 })
+
+test('3D39 T1.9: a generated stage overlay (no sceneJson) with a bake is priced from its bundle plus the bake', () => {
+  const bake = Buffer.alloc(2e5, 3).toString('base64')
+  const seg = { id: 'stage', scene3d: true, componentPath: '/nowhere/overlays/model3d_stage.jsx' }
+  const plain = workerFootprint([{ ...seg, props: {} }])
+  const baked = workerFootprint([{ ...seg, props: { physicsBake: bake } }])
+  assert.equal(plain.bytes, SCENE3D_UNKNOWN_BYTES)
+  assert.equal(baked.bytes, SCENE3D_UNKNOWN_BYTES + 2e5 * SCENE3D_BAKE_COPIES)
+  assert.equal(baked.scene.bakeBytes, 2e5)
+})
