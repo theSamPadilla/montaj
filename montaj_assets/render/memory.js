@@ -128,6 +128,13 @@ export const SCENE3D_TEXT_FACTOR = 30
 export const SCENE3D_TEXTURE_COPIES = 1 + 4 / 3
 /** Decoded over encoded bytes for a texture whose header gives no size (a 4K photo JPEG is about 10x; a PNG less). */
 export const TEXTURE_UNKNOWN_EXPANSION = 8
+/**
+ * 3D39: copies of a physics bake's bytes a 3D worker holds (scene3d.js puts the bake on the props as `physicsBake`, base64):
+ * the prop's text (4/3), atob's string and its Uint8Array (1 each), and the decoded tracks (the stage's bake-format.js keeps
+ * every position and rotation as float32, twice the bytes the file packs them in): 5.3, rounded up for the props' copy in
+ * transit. A scene's bake is about 150 KB, about 1 MB more per cloth.
+ */
+export const SCENE3D_BAKE_COPIES = 6
 
 /**
  * §737: a second 3D lane is held back once swap in use has grown by this much since the render began. PROVISIONAL: in
@@ -386,6 +393,14 @@ export function scene3dFootprint(sceneJson) {
   return { bytes, textBytes, textures, textureBytes, ...(unpacked !== null ? { packedBytes: text.length } : {}) }
 }
 
+/** What a 3D worker holds for a scene's physics bake (`physicsBake`, base64): its bytes and those bytes in the worker. */
+export function bakeFootprint(physicsBake) {
+  if (typeof physicsBake !== 'string' || physicsBake.length === 0) return { bakeBytes: 0, bytes: 0 }
+  const pad = physicsBake.endsWith('==') ? 2 : physicsBake.endsWith('=') ? 1 : 0
+  const bakeBytes = Math.max(0, Math.floor((physicsBake.length * 3) / 4) - pad)
+  return { bakeBytes, bytes: Math.ceil(bakeBytes * SCENE3D_BAKE_COPIES) }
+}
+
 const PIECES_HEAD = '{"pieces":{"v":1,'
 /** A packed scene's text length with each mesh piece counted once per meshRefs list naming it; null when it does not parse. */
 function meshesAsInline(text) {
@@ -455,7 +470,8 @@ export function bundleFootprint(componentPath, { stat = statSync } = {}) {
  * A 3D render is budgeted at its largest scene, never below its largest 2D
  * budget (its captions and titles run on the same workers, and a 3D page is
  * a 2D page with WebGL besides); `kind` is then '3d', `id` that scene's
- * segment and `scene` its footprint.
+ * segment and `scene` its footprint. 3D39: a segment's physics bake
+ * (`physicsBake`) adds bakeFootprint's bytes, and `scene.bakeBytes` says so.
  *
  * @param {Array<{ id?: string, scene3d?: boolean, componentPath?: string, props?: object }>} segments
  * @returns {{ bytes: number, kind: '2d'|'3d', id: string|null, has3d: boolean, scene?: object }}
@@ -470,7 +486,8 @@ export function workerFootprint(segments) {
     const json = seg.props?.sceneJson
     const key = typeof json === 'string' ? json : `bundle:${seg.componentPath ?? ''}`
     if (!scenes.has(key)) scenes.set(key, typeof json === 'string' ? { ...scene3dFootprint(json), from: 'sceneJson' } : bundleFootprint(seg.componentPath))
-    const scene = scenes.get(key)
+    const bake = bakeFootprint(seg.props?.physicsBake)
+    const scene = bake.bytes > 0 ? { ...scenes.get(key), bytes: scenes.get(key).bytes + bake.bytes, bakeBytes: bake.bakeBytes } : scenes.get(key)
     if (!largest || scene.bytes > largest.scene.bytes) largest = { id: seg.id ?? null, scene }
   }
   if (!largest) return { bytes: twoD, kind: '2d', id: null, has3d: false }

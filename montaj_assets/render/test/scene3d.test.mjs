@@ -10,7 +10,10 @@ import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { SCENE3D_SRC, SCENE3D_STAGE_ENV, Scene3dError, isScene3dItem, materializeScene3d, isThreeStageOverlay, STAGE_BUNDLE_HEAD, cloneSharingSceneText, PIECES_HEAD, stageTakesPieces } from '../scene3d.js'
+import { SCENE3D_SRC, SCENE3D_STAGE_ENV, Scene3dError, isScene3dItem, materializeScene3d, isThreeStageOverlay, STAGE_BUNDLE_HEAD, cloneSharingSceneText, PIECES_HEAD, stageTakesPieces, sceneBakeKey, bakeFileOf } from '../scene3d.js'
+import { keyFields, cacheKey } from '../segment-cache.js'
+import { buildFrameCacheKey } from '../sample-frame.js'
+import { createHash } from 'node:crypto'
 import { collectPuppeteerSegments } from '../render.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -456,4 +459,118 @@ test('§773 stageTakesPieces: "SCENE_PIECES v1" in the stage header\'s first thr
     const p = projectOf(scene({ scene: 'hands' })); materializeScene3d(p, w.project, { env: { [SCENE3D_STAGE_ENV]: other } })
     assert.equal(p.tracks[0][0].props.sceneJson, JSON.stringify(inlineOf()), 'an older stage gets the inline text')
   } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+// 3D39: a scene's physics bake, bake/<key>.mjbk beside its file (key: the first 32 hex of the sha256 of the file's bytes).
+const BAKE = Buffer.from('MJBK\x02\x00\x00\x00bake bytes \xff\x00\x01', 'latin1')
+const writeBake = (file, bytes = BAKE, key = sceneBakeKey(readFileSync(file, 'utf8'))) => {
+  mkdirSync(join(dirname(file), 'bake'), { recursive: true })
+  writeFileSync(bakeFileOf(file, key), bytes)
+  return key
+}
+const propsOf = (w, name, opts = {}) => {
+  const p = projectOf(scene(name === undefined ? {} : { scene: name }))
+  materializeScene3d(p, w.project, { env: w.env, ...opts })
+  return p.tracks[0][0].props
+}
+// The segment cache's key for a 3D chunk of the stage with these props (segment-cache.js keyFields, cacheKey).
+const chunkKey = (w, props) => {
+  const htmlPath = join(w.dir, 'index.html')
+  writeFileSync(htmlPath, '<html></html>')
+  writeFileSync(join(w.dir, 'bundle.js'), '')
+  return cacheKey(keyFields({ props, htmlPath, componentPath: w.stageFile, fps: 30, width: 1080, height: 1920, scene3d: true, frameStart: 0, frameEnd: 10 }, { engine: 'e', context: {}, env: w.env }))
+}
+
+test('3D39: the scene file\'s bake rides as props.physicsBake (base64 of its bytes); none, or one for another key, adds nothing', () => {
+  const w = world({ scenes: ['hands'] })
+  try {
+    const file = join(w.project, 'models', 'scenes', 'hands', 'active.json')
+    assert.equal(sceneBakeKey(SCENE_JSON), createHash('sha256').update(Buffer.from(SCENE_JSON)).digest('hex').slice(0, 32))
+    assert.equal('physicsBake' in propsOf(w, 'hands'), false, 'no bake: keyed motion, no prop')
+    writeBake(file, BAKE, 'f'.repeat(32))
+    assert.equal('physicsBake' in propsOf(w, 'hands'), false, 'a bake for another version of the scene is not this one\'s')
+    writeBake(file)
+    const props = propsOf(w, 'hands')
+    assert.equal(props.physicsBake, BAKE.toString('base64'))
+    assert.deepEqual(Buffer.from(props.physicsBake, 'base64'), BAKE)
+    assert.equal(props.sceneJson, SCENE_JSON, 'the scene text is unchanged')
+    // the project's own scene: models/bake/ beside models/active.json
+    writeBake(join(w.project, 'models', 'active.json'), Buffer.from('MJBK own'))
+    assert.equal(Buffer.from(propsOf(w).physicsBake, 'base64').toString(), 'MJBK own')
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('3D39: a physicsBake the item already carried is dropped: the bake is always the file\'s', () => {
+  const w = world()
+  try {
+    const p = projectOf(scene({ physicsBake: 'c3RhbGU=' }))
+    materializeScene3d(p, w.project, { env: w.env })
+    assert.equal('physicsBake' in p.tracks[0][0].props, false)
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('3D39: a bake that lands after the scene was read is picked up on the next pass; an edited scene leaves its old bake behind', () => {
+  const w = refWorld()
+  try {
+    const file = join(w.project, 'models', 'scenes', 'hands', 'active.json')
+    assert.equal('physicsBake' in propsOf(w, 'hands'), false)
+    writeBake(file) // the scene text is cached now (sceneTexts): its key must be too
+    assert.equal(propsOf(w, 'hands').physicsBake, BAKE.toString('base64'))
+    // the key is the file's own bytes, not the inlined text handed to the stage
+    assert.notEqual(sceneBakeKey(propsOf(w, 'hands').sceneJson), sceneBakeKey(readFileSync(file, 'utf8')))
+    writeBake(file, Buffer.from('MJBK rebaked'))
+    assert.equal(Buffer.from(propsOf(w, 'hands').physicsBake, 'base64').toString(), 'MJBK rebaked', 'a bake rewritten in place is read again')
+    const j = JSON.parse(readFileSync(file, 'utf8')); j.byRef.slug = 'hands-2'; writeFileSync(file, JSON.stringify(j))
+    assert.equal('physicsBake' in propsOf(w, 'hands'), false, 'the edited scene has no bake yet')
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('3D39: a bake or bake folder that is a link is not read', () => {
+  const w = world({ scenes: ['hands', 'feet'] })
+  try {
+    const hands = join(w.project, 'models', 'scenes', 'hands', 'active.json')
+    const outside = join(w.dir, 'outside.mjbk'); writeFileSync(outside, BAKE)
+    mkdirSync(join(dirname(hands), 'bake'))
+    symlinkSync(outside, bakeFileOf(hands, sceneBakeKey(SCENE_JSON)))
+    const logs = []
+    assert.equal('physicsBake' in propsOf(w, 'hands', { log: (l) => logs.push(l) }), false)
+    assert.match(logs.join('\n'), /is a link/)
+    const feet = join(w.project, 'models', 'scenes', 'feet', 'active.json')
+    const dir = join(w.dir, 'bakes'); mkdirSync(dir); writeFileSync(join(dir, `${sceneBakeKey(SCENE_JSON)}.mjbk`), BAKE)
+    symlinkSync(dir, join(dirname(feet), 'bake'))
+    assert.equal('physicsBake' in propsOf(w, 'feet', { log: () => {} }), false)
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('3D39: the segment cache keys on the bake: a new or changed bake re-renders, the same bake and an untouched scene reuse', () => {
+  const w = world({ scenes: ['hands', 'feet'] })
+  try {
+    const hands = join(w.project, 'models', 'scenes', 'hands', 'active.json')
+    const feet = join(w.project, 'models', 'scenes', 'feet', 'active.json')
+    writeBake(feet)
+    const none = chunkKey(w, propsOf(w, 'hands')), feet0 = chunkKey(w, propsOf(w, 'feet'))
+    writeBake(hands)
+    const baked = chunkKey(w, propsOf(w, 'hands'))
+    assert.ok(none && baked && feet0, 'every chunk has a key')
+    assert.notEqual(baked, none, 'a bake that lands re-renders')
+    assert.equal(chunkKey(w, propsOf(w, 'hands')), baked, 'the same bake reuses')
+    assert.equal(chunkKey(w, propsOf(w, 'hands', { read: (f) => readFileSync(f, 'utf8') })), baked, 'read fresh (another process) gives the same key')
+    writeBake(hands, Buffer.from('MJBK other physics'))
+    assert.notEqual(chunkKey(w, propsOf(w, 'hands')), baked, 'a changed bake re-renders')
+    // a camera-only edit of hands (the app copies its bake under the new key) leaves feet's chunks alone
+    const cam = JSON.stringify({ model: { name: 'm' }, moves: {}, scene: { camera: { lens: 50 } } })
+    writeFileSync(hands, cam); writeBake(hands)
+    assert.equal(chunkKey(w, propsOf(w, 'hands')) === baked, false)
+    assert.equal(chunkKey(w, propsOf(w, 'feet')), feet0, 'the other scene\'s chunks are reused')
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('3D39: a sampled frame\'s cache key moves with its bakes, and a frame with none keeps the key it had', () => {
+  const p = (props) => projectOf({ ...scene({}), src: '/stage.jsx', props: { sceneJson: SCENE_JSON, ...props } })
+  const plain = buildFrameCacheKey('/nowhere/project.json', p({}), 1)
+  assert.equal(buildFrameCacheKey('/nowhere/project.json', p({ physicsBake: '' }), 1), plain)
+  const baked = buildFrameCacheKey('/nowhere/project.json', p({ physicsBake: BAKE.toString('base64') }), 1)
+  assert.notEqual(baked, plain, 'a bake that landed after the frame was sampled misses')
+  assert.equal(buildFrameCacheKey('/nowhere/project.json', p({ physicsBake: BAKE.toString('base64') }), 1), baked)
+  assert.notEqual(buildFrameCacheKey('/nowhere/project.json', p({ physicsBake: Buffer.from('MJBK 2').toString('base64') }), 1), baked)
 })

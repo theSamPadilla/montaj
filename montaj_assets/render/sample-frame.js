@@ -2581,8 +2581,25 @@ function buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve = null, pr
   const raw = [RESOLVER_VERSION, `sample-v${version}`, mtime, String(atSeconds), colorSpace,
                MASTER_LOOK, sdrCurve ?? MASTER_LOOK, preferProxy ? 'proxy' : 'master',
                overlaySources, ...(maxShortEdge ? [`short-${maxShortEdge}`] : []), ...(noCaptions ? ['no-captions'] : []),
-               ...(lookAt ? [`look-${JSON.stringify([lookAt.follow, lookAt.distance, lookAt.lens])}`] : [])].join('|')
+               ...(lookAt ? [`look-${JSON.stringify([lookAt.follow, lookAt.distance, lookAt.lens])}`] : []),
+               ...physicsBakeCacheComponent(project)].join('|')
   return createHash('sha256').update(raw).digest('hex')
+}
+
+/**
+ * 3D39: the physics bakes materializeScene3d put on the 3D items (`physicsBake`), as one digest; none adds nothing, so
+ * the key of a frame with no bake is what it was. The app writes a bake after the scene's save, so neither project.json
+ * nor the scene file moves when it lands: without this, a frame sampled before it would be served for a day.
+ */
+function physicsBakeCacheComponent(project) {
+  const bakes = []
+  for (const track of trackItems(project)) {
+    for (const item of track ?? []) {
+      const b = item?.props?.physicsBake
+      if (typeof b === 'string' && b.length > 0) bakes.push(createHash('sha256').update(b).digest('hex'))
+    }
+  }
+  return bakes.length ? [`bake-${createHash('sha256').update(bakes.sort().join(',')).digest('hex')}`] : []
 }
 
 /** Scan cache dir and delete entries older than CACHE_TTL_MS. Safe to fail silently. */

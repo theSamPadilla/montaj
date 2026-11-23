@@ -18,7 +18,13 @@
  * `scene` names a folder under `<project>/models/scenes/<name>/`; absent is the project's single scene,
  * `<project>/models/active.json` (what the model-3d template's overlay copy imports today). A missing stage or scene
  * is an error that names it, never a blank frame. A second pass finds nothing left to do.
+ *
+ * 3D39: a scene's physics is a bake the app writes beside its file, `bake/<key>.mjbk` (key: the first 32 hex characters of
+ * the sha256 of the scene file's bytes). When one exists for the file as it is now, `props.physicsBake` carries its bytes
+ * as base64 and the stage plays it; else the stage plays keyed motion. The segment cache keys on the props, so a new bake
+ * re-renders and an unchanged one reuses the chunks.
  */
+import { createHash } from 'crypto'
 import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, statSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { trackItems } from './project-tracks.js'
@@ -296,6 +302,7 @@ export function stageTakesPieces(stage) {
 }
 
 const readText = (f) => readFileSync(f, 'utf8')
+const readBytesDefault = (f) => readFileSync(f)
 
 /**
  * Each scene file's text as handed to the stage, by its path: `{ stamp, sceneJson }`, the stamp being the file's inode, size
@@ -305,6 +312,41 @@ const readText = (f) => readFileSync(f, 'utf8')
  * same string. Only for the default reader on a real file, and never for a close-up (its text is its own).
  */
 const sceneTexts = new Map()
+
+/** 3D39: the bake key of a scene file's text: the first 32 hex characters of the sha256 of its bytes (UTF-8). */
+export function sceneBakeKey(text) {
+  return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 32)
+}
+
+/** Where the bake for a scene file of key `key` is: `bake/<key>.mjbk` beside the file. */
+export const bakeFileOf = (sceneFile, key) => join(dirname(sceneFile), 'bake', `${key}.mjbk`)
+
+/** Each bake's base64 by its path, `{ stamp, b64 }`, so render.js's second pass hands the same string (as sceneTexts). */
+const bakeTexts = new Map()
+
+/**
+ * The bake for a scene file of key `key` as base64, or null when there is none (keyed motion, never an error). A bake or
+ * bake folder that is a link is not read, like the store. An unreadable one is a log line.
+ */
+function physicsBakeOf(sceneFile, key, { exists, readBytes, log }) {
+  const dir = join(dirname(sceneFile), 'bake'), file = bakeFileOf(sceneFile, key)
+  if (!exists(file)) return null
+  const link = (path) => { try { return lstatSync(path).isSymbolicLink() } catch { return false } }
+  if (link(dir) || link(file)) { log(`[montaj] a 3D's physics bake is a link, not read: ${file}`); return null }
+  const stamp = readBytes === readBytesDefault ? sceneStamp(file) : null
+  const known = stamp !== null ? bakeTexts.get(file) : undefined
+  if (known && known.stamp === stamp) return known.b64
+  let b64
+  try {
+    b64 = Buffer.from(readBytes(file)).toString('base64')
+  } catch (e) {
+    log(`[montaj] a 3D's physics bake cannot be read (${e && e.code ? e.code : e}): ${file}`)
+    return null
+  }
+  if (b64.length === 0) return null
+  if (stamp !== null) bakeTexts.set(file, { stamp, b64 })
+  return b64
+}
 
 function sceneStamp(sceneFile) {
   try {
@@ -332,8 +374,11 @@ function sceneStamp(sceneFile) {
  *
  * §773: for a stage that fills a packed scene (stageTakesPieces; `pieces` true or false decides instead), a by-reference scene
  * is handed over packed (each mesh and texture once) and an inline one is packed when a piece repeats in it.
+ *
+ * 3D39: `physicsBake` (base64) joins the props when the scene file's bake exists (physicsBakeOf); a prop of that name the
+ * item already had is dropped, so the bake is always the file's.
  */
-export function materializeScene3d(project, projectDir, { env = process.env, exists = existsSync, read = readText, readBytes = (f) => readFileSync(f), log = logToStderr, only = null, closeUp = null, pieces = null } = {}) {
+export function materializeScene3d(project, projectDir, { env = process.env, exists = existsSync, read = readText, readBytes = readBytesDefault, log = logToStderr, only = null, closeUp = null, pieces = null } = {}) {
   let n = 0
   const files = new Map()
   const packs = new Map() // a stage path: whether its stage fills a packed scene
@@ -345,7 +390,7 @@ export function materializeScene3d(project, projectDir, { env = process.env, exi
       if (typeof projectDir !== 'string' || projectDir.length === 0) {
         throw new Scene3dError('scene3d_invalid', `${label} needs the project's folder to find its 3D.`)
       }
-      const props = item.props && typeof item.props === 'object' && !Array.isArray(item.props) ? item.props : {}
+      const { physicsBake: _stale, ...props } = item.props && typeof item.props === 'object' && !Array.isArray(item.props) ? item.props : {}
       const name = props.scene
       if (name !== undefined && (typeof name !== 'string' || !SCENE_NAME.test(name))) {
         throw new Scene3dError('scene3d_invalid', `${label}: its 3D must be named with lowercase letters, digits and - (got ${JSON.stringify(name)}).`)
@@ -367,15 +412,20 @@ export function materializeScene3d(project, projectDir, { env = process.env, exi
       }
       const stamp = read === readText && !closeUp ? sceneStamp(sceneFile) : null
       const known = stamp !== null ? sceneTexts.get(sceneFile) : undefined
+      const withBake = (key) => {
+        const physicsBake = physicsBakeOf(sceneFile, key, { exists, readBytes, log })
+        return physicsBake === null ? {} : { physicsBake }
+      }
       if (known && known.stamp === stamp && known.pack === pack) {
         item.src = stage
-        item.props = { ...props, sceneFile, sceneJson: known.sceneJson, inPoint }
+        item.props = { ...props, sceneFile, sceneJson: known.sceneJson, inPoint, ...withBake(known.bakeKey) }
         n += 1
         continue
       }
-      let sceneJson, sceneData
+      let sceneJson, sceneData, bakeKey
       try {
         sceneJson = read(sceneFile)
+        bakeKey = sceneBakeKey(sceneJson)
         sceneData = JSON.parse(sceneJson)
       } catch (e) {
         // A read error's code, not its message: the message carries the file's path, which names the scenes folder.
@@ -403,9 +453,9 @@ export function materializeScene3d(project, projectDir, { env = process.env, exi
         const follow = { ...closeUp.follow, cast: i }
         sceneJson = JSON.stringify({ ...sceneData, scene: { ...scene, camera: closeUpCamera({ ...closeUp, follow }, typeof rot === 'number' && Number.isFinite(rot) ? rot : 0) } })
       }
-      if (stamp !== null) sceneTexts.set(sceneFile, { stamp, pack, sceneJson })
+      if (stamp !== null) sceneTexts.set(sceneFile, { stamp, pack, sceneJson, bakeKey })
       item.src = stage
-      item.props = { ...props, sceneFile, sceneJson, inPoint }
+      item.props = { ...props, sceneFile, sceneJson, inPoint, ...withBake(bakeKey) }
       n += 1
     }
   }

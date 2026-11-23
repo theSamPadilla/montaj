@@ -226,7 +226,7 @@ export function memoryPlanLines(memory) {
   if (f?.kind === '3d') {
     const s = f.scene
     const mb = (bytes) => `${Math.round(bytes / 1e6)}MB`
-    lines.push(`3d worker estimate=${gb(f.bytes)} from=${s.from} text=${mb(s.textBytes)} textures=${s.textures} (${mb(s.textureBytes)} decoded)`)
+    lines.push(`3d worker estimate=${gb(f.bytes)} from=${s.from} text=${mb(s.textBytes)} textures=${s.textures} (${mb(s.textureBytes)} decoded)${s.bakeBytes ? ` bake=${(s.bakeBytes / 1e6).toFixed(2)}MB` : ''}`)
   }
   if (memory.limitedBy === 'memory' && memory.availableBytes == null) {
     lines.push(`workers lowered by memory: total=${gb(memory.totalBytes)} perWorker=${gb(memory.perWorkerBytes)} workers=${memory.workers} (asked ${memory.asked})`)

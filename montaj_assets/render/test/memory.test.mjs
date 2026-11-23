@@ -13,7 +13,7 @@ import os from 'os'
 import {
   parseVmStat, parseMeminfo, availableMemoryBytes, imageSize, scene3dFootprint, workerFootprint, planWorkers,
   createMemoryGovernor, GOVERNOR_ADMIT_GRACE_MS, reserveBytes, isScene3dSegment, captureWorkerBytes, PER_WORKER_BYTES, PER_WORKER_MIN_BYTES, SCENE3D_BASE_BYTES, SCENE3D_MAX_WORKERS,
-  SCENE3D_TEXT_FACTOR, SCENE3D_TEXTURE_COPIES, SCENE3D_UNKNOWN_BYTES, TEXTURE_UNKNOWN_EXPANSION,
+  SCENE3D_TEXT_FACTOR, SCENE3D_TEXTURE_COPIES, SCENE3D_UNKNOWN_BYTES, TEXTURE_UNKNOWN_EXPANSION, SCENE3D_BAKE_COPIES, bakeFootprint,
   parsePressureLevel, parseSwapUsage, readMemoryPressure, admitsSecond3dLane, SWAP_GROWTH_MAX_BYTES,
 } from '../memory.js'
 
@@ -423,4 +423,24 @@ test('scene3dFootprint: a packed scene counts each mesh piece once per entry tha
   const plain = scene3dFootprint(JSON.stringify({ model: { meshes: { [id]: mesh } }, moves: {} }))
   assert.equal(plain.packedBytes, undefined)
   assert.equal(scene3dFootprint(`${'{"pieces":{"v":1,'}broken`).packedBytes, undefined, 'a packed head that does not parse is priced as text')
+})
+
+test('3D39: a scene\'s physics bake (props.physicsBake, base64) adds its decoded bytes, SCENE3D_BAKE_COPIES times, to the 3D worker', () => {
+  assert.deepEqual(bakeFootprint(undefined), { bakeBytes: 0, bytes: 0 })
+  assert.deepEqual(bakeFootprint(''), { bakeBytes: 0, bytes: 0 })
+  for (const n of [1, 2, 3, 150000]) {
+    const b64 = Buffer.alloc(n, 7).toString('base64')
+    assert.deepEqual(bakeFootprint(b64), { bakeBytes: n, bytes: n * SCENE3D_BAKE_COPIES }, `${n} bytes`)
+  }
+  const sceneJson = JSON.stringify({ model: { name: 'cube' } })
+  const plain = workerFootprint([{ id: 'cube', props: { sceneJson } }])
+  const bake = Buffer.alloc(1e6, 1).toString('base64')
+  const baked = workerFootprint([{ id: 'cube', props: { sceneJson, physicsBake: bake } }])
+  assert.equal(baked.bytes - plain.bytes, 1e6 * SCENE3D_BAKE_COPIES)
+  assert.equal(baked.scene.bakeBytes, 1e6)
+  assert.equal(plain.scene.bakeBytes, undefined)
+  // two items of one scene text, only one baked: the worker is priced at the baked one
+  const both = workerFootprint([{ id: 'a', props: { sceneJson } }, { id: 'b', props: { sceneJson, physicsBake: bake } }])
+  assert.equal(both.id, 'b')
+  assert.equal(both.bytes, baked.bytes)
 })
