@@ -311,6 +311,9 @@ export declare function containsTime(itemStart: number, itemEnd: number, t: numb
  * `[segStart, segEnd]`. Input order and object identity are preserved; the
  * input array is never mutated. Pass `readInterval` for arrays that name their
  * endpoints differently (e.g. a Puppeteer segment's `startSeconds`/`endSeconds`).
+ * In a segment exactly one frame long, when any entry holds that frame with its
+ * edges rounded to frames ({@link ownsFrameOf}), only those are returned, so a
+ * neighbour that only touches it is not (back-to-back 1-frame overlays).
  */
 export declare function activeIn<T>(
   intervals: ReadonlyArray<T>,
@@ -319,6 +322,13 @@ export declare function activeIn<T>(
   fps: number,
   readInterval?: (x: T) => Interval,
 ): T[]
+
+/**
+ * Whether `[itemStart, itemEnd]`, its edges rounded to frames (`round(t * fps)`,
+ * as `boundariesFrom` snaps them), holds the frame `segStart` begins. A `NaN`
+ * endpoint makes it false.
+ */
+export declare function ownsFrameOf(itemStart: number, itemEnd: number, segStart: number, fps: number): boolean
 
 /**
  * Captions sort AFTER every other overlay (topmost z-layer). Relative order

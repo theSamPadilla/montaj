@@ -271,7 +271,8 @@ export function planSegments(allItems, puppeteerSegs, vw, vh, fps) {
     // (§308 P3: the editor's track order, `layerTrack`; it IS trackIdx for a
     // project already in that order). Lower = further back (composited first).
     // `activeIn` is the containment predicate `v.start <= start + 1/fps &&
-    // v.end >= end - 1/fps`; it preserves input order and object identity, so
+    // v.end >= end - 1/fps` (in a one-frame segment, only the entries that own
+    // its frame when any does: timeline-core ownsFrameOf); it preserves input order and object identity, so
     // the stable sort below sees exactly the array `compose.js` built. That
     // matters: `compose.js:64` merges as `[...imageItems, ...videoItems]`, so
     // two items sharing a trackIdx put all images before all videos

@@ -39,6 +39,7 @@ import {
   frameGrid,
   boundariesFrom,
   coversSegment,
+  ownsFrameOf,
   containsTime,
   activeIn,
   captionsLast,
@@ -1058,6 +1059,30 @@ describe('resolveSegment: containment predicate (start <= segStart + frameDur &&
     assert.equal(coversSegment(0, 5 - 1.0001 / 30, 0, 5, 30), false)
     // And the tolerance shrinks with fps.
     assert.equal(coversSegment(1 / 30, 5, 0, 5, 60), false, 'a 30fps frame is two frames @60')
+  })
+
+  test('activeIn: a one-frame segment holds only the entries that own its frame, never a neighbour that only touches it', () => {
+    // Four back-to-back 1-frame overlays, as a stills sheet places them (six-decimal times): each segment, its own one.
+    const rows = [[0, 0.033333], [0.033333, 0.066667], [0.066667, 0.1], [0.1, 0.133333]].map(([start, end], k) => ({ id: `s${k}`, start, end }))
+    const slack = []
+    for (const k of rows.keys()) {
+      const [a, b] = [k / 30, (k + 1) / 30] // the planner's segment: boundaries snapped to the grid
+      assert.deepEqual(activeIn(rows, a, b, 30).map((x) => x.id), [`s${k}`], `segment ${k}`)
+      slack.push(rows.filter((x) => coversSegment(x.start, x.end, a, b, 30)).length)
+    }
+    assert.deepEqual(slack, [2, 1, 3, 2], 'what the slack alone admitted: the neighbours that drew over each frame')
+    // the Puppeteer shape, through readInterval
+    const segs = rows.map((r) => ({ id: r.id, startSeconds: r.start, endSeconds: r.end }))
+    assert.deepEqual(activeIn(segs, 1 / 30, 2 / 30, 30, (s) => ({ start: s.startSeconds, end: s.endSeconds })).map((x) => x.id), ['s1'])
+    // A one-frame gap nothing owns keeps the slack's answer: the clip before it fills the frame, as it always has.
+    const gap = [{ id: 'a', start: 0, end: 4.7677 }, { id: 'b', start: 4.8001, end: 8 }]
+    assert.deepEqual(activeIn(gap, 143 / 30, 144 / 30, 30).map((x) => x.id), ['a'])
+    // A segment of two or more frames is the slack's answer, unchanged.
+    const long = [{ id: 'x', start: 0, end: 2 }, { id: 'y', start: 2, end: 4 }]
+    assert.deepEqual(activeIn(long, 0, 2, 30).map((x) => x.id), ['x'])
+    assert.equal(ownsFrameOf(0.033333, 0.066667, 1 / 30, 30), true)
+    assert.equal(ownsFrameOf(0, 0.033333, 1 / 30, 30), false)
+    assert.equal(ownsFrameOf(NaN, 1, 0, 30), false)
   })
 
   test('activeIn preserves input order and identity, and never mutates the input', () => {

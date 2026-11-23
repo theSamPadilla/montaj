@@ -238,3 +238,30 @@ test('planSegments: captions always sorted after overlays', () => {
   assert.equal(segs[0].overlays[0].id, 'ov')   // non-caption first
   assert.equal(segs[0].overlays[1].id, 'cap')   // caption last (on top)
 })
+
+test('planSegments: back-to-back 1-frame overlays each get only their own segment, never the neighbour that touches it', () => {
+  // A stills sheet (four 1-frame 3D shots, six-decimal times, as render.js quantizes them into specs): the one frame of
+  // slack used to hand each 1-frame segment its neighbours too, and the next one, opaque, drew over every frame.
+  const q = (t) => Math.round(t * 30) / 30
+  const puppeteerSegs = [[0, 0.033333], [0.033333, 0.066667], [0.066667, 0.1], [0.1, 0.133333]].map(([s, e], k) => (
+    { id: `shot${k}`, startSeconds: q(s), endSeconds: q(e), webmPath: `/shot${k}.mkv`, isCaption: false, opaque: true }))
+  const segs = planSegments([], puppeteerSegs, 1920, 1080, 30)
+  assert.equal(segs.length, 4)
+  assert.deepEqual(segs.map((s) => s.overlays.map((o) => o.id)), [['shot0'], ['shot1'], ['shot2'], ['shot3']])
+  // a clip under the sheet: each segment keeps it, one opaque shot over it
+  const items = [{ id: 'c', type: 'video', start: 0, end: 0.133333, src: '/a.mp4', inPoint: 0, outPoint: 1, trackIdx: 0 }]
+  const under = planSegments(items, puppeteerSegs, 1920, 1080, 30)
+  assert.deepEqual(under.map((s) => s.overlays.map((o) => o.id)), [['shot0'], ['shot1'], ['shot2'], ['shot3']])
+})
+
+test('planSegments: a one-frame gap between two clips is still filled by the clip before it', () => {
+  // timeline-core activeIn's one-frame rule applies only when some entry owns the frame; a sub-frame gap keeps the slack's fill.
+  const items = [
+    { id: 'a', type: 'video', start: 0, end: 4.7677, src: '/a.mp4', inPoint: 0, outPoint: 4.7677, trackIdx: 0 },
+    { id: 'b', type: 'video', start: 4.8001, end: 8, src: '/b.mp4', inPoint: 0, outPoint: 3.1999, trackIdx: 0 },
+  ]
+  const segs = planSegments(items, [], 1920, 1080, 30)
+  const gap = segs.find((s) => Math.round(s.start * 30) === 143)
+  assert.ok(gap && Math.round(gap.end * 30) === 144, 'the one-frame segment between them')
+  assert.deepEqual(gap.items.map((i) => i.id), ['a'])
+})

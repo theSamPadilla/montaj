@@ -498,6 +498,17 @@ export function containsTime(itemStart, itemEnd, t) {
  * mutated; callers apply their own ordering (`byTrackIdx`, `captionsLast`)
  * afterwards, exactly as legacy does.
  *
+ * A segment exactly ONE frame long is the one exception to `coversSegment`
+ * alone. Its one frame of slack there also admits the neighbours that only
+ * touch the segment: back-to-back 1-frame overlays (a stills sheet: four items
+ * at frames 0, 1, 2 and 3) each came back with the next one, which drew on top,
+ * so every export frame showed the item after it. So in a one-frame segment,
+ * when any entry covers it in whole frames (its edges rounded as
+ * `boundariesFrom` snaps them, `ownsFrameOf`), only those are returned. When
+ * none does (a sub-frame gap between two clips, which the slack fills with the
+ * clip before it), the slack's answer stands, as it always has. A segment of
+ * two or more frames is unchanged: there the slack never admits a neighbour.
+ *
  * @template T
  * @param {ReadonlyArray<T>} intervals
  * @param {number} segStart
@@ -516,7 +527,25 @@ export function activeIn(intervals, segStart, segEnd, fps, readInterval = readSt
     const iv = readInterval(x)
     if (coversSegment(orNaN(iv.start), orNaN(iv.end), segStart, segEnd, fps)) out.push(x)
   }
-  return out
+  if (out.length < 2 || Math.round(segEnd * fps) - Math.round(segStart * fps) !== 1) return out
+  const own = out.filter((x) => { const iv = readInterval(x); return ownsFrameOf(orNaN(iv.start), orNaN(iv.end), segStart, fps) })
+  return own.length > 0 ? own : out
+}
+
+/**
+ * Whether `[itemStart, itemEnd]`, its edges rounded to frames as `boundariesFrom`
+ * snaps them (`round(t * fps)`), holds the frame `segStart` begins (`activeIn`'s
+ * one-frame rule). A `NaN` endpoint is false.
+ *
+ * @param {number} itemStart
+ * @param {number} itemEnd
+ * @param {number} segStart
+ * @param {number} fps
+ * @returns {boolean}
+ */
+export function ownsFrameOf(itemStart, itemEnd, segStart, fps) {
+  const f = Math.round(segStart * fps)
+  return Math.round(itemStart * fps) <= f && Math.round(itemEnd * fps) > f
 }
 
 /**

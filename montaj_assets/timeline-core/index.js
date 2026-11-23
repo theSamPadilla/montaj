@@ -18,7 +18,7 @@ export * from './src/source-window.js'
 
 // T3 — activation + boundaries: resolveAt, resolveSegment, planBoundaries and
 // the flat primitives T7 delegates to — frameGrid, boundariesFrom,
-// coversSegment, containsTime, activeIn, captionsLast, byTrackIdx
+// coversSegment, containsTime, activeIn, ownsFrameOf, captionsLast, byTrackIdx
 // (absorbs segment-plan.js:29-133, PreviewPlayer.tsx:117,
 // OverlayItemsLayer.tsx:412, sample-frame.js:538).
 export * from './src/activation.js'
