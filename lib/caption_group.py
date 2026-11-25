@@ -191,7 +191,21 @@ def group(words, max_words=PHRASE_MAX_WORDS, clause_min=None):
         # clause_min, before the phrase holds that many words.
         long_enough = (len(phrase) >= 2 or not opens) if clause_min is None else len(phrase) >= clause_min
         clause = _CLAUSE_END.search(str(w["word"])) and long_enough
-        if (nxt is None or nxt["start"] - w["end"] > PHRASE_GAP_S or len(phrase) >= max_words
+        full = len(phrase) >= max_words
+        if full and clause_min is not None and not (_ends_sentence(w["word"]) or clause):
+            # With clause_min (the phrase style), never leave one or two words of a clause or sentence for the next
+            # caption ("... in the United" / "States."): when they finish it with no pause, they stay, up to
+            # CAPTION_WORDS_MAX words.
+            left, k = 0, i + 1
+            while k < len(words) and left < 3 and words[k]["start"] - words[k - 1]["end"] <= PHRASE_GAP_S:
+                left += 1
+                if _ends_sentence(words[k]["word"]) or _CLAUSE_END.search(str(words[k]["word"])):
+                    break
+                k += 1
+            ends = k < len(words) and (_ends_sentence(words[k]["word"]) or _CLAUSE_END.search(str(words[k]["word"])))
+            if left <= 2 and (ends or k == len(words)) and len(phrase) + left <= CAPTION_WORDS_MAX:
+                full = False
+        if (nxt is None or nxt["start"] - w["end"] > PHRASE_GAP_S or full
                 or _ends_sentence(w["word"]) or clause):
             items.append(phrase)
             opens = _ends_sentence(w["word"]) or (nxt is not None and nxt["start"] - w["end"] > PHRASE_GAP_S)

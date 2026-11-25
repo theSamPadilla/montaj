@@ -130,10 +130,10 @@ export const CAPTION_STYLE_TEXT_TRANSFORM: Partial<Record<Style, CaptionTextTran
 export const ACCENT_CAPTION_FONTS = ['Inter+Tight:wght@700', 'Playfair+Display:ital,wght@1,700', 'Caveat:wght@700']
 
 /** The Google Font the `phrase` style's accent words take by default
- *  (Playfair Display italic 500). The other copy of this list is
+ *  (Playfair Display italic 700, the weight the app vendors). The other copy of this list is
  *  `PHRASE_FONTS` in `montaj_assets/render/caption-spec.js`; keep the two
  *  identical. */
-export const PHRASE_CAPTION_FONTS = ['Playfair+Display:ital,wght@1,500']
+export const PHRASE_CAPTION_FONTS = ['Playfair+Display:ital,wght@1,700']
 
 /** The font list the editor must load for a caption style: the track's own
  *  `googleFonts` (array or bare string), plus the accent fonts for `accent`

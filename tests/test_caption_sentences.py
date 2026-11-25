@@ -80,8 +80,8 @@ def test_phrase_holds_ten_words_and_only_phrase_changes_the_clause_rule():
     assert clause_min_for("phrase") == 5
     for style in ("word-by-word", "pop", "karaoke", "subtitle", "highlight-box", "outline", "clean", "accent", "plate", None):
         assert clause_min_for(style) is None, style
-    assert _phrase("one two three four five six seven eight nine ten eleven twelve") == [
-        "one two three four five six seven eight nine ten", "eleven twelve"]
+    assert _phrase("one two three four five six seven eight nine ten eleven twelve thirteen fourteen") == [
+        "one two three four five six seven eight nine ten", "eleven twelve thirteen fourteen"]
 
 
 def test_phrase_a_clause_end_before_five_words_does_not_split():
@@ -93,6 +93,29 @@ def test_phrase_a_clause_end_from_five_words_splits():
     assert _phrase("When the lights went out, the machine kept running") == [
         "When the lights went out,", "the machine kept running"]
     assert _phrase("They built it in a garage: nobody believed them") == ["They built it in a garage:", "nobody believed them"]
+
+
+def test_phrase_never_leaves_one_or_two_words_of_a_sentence_for_the_next_caption():
+    from caption_group import clause_min_for
+    # 11 and 12 words: the last one or two would be an orphan at the 10-word cap, so they stay (up to 12).
+    assert _phrase("It was the fourth largest investment bank in the United States.") == [
+        "It was the fourth largest investment bank in the United States."]
+    assert _phrase("one two three four five six seven eight nine ten eleven twelve.") == [
+        "one two three four five six seven eight nine ten eleven twelve."]
+    # Three or more words left: the cap holds.
+    assert _phrase("one two three four five six seven eight nine ten eleven twelve thirteen.") == [
+        "one two three four five six seven eight nine ten", "eleven twelve thirteen."]
+    # A clause end finishes the run too.
+    assert _phrase("one two three four five six seven eight nine ten eleven, then more words here") == [
+        "one two three four five six seven eight nine ten eleven,", "then more words here"]
+    # A pause before the leftover words: they start the next caption as before.
+    ws = W("one two three four five six seven eight nine ten eleven.")
+    for w in ws[10:]:
+        w["start"] += 0.6; w["end"] += 0.6
+    assert texts(group(ws, max_words_for("phrase"), clause_min_for("phrase"))) == [
+        "one two three four five six seven eight nine ten", "eleven."]
+    # Every other style keeps the plain cap.
+    assert texts(group(W("one two three four eleven."), 4)) == ["one two three four", "eleven."]
 
 
 def test_phrase_a_sentence_end_always_splits_and_a_pause_still_does():

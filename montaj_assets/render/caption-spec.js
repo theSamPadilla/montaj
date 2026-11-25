@@ -66,10 +66,10 @@ export function captionOverlayFields(captions) {
     captionFonts = [...new Set([...given, ...ACCENT_FONTS])]
   }
   if (captions.style === 'phrase') {
-    // The phrase style's default accent face (Playfair Display italic 500), as
+    // The phrase style's default accent face (Playfair Display italic 700, the weight the app vendors), as
     // accent's above. The editor's PHRASE_CAPTION_FONTS
     // (captionStyleDefaults.ts) is the other copy; keep the two identical.
-    const PHRASE_FONTS = ['Playfair+Display:ital,wght@1,500']
+    const PHRASE_FONTS = ['Playfair+Display:ital,wght@1,700']
     const given = Array.isArray(captionFonts) ? captionFonts : captionFonts ? [captionFonts] : []
     captionFonts = [...new Set([...given, ...PHRASE_FONTS])]
   }

@@ -79,9 +79,9 @@ describe('phrase: registered', () => {
   })
 
   test('a phrase track with no googleFonts still loads the accent face; the track\'s own come first', () => {
-    assert.deepEqual(captionOverlayFields({ style: 'phrase', segments: [SEG] }).googleFonts, ['Playfair+Display:ital,wght@1,500'])
+    assert.deepEqual(captionOverlayFields({ style: 'phrase', segments: [SEG] }).googleFonts, ['Playfair+Display:ital,wght@1,700'])
     assert.deepEqual(captionOverlayFields({ style: 'phrase', segments: [SEG], googleFonts: ['Inter:wght@600'] }).googleFonts,
-      ['Inter:wght@600', 'Playfair+Display:ital,wght@1,500'])
+      ['Inter:wght@600', 'Playfair+Display:ital,wght@1,700'])
   })
 })
 
@@ -141,7 +141,7 @@ describe('phrase: the accent word', () => {
   test('serif: the accent face at accentScale, in accentColor; the other words keep the running font and colour', () => {
     const el = render({ accentColor: '#00ff00' })
     assert.deepEqual(span(el, 'quiet').props.style, {
-      opacity: 1, fontFamily: '"Playfair Display", Georgia, serif', fontStyle: 'italic', fontWeight: 500, fontSize: '1.08em', color: '#00ff00',
+      opacity: 1, fontFamily: '"Playfair Display", Georgia, serif', fontStyle: 'italic', fontWeight: 700, fontSize: '1.08em', color: '#00ff00',
     })
     assert.deepEqual(span(el, 'The').props.style, { opacity: 1 })
     assert.equal(textBoxOf(el).props.style.color, '#ffffff')

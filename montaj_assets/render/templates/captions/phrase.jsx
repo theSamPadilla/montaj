@@ -43,7 +43,7 @@ export default function Phrase({
   // The accent words' face ('serif' and 'script'); 'sans' keeps the running font.
   accentFontFamily = '"Playfair Display", Georgia, serif',
   accentFontStyle  = 'italic',
-  accentFontWeight = 500,
+  accentFontWeight = 700,
   accentScale      = 1.08,
   // Each word's fade in, in seconds.
   wordFade         = 0.1,
