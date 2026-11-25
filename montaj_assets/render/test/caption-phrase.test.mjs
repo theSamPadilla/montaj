@@ -123,6 +123,24 @@ describe('phrase: the build', () => {
     assert.ok(innerOf(Phrase({ frame: 89.5, fps: FPS, segments: [SEG] })).props.style.opacity < 0.2)
   })
 
+  test('the end fade never starts before the last word is fully in; with no room left there is no fade', () => {
+    // the last word starts at 2.9 and fades in until 3.0 (frame 90); the caption ends at 3.0: no fade at all
+    const late = { ...SEG, words: [...WORDS.slice(0, 2), { word: 'machine', start: 2.9, end: 3 }] }
+    assert.equal(innerOf(Phrase({ frame: 88, fps: FPS, segments: [late] })).props.style.opacity, 1)
+    assert.equal(innerOf(Phrase({ frame: 89.5, fps: FPS, segments: [late] })).props.style.opacity, 1)
+    // the last word starts at 2.8 and is in at frame 87: the fade runs frames 87..90, not 86..90
+    const mid = { ...SEG, words: [...WORDS.slice(0, 2), { word: 'machine', start: 2.8, end: 3 }] }
+    assert.equal(innerOf(Phrase({ frame: 87, fps: FPS, segments: [mid] })).props.style.opacity, 1)
+    close(innerOf(Phrase({ frame: 88.5, fps: FPS, segments: [mid] })).props.style.opacity, 0.5, 'half way through 3 frames')
+  })
+
+  test('a word that starts at or after the caption\'s end still shows fully by its end (a trimmed caption)', () => {
+    const trimmed = { ...SEG, end: 2 }   // "machine" starts at 2
+    assert.equal(span(Phrase({ frame: at(1.89), fps: FPS, segments: [trimmed] }), 'machine').props.style.opacity, 0)
+    close(span(Phrase({ frame: at(1.95), fps: FPS, segments: [trimmed] }), 'machine').props.style.opacity, 0.5, 'half, a fade before the end')
+    assert.equal(span(Phrase({ frame: at(1.999), fps: FPS, segments: [trimmed] }), 'machine').props.style.opacity > 0.99, true)
+  })
+
   test('nothing draws outside the caption\'s own time', () => {
     assert.equal(render({}, [SEG], 0.5), null)
     assert.equal(render({}, [SEG], 3.5), null)

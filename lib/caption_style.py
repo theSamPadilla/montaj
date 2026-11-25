@@ -48,10 +48,10 @@ DEFAULT_SIZE = {"word-by-word": 72, "pop": 68, "karaoke": 52, "subtitle": 46, "h
 SIZES = {"small": 0.8, "medium": 1.0, "large": 1.3}
 STEPS = {"bigger": 1.25, "smaller": 0.8}
 # Where each style draws its block: its bottom edge this % of the frame up from the bottom (MEASURED on sample_frame
-# renders, lib/look_check.py CAPTION_BAND; phrase's is its template's insetBottom, not yet measured). accent draws its
+# renders, lib/look_check.py CAPTION_BAND; phrase's was measured on sampled frames at its defaults). accent draws its
 # block CENTRED at ACCENT_CENTRE % from the top (accent.jsx, translateY(-50%)).
 ANCHOR = {"word-by-word": 24, "pop": 24, "karaoke": 25, "subtitle": 25, "highlight-box": 25, "outline": 25,
-          "clean": 26, "plate": 25, "phrase": 13}
+          "clean": 26, "plate": 25, "phrase": 13.7}
 ACCENT_CENTRE = 59.5
 # The block's bottom edge, % from the top of the frame, for each position: one line then centres at about 22%,
 # 50% and the default 74% (measured on the renders: a bottom edge at 56 centred at 52.4-53.9%, so middle is 53).

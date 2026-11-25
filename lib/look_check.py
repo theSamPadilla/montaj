@@ -44,7 +44,7 @@ VISUAL = ("video", "image")
 # no offset. MEASURED 2026-10-24 on real sample_frame renders (a 7-word caption, "Keep the best part of every take",
 # its first, middle and last word, over a flat frame) at 1080x1920, 1080x1080 and 1920x1080; the band is the
 # extent over those three frames. A taller or shorter caption (its size) grows or shrinks the band from its bottom;
-# a segment's offsetY moves it. phrase is NOT measured yet: its band is derived from phrase.jsx's layout (the box's
+# a segment's offsetY moves it. phrase's band was measured the same way, on sampled frames at its defaults (the box's
 # bottom at 87%, 64 px lines at 1.18, the 4 px rule 40 px above; the sample is one line at 16:9, two at 1:1 and 9:16).
 CAPTION_BAND = {
     "portrait": {"word-by-word": (0.725, 0.760), "pop": (0.726, 0.760), "karaoke": (0.724, 0.750),

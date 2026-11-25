@@ -44,6 +44,7 @@ EMPHASIS = {
     "highlight-box": ("accentColor", "#00B4D8"),
     "pop": ("activeColor", "#FF8C00"),
     "accent": ("accentColor", "#F00000"),
+    "phrase": ("accentColor", "#fbbf24"),
 }
 NO_PROFILE_FONT = ("subtitle", "clean")
 CASES = ("none", "uppercase", "lowercase", "capitalize")

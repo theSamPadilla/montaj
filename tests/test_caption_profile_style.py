@@ -150,6 +150,8 @@ def test_look_emphasis_colour():
     assert caption_look("pop", {"accentColor": "#101010", "primaryColor": "#33ccff"}) == {"activeColor": "#33ccff"}
     assert caption_look("pop", {}) == {"activeColor": "#FF8C00"}
     assert caption_look("karaoke", {"accentColor": "#ff0000"}) == {"highlightColor": "#ff0000"}
+    assert caption_look("phrase", {"accentColor": "#ff0000"}) == {"accentColor": "#ff0000"}
+    assert caption_look("phrase", {"accentColor": "#101010"}) == {"accentColor": "#fbbf24"}
     assert caption_look("pop", {"accentColor": "#ff0000"}, emphasis=False) == {}
 
 

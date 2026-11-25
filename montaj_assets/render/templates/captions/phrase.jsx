@@ -198,19 +198,25 @@ function renderSegment(seg, key, th, lines = []) {
   const { frame, fps, t, color, accentColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform, textShadow } = th
   const side = sideOf(textAlign)
   const segEndFrame = Math.round(seg.end * fps)
-  const endOpacity = interpolate(segEndFrame - frame, [0, 4], [0, 1])
   const dark = isDark(seg)
+  // A word starts no later than a wordFade before the caption ends (a caption trimmed in the editor moves only `end`).
+  const startOf = w => Math.min(w.start ?? seg.start, seg.end - th.wordFade)
+  const words = isTranslation(seg) ? [] : (seg.words || [])
+  // The end fade runs over the last 4 frames, but never starts before the last word is fully in; when that is at or
+  // past the caption's end there is no fade.
+  const lastIn = words.length ? (startOf(words[words.length - 1]) + th.wordFade) * fps : seg.start * fps
+  const fadeStart = Math.max(segEndFrame - 4, Math.round(lastIn))
+  const endOpacity = fadeStart >= segEndFrame ? 1 : interpolate(segEndFrame - frame, [0, segEndFrame - fadeStart], [0, 1])
 
   let content = null
   if (!isTranslation(seg)) {
-    const words = seg.words || []
     // No word timestamps: the text fades in whole, from the caption's start.
-    const first = words.length ? fadeIn(t, words[0].start ?? seg.start, th.wordFade) : fadeIn(t, seg.start, th.wordFade)
+    const first = words.length ? fadeIn(t, startOf(words[0]), th.wordFade) : fadeIn(t, seg.start, th.wordFade)
     const text = words.length
       ? words.flatMap((w, i) => [
         // A real space between words, outside the spans, so a wrapped line has no trailing gap.
         i > 0 ? ' ' : null,
-        <span key={i} style={wordStyle(w, seg, th, fadeIn(t, w.start ?? seg.start, th.wordFade))}>{w.word}</span>,
+        <span key={i} style={wordStyle(w, seg, th, fadeIn(t, startOf(w), th.wordFade))}>{w.word}</span>,
       ])
       : seg.text
     content = (

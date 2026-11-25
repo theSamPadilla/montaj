@@ -100,6 +100,8 @@ def floor_word_durations(words, floor_s=MIN_WORD_DURATION_S):
 
 PHRASE_GAP_S = 0.4
 PHRASE_MAX_WORDS = 8
+# With clause_min (the phrase style) a caption stays up this long after its last word, or until the next caption starts.
+PHRASE_HOLD_S = 0.4
 # How many words a caption holds at most, by style: the styles that show the whole line read best short (2-4 words,
 # what people's own captions land on); word-by-word and pop show one word at a time, so their lines can run longer;
 # phrase shows a whole clause or sentence, up to about two lines.
@@ -168,6 +170,19 @@ def _join_short(items):
     return out
 
 
+def _tail(words, i):
+    """How many words follow words[i] up to and including the next sentence or clause end, counted to 3 at most. It
+    stops, without counting further, at a pause over PHRASE_GAP_S or at the end of the words (the words before either
+    finish the run); a pause right after words[i] gives 0."""
+    n, k = 0, i + 1
+    while k < len(words) and n < 3 and words[k]["start"] - words[k - 1]["end"] <= PHRASE_GAP_S:
+        n += 1
+        if _ends_sentence(words[k]["word"]) or _CLAUSE_END.search(str(words[k]["word"])):
+            break
+        k += 1
+    return n
+
+
 def group(words, max_words=PHRASE_MAX_WORDS, clause_min=None):
     """Floor word durations, then group into display phrases.
 
@@ -192,19 +207,14 @@ def group(words, max_words=PHRASE_MAX_WORDS, clause_min=None):
         long_enough = (len(phrase) >= 2 or not opens) if clause_min is None else len(phrase) >= clause_min
         clause = _CLAUSE_END.search(str(w["word"])) and long_enough
         full = len(phrase) >= max_words
-        if full and clause_min is not None and not (_ends_sentence(w["word"]) or clause):
+        if clause_min is not None and not _ends_sentence(w["word"]):
             # With clause_min (the phrase style), never leave one or two words of a clause or sentence for the next
-            # caption ("... in the United" / "States."): when they finish it with no pause, they stay, up to
-            # CAPTION_WORDS_MAX words.
-            left, k = 0, i + 1
-            while k < len(words) and left < 3 and words[k]["start"] - words[k - 1]["end"] <= PHRASE_GAP_S:
-                left += 1
-                if _ends_sentence(words[k]["word"]) or _CLAUSE_END.search(str(words[k]["word"])):
-                    break
-                k += 1
-            ends = k < len(words) and (_ends_sentence(words[k]["word"]) or _CLAUSE_END.search(str(words[k]["word"])))
-            if left <= 2 and (ends or k == len(words)) and len(phrase) + left <= CAPTION_WORDS_MAX:
-                full = False
+            # caption ("... in the United" / "States."; "When the lights went out," / "it died."): when they finish
+            # it with no pause before the first of them, they stay, up to CAPTION_WORDS_MAX words.
+            if full or clause:
+                tail = _tail(words, i)
+                if 1 <= tail <= 2 and len(phrase) + tail <= CAPTION_WORDS_MAX:
+                    full = clause = False
         if (nxt is None or nxt["start"] - w["end"] > PHRASE_GAP_S or full
                 or _ends_sentence(w["word"]) or clause):
             items.append(phrase)
@@ -212,15 +222,22 @@ def group(words, max_words=PHRASE_MAX_WORDS, clause_min=None):
             phrase = []
     items = _join_short(items)
 
+    def end_of(j):
+        end = items[j][-1]["end"]
+        if clause_min is None:
+            return end
+        held = end + PHRASE_HOLD_S
+        return min(held, items[j + 1][0]["start"]) if j + 1 < len(items) else held
+
     return [
         {
             "text":  " ".join(w["word"] for w in phrase),
             "start": round(phrase[0]["start"], 3),
-            "end":   round(phrase[-1]["end"],  3),
+            "end":   round(end_of(j),  3),
             "words": [
                 {"word": w["word"], "start": round(w["start"], 3), "end": round(w["end"], 3)}
                 for w in phrase
             ],
         }
-        for phrase in items
+        for j, phrase in enumerate(items)
     ]

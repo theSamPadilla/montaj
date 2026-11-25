@@ -118,6 +118,40 @@ def test_phrase_never_leaves_one_or_two_words_of_a_sentence_for_the_next_caption
     assert texts(group(W("one two three four eleven."), 4)) == ["one two three four", "eleven."]
 
 
+def test_phrase_the_orphan_rule_does_not_read_past_a_pause():
+    from caption_group import clause_min_for
+    eleven = "one two three four five six seven eight nine ten eleven"
+
+    def run(first, second):
+        ws = W(first)
+        later = W(second, start=ws[-1]["end"] + 0.6)
+        return texts(group(ws + later, max_words_for("phrase"), clause_min_for("phrase")))
+    assert run(eleven, "States.") == [eleven, "States."]
+    assert run(eleven, "more words here and on") == [eleven, "more words here and on"]
+
+
+def test_phrase_a_clause_split_keeps_one_or_two_words_of_the_sentence():
+    assert _phrase("When the lights went out, it died.") == ["When the lights went out, it died."]
+    assert _phrase("When the lights went out, died.") == ["When the lights went out, died."]
+    assert _phrase("When the lights went out, it all died.") == ["When the lights went out,", "it all died."]
+    assert _phrase("When the lights went out, the machine kept running") == [
+        "When the lights went out,", "the machine kept running"]
+    # Not past the word limit, and not across a pause.
+    assert _phrase("one two three four five six seven eight nine ten eleven, it died.") == [
+        "one two three four five six seven eight nine ten eleven,", "it died."]
+    ws = W("When the lights went out,") + W("it died.", start=2.5)
+    assert texts(group(ws, 10, 5)) == ["When the lights went out,", "it died."]
+
+
+def test_phrase_holds_each_caption_0_4s_capped_by_the_next_and_other_styles_do_not():
+    ws = W("It ran fast. Then it stopped.")   # 0.0-0.9 and 0.9-1.8
+    ph = group(ws, 10, 5)
+    assert [s["end"] for s in ph] == [0.9, 2.2], "the first is capped by the next caption's start, the last holds 0.4 s"
+    gap = group(W("It ran fast.") + W("Then it stopped.", start=3.0), 10, 5)
+    assert [s["end"] for s in gap] == [1.3, 4.3]
+    assert [s["end"] for s in group(ws, 8)] == [0.9, 1.8], "every other style ends at its last word"
+
+
 def test_phrase_a_sentence_end_always_splits_and_a_pause_still_does():
     assert _phrase("It ran. Then it stopped.") == ["It ran.", "Then it stopped."]
     assert texts(group(W("one two") + W("three four", start=1.2), 10, 5)) == ["one two", "three four"]

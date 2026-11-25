@@ -389,7 +389,7 @@ def test_the_phrase_look_keeps_per_word_accents_and_positions_from_its_low_ancho
     assert out["style"] == "phrase" and report["style"] == "phrase"
     assert out["segments"][0]["words"][1]["color"] == "#ff0000"
     assert report["issues"] == []
-    # its block's bottom is 13% up the frame: top puts that edge 25% from the top
-    assert out["segments"][0]["offsetY"] == 25.0 - (100 - 13)
+    # its block's bottom is 13.7% up the frame (measured): top puts that edge 25% from the top
+    assert out["segments"][0]["offsetY"] == 25.0 - (100 - 13.7)
     _, report = caption_style.restyle(caps, look="phrase", highlight="#00ff00")
     assert report["issues"] == ["phrase has no spoken-word highlight: use look highlight, highlight-box, karaoke, outline, plate"]
