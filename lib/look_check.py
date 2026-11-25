@@ -50,15 +50,15 @@ CAPTION_BAND = {
     "portrait": {"word-by-word": (0.725, 0.760), "pop": (0.726, 0.760), "karaoke": (0.724, 0.750),
                  "subtitle": (0.708, 0.749), "highlight-box": (0.656, 0.751), "outline": (0.673, 0.746),
                  "clean": (0.710, 0.740), "accent": (0.559, 0.644), "plate": (0.663, 0.749),
-                 "phrase": (0.768, 0.870)},
+                 "phrase": (0.768, 0.863)},
     "square": {"word-by-word": (0.698, 0.759), "pop": (0.700, 0.759), "karaoke": (0.704, 0.750),
                "subtitle": (0.676, 0.748), "highlight-box": (0.583, 0.752), "outline": (0.611, 0.743),
                "clean": (0.687, 0.737), "accent": (0.531, 0.681), "plate": (0.594, 0.748),
-               "phrase": (0.689, 0.870)},
+               "phrase": (0.690, 0.857)},
     "landscape": {"word-by-word": (0.698, 0.759), "pop": (0.700, 0.759), "karaoke": (0.704, 0.750),
                   "subtitle": (0.676, 0.748), "highlight-box": (0.670, 0.752), "outline": (0.687, 0.743),
                   "clean": (0.687, 0.737), "accent": (0.531, 0.681), "plate": (0.659, 0.748),
-                  "phrase": (0.759, 0.870)},
+                  "phrase": (0.759, 0.867)},
 }
 # Each caption style's default font size (the templates' own defaults), which the band was measured at.
 CAPTION_DEFAULT_SIZE = {"word-by-word": 72, "pop": 68, "karaoke": 52, "subtitle": 46, "highlight-box": 60,
