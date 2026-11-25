@@ -5,7 +5,7 @@ import json, os, sys, argparse
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, check_output
 
-from caption_group import group, max_words_for, floor_word_durations, MIN_WORD_DURATION_S  # noqa: F401  (re-exported)
+from caption_group import group, max_words_for, clause_min_for, floor_word_durations, MIN_WORD_DURATION_S  # noqa: F401  (re-exported)
 
 
 def main():
@@ -14,10 +14,10 @@ def main():
     parser.add_argument("--input", required=True,
                         help="Word-level JSON transcript from the transcribe step")
     parser.add_argument("--style", default="word-by-word",
-                        choices=["word-by-word", "karaoke", "subtitle", "pop", "highlight-box", "outline", "clean", "accent"],
+                        choices=["word-by-word", "karaoke", "subtitle", "pop", "highlight-box", "outline", "clean", "accent", "plate", "phrase"],
                         help="Caption animation style")
     parser.add_argument("--max-words", type=int, default=None,
-                        help="Most words a caption holds (1-12); default by style: 4, or 8 for word-by-word and pop")
+                        help="Most words a caption holds (1-12); default by style: 4, or 8 for word-by-word and pop, 10 for phrase")
     parser.add_argument("--out", help="Output caption track JSON path")
     args = parser.parse_args()
 
@@ -48,7 +48,7 @@ def main():
     if not words:
         fail("empty_transcript", "No words found in transcript JSON")
 
-    items = group(words, max_words_for(args.style, args.max_words))
+    items = group(words, max_words_for(args.style, args.max_words), clause_min_for(args.style))
 
     caption_track = {"style": args.style, "segments": items}
 

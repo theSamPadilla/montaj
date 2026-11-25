@@ -139,9 +139,19 @@ describe('CaptionStyleGallery', () => {
     expect(accent[0].words!.map(w => w.accent)).toEqual([undefined, undefined, undefined, 'serif'])
     // the resting poster frame (1.0 s) already shows every word
     for (const w of accent[0].words!) expect(w.start).toBeLessThanOrEqual(1.0)
-    for (const c of calls.filter(c => c.src !== 'accent')) {
+    for (const c of calls.filter(c => c.src !== 'accent' && c.src !== 'phrase')) {
       expect(c.props.segments).toEqual([SAMPLE_SEGMENT])
     }
+  })
+
+  it('feeds the phrase card the sample with its second word accented, so the poster frame shows the accent', async () => {
+    const { calls } = await renderGallery()
+
+    const phrase = calls.filter(c => c.src === 'phrase')[0].props.segments as CaptionSegment[]
+    expect(phrase[0].hero).toBeUndefined()
+    expect(phrase[0].words!.map(w => w.accent)).toEqual([undefined, 'serif', undefined, undefined])
+    expect(phrase[0].words![1].start).toBeLessThan(1.0)
+    expect(phrase[0].words!.map(w => [w.word, w.start, w.end])).toEqual(SAMPLE_SEGMENT.words!.map(w => [w.word, w.start, w.end]))
   })
 
   it('compiles every style template eagerly on mount, before any hover', async () => {

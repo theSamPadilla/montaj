@@ -29,7 +29,7 @@ from collections import Counter
 from lib.css_color import is_css_color
 from lib.speech_lines import norm
 
-STYLES = ("word-by-word", "pop", "karaoke", "subtitle", "highlight-box", "outline", "clean", "accent", "plate")
+STYLES = ("word-by-word", "pop", "karaoke", "subtitle", "highlight-box", "outline", "clean", "accent", "plate", "phrase")
 LOOKS = STYLES + ("highlight",)
 LOOK_STYLE = {"highlight": "outline"}
 RENDER_DEFAULT_STYLE = "subtitle"   # what render/caption-spec.js draws for no style or an unknown one
@@ -44,14 +44,14 @@ HIGHLIGHT_WHITE = "#ffffff"
 SPOKEN_DEFAULT = {"outline": "#fbbf24", "highlight-box": "#fbbf24", "plate": "#fbbf24", "karaoke": "#ffffff"}
 # Each style's default font size (the templates' defaults), for small / medium / large.
 DEFAULT_SIZE = {"word-by-word": 72, "pop": 68, "karaoke": 52, "subtitle": 46, "highlight-box": 60, "outline": 70,
-                "clean": 54, "accent": 168, "plate": 56}
+                "clean": 54, "accent": 168, "plate": 56, "phrase": 64}
 SIZES = {"small": 0.8, "medium": 1.0, "large": 1.3}
 STEPS = {"bigger": 1.25, "smaller": 0.8}
 # Where each style draws its block: its bottom edge this % of the frame up from the bottom (MEASURED on sample_frame
-# renders, lib/look_check.py CAPTION_BAND). accent draws its block CENTRED at ACCENT_CENTRE % from the top
-# (accent.jsx, translateY(-50%)).
+# renders, lib/look_check.py CAPTION_BAND; phrase's is its template's insetBottom, not yet measured). accent draws its
+# block CENTRED at ACCENT_CENTRE % from the top (accent.jsx, translateY(-50%)).
 ANCHOR = {"word-by-word": 24, "pop": 24, "karaoke": 25, "subtitle": 25, "highlight-box": 25, "outline": 25,
-          "clean": 26, "plate": 25}
+          "clean": 26, "plate": 25, "phrase": 13}
 ACCENT_CENTRE = 59.5
 # The block's bottom edge, % from the top of the frame, for each position: one line then centres at about 22%,
 # 50% and the default 74% (measured on the renders: a bottom edge at 56 centred at 52.4-53.9%, so middle is 53).

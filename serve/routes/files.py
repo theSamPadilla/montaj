@@ -26,7 +26,7 @@ from cli.deps import render_runtime_dir
 
 router = APIRouter(prefix="/api")
 
-CAPTION_STYLES = {"word-by-word", "pop", "karaoke", "subtitle", "highlight-box", "outline", "clean", "accent", "plate"}
+CAPTION_STYLES = {"word-by-word", "pop", "karaoke", "subtitle", "highlight-box", "outline", "clean", "accent", "plate", "phrase"}
 
 # Absolute-path check seam. On POSIX this is os.path.isabs (== startswith("/")
 # for str paths); tests prove Windows behaviour by swapping this to

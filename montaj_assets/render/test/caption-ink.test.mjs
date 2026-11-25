@@ -52,7 +52,7 @@ async function loadTemplate(name) {
 
 
 const INK = '#1c1c1e'
-const INKED = ['accent', 'clean', 'highlight-box', 'karaoke', 'outline', 'pop', 'word-by-word']
+const INKED = ['accent', 'clean', 'highlight-box', 'karaoke', 'outline', 'phrase', 'pop', 'word-by-word']
 const BOXED = ['plate', 'subtitle']
 const templates = {}
 before(async () => {
@@ -116,7 +116,7 @@ function assertSafe(got, orig, backdrop, label) {
 
 // What each style shows at 1.2 s (the word "cut" is being spoken): a base word, and the accent on the spoken word.
 const BASE = {
-  accent: 'the', clean: SEG.text, 'highlight-box': 'the', karaoke: 'the', outline: 'the', pop: null, 'word-by-word': 'cut',
+  accent: 'the', clean: SEG.text, 'highlight-box': 'the', karaoke: 'the', outline: 'the', phrase: 'cut', pop: null, 'word-by-word': 'cut',
 }
 const SPOKEN = { karaoke: 'cut', outline: 'cut', pop: 'cut', 'highlight-box': 'cut' }
 
@@ -144,9 +144,9 @@ describe('ink: "dark"', () => {
       }
     })
   }
-  for (const name of ['accent', 'highlight-box', 'karaoke', 'outline', 'word-by-word', 'pop']) {
+  for (const name of ['accent', 'highlight-box', 'karaoke', 'outline', 'phrase', 'word-by-word', 'pop']) {
     test(`${name}: a word with its own colour is darkened in its hue`, () => {
-      const t = ['word-by-word', 'pop', 'accent'].includes(name) ? 2.0 : 1.2
+      const t = ['word-by-word', 'pop', 'accent', 'phrase'].includes(name) ? 2.0 : 1.2
       assertSafe(colorOf(render(name, t, dark), 'pauses'), CYAN, 0.5, name)
     })
   }

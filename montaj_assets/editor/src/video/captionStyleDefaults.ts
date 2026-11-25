@@ -19,7 +19,7 @@
  * here too, in the same commit. Verified against the actual `function Xxx({
  * ... })` destructuring defaults in:
  *   clean.jsx, karaoke.jsx, subtitle.jsx, pop.jsx, word-by-word.jsx,
- *   highlight-box.jsx, outline.jsx, accent.jsx, plate.jsx
+ *   highlight-box.jsx, outline.jsx, accent.jsx, plate.jsx, phrase.jsx
  * (all under montaj_assets/render/templates/captions/).
  */
 import type { Captions, CaptionTextTransform } from '../schema'
@@ -28,7 +28,7 @@ type Style = Captions['style']
 
 /** The caption templates' own default font size (px), shown by the size control when `fontsize` is absent. */
 export const CAPTION_STYLE_FONT_SIZE: Record<Style, number> = {
-  clean: 54, karaoke: 52, subtitle: 46, pop: 68, 'word-by-word': 72, 'highlight-box': 60, outline: 70, accent: 168, plate: 56,
+  clean: 54, karaoke: 52, subtitle: 46, pop: 68, 'word-by-word': 72, 'highlight-box': 60, outline: 70, accent: 168, plate: 56, phrase: 64,
 }
 
 /** `Captions.fontWeight`'s default per style (CSS `font-weight`). */
@@ -42,6 +42,7 @@ export const CAPTION_STYLE_FONT_WEIGHT: Record<Style, number> = {
   outline: 900,
   accent: 700,
   plate: 800,
+  phrase: 600,
 }
 
 /** `Captions.fontFamily`'s default per style. Seven of the eight templates
@@ -57,6 +58,7 @@ export const CAPTION_STYLE_FONT_FAMILY: Record<Style, string> = {
   outline: 'system-ui, -apple-system, sans-serif',
   accent: '"Inter Tight", system-ui, sans-serif',
   plate: 'system-ui, -apple-system, sans-serif',
+  phrase: 'system-ui, -apple-system, sans-serif',
 }
 
 /** `Captions.letterSpacing`'s default per style. A style absent from this
@@ -68,6 +70,7 @@ export const CAPTION_STYLE_LETTER_SPACING: Partial<Record<Style, string>> = {
   pop: '-0.02em',
   'word-by-word': '-0.02em',
   accent: '-0.03em',
+  phrase: '-0.01em',
 }
 
 /** `Captions.lineHeight`'s default per style.
@@ -87,10 +90,11 @@ export const CAPTION_STYLE_LINE_HEIGHT: Partial<Record<Style, number>> = {
   outline: 1.15,
   accent: 0.76,
   plate: 1.25,
+  phrase: 1.18,
 }
 
 /** `Captions.textAlign`'s default per style — every template centers text by
- *  default, with no exceptions. */
+ *  default except `phrase`, which sets its block bottom-left. */
 export const CAPTION_STYLE_TEXT_ALIGN: Record<Style, string> = {
   clean: 'center',
   karaoke: 'center',
@@ -101,6 +105,7 @@ export const CAPTION_STYLE_TEXT_ALIGN: Record<Style, string> = {
   outline: 'center',
   accent: 'center',
   plate: 'center',
+  phrase: 'left',
 }
 
 /** `Captions.textTransform`'s default per style. Only `outline` has one — its
@@ -124,16 +129,24 @@ export const CAPTION_STYLE_TEXT_TRANSFORM: Partial<Record<Style, CaptionTextTran
  *  keep the two identical. */
 export const ACCENT_CAPTION_FONTS = ['Inter+Tight:wght@700', 'Playfair+Display:ital,wght@1,700', 'Caveat:wght@700']
 
+/** The Google Font the `phrase` style's accent words take by default
+ *  (Playfair Display italic 500). The other copy of this list is
+ *  `PHRASE_FONTS` in `montaj_assets/render/caption-spec.js`; keep the two
+ *  identical. */
+export const PHRASE_CAPTION_FONTS = ['Playfair+Display:ital,wght@1,500']
+
 /** The font list the editor must load for a caption style: the track's own
- *  `googleFonts` (array or bare string), plus the accent fonts for `accent`,
- *  deduped, mirroring render.js. Other styles pass through unchanged. */
+ *  `googleFonts` (array or bare string), plus the accent fonts for `accent`
+ *  and the phrase fonts for `phrase`, deduped, mirroring caption-spec.js.
+ *  Other styles pass through unchanged. */
 export function captionFontsFor(
   style: string | undefined,
   googleFonts: string[] | string | undefined,
 ): string[] | string | undefined {
-  if (style !== 'accent') return googleFonts
+  const own = style === 'accent' ? ACCENT_CAPTION_FONTS : style === 'phrase' ? PHRASE_CAPTION_FONTS : null
+  if (!own) return googleFonts
   const given = Array.isArray(googleFonts) ? googleFonts : googleFonts ? googleFonts.split(',').map(s => s.trim()).filter(Boolean) : []
-  return [...new Set([...given, ...ACCENT_CAPTION_FONTS])]
+  return [...new Set([...given, ...own])]
 }
 
 /** The `plate` style's plate defaults, the template's own parameter defaults (plate.jsx): the colour is

@@ -44,30 +44,35 @@ VISUAL = ("video", "image")
 # no offset. MEASURED 2026-10-24 on real sample_frame renders (a 7-word caption, "Keep the best part of every take",
 # its first, middle and last word, over a flat frame) at 1080x1920, 1080x1080 and 1920x1080; the band is the
 # extent over those three frames. A taller or shorter caption (its size) grows or shrinks the band from its bottom;
-# a segment's offsetY moves it.
+# a segment's offsetY moves it. phrase is NOT measured yet: its band is derived from phrase.jsx's layout (the box's
+# bottom at 87%, 64 px lines at 1.18, the 4 px rule 40 px above; the sample is one line at 16:9, two at 1:1 and 9:16).
 CAPTION_BAND = {
     "portrait": {"word-by-word": (0.725, 0.760), "pop": (0.726, 0.760), "karaoke": (0.724, 0.750),
                  "subtitle": (0.708, 0.749), "highlight-box": (0.656, 0.751), "outline": (0.673, 0.746),
-                 "clean": (0.710, 0.740), "accent": (0.559, 0.644), "plate": (0.663, 0.749)},
+                 "clean": (0.710, 0.740), "accent": (0.559, 0.644), "plate": (0.663, 0.749),
+                 "phrase": (0.768, 0.870)},
     "square": {"word-by-word": (0.698, 0.759), "pop": (0.700, 0.759), "karaoke": (0.704, 0.750),
                "subtitle": (0.676, 0.748), "highlight-box": (0.583, 0.752), "outline": (0.611, 0.743),
-               "clean": (0.687, 0.737), "accent": (0.531, 0.681), "plate": (0.594, 0.748)},
+               "clean": (0.687, 0.737), "accent": (0.531, 0.681), "plate": (0.594, 0.748),
+               "phrase": (0.689, 0.870)},
     "landscape": {"word-by-word": (0.698, 0.759), "pop": (0.700, 0.759), "karaoke": (0.704, 0.750),
                   "subtitle": (0.676, 0.748), "highlight-box": (0.670, 0.752), "outline": (0.687, 0.743),
-                  "clean": (0.687, 0.737), "accent": (0.531, 0.681), "plate": (0.659, 0.748)},
+                  "clean": (0.687, 0.737), "accent": (0.531, 0.681), "plate": (0.659, 0.748),
+                  "phrase": (0.759, 0.870)},
 }
 # Each caption style's default font size (the templates' own defaults), which the band was measured at.
 CAPTION_DEFAULT_SIZE = {"word-by-word": 72, "pop": 68, "karaoke": 52, "subtitle": 46, "highlight-box": 60,
-                        "outline": 70, "clean": 54, "accent": 168, "plate": 56}
+                        "outline": 70, "clean": 54, "accent": 168, "plate": 56, "phrase": 64}
 # The style the renderer draws for no style or an unknown one (render.js; caption_style.RENDER_DEFAULT_STYLE).
 RENDER_DEFAULT_STYLE = "subtitle"
 # A longer caption wraps to more rows, and each translation shown stacks a row under it, in the block that grows up
 # from its bottom. Rows are ESTIMATED at the style's default size (a character about 0.55 of the font size wide, lines
 # up to 90% of the frame; a bigger size already grows the band by itself), relative to the measured caption's own
-# estimate; a translation row counts 0.8 of a caption row (a line size).
+# estimate; a translation row counts 0.8 of a caption row (a line size). phrase's lines wrap at its box's 75% instead.
 # accent draws its words in windows of a few, so its band never grows with the text.
 BAND_SAMPLE = "Keep the best part of every take"
 CHAR_W, LINE_W, TRANSLATION_ROW = 0.55, 0.90, 0.8
+STYLE_LINE_W = {"phrase": 0.75}
 WINDOWED = ("accent",)
 
 
@@ -451,8 +456,10 @@ def caption_bands(project, start, end, frame_w, frame_h):
             for sid in seg["translationOf"]:
                 under[sid] = under.get(sid, 0) + 1
 
+    line_w = STYLE_LINE_W.get(style, LINE_W)
+
     def rows(text, size):
-        return max(1, -(-len(text) * CHAR_W * size // (LINE_W * frame_w)))
+        return max(1, -(-len(text) * CHAR_W * size // (line_w * frame_w)))
     out = []
     for seg in segs:
         if seg.get("lang") and isinstance(seg.get("translationOf"), list):

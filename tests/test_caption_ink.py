@@ -1444,3 +1444,10 @@ def test_every_round_goes_to_one_sampler_process_closed_at_the_end(tmp_path, mon
     pid = rounds[0]["pid"]
     with pytest.raises(ProcessLookupError):
         __import__("os").kill(pid, 0)
+
+
+def test_phrase_draws_on_the_backdrop_so_the_step_inks_it():
+    seg = _seg("a", 1, 2)
+    assert ci.inkable(_project(segs=[seg], style="phrase"), seg)
+    # its band: the rows from the rule down to the block's bottom, 13% up the frame (derived from the layout)
+    assert ci.band(_project(segs=[seg], style="phrase"), seg, W, H)[3] == round(0.870 * H)

@@ -50,7 +50,7 @@ async function loadTemplate(name) {
   }
 }
 
-const PER_WORD = ['word-by-word', 'pop', 'karaoke', 'highlight-box', 'outline', 'plate', 'accent']
+const PER_WORD = ['word-by-word', 'pop', 'karaoke', 'highlight-box', 'outline', 'plate', 'accent', 'phrase']
 const PHRASE = ['clean', 'subtitle']
 const templates = {}
 before(async () => {
@@ -104,7 +104,7 @@ describe('a word with its own colour', () => {
       assert.ok(colors.length > 0 && !colors.includes(CYAN), `${name}: ${JSON.stringify(colors)}`)
     })
   }
-  for (const name of ['word-by-word', 'pop']) {
+  for (const name of ['word-by-word', 'pop', 'phrase']) {
     test(`${name}: the word shows its colour when it is up`, () => {
       assert.deepEqual(colorsOf(render(name, 2.0), 'pauses'), [CYAN])
       assert.ok(!colorsOf(render(name, 2.6), 'best').includes(CYAN))

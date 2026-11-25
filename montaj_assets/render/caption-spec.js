@@ -22,6 +22,7 @@ export function captionTemplatePath(style) {
     'clean':         'clean.jsx',
     'accent':        'accent.jsx',
     'plate':         'plate.jsx',
+    'phrase':        'phrase.jsx',
   }
   const file = styleMap[style] ?? 'subtitle.jsx'
   return join(__dirname, 'templates', 'captions', file)
@@ -63,6 +64,14 @@ export function captionOverlayFields(captions) {
     const ACCENT_FONTS = ['Inter+Tight:wght@700', 'Playfair+Display:ital,wght@1,700', 'Caveat:wght@700']
     const given = Array.isArray(captionFonts) ? captionFonts : captionFonts ? [captionFonts] : []
     captionFonts = [...new Set([...given, ...ACCENT_FONTS])]
+  }
+  if (captions.style === 'phrase') {
+    // The phrase style's default accent face (Playfair Display italic 500), as
+    // accent's above. The editor's PHRASE_CAPTION_FONTS
+    // (captionStyleDefaults.ts) is the other copy; keep the two identical.
+    const PHRASE_FONTS = ['Playfair+Display:ital,wght@1,500']
+    const given = Array.isArray(captionFonts) ? captionFonts : captionFonts ? [captionFonts] : []
+    captionFonts = [...new Set([...given, ...PHRASE_FONTS])]
   }
   // A caption can carry its own fontFamily with its own googleFonts (the
   // editor's per-caption styling). Fetch those too, after the track's. Added

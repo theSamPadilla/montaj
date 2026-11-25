@@ -670,7 +670,7 @@ def test_an_overlays_path_that_is_a_broken_link_is_refused_not_a_traceback(tmp_p
 
 
 @pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
-@pytest.mark.parametrize("style", ["pop", "outline", "highlight-box", "plate"])
+@pytest.mark.parametrize("style", ["pop", "outline", "highlight-box", "plate", "phrase"])
 def test_the_lower_third_sits_above_the_captions_of_every_bottom_style(tmp_path, style):
     d = make_project(tmp_path)
     p = json.loads((d / "project.json").read_text())

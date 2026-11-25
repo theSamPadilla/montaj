@@ -16,7 +16,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
 import CaptionPreview from '../CaptionPreview'
-import { ACCENT_CAPTION_FONTS, captionFontsFor } from '../../captionStyleDefaults'
+import { ACCENT_CAPTION_FONTS, PHRASE_CAPTION_FONTS, captionFontsFor } from '../../captionStyleDefaults'
 import type { Captions } from '../../../schema'
 import type { OverlayFactory } from '../../../types'
 
@@ -161,5 +161,10 @@ describe('captionFontsFor', () => {
 
   it('splits a comma-separated string for accent', () => {
     expect((captionFontsFor('accent', 'Anton,Roboto') as string[]).slice(0, 2)).toEqual(['Anton', 'Roboto'])
+  })
+
+  it('adds the phrase style\'s accent face after the track\'s own, deduped', () => {
+    expect(captionFontsFor('phrase', undefined)).toEqual(PHRASE_CAPTION_FONTS)
+    expect(captionFontsFor('phrase', ['Inter:wght@600', PHRASE_CAPTION_FONTS[0]])).toEqual(['Inter:wght@600', PHRASE_CAPTION_FONTS[0]])
   })
 })

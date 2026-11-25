@@ -1,5 +1,5 @@
 // §244: a translated caption segment (`lang` + `translationOf`) is drawn in
-// every one of the nine caption styles, as a plain line stacked under the
+// every one of the ten caption styles, as a plain line stacked under the
 // caption it translates, inside that caption's block (so the browser lays the
 // two out and they never collide). The templates are compiled exactly as
 // captions-font.test.mjs does and called as plain functions; these tests read
@@ -51,7 +51,7 @@ async function loadTemplate(name) {
   }
 }
 
-const STYLE_NAMES = ['clean', 'subtitle', 'karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop', 'accent', 'plate']
+const STYLE_NAMES = ['clean', 'subtitle', 'karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop', 'accent', 'plate', 'phrase']
 const templates = {}
 before(async () => {
   for (const name of STYLE_NAMES) templates[name] = await loadTemplate(name)

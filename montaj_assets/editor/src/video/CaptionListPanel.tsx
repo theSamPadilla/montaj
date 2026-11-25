@@ -56,6 +56,7 @@ const ACCENT: Partial<Record<CaptionStyle, { field: AccentField; label: string; 
   accent:          { field: 'accentColor',     label: 'Accent',    def: '#F00000' },
   subtitle:        { field: 'backgroundColor', label: 'Box',       def: '#000000' },
   plate:           { field: 'accentColor',     label: 'Accent',    def: '#fbbf24' },
+  phrase:          { field: 'accentColor',     label: 'Accent',    def: '#fbbf24' },
 }
 
 // The native <input type="color"> only accepts #rrggbb. Stored values are always

@@ -101,11 +101,15 @@ def floor_word_durations(words, floor_s=MIN_WORD_DURATION_S):
 PHRASE_GAP_S = 0.4
 PHRASE_MAX_WORDS = 8
 # How many words a caption holds at most, by style: the styles that show the whole line read best short (2-4 words,
-# what people's own captions land on); word-by-word and pop show one word at a time, so their lines can run longer.
+# what people's own captions land on); word-by-word and pop show one word at a time, so their lines can run longer;
+# phrase shows a whole clause or sentence, up to about two lines.
 # A profile's `captionWords` preference (1..CAPTION_WORDS_MAX) overrides it.
 LINE_WORDS = 4
-STYLE_WORDS = {"word-by-word": PHRASE_MAX_WORDS, "pop": PHRASE_MAX_WORDS}
+STYLE_WORDS = {"word-by-word": PHRASE_MAX_WORDS, "pop": PHRASE_MAX_WORDS, "phrase": 10}
 CAPTION_WORDS_MAX = 12
+# The fewest words a caption holds before a clause end (comma, semicolon, colon, dash) ends it, by style. A style not
+# here keeps the default rule: two words, or one that does not open a sentence ("Yeah," stays with what follows).
+STYLE_CLAUSE_MIN = {"phrase": 5}
 
 # A word that ends a sentence: ., ? or !, then any closing quotes or brackets. An initialism ("U.S.") does not.
 _SENTENCE_END = re.compile(r"[.?!]+[\"'\u201d\u2019)\]]*$")
@@ -120,6 +124,11 @@ def max_words_for(style, override=None) -> int:
     if isinstance(override, int) and not isinstance(override, bool) and 1 <= override <= CAPTION_WORDS_MAX:
         return override
     return STYLE_WORDS.get(style, LINE_WORDS)
+
+
+def clause_min_for(style):
+    """The fewest words a caption holds before a clause end ends it for `style`, or None: the default rule."""
+    return STYLE_CLAUSE_MIN.get(style)
 
 
 def _ends_sentence(word) -> bool:
@@ -159,13 +168,13 @@ def _join_short(items):
     return out
 
 
-def group(words, max_words=PHRASE_MAX_WORDS):
+def group(words, max_words=PHRASE_MAX_WORDS, clause_min=None):
     """Floor word durations, then group into display phrases.
 
     A phrase ends after a word that ends a sentence (never runs across one), after a word that ends a clause (unless
-    it is a lone word opening a sentence: "Yeah,"), when it holds `max_words`, or before a gap over 0.4 s; then a phrase
-    too short to read joins a neighbour (_join_short). Returns segments
-    `{"text", "start", "end", "words": [{"word", "start", "end"}]}` with times
+    it is a lone word opening a sentence: "Yeah,"; with `clause_min`, only once it holds that many words), when it holds
+    `max_words`, or before a gap over 0.4 s; then a phrase too short to read joins a neighbour (_join_short). Returns
+    segments `{"text", "start", "end", "words": [{"word", "start", "end"}]}` with times
     rounded to milliseconds. Pure: never mutates `words`.
     """
     words = floor_word_durations(words, MIN_WORD_DURATION_S)
@@ -178,8 +187,10 @@ def group(words, max_words=PHRASE_MAX_WORDS):
     for i, w in enumerate(words):
         phrase.append(w)
         nxt = words[i + 1] if i + 1 < len(words) else None
-        # A clause comma ends the phrase, except after a lone word that opens a sentence ("Yeah," "So,").
-        clause = _CLAUSE_END.search(str(w["word"])) and (len(phrase) >= 2 or not opens)
+        # A clause comma ends the phrase, except after a lone word that opens a sentence ("Yeah," "So,"), or, with
+        # clause_min, before the phrase holds that many words.
+        long_enough = (len(phrase) >= 2 or not opens) if clause_min is None else len(phrase) >= clause_min
+        clause = _CLAUSE_END.search(str(w["word"])) and long_enough
         if (nxt is None or nxt["start"] - w["end"] > PHRASE_GAP_S or len(phrase) >= max_words
                 or _ends_sentence(w["word"]) or clause):
             items.append(phrase)

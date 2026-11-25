@@ -69,7 +69,7 @@ async function loadTemplate(name) {
   }
 }
 
-const STYLE_NAMES = ['clean', 'subtitle', 'karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop', 'accent', 'plate']
+const STYLE_NAMES = ['clean', 'subtitle', 'karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop', 'accent', 'plate', 'phrase']
 
 const templates = {}
 before(async () => {

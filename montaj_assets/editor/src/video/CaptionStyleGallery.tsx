@@ -44,7 +44,7 @@ type CompileOverlay = (src: string) => Promise<OverlayFactory>
  *  in `CaptionListPanel.tsx` had its own private copy, which is retired when
  *  this gallery is mounted in its place. */
 export const CAPTION_STYLES: readonly CaptionStyle[] = [
-  'word-by-word', 'pop', 'karaoke', 'subtitle', 'highlight-box', 'outline', 'clean', 'accent', 'plate',
+  'word-by-word', 'pop', 'karaoke', 'subtitle', 'highlight-box', 'outline', 'clean', 'accent', 'plate', 'phrase',
 ]
 
 /** Human labels for the cards. The kebab-case identifier is a code name, not a
@@ -60,6 +60,7 @@ export const CAPTION_STYLE_LABELS: Record<CaptionStyle, string> = {
   clean: 'Clean',
   accent: 'Accent',
   plate: 'Plate',
+  phrase: 'Phrase',
 }
 
 // The caption templates position themselves against the native render frame
@@ -81,8 +82,10 @@ const RENDER_H = 1920
  *  identically — no per-style offset needed. BAND_TOP is tuned so the
  *  full-sentence block styles (five of the seven, two lines at CARD_FONT_SIZE)
  *  sit roughly centred; the two single-word styles (word-by-word, pop) then sit
- *  a touch low, which is fine for a one-word specimen. BAND_H sets the card's
- *  aspect ratio. */
+ *  a touch low, which is fine for a one-word specimen. Phrase anchors lower,
+ *  its block's bottom at 13% of the frame, which is the band's bottom edge
+ *  (950 + 720 = 1670 of 1920), so its card shows it whole along the bottom.
+ *  BAND_H sets the card's aspect ratio. */
 const BAND_TOP = 950
 const BAND_H = 720
 
@@ -156,8 +159,14 @@ const ACCENT_SAMPLE_SEGMENTS: CaptionSegment[] = [{
     ...(i === a.length - 1 ? { accent: 'serif' as const } : {}),
   })),
 }]
+// The Phrase style builds the line word by word with one accent word: the second word is accented, so the
+// 1.0 s poster frame (two words built) shows it.
+const PHRASE_SAMPLE_SEGMENTS: CaptionSegment[] = [{
+  ...SAMPLE_SEGMENT,
+  words: SAMPLE_SEGMENT.words!.map((w, i) => (i === 1 ? { ...w, accent: 'serif' as const } : w)),
+}]
 export const sampleSegmentsFor = (style: string): CaptionSegment[] =>
-  style === 'accent' ? ACCENT_SAMPLE_SEGMENTS : SAMPLE_SEGMENTS
+  style === 'accent' ? ACCENT_SAMPLE_SEGMENTS : style === 'phrase' ? PHRASE_SAMPLE_SEGMENTS : SAMPLE_SEGMENTS
 const SAMPLE_TOTAL_FRAMES = Math.round(SAMPLE_SEGMENT.end * SAMPLE_FPS)
 
 /** Length of one hover loop, in seconds. Longer than the sample (2.6s) on
@@ -264,9 +273,10 @@ export default function CaptionStyleGallery({
   // dedupes anyway. Without it every card would preview in a fallback face and
   // misreport what the export will look like. Keyed on the joined list because
   // `captions` is a fresh object on every project edit (see CaptionPreview).
-  // The Accent card is always on screen, so its fonts load whatever the
-  // active style is (the preview only loads them while accent is active).
-  const fontsToLoad = captionFontsFor('accent', googleFonts)
+  // The Accent and Phrase cards are always on screen, so their fonts load
+  // whatever the active style is (the preview only loads them while that
+  // style is active).
+  const fontsToLoad = captionFontsFor('phrase', captionFontsFor('accent', googleFonts))
   useEffect(() => { ensureGoogleFontsLoaded(fontsToLoad) }, [String(fontsToLoad)])
 
   function selectStyle(style: CaptionStyle) {

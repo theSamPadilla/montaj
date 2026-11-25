@@ -126,7 +126,7 @@ export interface CaptionSegment {
 export type CaptionTextTransform = 'uppercase' | 'lowercase' | 'capitalize' | 'none'
 
 export interface Captions {
-  style: 'word-by-word' | 'pop' | 'karaoke' | 'subtitle' | 'highlight-box' | 'outline' | 'clean' | 'accent' | 'plate'
+  style: 'word-by-word' | 'pop' | 'karaoke' | 'subtitle' | 'highlight-box' | 'outline' | 'clean' | 'accent' | 'plate' | 'phrase'
   segments: CaptionSegment[]
   // §244: the language the SOURCE captions are in (a code such as "en"), recorded when the captions are
   // generated. Absent when unknown; the language chips then call the source "Original".
@@ -144,7 +144,7 @@ export interface Captions {
   fontsize?: number
   // Per-style accent color fields, each read by the matching JSX caption template.
   // A single UI control writes whichever one the active style uses (see CaptionListPanel).
-  accentColor?: string    // active-word/box accent — highlight-box, outline, accent
+  accentColor?: string    // active-word/box accent — highlight-box, outline, accent; accent words and rule — phrase
   highlightColor?: string // active word — karaoke
   activeColor?: string    // active word — pop
   backgroundColor?: string// text box background — subtitle; the plate's colour — plate
@@ -153,6 +153,25 @@ export interface Captions {
   plateOpacity?: number
   platePadding?: number
   plateRadius?: number
+  // The `phrase` style's own look, track-wide (phrase.jsx's props hold the defaults): each word's fade in (s); the
+  // accent words' face ('serif' and 'script'); the rule above the block (colour, default the accent colour; px sizes;
+  // the solid share of its length, 0 to 1); the layout (a CSS length or px: the box's most width, the aligned side's
+  // inset and the bottom inset); the text shadow. `accentFontFamily` is also the `accent` style's serif face.
+  wordFade?: number
+  accentFontFamily?: string
+  accentFontStyle?: string
+  accentFontWeight?: number | string
+  accentScale?: number
+  showRule?: boolean
+  ruleColor?: string
+  ruleWidth?: number
+  ruleLength?: number
+  ruleGap?: number
+  ruleSolid?: number
+  maxWidth?: number | string
+  insetX?: number | string
+  insetBottom?: number | string
+  textShadow?: string
   googleFonts?: string[]  // Google Fonts family specs for the caption template (e.g. ["Figtree:wght@700"])
   // Text-styling fields, honoured by the JSX caption templates. `fontFamily` and `googleFonts` travel together: a family
   // whose font file isn't also fetched via `googleFonts` renders as the fallback face,

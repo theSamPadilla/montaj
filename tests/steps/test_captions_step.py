@@ -380,3 +380,16 @@ def test_an_accent_the_colour_of_the_styles_own_spoken_default_is_said(tmp_path)
     d = make_project(tmp_path)
     out = run(d, look="outline", accent=json.dumps({"words": ["best"], "color": "#fbbf24"}))
     assert any("accent matches the spoken-word colour" in i for i in out["issues"]), out
+
+
+def test_the_phrase_look_keeps_per_word_accents_and_positions_from_its_low_anchor():
+    caps = {"style": "pop", "segments": [{"id": "cap-0", "text": "the quiet machine", "start": 0, "end": 2, "words": [
+        {"word": "the", "start": 0, "end": 0.5}, {"word": "quiet", "start": 0.5, "end": 1}, {"word": "machine", "start": 1, "end": 2}]}]}
+    out, report = caption_style.restyle(caps, look="phrase", accent={"words": ["quiet"], "color": "#ff0000"}, position="top")
+    assert out["style"] == "phrase" and report["style"] == "phrase"
+    assert out["segments"][0]["words"][1]["color"] == "#ff0000"
+    assert report["issues"] == []
+    # its block's bottom is 13% up the frame: top puts that edge 25% from the top
+    assert out["segments"][0]["offsetY"] == 25.0 - (100 - 13)
+    _, report = caption_style.restyle(caps, look="phrase", highlight="#00ff00")
+    assert report["issues"] == ["phrase has no spoken-word highlight: use look highlight, highlight-box, karaoke, outline, plate"]

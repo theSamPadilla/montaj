@@ -56,7 +56,7 @@ SAMPLE_FRAME_PY = os.path.join(MONTAJ_ROOT, "steps", "render", "sample_frame.py"
 SAMPLE_OVERLAY_PY = os.path.join(MONTAJ_ROOT, "steps", "render", "sample_overlay.py")
 
 # plate and subtitle draw on their own box: the step does nothing for them (and clears nothing).
-INK_STYLES = ("accent", "clean", "highlight-box", "karaoke", "outline", "pop", "word-by-word")
+INK_STYLES = ("accent", "clean", "highlight-box", "karaoke", "outline", "phrase", "pop", "word-by-word")
 # A backdrop is light when the mean relative luminance of the caption band is at least this. Paper #efece4 is about
 # 0.83, so it draws dark; #a6a49e (about 0.37) and footage stay white.
 LIGHT_L = 0.5

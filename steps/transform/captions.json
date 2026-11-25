@@ -30,7 +30,8 @@
         "outline",
         "clean",
         "accent",
-        "plate"
+        "plate",
+        "phrase"
       ],
       "required": false,
       "description": "highlight: white text, the spoken word in colour. Or a caption style."

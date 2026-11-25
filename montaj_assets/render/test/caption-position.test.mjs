@@ -209,7 +209,7 @@ async function loadTemplate(name) {
   }
 }
 
-const STYLE_NAMES = ['clean', 'subtitle', 'karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop', 'accent', 'plate']
+const STYLE_NAMES = ['clean', 'subtitle', 'karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop', 'accent', 'plate', 'phrase']
 
 const templates = {}
 before(async () => {
@@ -386,6 +386,18 @@ describe('no-offset equivalence gate — inner anchor, historical values (10 wra
       position: 'absolute',
       bottom: '24%', left: 0, right: 0,
       textAlign: 'center', padding: '0 8%',
+    })
+  })
+
+  // phrase anchors bottom-left and its box hugs the block, so a segment scale
+  // grows it in place rather than about the frame's centre.
+  test('phrase: bottom 13%, left 6%, maxWidth 75%, textAlign left, opacity (the end fade)', () => {
+    const { innerEl } = renderNoOffset('phrase', { words: WORDS })
+    assert.deepEqual(innerEl.props.style, {
+      position: 'absolute',
+      bottom: '13%', left: '6%', maxWidth: '75%',
+      textAlign: 'left',
+      opacity: 1,
     })
   })
 })

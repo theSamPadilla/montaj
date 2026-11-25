@@ -38,7 +38,7 @@
     {
       "name": "style",
       "type": "enum",
-      "options": ["word-by-word", "karaoke", "subtitle", "pop", "highlight-box", "outline", "clean", "accent", "plate"],
+      "options": ["word-by-word", "karaoke", "subtitle", "pop", "highlight-box", "outline", "clean", "accent", "plate", "phrase"],
       "description": "Caption animation style. Defaults to the prior caption track's style, then the profile's caption style (a new track also takes the profile's caption font), then 'pop'."
     },
     {

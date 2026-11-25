@@ -66,6 +66,49 @@ def test_line_styles_default_to_short_captions_and_word_styles_keep_eight():
     assert max_words_for("outline", 0) == 4 and max_words_for("outline", 40) == 4 and max_words_for("outline", "3") == 4
 
 
+# -- phrase: a whole clause or sentence, up to about two lines -------------------------------------------------------
+
+def _phrase(text, **kw):
+    from caption_group import clause_min_for
+    return texts(group(W(text, **kw), max_words_for("phrase"), clause_min_for("phrase")))
+
+
+def test_phrase_holds_ten_words_and_only_phrase_changes_the_clause_rule():
+    from caption_group import clause_min_for
+    assert max_words_for("phrase") == 10
+    assert max_words_for("phrase", 6) == 6, "the profile's captionWords wins"
+    assert clause_min_for("phrase") == 5
+    for style in ("word-by-word", "pop", "karaoke", "subtitle", "highlight-box", "outline", "clean", "accent", "plate", None):
+        assert clause_min_for(style) is None, style
+    assert _phrase("one two three four five six seven eight nine ten eleven twelve") == [
+        "one two three four five six seven eight nine ten", "eleven twelve"]
+
+
+def test_phrase_a_clause_end_before_five_words_does_not_split():
+    assert _phrase("In the end, the machine kept running all night") == ["In the end, the machine kept running all night"]
+    assert _phrase("Yes; it worked") == ["Yes; it worked"]
+
+
+def test_phrase_a_clause_end_from_five_words_splits():
+    assert _phrase("When the lights went out, the machine kept running") == [
+        "When the lights went out,", "the machine kept running"]
+    assert _phrase("They built it in a garage: nobody believed them") == ["They built it in a garage:", "nobody believed them"]
+
+
+def test_phrase_a_sentence_end_always_splits_and_a_pause_still_does():
+    assert _phrase("It ran. Then it stopped.") == ["It ran.", "Then it stopped."]
+    assert texts(group(W("one two") + W("three four", start=1.2), 10, 5)) == ["one two", "three four"]
+
+
+def test_the_default_clause_rule_is_unchanged_for_every_other_style():
+    words = W("Yeah, so when the lights went out, we kept going; it was fine.")
+    for style in ("outline", "highlight-box", "karaoke", "plate", "clean", "subtitle", "accent", "word-by-word", "pop"):
+        from caption_group import clause_min_for
+        n = max_words_for(style)
+        assert group(words, n, clause_min_for(style)) == group(words, n), style
+        assert group(words, n, None) == group(words, max_words=n), style
+
+
 # -- the caption step and generate_captions -------------------------------------------------------------------------
 
 def _caption_py(tmp_path, style, extra=()):
@@ -78,6 +121,17 @@ def _caption_py(tmp_path, style, extra=()):
     subprocess.run([sys.executable, str(ROOT / "steps" / "lyrics" / "caption.py"), "--input", str(src), "--style", style,
                     "--out", str(out), *extra], check=True, capture_output=True)
     return texts(json.loads(out.read_text())["segments"])
+
+
+def test_the_caption_step_groups_phrase_by_its_own_rule(tmp_path):
+    # "If you're trapped under something," is five words: the comma ends it; the rest is one sentence of 13 words.
+    assert _caption_py(tmp_path, "phrase") == ["If you're trapped under something,",
+                                               "you absolutely want a robot around that is strong enough",
+                                               "to get you out."]
+
+
+def test_the_caption_step_takes_plate(tmp_path):
+    assert _caption_py(tmp_path, "plate")[0] == "If you're trapped under"
 
 
 def test_the_caption_step_uses_the_styles_cap_and_takes_max_words(tmp_path):

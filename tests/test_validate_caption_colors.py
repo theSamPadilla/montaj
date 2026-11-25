@@ -18,7 +18,7 @@ sys.path.insert(0, str(REPO_ROOT))
 import validate as v  # noqa: E402
 from lib.css_color import is_css_color  # noqa: E402
 
-STYLES = ["word-by-word", "pop", "karaoke", "subtitle", "highlight-box", "outline", "clean", "accent", "plate"]
+STYLES = ["word-by-word", "pop", "karaoke", "subtitle", "highlight-box", "outline", "clean", "accent", "plate", "phrase"]
 BASE = {"version": "0.2", "id": "abc", "status": "draft", "workflow": "default", "editingPrompt": "t",
         "settings": {"resolution": [1080, 1920], "fps": 30}, "tracks": [[]], "assets": [], "audio": {}}
 
