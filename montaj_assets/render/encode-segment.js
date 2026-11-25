@@ -807,9 +807,15 @@ function animatedGeometry(item, kind, vw, vh, timeOffset, duration, onCap) {
   // zero while toPixelBox uses Math.round, so a bare expression that lands a
   // hair under an integer costs a whole pixel against the preview. Pinned by
   // timeline-core's expr.ffmpeg test.
-  const evenBox = (dim, sc) => `round(round(${dim}*(${sc}))/2)*2`
-  const boxWExpr = evenBox(vw, sxExpr)
-  const boxHExpr = evenBox(vh, syExpr)
+  // A resized box steps in 4 px about an even centre (34, 5.43.0). The composite is 4:2:0 (overlay=format=yuv420, or
+  // yuv420p10), whose overlay snaps x and y down to even pixels. An even size (2 px steps) placed at a corner rounded on
+  // its own, then snapped, grew the box on one side one step and shifted it the next, so a slow keyframed push shook
+  // back and forth by up to 2 px a frame (lfx measured 1.6 px). In 4 px steps about a centre snapped to even, half the
+  // size is even too, so each step grows the box 2 px on every side and every point of it moves only the way the keys
+  // move it, in whole-pixel steps. Sub-pixel placement (a resample to exact corners) is the next step, not this one.
+  const quadBox = (dim, sc) => `round(round(${dim}*(${sc}))/4)*4`
+  const boxWExpr = quadBox(vw, sxExpr)
+  const boxHExpr = quadBox(vh, syExpr)
 
   // Animating POSITION alone is nearly free — the overlay's x/y are already
   // evaluated per frame, so nothing else in the chain has to change. Only a
@@ -840,8 +846,13 @@ function animatedGeometry(item, kind, vw, vh, timeOffset, duration, onCap) {
   // `x = xPx - (outW - scaledW)/2`.
   const xPxExpr = `round(${vw}*(0.5*(1-(${sxExpr}))+(${oxExpr})/100))`
   const yPxExpr = `round(${vh}*(0.5*(1-(${syExpr}))+(${oyExpr})/100))`
-  const xExpr = emitRotate ? `round(${xPxExpr}+(${boxWExpr})/2-${rotOutW}/2)` : xPxExpr
-  const yExpr = emitRotate ? `round(${yPxExpr}+(${boxHExpr})/2-${rotOutH}/2)` : yPxExpr
+  // On the resized (and rotated) chain the corner is the box centre snapped to even, less half the box: half of a 4 px
+  // box, or of the frozen rotate box (rotOutW, even), is a whole pixel, so no round() is needed. Position alone keeps
+  // xPxExpr/yPxExpr (staticBoxPosition): a box of fixed size moves monotonically through the even snap already.
+  const cxExpr = `2*round(${vw}*(0.5+(${oxExpr})/100)/2)`
+  const cyExpr = `2*round(${vh}*(0.5+(${oyExpr})/100)/2)`
+  const xExpr = emitRotate ? `${cxExpr}-${rotOutW / 2}` : `${cxExpr}-(${boxWExpr})/2`
+  const yExpr = emitRotate ? `${cyExpr}-${rotOutH / 2}` : `${cyExpr}-(${boxHExpr})/2`
 
   return {
     peakW, peakH, needsAnimatedChain, emitRotate, rotOutW, rotOutH,
@@ -1310,7 +1321,13 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   const imgOffset = segStart == null ? 0 : Math.max(0, segStart - (item.start ?? 0))
   const anim = animatedGeometry(item, 'image', vw, vh, imgOffset, duration, warnIfCapped(item, 'image'))
 
-  const inputArgs = ['-loop', '1', '-t', ffSeconds(duration), '-i', item.src]
+  // A resized box reads `t` per IMAGE frame (its eval=frame scale) and the overlay per OUTPUT frame: a looped image comes
+  // in at the image demuxer's 25 fps, so in a 30 fps segment the size and the place came from different instants and
+  // the box jumped 2 px back on the frames the overlay repeated an image frame (34, 5.43.0). Its frames come at the
+  // segment's own rate now. A still or position-only image keeps its input exactly as before.
+  const inputArgs = anim?.needsAnimatedChain
+    ? ['-framerate', String(opts?.fps ?? 30), '-loop', '1', '-t', ffSeconds(duration), '-i', item.src]
+    : ['-loop', '1', '-t', ffSeconds(duration), '-i', item.src]
   const filterParts = []
 
   // Fit the source image into its scaledW×scaledH box. Default 'cover' preserves

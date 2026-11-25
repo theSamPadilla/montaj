@@ -362,6 +362,8 @@
    },
    "expected": {
     "inputArgs": [
+     "-framerate",
+     "30",
      "-loop",
      "1",
      "-t",
@@ -370,8 +372,8 @@
      "/abs/a.png"
     ],
     "filterParts": [
-     "[1:v]scale=864:2880:force_original_aspect_ratio=increase,crop=864:2880,format=rgba,scale=w='round(round(1080*(0.8))/2)*2':h='round(round(1920*(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.5*(t-0)/2,1.5))))/2)*2':eval=frame,pad=864:2880:(ow-iw)/2:(oh-ih)/2:color=black@0.0:eval=frame,rotate='15*PI/180':ow=1580:oh=3006:c=black@0.0,setpts=PTS-STARTPTS[img1]",
-     "[canvas][img1]overlay=x='round(round(1080*(0.5*(1-(0.8))+(10)/100))+(round(round(1080*(0.8))/2)*2)/2-1580/2)':y='round(round(1920*(0.5*(1-(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.5*(t-0)/2,1.5))))+(-5)/100))+(round(round(1920*(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.5*(t-0)/2,1.5))))/2)*2)/2-3006/2)':shortest=0[iv1]"
+     "[1:v]scale=864:2880:force_original_aspect_ratio=increase,crop=864:2880,format=rgba,scale=w='round(round(1080*(0.8))/4)*4':h='round(round(1920*(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.5*(t-0)/2,1.5))))/4)*4':eval=frame,pad=864:2880:(ow-iw)/2:(oh-ih)/2:color=black@0.0:eval=frame,rotate='15*PI/180':ow=1580:oh=3006:c=black@0.0,setpts=PTS-STARTPTS[img1]",
+     "[canvas][img1]overlay=x='2*round(1080*(0.5+(10)/100)/2)-790':y='2*round(1920*(0.5+(-5)/100)/2)-1503':shortest=0[iv1]"
     ],
     "newVideoLabel": "[iv1]"
    }
@@ -450,6 +452,8 @@
    },
    "expected": {
     "inputArgs": [
+     "-framerate",
+     "30",
      "-loop",
      "1",
      "-t",
@@ -458,8 +462,8 @@
      "/abs/a.png"
     ],
     "filterParts": [
-     "[2:v]scale=1296:2304:force_original_aspect_ratio=increase,crop=1296:2304,format=rgba,scale=w='round(round(1080*(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.19999999999999996*(t-0)/2,1.2))))/2)*2':h='round(round(1920*(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.19999999999999996*(t-0)/2,1.2))))/2)*2':eval=frame,pad=1296:2304:(ow-iw)/2:(oh-ih)/2:color=black@0.0:eval=frame,rotate='15*PI/180':ow=1848:oh=2560:c=black@0.0,setpts=PTS-STARTPTS[img2]",
-     "[canvas][img2]overlay=x='round(round(1080*(0.5*(1-(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.19999999999999996*(t-0)/2,1.2))))+(10)/100))+(round(round(1080*(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.19999999999999996*(t-0)/2,1.2))))/2)*2)/2-1848/2)':y='round(round(1920*(0.5*(1-(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.19999999999999996*(t-0)/2,1.2))))+(-5)/100))+(round(round(1920*(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.19999999999999996*(t-0)/2,1.2))))/2)*2)/2-2560/2)':shortest=0[iv2]"
+     "[2:v]scale=1296:2304:force_original_aspect_ratio=increase,crop=1296:2304,format=rgba,scale=w='round(round(1080*(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.19999999999999996*(t-0)/2,1.2))))/4)*4':h='round(round(1920*(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.19999999999999996*(t-0)/2,1.2))))/4)*4':eval=frame,pad=1296:2304:(ow-iw)/2:(oh-ih)/2:color=black@0.0:eval=frame,rotate='15*PI/180':ow=1848:oh=2560:c=black@0.0,setpts=PTS-STARTPTS[img2]",
+     "[canvas][img2]overlay=x='2*round(1080*(0.5+(10)/100)/2)-924':y='2*round(1920*(0.5+(-5)/100)/2)-1280':shortest=0[iv2]"
     ],
     "newVideoLabel": "[iv2]"
    }
