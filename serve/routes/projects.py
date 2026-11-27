@@ -1207,10 +1207,10 @@ async def retry_source_download(project_id: str, request: Request, project_dir: 
 
 OVERLAY_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 # Overlay JSX is code, not media, but a Hub template's stage component is not
-# small: the 3D templates' model3d_stage.jsx is about 80 KB, and the old 64 KB
-# cap answered their install with a 413. 512 KB leaves room for that and still
-# rejects anything that is plainly not a component.
-OVERLAY_MAX_BYTES = 524_288
+# small: the 3D templates' scene stage grew past 480 KB, and the app's own cap
+# on it is 2 MiB. 2.5 MB leaves headroom over that and still rejects anything
+# that is plainly not a component.
+OVERLAY_MAX_BYTES = 2_621_440
 
 
 # ---------------------------------------------------------------------------

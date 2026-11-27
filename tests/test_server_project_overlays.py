@@ -156,10 +156,10 @@ def test_put_overlay_accepts_a_100kb_template_stage(project_id):
     assert res.json()["bytes"] == size
 
 
-def test_overlay_cap_is_512kb():
+def test_overlay_cap_is_2_5mb():
     from serve.routes.projects import OVERLAY_MAX_BYTES
 
-    assert OVERLAY_MAX_BYTES == 512 * 1024
+    assert OVERLAY_MAX_BYTES == 2_621_440
 
 
 def test_put_overlay_rejects_empty_body(project_id):
