@@ -29,8 +29,9 @@ import { stageWarningOf, STAGE_WARNING_PREFIX } from './stage-warnings.js'
 import { captureWithThree, isThreeBlurUnsupported } from './three-frame.js'
 import { check3dGraphics, no3dGraphicsError, softwareAllowed } from './gpu-3d.js'
 import { createReadRecorder } from './read-set.js'
+import { externalizeFilterGraph } from './filter-script.js'
 import { createBakeTally, addJob } from './bake-tally.js'
-import { scene3dHost, CinematicUnavailableError, reportCinematicFrame } from './scene3d-host.js'
+import { scene3dHost, CinematicUnavailableError, reportCinematicFrame, segmentFilterOf } from './scene3d-host.js'
 
 // A stream copy of chunks already on disk cannot stall for long, and spawnSync
 // cannot watch progress, so this is a generous wall clock (the callers are sync).
@@ -376,6 +377,14 @@ export async function renderAllSegments(segments, config = {}) {
     if (!chunkResults.has(job.id)) chunkResults.set(job.id, [])
     chunkResults.get(job.id)[job.chunkIndex] = webmPath
   }
+  // A cinematic segment's camera cuts (segment frames), from its chunks: each chunk's page reports the scene's whole
+  // list, and a reused chunk the list it was stored with. assemble keeps the host's segment filter to each shot.
+  const segmentCuts = new Map()
+  const noteCuts = (job, cuts) => {
+    if (job.cinematic !== true || !Array.isArray(cuts)) return
+    if (!segmentCuts.has(job.id)) segmentCuts.set(job.id, new Set())
+    for (const c of cuts) if (Number.isFinite(c)) segmentCuts.get(job.id).add(c)
+  }
   let jobsDone = 0
 
   // §737: a 3D chunk the export's segment cache (segment-cache.js, render.js opens
@@ -396,6 +405,7 @@ export async function renderAllSegments(segments, config = {}) {
     jobsDone++
     reusedPaths.add(hit)
     keepChunk(job, hit)
+    noteCuts(job, cache.cutsOf?.(job))
     log(`reused ${chunkLabel(job)} (${jobsDone}/${jobs.length} done)`)
   }
   queueReady = true
@@ -583,11 +593,11 @@ export async function renderAllSegments(segments, config = {}) {
         const label = chunkLabel(job)
         log(`rendering ${label} (${job.frameEnd - job.frameStart} frames)...`)
         // `reads` (§737): what a 3D chunk's page read (read-set.js); a renderJob that gives none read nothing.
-        let webmPath, reads
+        let webmPath, reads, cuts
         let lanesNow = 1
         if (is3d) lanes3dActive.add(workerIdx)
         try {
-          ({ webmPath, reads } = await renderJob(current, job, { onFrame: noteFrame, threads: encoderThreads }))
+          ({ webmPath, reads, cuts } = await renderJob(current, job, { onFrame: noteFrame, threads: encoderThreads }))
           lanesNow = Math.max(1, running3d)
           const took = now() - jobStart
           const frames = job.frameEnd - job.frameStart
@@ -606,8 +616,9 @@ export async function renderAllSegments(segments, config = {}) {
         jobsOnThisBrowser++
         log(`encoded ${label} (${jobsDone}/${jobs.length} done)`)
         // §737: kept for the next export. Never fails the render (segment-cache.js store).
-        if (cache && is3d) cache.store(job, webmPath, reads)
+        if (cache && is3d) cache.store(job, webmPath, reads, { cuts })
         keepChunk(job, webmPath)
+        noteCuts(job, cuts)
 
         // Recycle browser to flush memory after RECYCLE_AFTER jobs, or after any 3D job
         const after3d = is3d
@@ -660,7 +671,7 @@ export async function renderAllSegments(segments, config = {}) {
   return assemble()
 
   // Reassemble multi-chunk segments. A reused chunk is the cache's own file: the concat leaves it in place.
-  function assemble() {
+  async function assemble() {
     const results = []
     for (const seg of segments) {
       const chunks = chunkResults.get(seg.id) || []
@@ -671,6 +682,8 @@ export async function renderAllSegments(segments, config = {}) {
         mkdirSync(dirname(seg.outputPath), { recursive: true })
         webmPath = concatChunks(chunks, seg.outputPath, { keep: reusedPaths })
       }
+      // A cinematic segment: its host's filter over the joined 3D layer (segmentFilterOf), each shot on its own.
+      if (seg.cinematic === true) webmPath = await filterCinematicSegment(seg, webmPath, { joined: chunks.length > 1 })
       // A windowed segment's file covers only its window: its times are the window's.
       const windowed = seg.frameFrom != null || seg.frameTo != null
       const { from, to } = windowOf(seg)
@@ -679,6 +692,73 @@ export async function renderAllSegments(segments, config = {}) {
       results.push({ id: seg.id, webmPath, startSeconds, endSeconds, opaque: seg.opaque ?? false })
     }
     return results
+  }
+
+  // The host's segment filter (a temporal denoise) over cinematic segment `seg`'s joined file `input`, cut at the scene's
+  // camera cuts so no shot blends into the next. The cached chunks are never touched. A filter that fails leaves the
+  // segment as it was (one log line); a kill by signal still stops the render. `joined`: input is the concat's own file.
+  async function filterCinematicSegment(seg, input, { joined }) {
+    const vf = await (config.segmentFilterOf ?? segmentFilterOf)(seg)
+    if (!vf) return input
+    const { from, to } = windowOf(seg)
+    const frames = to - from
+    const cuts = [...(segmentCuts.get(seg.id) ?? [])]
+    const output = seg.outputPath.replace(/\.\w+$/, '') + '-filtered.mkv'
+    try {
+      mkdirSync(dirname(output), { recursive: true })
+      const ranges = shotRanges(frames, cuts.map((c) => c - from))
+      await (config.filterSegment ?? filterSegment)(input, output, { vf, ranges, pixFmt: captureOptionsFor(seg).pixFmt })
+      if (joined) rmSync(input, { force: true })
+      log(`segment filter: ${seg.id}, ${ranges.length} shot(s)`)
+      return output
+    } catch (err) {
+      rmSync(output, { force: true })
+      if (isChildKilled(err)) throw err
+      log(`segment filter: ${seg.id} left unfiltered (${String(err?.message ?? err).split('\n')[0]})`)
+      return input
+    }
+  }
+}
+
+/**
+ * A segment's shots for its filter: `[start, end)` frame ranges of a file of `frames` frames, cut where the camera cuts
+ * (`cuts`, frames from the file's first; a cut mid-frame starts its shot at the next whole frame, as each frame belongs
+ * to the shot its centre is in). Cuts at or outside the file's ends do not split it.
+ */
+export function shotRanges(frames, cuts = []) {
+  const at = [...new Set(cuts.filter(Number.isFinite).map((c) => Math.ceil(c - 1e-6)))].filter((f) => f > 0 && f < frames).sort((a, b) => a - b)
+  const edges = [0, ...at, frames]
+  const ranges = []
+  for (let i = 0; i + 1 < edges.length; i++) ranges.push([edges[i], edges[i + 1]])
+  return ranges
+}
+
+/** The ffmpeg filter graph that runs `vf` on each shot of `ranges` (shotRanges) on its own and joins them, as [v]. */
+export function shotFilterGraph(vf, ranges) {
+  if (ranges.length <= 1) return `[0:v]${vf}[v]`
+  const n = ranges.length
+  const parts = [`[0:v]split=${n}${ranges.map((_, i) => `[s${i}]`).join('')}`]
+  ranges.forEach(([a, b], i) => parts.push(`[s${i}]trim=start_frame=${a}:end_frame=${b},setpts=PTS-STARTPTS,${vf}[f${i}]`))
+  parts.push(`${ranges.map((_, i) => `[f${i}]`).join('')}concat=n=${n}:v=1:a=0[v]`)
+  return parts.join(';')
+}
+
+/**
+ * Runs filter `vf` over each shot of `input` (an FFV1 3D layer) into `output`: FFV1 again, in the chunk's pix_fmt. The
+ * graph goes to ffmpeg as a file beside `output` (filter-script.js: a long shot list would pass Windows' argv cap).
+ */
+export async function filterSegment(input, output, { vf, ranges, pixFmt }) {
+  const script = externalizeFilterGraph([
+    '-y', '-i', input,
+    '-filter_complex', shotFilterGraph(vf, ranges), '-map', '[v]',
+    '-c:v', 'ffv1', '-g', '1', '-pix_fmt', pixFmt,
+    '-f', 'matroska', '-cluster_size_limit', '2000000', '-reserve_index_space', '1000000',
+    output,
+  ], dirname(output))
+  try {
+    await spawnAsync(FFMPEG, script.args, `ffmpeg segment filter failed (${basename(output)})`, 'chunk-concat')
+  } finally {
+    script.cleanup()
   }
 }
 
@@ -1014,7 +1094,7 @@ async function renderChunkOnce(worker, job, { onFrame, threads, recorder = null 
     // naming it, rather than exporting without it (page-guard.js).
     guard.assertPropsServed()
     await sinkFor(sinkBlursInPage ?? (job.cinematic === true || blursInPage(job))).end()
-    return { webmPath: chunkMkv, ...(recorder ? { reads: recorder.reads(guard.blocked) } : {}) }
+    return { webmPath: chunkMkv, ...(recorder ? { reads: recorder.reads(guard.blocked) } : {}), ...(at.cuts ? { cuts: at.cuts } : {}) }
   } catch (err) {
     await sink?.abort()
     rmSync(chunkMkv, { force: true })
@@ -1364,9 +1444,14 @@ async function captureChunkFrames(worker, job, sinkFor, at, onFrame, recorder = 
     // each frame's sub-frames inside its shot (shutterTimes). The stage reports
     // them once its scene is built, which networkidle0 above has waited for; a
     // stage that predates the hook reports none, and its shutter is only centred.
-    const cuts = subframes > 1 && shutterOf(job) === 'centred'
+    // A cinematic chunk reads them whatever its shutter: they go back with the chunk (at.cuts, renderChunkOnce) for its
+    // segment's filter (assemble), and only the centred shutter's sub-frames use them, as before.
+    const blurCuts = subframes > 1 && shutterOf(job) === 'centred'
+    const stageCuts = blurCuts || job.cinematic === true
       ? cameraCutFrames(await page.evaluate(() => (typeof window.__montajCameraCuts === 'function' ? window.__montajCameraCuts() : null)))
       : []
+    const cuts = blurCuts ? stageCuts : []
+    if (job.cinematic === true) at.cuts = stageCuts
 
     // Screenshot each frame
     // 3D36: a cinematic chunk is rendered by the path-tracing host from this page (scene3d-host.js): it steps the

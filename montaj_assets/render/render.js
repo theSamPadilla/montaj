@@ -82,7 +82,7 @@ import { loudnessFilter }                 from './mix-audio.js'
 import { effectiveItemAudio, enabledTrackItems, enabledTracks, trackItems } from './project-tracks.js'
 import { captionOverlayFields }           from './caption-spec.js'
 import { materializeScene3d, Scene3dError, isThreeStageOverlay, cloneSharingSceneText } from './scene3d.js'
-import { look3dOf, look3dQualityOf, stampCinematic, LOOK3D_CINEMATIC, onCinematicFrame } from './scene3d-host.js'
+import { look3dOf, look3dQualityOf, look3dDenoiseOf, stampCinematic, LOOK3D_CINEMATIC, onCinematicFrame } from './scene3d-host.js'
 import { resolveProjectSrc, resolveDerivedSrc, resolveFilePath } from './project-paths.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
@@ -2004,6 +2004,7 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
   const specs = []
   const look3d = look3dOf(projectJson.settings)
   const look3dQuality = look3dQualityOf(projectJson.settings)
+  const look3dDenoise = look3dDenoiseOf(projectJson.settings)
   // Quantize every spec time to the frame grid so it matches the segment
   // planner's quantization (segment-plan.js). Without this the overlay's
   // startSeconds/endSeconds disagree with the segment boundaries that display
@@ -2082,8 +2083,10 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
           ...(isThreeStageOverlay(item, overlayTemplatePath(item)) ? { scene3d: true } : {}),
           // 3D36: a full 3D shot (opaque, covering the picture) in a project whose 3D look is 'cinematic' is
           // rendered by the path-tracing host (scene3d-host.js). Absent otherwise, so nothing else changes.
+          // look3dDenoise: false only when the project turns the host's segment filter off (look3dDenoiseOf).
           ...(look3d === LOOK3D_CINEMATIC && isThreeStageOverlay(item, overlayTemplatePath(item))
-            && isOpaqueCover(item) && opaqueReplacesPicture(item) ? { cinematic: true, look3dQuality } : {}),
+            && isOpaqueCover(item) && opaqueReplacesPicture(item)
+            ? { cinematic: true, look3dQuality, ...(look3dDenoise ? {} : { look3dDenoise: false }) } : {}),
           googleFonts:   item.googleFonts ?? [],
           // Keyframes drive BOTH ends of the render: bundleComponent bakes the
           // animated transform into the capture, and buildOverlayFilterParts

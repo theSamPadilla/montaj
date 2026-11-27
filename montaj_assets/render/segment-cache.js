@@ -465,7 +465,7 @@ export function openSegmentCache({ dir, context = {}, log = defaultLog, probe = 
   }
 
   /** store()'s work, which may throw: store() makes anything unexpected one log line. */
-  const storeJob = (job, file, reads) => {
+  const storeJob = (job, file, reads, extra = {}) => {
     const key = keyOf(job)
     if (!key) return false
     const label = chunkLabel(job)
@@ -498,6 +498,8 @@ export function openSegmentCache({ dir, context = {}, log = defaultLog, probe = 
         stream: { codec_name: v.codec_name, width: v.width, height: v.height, pix_fmt: v.pix_fmt, nb_read_packets: Number(v.nb_read_packets) },
         reads: sealed.reads,
         fields: fieldsOf(job).fields,
+        // A cinematic chunk's camera cuts (segment frames): a reused chunk still gives its segment's filter its shots.
+        ...(Array.isArray(extra?.cuts) ? { cuts: extra.cuts.filter(Number.isFinite) } : {}),
       }
       writeFileSync(tmpJson, JSON.stringify(manifest))
       renameSync(tmpJson, json)
@@ -550,13 +552,27 @@ export function openSegmentCache({ dir, context = {}, log = defaultLog, probe = 
     },
 
     /**
-     * Keeps a 3D chunk that encoded (`file`, renderChunk's MKV) with its read set (`reads`, renderChunk's; none is an
-     * empty set). Returns whether it was kept. Never throws: a chunk that cannot be kept, or a write that fails (a full
-     * disk), is one log line.
+     * The camera cuts (segment frames) the entry this export uses for `job` was stored with, or null: none kept (an
+     * older entry), a 2D job or a miss. Never throws.
      */
-    store(job, file, reads) {
+    cutsOf(job) {
       try {
-        return storeJob(job, file, reads)
+        const key = keyOf(job)
+        const hit = key ? checked.get(key) : null
+        return hit && Array.isArray(hit.manifest?.cuts) ? hit.manifest.cuts : null
+      } catch {
+        return null
+      }
+    },
+
+    /**
+     * Keeps a 3D chunk that encoded (`file`, renderChunk's MKV) with its read set (`reads`, renderChunk's; none is an
+     * empty set), and `extra.cuts`, a cinematic chunk's camera cuts. Returns whether it was kept. Never throws: a
+     * chunk that cannot be kept, or a write that fails (a full disk), is one log line.
+     */
+    store(job, file, reads, extra) {
+      try {
+        return storeJob(job, file, reads, extra)
       } catch (err) {
         log(`segment cache: could not keep ${chunkLabel(job)} (${firstLine(err)})`)
         return false

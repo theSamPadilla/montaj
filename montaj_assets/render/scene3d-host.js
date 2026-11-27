@@ -25,6 +25,11 @@
  *       the 2-frame test (render.js --cinematic-test) multiplies out. A job marked
  *       `cinematicTest` is such a test: the host keeps nothing of it but the shot's own
  *       one-off state (a metered exposure, say), so a later render reuses that and nothing else.
+ *   export function segmentFilter(job): string | null   (optional)
+ *       An ffmpeg video filter for a cinematic segment's 3D layer once its chunks are joined (renderer.js assemble):
+ *       a temporal denoise, say, which has to see across chunk seams. It runs on each shot between the scene's camera
+ *       cuts, never on the cached chunks, so turning it off or changing it renders nothing again. null: no filter.
+ *       Not in cacheKey: it never changes a chunk.
  *
  * No host configured, or one that fails to load or lacks this contract, fails
  * the render with `cinematic_unavailable` before any chunk is drawn: a
@@ -72,6 +77,27 @@ export function look3dOf(settings) {
 export function look3dQualityOf(settings) {
   const q = settings?.look3dQuality
   return typeof q === 'string' && /^[a-z0-9-]{1,32}$/.test(q) ? q : 'standard'
+}
+
+/** Whether a cinematic job asks its host's segment filter (segmentFilter): yes unless the project's `look3dDenoise` is false. */
+export function look3dDenoiseOf(settings) {
+  return settings?.look3dDenoise !== false
+}
+
+/**
+ * The host's filter for cinematic segment `job` (segmentFilter), or null: a job that is not cinematic, no host, a host
+ * without the export, or one that throws or gives no string. Never throws: a filter that cannot be had is no filter.
+ */
+export async function segmentFilterOf(job, env = process.env) {
+  if (job?.cinematic !== true) return null
+  try {
+    const host = await scene3dHost(env)
+    if (!host || typeof host.segmentFilter !== 'function') return null
+    const vf = host.segmentFilter(job)
+    return typeof vf === 'string' && vf.trim() ? vf : null
+  } catch {
+    return null
+  }
 }
 
 /** The host module, loaded once per process; null when none is configured. */
