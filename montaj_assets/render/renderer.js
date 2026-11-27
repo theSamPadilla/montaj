@@ -25,6 +25,7 @@ import { frameTimes, shutterOf, cameraCutFrames, SHUTTER_3D, motionBlurFilter, s
 import { geometryAt } from '@bycrux/timeline-core'
 import { overlayPageLaunchOptions, installPageGuard } from './page-guard.js'
 import { fontLoadFailure, fontFailureWarning } from './google-fonts.js'
+import { stageWarningOf, STAGE_WARNING_PREFIX } from './stage-warnings.js'
 import { captureWithThree, isThreeBlurUnsupported } from './three-frame.js'
 import { check3dGraphics, no3dGraphicsError, softwareAllowed } from './gpu-3d.js'
 import { createReadRecorder } from './read-set.js'
@@ -1286,7 +1287,16 @@ async function captureChunkFrames(worker, job, sinkFor, at, onFrame, recorder = 
     // errors here only explain a page that did not start), it drew the overlay
     // in its fallback font without a word; now it says which family.
     const fontFailures = new Set()
+    // What the page says it drew less of (stage-warnings.js): the 3D stage's look pass failed, a bake was not played,
+    // textures were halved; an overlay skipped a part. Read for errors only, these were dropped and the render came out
+    // degraded without a word.
+    const stageWarnings = new Set()
     page.on('console', msg => {
+      const stage = stageWarningOf({ type: msg.type(), text: msg.text() })
+      if (stage) {
+        if (!stageWarnings.has(stage)) { stageWarnings.add(stage); log(`${STAGE_WARNING_PREFIX}${stage}`) }
+        return
+      }
       if (msg.type() !== 'error' || isBlockNoise(msg)) return
       const font = fontLoadFailure({ type: msg.type(), text: msg.text(), url: msg.location()?.url })
       if (!font) { pageErrors.push(msg.text()); return }

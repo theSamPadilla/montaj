@@ -40,6 +40,7 @@ import { createInterface } from 'readline'
 import { bundleComponent, cleanupBundle, resolveFilePath } from './bundle.js'
 import { overlayPageLaunchOptions, installPageGuard, prefetchPropsUrls } from './page-guard.js'
 import { fontLoadFailure, fontFailureWarning } from './google-fonts.js'
+import { stageWarningOf } from './stage-warnings.js'
 import { threeFrameRetry, isThreeFrameBlank } from './three-frame.js'
 import { isMain as isMainModule } from './is-main.js'
 import { toFileHref, propFilePath } from './file-url.js'
@@ -807,7 +808,7 @@ export async function sampleInSessions({ count, sampleWith, order = [...Array(co
 
 /**
  * PL89: an overlay's page, bundled, loaded and mounted, ready for captureOverlay: { browser, page, guard, pageErrors,
- * fontFailures, workDir, recordedInputs }. With a session the browser is the session's (createSampleSession) and stays
+ * fontFailures, stageWarnings, workDir, recordedInputs }. With a session the browser is the session's (createSampleSession) and stays
  * open; without one it is this page's own, and the caller closes it. On a failure what it opened is closed.
  */
 async function openOverlayPage({ componentPath, props, fps, effectiveDuration, width, height, googleFonts, projectDir, session = null, deviceScaleFactor = 1 }) {
@@ -854,8 +855,13 @@ async function openOverlayPage({ componentPath, props, fps, effectiveDuration, w
     // §140: a family Google refuses, or a font the network cannot fetch, is a
     // warning, not a page error: the overlay draws with its fallback font.
     const fontFailures = new Set()
+    // What the page says it drew less of (stage-warnings.js), returned as the sample's warnings so the AI's frame
+    // checks see a look pass that failed, a bake that did not play or an overlay part that was skipped.
+    const stageWarnings = new Set()
     page.on('pageerror', err => pageErrors.push(err.message))
     page.on('console', msg => {
+      const stage = stageWarningOf({ type: msg.type(), text: msg.text() })
+      if (stage) { stageWarnings.add(stage); return }
       if (msg.type() !== 'error' || guard.isBlockNoise(msg)) return
       const font = fontLoadFailure({ type: msg.type(), text: msg.text(), url: msg.location()?.url })
       if (!font) { pageErrors.push(msg.text()); return }
@@ -875,7 +881,7 @@ async function openOverlayPage({ componentPath, props, fps, effectiveDuration, w
       err.sampleError = 'overlay_eval_failed'
       throw err
     }
-    return { browser, page, guard, pageErrors, fontFailures, workDir, recordedInputs }
+    return { browser, page, guard, pageErrors, fontFailures, stageWarnings, workDir, recordedInputs }
   } catch (err) {
     if (page && session) await page.close().catch(() => {})
     if (browser && !session) await browser.close()
@@ -887,7 +893,7 @@ async function openOverlayPage({ componentPath, props, fps, effectiveDuration, w
 /**
  * PL89: one frame of an open overlay page (openOverlayPage) to `outPath`: { measurements, degraded, warnings }.
  */
-async function captureOverlay({ page, guard, pageErrors, fontFailures, componentPath, frame, measure, width, height, outPath }) {
+async function captureOverlay({ page, guard, pageErrors, fontFailures, stageWarnings = new Set(), componentPath, frame, measure, width, height, outPath }) {
   let measurements = undefined
   // A sample the page guard blocked anything in is not cached: what it shows
   // may depend on things outside the cache key (the workspace, the network).
@@ -1131,8 +1137,10 @@ async function captureOverlay({ page, guard, pageErrors, fontFailures, component
   // wait) keeps this sample out of the cache, so a blank is never served again.
   const imagesLoading = imagesMissed.length > 0 || await page.evaluate(() =>
     [...document.images].some(img => img.loading !== 'lazy' && !img.complete))
-  degraded = guard.blocked.size > 0 || imagesLoading || fontFailures.size > 0
+  // A frame the page drew degraded (stage-warnings.js) is not cached either, so it is never served again without its warning.
+  degraded = guard.blocked.size > 0 || imagesLoading || fontFailures.size > 0 || stageWarnings.size > 0
   if (fontFailures.size > 0) warnings.push(fontFailureWarning(fontFailures))
+  for (const w of stageWarnings) warnings.push(w)
 
   // Screenshot — transparent PNG (omitBackground: true matches the renderer)
   mkdirSync(dirname(outPath), { recursive: true })
