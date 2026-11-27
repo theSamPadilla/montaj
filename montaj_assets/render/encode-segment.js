@@ -718,7 +718,7 @@ export function buildCutoutGradeFilter(srcKey, hasZscaleFlag, opts = {}) {
  *   xExpr: string, yExpr: string, angleExpr: string | null,
  * }}
  */
-function animatedGeometry(item, kind, vw, vh, timeOffset, duration, onCap) {
+function animatedGeometry(item, kind, vw, vh, timeOffset, duration, onCap, { pixelTolerance = 0.25 } = {}) {
   const tracks = item?.keyframes
   if (!Array.isArray(tracks) || tracks.length === 0) return null
 
@@ -777,8 +777,10 @@ function animatedGeometry(item, kind, vw, vh, timeOffset, duration, onCap) {
     const tr = animatedProps.find((x) => x.prop === prop)
     if (!tr) return null
     const shifted = { prop, points: tr.points.map((p) => ({ ...p, t: p.t - timeOffset })) }
-    const info = compileTrackExprInfo(shifted, { pixelTolerance: 0.25, unitsPerPixel })
-    if (info.capped) onCap(prop, info)
+    // The sub-pixel chain asks for a finer fit (SUBPIXEL_TOLERANCE): drawn exactly, a curve's chords show as jumps in
+    // speed. The warning still means what it always did, an error past the whole-pixel chain's 0.25 px.
+    const info = compileTrackExprInfo(shifted, { pixelTolerance, unitsPerPixel })
+    if (info.capped && info.maxError > Math.abs(0.25 * unitsPerPixel)) onCap(prop, info)
     return info.expr ?? lit(staticValue, prop)
   }
   // scaleX/scaleY in geometryAt's own order: the per-axis track, then the
@@ -857,6 +859,10 @@ function animatedGeometry(item, kind, vw, vh, timeOffset, duration, onCap) {
   return {
     peakW, peakH, needsAnimatedChain, emitRotate, rotOutW, rotOutH,
     boxWExpr, boxHExpr, xExpr, yExpr, xPxExpr, yPxExpr,
+    // The exact geometry, unrounded, for the sub-pixel chain (§801): per-axis scale, offset in percent, and the angle in
+    // degrees (null when the item is never turned).
+    sxExpr, syExpr, oxExpr, oyExpr,
+    rotDegExpr: maxAbsDeg > 0 ? (rotExpr ?? lit(staticGeom.rotation ?? 0, 'rotation')) : null,
     angleExpr: emitRotate
       ? (rotExpr ? `(${rotExpr})*PI/180` : `${lit(staticGeom.rotation ?? 0, 'rotation')}*PI/180`)
       : null,
@@ -876,6 +882,123 @@ function staticBoxPosition(anim, box) {
     x: dx === 0 ? anim.xPxExpr : `round(${anim.xPxExpr}+${dx})`,
     y: dy === 0 ? anim.yPxExpr : `round(${anim.yPxExpr}+${dy})`,
   }
+}
+
+// ── Sub-pixel motion (§801) ─────────────────────────────────────────────────
+//
+// A keyframed box on an 8-bit canvas is drawn at its exact, unrounded place, size and angle every frame. The overlay
+// can only place a picture at whole pixels (even ones, on the 4:2:0 composite), and `scale` only makes whole sizes, so
+// a slow push or pan stepped: still, then a whole pixel, then still (34's bd6378f3 made those steps go one way only).
+// Here the picture is resampled ONCE more, by `perspective` (cubic, re-evaluated per frame), onto its exact corners
+// inside a fixed frame, and that frame is overlaid at a fixed even place. Nothing moves in whole pixels any more.
+//
+//   fit(P) → [opacity] → pad P by M, the margin smeared with the edge colour at alpha 0
+//          → [scale per frame to an even size, only for a big zoom] → pad to the fixed frame F → perspective → overlay
+//
+// The margin is smeared, not black: the resample mixes the picture's edge with the margin, and against transparent
+// black (straight alpha) an edge pixel half covered comes out dark, a 1 px rim that flickers as the box moves
+// (measured 255 → 191 on white over white). premultiply/unpremultiply would do it too, but in 8 bits their round trip
+// moves opaque pixels by 1 (measured on 8.1.2), and in 16 bits too once stored back at 8 for perspective.
+//
+// perspective is 8-bit only (8.1.2 inserts a 10-to-8-bit converter in front of it), so a 10-bit (HDR) canvas keeps the
+// whole-pixel chain. perspective has no `t`: its frame counter `in` is 1 on the first frame (measured), and the
+// item comes in at the segment's rate (an image's -framerate, a video's fps filter), so frame k is t = (in-1)/fps.
+// The overlay, at a fixed place, has no clock of its own to agree with.
+//
+// The `scale` per frame is there for downscale quality only: perspective samples 4x4 taps, which alias when they
+// shrink a picture far (a zoom out to half size). When the box never falls under BULK_BELOW of the fitted size, the
+// fitted picture goes to perspective as it is, one resample.
+const SUBPIXEL_MARGIN = 8
+const SUBPIXEL_BULK_BELOW = 0.75
+// How closely the chain's piecewise-linear curves follow an eased key, in pixels. Drawn exactly, a chord's joint shows
+// as a jump in speed. Measured on an ease-in-out push whose edge travels 144 px in 3 s: from one frame to the next the
+// speed changes by up to 0.21 px at the whole-pixel chain's 0.25 px, 0.10 px at 0.02 (the compiler's 63-segment cap),
+// and 0.08 px in the keys themselves.
+const SUBPIXEL_TOLERANCE = 0.02
+
+/**
+ * Where the fixed frame goes and how big it is: it holds the box at every frame of the segment (as far as the
+ * canvas shows it, plus 3 px for the cubic taps), and the fitted picture with its margin.
+ */
+function subpixelPlan(item, kind, anim, { vw, vh, timeOffset, duration, fps, contentW: pw, contentH: ph }) {
+  const m = SUBPIXEL_MARGIN
+  const frames = Math.max(1, Math.ceil(duration * fps - 1e-6))
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, minRatio = Infinity
+  for (let k = 0; k <= frames; k++) {
+    const g = geometryAt(item, kind, timeOffset + Math.min(k / fps, duration))
+    const bw = vw * (g.scaleX ?? g.scale ?? 1)
+    const bh = vh * (g.scaleY ?? g.scale ?? 1)
+    const cx = vw * (0.5 + (g.offsetX ?? 0) / 100)
+    const cy = vh * (0.5 + (g.offsetY ?? 0) / 100)
+    const a = anim.rotDegExpr ? ((g.rotation ?? 0) * Math.PI) / 180 : 0
+    const hx = (Math.abs(bw * Math.cos(a)) + Math.abs(bh * Math.sin(a))) / 2
+    const hy = (Math.abs(bw * Math.sin(a)) + Math.abs(bh * Math.cos(a))) / 2
+    x0 = Math.min(x0, cx - hx); x1 = Math.max(x1, cx + hx)
+    y0 = Math.min(y0, cy - hy); y1 = Math.max(y1, cy + hy)
+    minRatio = Math.min(minRatio, Math.abs(bw) / pw, Math.abs(bh) / ph)
+  }
+  const span = (lo, hi, dim, content) => {
+    let a = Math.max(lo - 3, -3)
+    let b = Math.min(hi + 3, dim + 3)
+    if (!(b > a)) { a = lo - 3; b = a }
+    const at = 2 * Math.floor(a / 2)
+    const size = Math.max(Math.ceil(b) - at, content + 2 * m + 4)
+    return { at, size: size + (size % 2) }
+  }
+  const sx = span(x0, x1, vw, pw)
+  const sy = span(y0, y1, vh, ph)
+  return { m, pw, ph, fw: sx.size, fh: sy.size, x: sx.at, y: sy.at, bulk: minRatio < SUBPIXEL_BULK_BELOW, fps }
+}
+
+/**
+ * The sub-pixel chain as filter parts, from `inLabel` (the fitted picture, pw x ph) to `outLabel` (the fixed frame).
+ * `pre` runs on the fitted picture first (its opacity, a video's fps pin), `post` last (an image's setpts). `fmt` is the
+ * 8-bit format the chain works in: gbrap for an image, yuva420p for a video (the composite's own, so nothing is
+ * converted twice).
+ */
+function subpixelParts(anim, plan, { vw, vh, idx, inLabel, outLabel, pre = '', post = '', fmt }) {
+  const { m, pw, ph, fw, fh, bulk, fps } = plan
+  const sw = pw + 2 * m
+  const sh = ph + 2 * m
+  // The item's own curves, read at perspective's frame (t = (in-1)/fps). They hold only numbers, `t`, if and between.
+  const T = `((in-1)/${fps})`
+  const at = (e) => String(e).replace(/\bt\b/g, T)
+  const bw = (tv) => `${vw}*(${tv(anim.sxExpr)})`
+  const bh = (tv) => `${vh}*(${tv(anim.syExpr)})`
+  // A big zoom's per-frame size, even, about the box's own: `scale` reads it at its `t`, perspective at its frame.
+  const bulkW = (tv) => `2*round(${sw}*${bw(tv)}/${pw}/2)`
+  const bulkH = (tv) => `2*round(${sh}*${bh(tv)}/${ph}/2)`
+  const kx = bulk ? `(${bulkW(at)})/${sw}` : '1'
+  const ky = bulk ? `(${bulkH(at)})/${sh}` : '1'
+  // The source corner at input pixel (u, v), as a point of the box about its centre, in canvas pixels. perspective's
+  // coordinates are pixel indices (0 is the first pixel's centre, W one past the last: measured), so an edge coordinate
+  // is the index plus a half.
+  const A = (u) => `(${bw(at)})*(((${u + 0.5})/(${kx})-${m})/${pw}-0.5)`
+  const B = (v) => `(${bh(at)})*(((${v + 0.5})/(${ky})-${m})/${ph}-0.5)`
+  const cx = `${vw}*(0.5+(${at(anim.oxExpr)})/100)-(${plan.x})-0.5`
+  const cy = `${vh}*(0.5+(${at(anim.oyExpr)})/100)-(${plan.y})-0.5`
+  let corner
+  if (anim.rotDegExpr) {
+    // Clockwise for a positive angle, about the box's centre, as `rotate` turns it (measured against it).
+    const th = `(${at(anim.rotDegExpr)})*PI/180`
+    corner = (u, v) => [
+      `${cx}+cos(${th})*${A(u)}-sin(${th})*${B(v)}`,
+      `${cy}+sin(${th})*${A(u)}+cos(${th})*${B(v)}`,
+    ]
+  } else {
+    corner = (u, v) => [`${cx}+${A(u)}`, `${cy}+${B(v)}`]
+  }
+  const pts = [corner(0, 0), corner(fw, 0), corner(0, fh), corner(fw, fh)]
+  const persp = 'perspective=' + pts.map(([x, y], i) => `x${i}='${x}':y${i}='${y}'`).join(':')
+    + ':interpolation=cubic:sense=destination:eval=frame'
+  const sizeStep = bulk ? `,scale=w='${bulkW((e) => e)}':h='${bulkH((e) => e)}':eval=frame` : ''
+  return [
+    `${inLabel}${pre}format=${fmt},pad=${sw}:${sh}:${m}:${m}:color=black@0.0,split=2[spc${idx}][spa${idx}]`,
+    `[spa${idx}]alphaextract[spaa${idx}]`,
+    `[spc${idx}]fillborders=left=${m}:right=${m}:top=${m}:bottom=${m}:mode=smear[spcs${idx}]`,
+    `[spcs${idx}][spaa${idx}]alphamerge${sizeStep},pad=${fw}:${fh}:0:0:color=black@0.0${bulk ? ':eval=frame' : ''},`
+      + `${persp}${post}${outLabel}`,
+  ]
 }
 
 /**
@@ -1319,13 +1442,18 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   // sample-frame.js's six-argument call keeps working; its pseudo-item never
   // carries `keyframes`, so the animated branch cannot engage there anyway.
   const imgOffset = segStart == null ? 0 : Math.max(0, segStart - (item.start ?? 0))
-  const anim = animatedGeometry(item, 'image', vw, vh, imgOffset, duration, warnIfCapped(item, 'image'))
+  // On an 8-bit canvas every keyframed image takes the sub-pixel chain (§801). A 10-bit canvas keeps the whole-pixel one.
+  const eightBit = !opts?.toHdr && !String(opts?.canvasPixFmt ?? '').includes('10') && !opts?.wholePixel
+  const anim = animatedGeometry(item, 'image', vw, vh, imgOffset, duration, warnIfCapped(item, 'image'),
+    eightBit ? { pixelTolerance: SUBPIXEL_TOLERANCE } : undefined)
 
   // A resized box reads `t` per IMAGE frame (its eval=frame scale) and the overlay per OUTPUT frame: a looped image comes
   // in at the image demuxer's 25 fps, so in a 30 fps segment the size and the place came from different instants and
   // the box jumped 2 px back on the frames the overlay repeated an image frame (34, 5.43.0). Its frames come at the
-  // segment's own rate now. A still or position-only image keeps its input exactly as before.
-  const inputArgs = anim?.needsAnimatedChain
+  // segment's own rate now. A still image keeps its input exactly as before.
+  // The sub-pixel chain redraws the image per frame, so a pan (position only) comes in at the segment's rate too.
+  const subpixel = Boolean(anim) && eightBit
+  const inputArgs = anim?.needsAnimatedChain || subpixel
     ? ['-framerate', String(opts?.fps ?? 30), '-loop', '1', '-t', ffSeconds(duration), '-i', item.src]
     : ['-loop', '1', '-t', ffSeconds(duration), '-i', item.src]
   const filterParts = []
@@ -1417,7 +1545,7 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   // first frame and drew every later one at the first frame's size. The fit chains end in `format=rgba`, so the
   // mixer has its alpha plane here.
   const op = opacityFilterStep(item, 'op' + idx, imgOffset, duration, opts?.fps ?? 30)
-  const opInChain = anim?.needsAnimatedChain && op ? `,${op}` : ''
+  const opInChain = (anim?.needsAnimatedChain || subpixel) && op ? `,${op}` : ''
   const animStep = anim?.needsAnimatedChain
     ? `${opInChain},scale=w='${anim.boxWExpr}':h='${anim.boxHExpr}':eval=frame${animatedRotateStep(anim, false)}`
     : ''
@@ -1449,7 +1577,24 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   const mask = opts?.maskBase
     ? planItemMask(item, fitW, fitH, imgOffset, duration, opts?.fps ?? 30, opts.maskBase)
     : null
-  if (mask) {
+  let subAt = null
+  if (subpixel) {
+    // The sub-pixel chain (§801) takes the fitted (and masked) picture, its opacity first.
+    if (mask) {
+      filterParts.push(
+        `[${idx}:v]${fitChain}[imgb${idx}]`,
+        ...maskFilterParts(`[imgb${idx}]`, idx + 1, `[imgm${idx}]`, { tenBit: false }),
+      )
+    } else {
+      filterParts.push(`[${idx}:v]${fitChain}[imgm${idx}]`)
+    }
+    const plan = subpixelPlan(item, 'image', anim, { vw, vh, timeOffset: imgOffset, duration, fps: opts?.fps ?? 30, contentW: fitW, contentH: fitH })
+    filterParts.push(...subpixelParts(anim, plan, {
+      vw, vh, idx, inLabel: `[imgm${idx}]`, outLabel: `[img${idx}]`,
+      pre: op ? `${op},` : '', post: ',setpts=PTS-STARTPTS', fmt: 'gbrap',
+    }))
+    subAt = { x: plan.x, y: plan.y }
+  } else if (mask) {
     filterParts.push(
       `[${idx}:v]${fitChain}${toHdr}[imgb${idx}]`,
       ...maskFilterParts(`[imgb${idx}]`, idx + 1, `[imgm${idx}]`, { tenBit: Boolean(opts?.toHdr) }),
@@ -1472,9 +1617,11 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   // box.x/box.y, not the unrotated x/y: a rotated frame arrives here at
   // outW×outH, so compositing it at the unrotated top-left would translate it
   // by half the growth instead of turning it in place.
-  const iPos = anim
+  // The sub-pixel frame sits still at its even place; its picture moves inside it.
+  const iPos = subpixel ? null : anim
     ? (anim.needsAnimatedChain ? { x: anim.xExpr, y: anim.yExpr } : staticBoxPosition(anim, box))
     : null
+  const iAt = subAt ?? { x: box.x, y: box.y }
   const blend = blendModeOf(item)
   const imgComposite = compositeFormat(opts?.canvasPixFmt, '')
   const imgFmt = imgComposite ? ':format=' + imgComposite : ''
@@ -1484,12 +1631,12 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
     // merges it with this overlay's own format (imgFmt).
     filterParts.push(...blendCompositeParts(blendOpts(opts, {
       backdrop: videoLabel, item: src, mode: blend, idx, vw, vh, duration, overlayFormat: imgFmt,
-      x: iPos ? `'${iPos.x}'` : box.x, y: iPos ? `'${iPos.y}'` : box.y,
+      x: iPos ? `'${iPos.x}'` : iAt.x, y: iPos ? `'${iPos.y}'` : iAt.y,
     })))
   } else {
     filterParts.push(
       `${videoLabel}${src}overlay=` +
-      `x=${iPos ? `'${iPos.x}'` : box.x}:y=${iPos ? `'${iPos.y}'` : box.y}` +
+      `x=${iPos ? `'${iPos.x}'` : iAt.x}:y=${iPos ? `'${iPos.y}'` : iAt.y}` +
       `${imgFmt}:shortest=0[iv${idx}]`
     )
   }
@@ -1520,6 +1667,8 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
  * @param {string|null} [opts.sdrCurve]   — look curve id for the HDR→SDR LUT
  * @param {number} [opts.cropBudgetPx]    — test seam: a keyframed crop's pixel
  *   budget, MAX_ANIMATED_CROP_PX when absent. No production caller passes it.
+ * @param {boolean} [opts.wholePixel]     — test seam: a keyframed item takes the whole-pixel chain a 10-bit canvas
+ *   takes, on any canvas (§801). No production caller passes it.
  * @param {number} [opts.fps]             — samples keyframed opacity and a keyframed mask (30 when absent)
  * @param {string} [opts.maskBase]        — where the item's mask file goes, without
  *   its extension; without it a `mask` is not drawn
@@ -1566,7 +1715,10 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // the chain divides PTS by the speed, so every downstream filter's `t` is
   // already back in timeline seconds. Verified against real footage at 1x, 2x
   // and 0.5x: the animation lands identically at all three.
-  const anim = animatedGeometry(item, 'video', vw, vh, seekOffset, duration, warnIfCapped(item, 'video'))
+  // On an 8-bit canvas every keyframed clip takes the sub-pixel chain (§801). A 10-bit canvas keeps the whole-pixel one.
+  const eightBit = !isHdr(projectColorSpace) && !String(opts.canvasPixFmt ?? '').includes('10') && !opts.wholePixel
+  const anim = animatedGeometry(item, 'video', vw, vh, seekOffset, duration, warnIfCapped(item, 'video'),
+    eightBit ? { pixelTolerance: SUBPIXEL_TOLERANCE } : undefined)
 
   // ProRes 4444 (.mov from remove-bg) has alpha: format=auto. A 10-bit canvas
   // composites at yuv420p10 either way (§619).
@@ -1942,9 +2094,15 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // it cannot follow a changing frame size. Behind the resize ffmpeg's format negotiation gave it a converter
   // configured on the first frame, which drew every later frame at the first frame's size (a landing card stuck
   // at its first scale, a blurred one at its largest, both out of place), and only a keyframed item has one.
-  const opInChain = anim?.needsAnimatedChain && op ? `,${op}` : ''
-  const afterPad = anim?.needsAnimatedChain
-    ? `${opInChain},scale=w='${anim.boxWExpr}':h='${anim.boxHExpr}':eval=frame` +
+  // The sub-pixel chain (§801) runs after the pad (and the mask) instead.
+  const subpixel = Boolean(anim) && eightBit
+  // The clip's frames at the segment's rate before anything is resized per frame: the resize reads `t` per CLIP frame
+  // and the overlay per OUTPUT frame, so a 24 fps clip in a 30 fps segment took its size and its place from different
+  // instants and stepped back, as a looped image at 25 fps did (§801).
+  const fpsPin = anim?.needsAnimatedChain || subpixel ? `fps=${positiveNumber(opts.fps ?? 30, 'settings.fps')}` : ''
+  const opInChain = (anim?.needsAnimatedChain || subpixel) && op ? `,${op}` : ''
+  const afterPad = subpixel ? '' : anim?.needsAnimatedChain
+    ? `,${fpsPin}${opInChain},scale=w='${anim.boxWExpr}':h='${anim.boxHExpr}':eval=frame` +
       `${animatedRotateStep(anim, true, isHdr(projectColorSpace))}`
     : rotateFilterStep(box, true, isHdr(projectColorSpace))
   // A mask (§616) goes BETWEEN the two: after pad, which made the box the
@@ -1953,14 +2111,26 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // pad (`[vidb]`), masked (maskFilterParts, mask file at input `idx + 1`), and
   // resumed from `[vidm]`; with nothing after the pad the mask writes `[vid]`.
   const tail = mask ? padStep : `${padStep}${afterPad}`
-  const chainOut = mask ? `[vidb${idx}]` : `[vid${idx}]`
+  const chainOut = mask ? `[vidb${idx}]` : subpixel ? `[vidm${idx}]` : `[vid${idx}]`
   const maskParts = mask
     ? [
-        ...maskFilterParts(`[vidb${idx}]`, idx + 1, afterPad ? `[vidm${idx}]` : `[vid${idx}]`,
+        ...maskFilterParts(`[vidb${idx}]`, idx + 1, afterPad || subpixel ? `[vidm${idx}]` : `[vid${idx}]`,
           { tenBit: padAlphaFmt === 'yuva444p10le' }),
         ...(afterPad ? [`[vidm${idx}]${afterPad.slice(1)}[vid${idx}]`] : []),
       ]
     : []
+  // The sub-pixel chain from the padded (and masked) box, `[vidm]`, to `[vid]`: the fps pin, the opacity, then the
+  // move, in the composite's own 4:2:0 with alpha.
+  let subAt = null
+  const subParts = []
+  if (subpixel) {
+    const plan = subpixelPlan(item, 'video', anim, { vw, vh, timeOffset: seekOffset, duration, fps: opts.fps ?? 30, contentW: padW, contentH: padH })
+    subParts.push(...subpixelParts(anim, plan, {
+      vw, vh, idx, inLabel: `[vidm${idx}]`, outLabel: `[vid${idx}]`,
+      pre: `${fpsPin},${op ? `format=yuva420p,${op},` : ''}`, fmt: 'yuva420p',
+    }))
+    subAt = { x: plan.x, y: plan.y }
+  }
   if (cutoutGrade) {
     // The graded cutout: colour and alpha split after scale, the colour graded,
     // the alpha merged back, then the same pad (yuva420p: the SDR path's pin,
@@ -1980,7 +2150,7 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   } else {
     filterParts.push(`${head}${conversionStep}${postBlur}${tail}${chainOut}`)
   }
-  filterParts.push(...maskParts)
+  filterParts.push(...maskParts, ...subParts)
   let src = `[vid${idx}]`
   // Static opacity keeps its plain mixer; a keyframed one is a sendcmd-driven
   // mixer sampled once per frame at the segment's fps (item-opacity.js, §616).
@@ -1990,21 +2160,23 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     src = `[vidop${idx}]`
   }
   // box.x/box.y, not the unrotated x/y — see the image path.
-  const vPos = anim
+  // The sub-pixel frame sits still at its even place; its picture moves inside it.
+  const vPos = subpixel ? null : anim
     ? (anim.needsAnimatedChain ? { x: anim.xExpr, y: anim.yExpr } : staticBoxPosition(anim, box))
     : null
+  const vAt = subAt ?? { x: box.x, y: box.y }
   const blend = blendModeOf(item)
   if (blend !== 'normal') {
     // A blend mode (§616): item-blend.js's graph in place of this overlay,
     // the same x/y, merged with this overlay's own format (ovFmt).
     filterParts.push(...blendCompositeParts(blendOpts(opts, {
       backdrop: videoLabel, item: src, mode: blend, idx, vw, vh, duration, overlayFormat: ovFmt,
-      x: vPos ? `'${vPos.x}'` : box.x, y: vPos ? `'${vPos.y}'` : box.y,
+      x: vPos ? `'${vPos.x}'` : vAt.x, y: vPos ? `'${vPos.y}'` : vAt.y,
     })))
   } else {
     filterParts.push(
       `${videoLabel}${src}overlay=` +
-      `x=${vPos ? `'${vPos.x}'` : box.x}:y=${vPos ? `'${vPos.y}'` : box.y}` +
+      `x=${vPos ? `'${vPos.x}'` : vAt.x}:y=${vPos ? `'${vPos.y}'` : vAt.y}` +
       `${ovFmt}:shortest=0[iv${idx}]`
     )
   }

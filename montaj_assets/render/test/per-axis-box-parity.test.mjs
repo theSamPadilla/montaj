@@ -102,11 +102,15 @@ const ev = (src, t) => Function('t', `
   return ${src.replace(/\bif\(/g, 'iff(')}
 `)(t)
 
-/** The export's fit box and its per-frame box, read out of the chain it emits for `item`. */
+/**
+ * The export's fit box and its per-frame box, read out of the chain it emits for `item`: the whole-pixel chain a
+ * 10-bit canvas takes (the `wholePixel` seam). The 8-bit sub-pixel chain (§801) draws the same band to the preview's
+ * exact box: subpixel-motion.integration.test.mjs routes this closer through collectAllItems too.
+ */
 function exportedAnimation(item, duration) {
   const project = { tracks: [{ id: 'base', items: [] }, { id: 'band', items: [item] }] }
   const emitted = collectAllItems(project).videoItems[0]
-  const { filterParts } = buildVideoItemFilterParts(emitted, VW, VH, 1, '[base]', { ...SDR, duration })
+  const { filterParts } = buildVideoItemFilterParts(emitted, VW, VH, 1, '[base]', { ...SDR, duration, wholePixel: true })
   const chain = filterParts.join(';')
   const fit = /scale=(\d+):(\d+):force_original_aspect_ratio=decrease/.exec(chain)
   const size = /scale=w='([^']*)':h='([^']*)':eval=frame/.exec(chain)

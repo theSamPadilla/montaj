@@ -44,8 +44,13 @@ describe('PV55: a keyframed crop animates', () => {
     assert.doesNotMatch(chainOf(build(img({ ...DIMS, fit: 'contain', keyframes: PAN }))), /force_original_aspect_ratio|pad=/)
   })
   test('crop and box keyframes compose: the crop fills the PEAK box, then the box animates', () => {
-    const c = chainOf(build(img({ ...DIMS, keyframes: [...PAN, lin('scale', 0.5, 1)] })))
+    // The whole-pixel chain (a 10-bit canvas's; the `wholePixel` seam).
+    const item = img({ ...DIMS, keyframes: [...PAN, lin('scale', 0.5, 1)] })
+    const c = chainOf(buildImageItemFilterParts(item, VW, VH, 1, '[canvas]', 3, 0, { wholePixel: true }))
     assert.match(c, /crop=1080:1920:x='[^']*':y='[^']*':exact=1,scale,format=rgba,scale=w='[^']*':h='[^']*':eval=frame/)
+    // The sub-pixel chain (§801) moves the same filled peak box.
+    const s = build(item).filterParts.join(';')
+    assert.match(s, /crop=1080:1920:x='[^']*':y='[^']*':exact=1,scale,format=rgba\[imgm1\];\[imgm1\]format=gbrap,pad=/, s)
   })
   test('with no readable size it holds the crop at the segment start, and warns', () => {
     const warn = mock.method(console, 'warn', () => {})

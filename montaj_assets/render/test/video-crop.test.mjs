@@ -15,7 +15,10 @@ import { buildVideoItemFilterParts, decreaseFitSize } from '../encode-segment.js
 
 const VW = 1080
 const VH = 1920
+// A keyframed box here takes the whole-pixel chain (the `wholePixel` seam; a 10-bit canvas's chain), whose strings
+// these read. The crop is the same on the 8-bit sub-pixel chain (§801), which takes over after the pad.
 const OPTS = {
+  wholePixel: true,
   segStart: 0,
   duration: 3,
   projectColorSpace: 'sdr_bt709',

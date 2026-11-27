@@ -16,7 +16,10 @@ import { geometryAt, toPixelBox, toRotatedPixelBox } from '@bycrux/timeline-core
 
 const VW = 1920
 const VH = 1080
+// The keyframed tests below pin the WHOLE-PIXEL chain, which a 10-bit (HDR) canvas takes (the `wholePixel` seam
+// builds it on any canvas). An 8-bit canvas takes the sub-pixel chain (§801): subpixel-motion.integration.test.mjs.
 const OPTS = {
+  wholePixel: true,
   segStart: 0,
   duration: 3,
   projectColorSpace: 'sdr_bt709',
@@ -270,7 +273,7 @@ describe('SP9d — image items animate too', () => {
   test('a keyframed image compiles the same way a video does', () => {
     const r = buildImageItemFilterParts(
       imageItem({ keyframes: [track('scale', [{ t: 0, value: 0.5 }, { t: 3, value: 0.9 }])] }),
-      VW, VH, 1, '[canvas]', 3, 0,
+      VW, VH, 1, '[canvas]', 3, 0, { wholePixel: true },
     )
     assert.match(chainOf(r), /scale=w='[^']*\bt\b[^']*':h='[^']*':eval=frame/)
     assert.match(overlayOf(r), /overlay=x='[^']*\bt\b/)

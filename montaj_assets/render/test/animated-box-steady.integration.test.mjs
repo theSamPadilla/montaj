@@ -32,9 +32,13 @@ const ev = (src, t) => Function('t', `
 
 const haveFfmpeg = spawnSync(FFMPEG, ['-hide_banner', '-version']).status === 0
 
+// The whole-pixel chain this file was written for is the one a 10-bit (HDR) canvas still takes; the `wholePixel` seam
+// builds it on any canvas. An 8-bit canvas takes the sub-pixel chain (§801): subpixel-motion.integration.test.mjs.
+const WHOLE = { wholePixel: true }
+
 describe('a keyframed push: the box steps 4 px about an even centre', () => {
   test('every frame: the size a multiple of 4, the corner even, the centre still, the size never shrinking', () => {
-    const r = buildImageItemFilterParts(imageItem({ keyframes: [push] }), VW, VH, 1, '[canvas]', DUR, 0, { fps: FPS })
+    const r = buildImageItemFilterParts(imageItem({ keyframes: [push] }), VW, VH, 1, '[canvas]', DUR, 0, { fps: FPS, ...WHOLE })
     const chain = r.filterParts.find((p) => p.includes('eval=frame'))
     const w = /scale=w='([^']*)':h='([^']*)':eval=frame/.exec(chain), ov = overlayOf(r)
     const x = /overlay=x='([^']*)'/.exec(ov)[1], y = /:y='([^']*)'/.exec(ov)[1]
@@ -50,31 +54,31 @@ describe('a keyframed push: the box steps 4 px about an even centre', () => {
   })
 
   test('an animated image comes in at the segment\'s rate; a still or a position-only one exactly as before', () => {
-    const animated = buildImageItemFilterParts(imageItem({ keyframes: [push] }), VW, VH, 1, '[canvas]', DUR, 0, { fps: 25 })
+    const animated = buildImageItemFilterParts(imageItem({ keyframes: [push] }), VW, VH, 1, '[canvas]', DUR, 0, { fps: 25, ...WHOLE })
     assert.deepEqual(animated.inputArgs.slice(0, 2), ['-framerate', '25'])
     const still = buildImageItemFilterParts(imageItem(), VW, VH, 1, '[canvas]', DUR, 0, { fps: FPS })
     assert.deepEqual(still.inputArgs, ['-loop', '1', '-t', '3', '-i', '/tmp/tex.png'])
-    const pan = buildImageItemFilterParts(imageItem({ keyframes: [{ prop: 'offsetX', points: [{ t: 0, value: -10 }, { t: DUR, value: 10 }] }] }), VW, VH, 1, '[canvas]', DUR, 0, { fps: FPS })
+    const pan = buildImageItemFilterParts(imageItem({ keyframes: [{ prop: 'offsetX', points: [{ t: 0, value: -10 }, { t: DUR, value: 10 }] }] }), VW, VH, 1, '[canvas]', DUR, 0, { fps: FPS, ...WHOLE })
     assert.deepEqual(pan.inputArgs, still.inputArgs)
     assert.match(overlayOf(pan), /overlay=x='round\(1920\*\(0\.5\*\(1-\(0\.5\)\)\+\(/, 'a pan keeps its corner expression')
   })
 
   test('a video\'s resized box steps the same way', () => {
     const r = buildVideoItemFilterParts({ type: 'video', src: '/tmp/clip.mp4', start: 0, duration: DUR, scale: 0.5, offsetX: 0, offsetY: 0, keyframes: [push] }, VW, VH, 1, '[canvas]',
-      { segStart: 0, duration: DUR, projectColorSpace: 'sdr_bt709', zscaleAvailable: true, lut3dAvailable: true, sdrCurve: null, fps: FPS })
+      { segStart: 0, duration: DUR, projectColorSpace: 'sdr_bt709', zscaleAvailable: true, lut3dAvailable: true, sdrCurve: null, fps: FPS, ...WHOLE })
     const x = /overlay=x='([^']*)'/.exec(overlayOf(r))[1]
     for (let f = 0; f <= DUR * FPS; f += 7) assert.equal(ev(x, f / FPS) % 2, 0)
   })
 })
 
 describe('a keyframed push measured on the real binary', () => {
-  test('a point of the picture never moves back: right side only right, left only left, and the same down and up', { skip: haveFfmpeg ? false : 'no ffmpeg' }, () => {
+  for (const [chain, opts] of [['whole-pixel', WHOLE], ['sub-pixel', {}]]) test(`${chain}: a point of the picture never moves back: right side only right, left only left, and the same down and up`, { skip: haveFfmpeg ? false : 'no ffmpeg' }, () => {
     const dir = mkdtempSync(join(tmpdir(), 'box-steady-'))
     try {
       const img = join(dir, 'tex.png'), out = join(dir, 'out.y')
       let r = spawnSync(FFMPEG, ['-v', 'error', '-f', 'lavfi', '-i', 'color=gray:s=1600x900,noise=alls=90:allf=u,gblur=sigma=2.5', '-frames:v', '1', img])
       assert.equal(r.status, 0, String(r.stderr))
-      const parts = buildImageItemFilterParts(imageItem({ src: img, keyframes: [push] }), VW, VH, 1, '[canvas]', DUR, 0, { fps: FPS })
+      const parts = buildImageItemFilterParts(imageItem({ src: img, keyframes: [push] }), VW, VH, 1, '[canvas]', DUR, 0, { fps: FPS, ...opts })
       r = spawnSync(FFMPEG, ['-v', 'error', '-f', 'lavfi', '-i', `color=black:s=${VW}x${VH}:r=${FPS}:d=${DUR}`, ...parts.inputArgs,
         '-filter_complex', ['[0:v]format=yuv420p[canvas]', ...parts.filterParts].join(';'), '-map', '[iv1]', '-r', String(FPS), '-pix_fmt', 'gray', '-f', 'rawvideo', out], { maxBuffer: 1 << 30 })
       assert.equal(r.status, 0, String(r.stderr).slice(0, 2000))

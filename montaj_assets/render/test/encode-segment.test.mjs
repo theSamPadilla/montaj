@@ -2004,14 +2004,18 @@ test('dry-run: numeric strings (an older project\'s fps, size, speed, opacity, v
 // §563 review: a keyframed item's STATIC geometry went into its quoted x='…' / w='…' / rotate='…' expressions as
 // project.json text.
 test('keyframed items build exactly the arguments they did before the §563 expression checks', () => {
+  // The goldens are the whole-pixel chain (a 10-bit canvas's; the `wholePixel` seam). The 8-bit sub-pixel chain
+  // (§801) is pinned by subpixel-motion.integration.test.mjs.
   const { image, video, spin } = VALID_SEGMENT.keyframed
-  const opts = { segStart: 0, duration: 2, zscaleAvailable: true, lutAvailable: true, lut3dAvailable: true }
-  assert.deepEqual(JSON.parse(JSON.stringify(buildImageItemFilterParts(image.item, 1080, 1920, 1, '[canvas]', 2, 0, {}))), image.expected)
+  const opts = { segStart: 0, duration: 2, zscaleAvailable: true, lutAvailable: true, lut3dAvailable: true, wholePixel: true }
+  const whole = { wholePixel: true }
+  assert.deepEqual(JSON.parse(JSON.stringify(buildImageItemFilterParts(image.item, 1080, 1920, 1, '[canvas]', 2, 0, whole))), image.expected)
   assert.deepEqual(JSON.parse(JSON.stringify(buildVideoItemFilterParts(video.item, 1080, 1920, 1, '[canvas]', opts))), video.expected)
-  assert.deepEqual(JSON.parse(JSON.stringify(buildImageItemFilterParts(spin.item, 1080, 1920, 2, '[canvas]', 2, 0, {}))), spin.expected)
-  // A numeric string builds the same arguments as its number.
+  assert.deepEqual(JSON.parse(JSON.stringify(buildImageItemFilterParts(spin.item, 1080, 1920, 2, '[canvas]', 2, 0, whole))), spin.expected)
+  // A numeric string builds the same arguments as its number, on either chain.
   const asText = { ...image.item, offsetX: '10', offsetY: '-5', scaleX: '0.8' }
-  assert.deepEqual(JSON.parse(JSON.stringify(buildImageItemFilterParts(asText, 1080, 1920, 1, '[canvas]', 2, 0, {}))), image.expected)
+  assert.deepEqual(JSON.parse(JSON.stringify(buildImageItemFilterParts(asText, 1080, 1920, 1, '[canvas]', 2, 0, whole))), image.expected)
+  assert.deepEqual(buildImageItemFilterParts(asText, 1080, 1920, 1, '[canvas]', 2, 0, {}), buildImageItemFilterParts(image.item, 1080, 1920, 1, '[canvas]', 2, 0, {}))
 })
 
 test('a keyframed item\'s static geometry that is not a number never reaches its expressions (§563)', () => {

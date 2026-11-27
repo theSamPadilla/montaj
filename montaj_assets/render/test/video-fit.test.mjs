@@ -55,8 +55,12 @@ describe('§669: a video item\'s fit', () => {
 
   test('cover under an animated box covers the peak box, then resizes it', () => {
     const keyframes = [{ prop: 'scale', points: [{ t: 0, value: 0.5 }, { t: 2, value: 1 }] }]
-    const c = quietly(() => chainOf(build(clip({ fit: 'cover', keyframes }))))
-    assert.match(c, /scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,pad=1080:1920:[^,]*,scale=w='/, c)
+    // The whole-pixel chain (a 10-bit canvas's; the `wholePixel` seam) resizes right after the pad.
+    const c = quietly(() => chainOf(buildVideoItemFilterParts(clip({ fit: 'cover', keyframes }), 1080, 1920, 1, '[canvas]', { ...OPTS, wholePixel: true })))
+    assert.match(c, /scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,pad=1080:1920:[^,]*,fps=30,scale=w='/, c)
+    // The sub-pixel chain (§801) moves the same covered peak box.
+    const s = quietly(() => build(clip({ fit: 'cover', keyframes }))).filterParts.join(';')
+    assert.match(s, /scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,pad=1080:1920:[^;]*\[vidm1\];\[vidm1\]fps=/, s)
   })
 
   test('cover with a keyframed crop cuts the moving window at the box\'s aspect, then covers', () => {

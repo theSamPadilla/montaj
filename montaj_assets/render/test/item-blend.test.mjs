@@ -92,7 +92,8 @@ test('graph: an animated position places the item with the same expressions the 
   const kf = [{ prop: 'offsetX', points: [{ t: 0, value: 0 }, { t: 2, value: 20 }] }]
   const plain = (await dry(segOf([videoItem({ keyframes: kf })]))).filterParts.join(';')
   const blended = (await dry(segOf([videoItem({ keyframes: kf, blendMode: 'screen' })]))).filterParts.join(';')
-  const pos = plain.match(/\[vid1\]overlay=(x='[^']*':y='[^']*')/)
+  // The sub-pixel chain (§801) moves the picture inside a frame placed still, so the place is a number.
+  const pos = plain.match(/\[vid1\]overlay=(x=(?:'[^']*'|-?\d+):y=(?:'[^']*'|-?\d+))/)
   assert.ok(pos, plain)
   assert.ok(blended.includes(`[vid1]overlay=${pos[1]}:format=yuv444:shortest=0,`), blended)
 })

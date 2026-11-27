@@ -169,7 +169,7 @@ test('graph: a masked video with no rotation goes straight from the mask to [vid
   assert.ok(!r.filterParts.some(p => p.includes('[vidm1]')))
 })
 
-test('graph: keyframed geometry puts the mask after the pad, before the animated scale, on the PEAK box', async () => {
+test('graph: keyframed geometry puts the mask after the pad, before the move, on the PEAK box', async () => {
   const kf = [{ prop: 'scale', points: [{ t: 0, value: 0.25 }, { t: 2, value: 0.5 }] }]
   const r = await dry(segOf([videoItem({ mask: MASK, keyframes: kf })]))
   const parts = r.filterParts
@@ -177,8 +177,10 @@ test('graph: keyframed geometry puts the mask after the pad, before the animated
   const pad = parts[head].match(/pad=(\d+):(\d+):/)
   assert.ok(pad && parts[head].endsWith('[vidb1]'), parts[head])
   const merge = parts.indexOf('[mc2][mam2]alphamerge[vidm1]')
-  const anim = parts.findIndex(p => p.startsWith('[vidm1]scale=w=\'') && p.includes(':eval=frame'))
-  assert.ok(head < merge && merge < anim, `${head} ${merge} ${anim}`)
+  // The move: the sub-pixel chain (§801) from the masked box, its perspective last.
+  const move = parts.findIndex(p => p.startsWith('[vidm1]fps='))
+  const persp = parts.findIndex(p => p.includes('perspective=') && p.endsWith('[vid1]'))
+  assert.ok(head < merge && merge < move && move < persp, `${head} ${merge} ${move} ${persp}`)
   assert.ok(!parts[head].includes('eval=frame'))
   const [job] = r.maskJobs
   assert.deepEqual([job.boxW, job.boxH], [Number(pad[1]), Number(pad[2])])

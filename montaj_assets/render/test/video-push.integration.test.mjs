@@ -1,5 +1,6 @@
 // PL89 push_in: a talking-head clip with keyed `scale` and `offsetY` (a slow push), through the REAL video chain
-// (buildVideoItemFilterParts' animated geometry: scale eval=frame, pad, overlay; no crop), in the real binary.
+// (buildVideoItemFilterParts' animated geometry: on an HLG canvas the whole-pixel scale eval=frame, on an SDR one the
+// sub-pixel perspective of §801; no crop), in the real binary, at the segment's own 25 fps as encodeSegment passes it.
 // A keyed crop on a deeper-than-8-bit clip came out magenta on alternate frames (render-crop-10bit); a push takes
 // another path, and this proves it keeps the source's chroma on every frame, on an HLG 10-bit clip and an SDR one.
 import { test } from 'node:test'
@@ -25,6 +26,8 @@ const PUSH = [
   { prop: 'offsetY', points: [{ t: 0, value: 0 }, { t: 1, value: 1.05 }] },
 ]
 const FLAT = (fmt, tags) => `color=0x3060a0:size=360x640:rate=25:duration=1,format=${fmt},setparams=${tags}:range=tv`
+const HLG_TAGS = 'color_trc=arib-std-b67:color_primaries=bt2020:colorspace=bt2020nc'
+const SDR_TAGS = 'color_trc=bt709:color_primaries=bt709:colorspace=bt709'
 
 /** Every frame's mean U and V at `label`, in 8 bits. */
 function chromaPerFrame(inputs, graph, label) {
@@ -44,19 +47,19 @@ function chainParts(item, opts) {
   try { return buildVideoItemFilterParts(item, CW, CH, 1, '[canvas]', { ...base, ...opts }) } finally { console.warn = warn }
 }
 
-for (const [name, source, probedPixFmt, colorTransfer, projectColorSpace, canvasFmt] of [
-  ['an HLG yuv420p10le clip in an HLG project', FLAT('yuv420p10le', 'color_trc=arib-std-b67:color_primaries=bt2020:colorspace=bt2020nc'),
-    'yuv420p10le', 'arib-std-b67', 'hdr_hlg', 'yuv420p10le'],
-  ['an SDR yuv420p clip in an SDR project', FLAT('yuv420p', 'color_trc=bt709:color_primaries=bt709:colorspace=bt709'),
-    'yuv420p', 'bt709', 'sdr_bt709', 'yuv420p'],
+for (const [name, source, probedPixFmt, colorTransfer, projectColorSpace, canvasFmt, canvasTags] of [
+  ['an HLG yuv420p10le clip in an HLG project', FLAT('yuv420p10le', HLG_TAGS), 'yuv420p10le', 'arib-std-b67', 'hdr_hlg', 'yuv420p10le', HLG_TAGS],
+  ['an SDR yuv420p clip in an SDR project', FLAT('yuv420p', SDR_TAGS), 'yuv420p', 'bt709', 'sdr_bt709', 'yuv420p', SDR_TAGS],
 ]) {
   test(`a push (keyed scale and offsetY) on ${name} keeps the source's chroma on every frame`, { timeout: 60_000, ...SKIP }, () => {
     const [want] = chromaPerFrame(['-f', 'lavfi', '-i', source], '', '[0:v]')
     const item = { type: 'video', src: 'lavfi-placeholder', start: 0, duration: 1, scale: 1, offsetX: 0, offsetY: 0,
       sourceWidth: 360, sourceHeight: 640, probedPixFmt, colorTransfer, keyframes: PUSH }
-    const { filterParts } = chainParts(item, { projectColorSpace })
+    const { filterParts } = chainParts(item, { projectColorSpace, fps: 25 })
     assert.ok(filterParts.join(';').includes('eval=frame'), 'the push goes through the animated chain')
-    const got = chromaPerFrame(['-f', 'lavfi', '-i', `color=black:size=${CW}x${CH}:rate=25:duration=1,format=${canvasFmt}`,
+    // The canvas tagged as encodeSegment tags it (its Step 1): untagged, `overlay` re-matrixes the clip as BT.601,
+    // which moved this colour's chroma by 2 to 3 on every frame and left the whole-pixel chain at the limit (§801).
+    const got = chromaPerFrame(['-f', 'lavfi', '-i', `color=black:size=${CW}x${CH}:rate=25:duration=1,format=${canvasFmt},setparams=${canvasTags}:range=tv`,
       '-f', 'lavfi', '-i', source], `${filterParts.join(';')};`, '[iv1]')
     assert.equal(got.length, 25)
     const bad = got.flatMap(([u, v], i) => (Math.max(Math.abs(u - want[0]), Math.abs(v - want[1])) > 3 ? [`frame ${i}: U ${u} V ${v}`] : []))

@@ -109,10 +109,17 @@ test('padded animated video: the peak-box pad is transparent, before the varying
     ...base, probedWidth: 1920, probedHeight: 1080, probedAlpha: false,
     keyframes: [{ prop: 'scale', points: [{ t: 0, value: 0.5 }, { t: 5, value: 1 }] }],
   }
-  const f = chain(item)
-  const m = /scale=(\d+):(\d+):force_original_aspect_ratio=decrease,format=yuva420p,pad=(\d+):(\d+):\(ow-iw\)\/2:\(oh-ih\)\/2:color=black@0\.0,scale=w='/.exec(f)
+  // The whole-pixel chain (a 10-bit canvas's; the `wholePixel` seam): the varying scale right after the pad, the clip
+  // pinned to the segment's rate first (§801).
+  const f = chain(item, { ...SDR, wholePixel: true })
+  const m = /scale=(\d+):(\d+):force_original_aspect_ratio=decrease,format=yuva420p,pad=(\d+):(\d+):\(ow-iw\)\/2:\(oh-ih\)\/2:color=black@0\.0,fps=30,scale=w='/.exec(f)
   assert.ok(m, `animated chain lacks the transparent peak pad: ${f}`)
   assert.deepEqual([m[3], m[4]], [m[1], m[2]], 'the pad is sized to the same peak box as the static scale')
+  // The sub-pixel chain (§801): the same transparent peak pad ends the head, and the move starts from it.
+  const s = chain(item)
+  const n = /scale=(\d+):(\d+):force_original_aspect_ratio=decrease,format=yuva420p,pad=(\d+):(\d+):\(ow-iw\)\/2:\(oh-ih\)\/2:color=black@0\.0\[vidm0\]$/.exec(s)
+  assert.ok(n, `sub-pixel head lacks the transparent peak pad: ${s}`)
+  assert.deepEqual([n[3], n[4]], [n[1], n[2]])
 })
 
 test('padded animated + rotated: the pad stays transparent into the animated rotate tail', () => {
@@ -120,9 +127,13 @@ test('padded animated + rotated: the pad stays transparent into the animated rot
     ...base, probedWidth: 1920, probedHeight: 1080, probedAlpha: false, rotation: 20,
     keyframes: [{ prop: 'scale', points: [{ t: 0, value: 0.5 }, { t: 5, value: 1 }] }],
   }
-  const f = chain(item)
-  assert.match(f, /format=yuva420p,pad=\d+:\d+:\(ow-iw\)\/2:\(oh-ih\)\/2:color=black@0\.0,scale=w='/)
+  const f = chain(item, { ...SDR, wholePixel: true })
+  assert.match(f, /format=yuva420p,pad=\d+:\d+:\(ow-iw\)\/2:\(oh-ih\)\/2:color=black@0\.0,fps=30,scale=w='/)
   assert.match(f, /rotate='[^']+':ow=\d+:oh=\d+:c=black@0\.0\[vid0\]$/)
+  // The sub-pixel chain (§801) turns it in its one resample: no rotate filter, a transparent pad into it.
+  const parts = buildVideoItemFilterParts(item, 1080, 1920, 0, '[base]', SDR).filterParts.join(';')
+  assert.match(parts, /format=yuva420p,pad=\d+:\d+:\(ow-iw\)\/2:\(oh-ih\)\/2:color=black@0\.0\[vidm0\]/)
+  assert.ok(!parts.includes('rotate=') && /perspective=x0='[^']*cos\(/.test(parts), parts)
 })
 
 test('padded static + rotated: transparent pad, then the existing alpha pin and transparent rotate', () => {
